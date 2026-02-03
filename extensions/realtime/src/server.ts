@@ -7,9 +7,14 @@
  * - Broadcasts prompt updates
  */
 
+import crypto from "node:crypto";
+import fs from "node:fs/promises";
 import http from "node:http";
+import path from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import { loadCoreAgentDeps, type CoreAgentDeps, type CoreConfig } from "./core-bridge.js";
+import { buildBackendModePrompt } from "./prompt.js";
 
 // Message types from Live
 export type LiveMessage =
@@ -34,7 +39,17 @@ interface RealtimeClient {
   ws: WebSocket;
   sessionId: string;
   conversation: string[];
+  agentSessionId?: string; // UUID for agent session
 }
+
+// Session entry type (matches OpenClaw's session store)
+interface SessionEntry {
+  sessionId: string;
+  updatedAt: number;
+}
+
+// Cached core dependencies
+let coreDeps: CoreAgentDeps | null = null;
 
 export async function startRealtimeServer(params: {
   port: number;
@@ -185,47 +200,188 @@ async function handleHelpRequest(
   request: string,
   api: OpenClawPluginApi,
 ): Promise<string> {
-  // TODO: Implement actual agent call
-  // This should:
-  // 1. Create a session with sessionKey = client.sessionId
-  // 2. Call the agent with backend mode
-  // 3. Return the response
-
-  // Placeholder implementation
   api.logger.info(`[realtime] Processing help request: ${request}`);
 
-  // For now, return a simple response
-  return `收到请求：${request}。这是一个占位响应，完整实现需要集成 OpenClaw Agent。`;
+  try {
+    // Load core dependencies (cached after first call)
+    if (!coreDeps) {
+      api.logger.info("[realtime] Loading core dependencies...");
+      coreDeps = await loadCoreAgentDeps();
+    }
+
+    const cfg = api.config as CoreConfig;
+    const agentId = "main";
+
+    // Resolve paths
+    const storePath = coreDeps.resolveStorePath(cfg.session?.store, { agentId });
+    const agentDir = coreDeps.resolveAgentDir(cfg, agentId);
+    const workspaceDir = coreDeps.resolveAgentWorkspaceDir(cfg, agentId);
+
+    // Ensure workspace exists
+    await coreDeps.ensureAgentWorkspace({ dir: workspaceDir });
+
+    // Load or create session
+    const sessionStore = coreDeps.loadSessionStore(storePath);
+    const sessionKey = client.sessionId; // Use realtime session ID as key
+
+    let sessionEntry = sessionStore[sessionKey] as SessionEntry | undefined;
+    if (!sessionEntry) {
+      // Create new session
+      const agentSessionId = crypto.randomUUID();
+      sessionEntry = {
+        sessionId: agentSessionId,
+        updatedAt: Date.now(),
+      };
+      sessionStore[sessionKey] = sessionEntry;
+      await coreDeps.saveSessionStore(storePath, sessionStore);
+      client.agentSessionId = agentSessionId;
+      api.logger.info(`[realtime] Created new agent session: ${agentSessionId}`);
+    } else {
+      client.agentSessionId = sessionEntry.sessionId;
+    }
+
+    // Resolve session file path
+    const sessionFile = coreDeps.resolveSessionFilePath(
+      sessionEntry.sessionId,
+      sessionEntry,
+      { agentId },
+    );
+
+    // Build prompt with conversation context
+    const conversationContext = client.conversation.join("\n");
+    const prompt = `用户通过语音助手请求帮助：
+
+## 对话上下文
+${conversationContext || "（暂无之前的对话）"}
+
+## 当前请求
+${request}
+
+请处理这个请求，返回给语音助手说的内容。`;
+
+    // Build extra system prompt for backend mode
+    const extraSystemPrompt = buildBackendModePrompt(conversationContext);
+
+    // Resolve model configuration from config
+    // Format: "provider/model" or "provider/vendor/model"
+    const agentDefaults = (cfg as Record<string, unknown>).agents as
+      | { defaults?: { model?: { primary?: string } } }
+      | undefined;
+    const modelRef = agentDefaults?.defaults?.model?.primary
+      || `${coreDeps.DEFAULT_PROVIDER}/${coreDeps.DEFAULT_MODEL}`;
+
+    // Parse provider/model (handle both "provider/model" and "provider/vendor/model")
+    const parts = modelRef.split("/");
+    const provider = parts[0] || coreDeps.DEFAULT_PROVIDER;
+    const model = parts.slice(1).join("/") || coreDeps.DEFAULT_MODEL;
+
+    const thinkLevel = coreDeps.resolveThinkingDefault({ cfg, provider, model });
+    const timeoutMs = coreDeps.resolveAgentTimeoutMs({ cfg });
+
+    api.logger.info(`[realtime] Calling agent with session ${sessionEntry.sessionId}, model: ${provider}/${model}`);
+
+    // Call the agent
+    const result = await coreDeps.runEmbeddedPiAgent({
+      sessionId: sessionEntry.sessionId,
+      sessionKey,
+      messageProvider: "realtime",
+      sessionFile,
+      workspaceDir,
+      config: cfg,
+      prompt,
+      provider,
+      model,
+      thinkLevel,
+      verboseLevel: "off",
+      timeoutMs,
+      runId: `realtime:${client.sessionId}:${Date.now()}`,
+      lane: "realtime",
+      extraSystemPrompt,
+      agentDir,
+    });
+
+    // Extract text reply
+    const texts = (result.payloads ?? [])
+      .filter((p) => p.text && !p.isError)
+      .map((p) => p.text?.trim())
+      .filter(Boolean);
+
+    const replyText = texts.join(" ") || "抱歉，我暂时无法处理这个请求。";
+
+    api.logger.info(`[realtime] Agent reply: ${replyText.slice(0, 100)}...`);
+
+    return replyText;
+  } catch (err) {
+    api.logger.error(`[realtime] Failed to call agent: ${err}`);
+    return `抱歉，处理请求时出错了：${err instanceof Error ? err.message : String(err)}`;
+  }
 }
 
-function handleBootstrap(
+async function handleBootstrap(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   api: OpenClawPluginApi,
 ) {
-  // TODO: Read USER.md and MEMORY.md to build initial system prompt
-  const response = {
-    systemPrompt: `你是用户的语音助手。
+  try {
+    // Load core dependencies if not already loaded
+    if (!coreDeps) {
+      coreDeps = await loadCoreAgentDeps();
+    }
+
+    const cfg = api.config as CoreConfig;
+    const agentId = "main";
+    const workspaceDir = coreDeps.resolveAgentWorkspaceDir(cfg, agentId);
+
+    // Read USER.md and MEMORY.md
+    let userProfile = "";
+    let memorySummary = "";
+
+    try {
+      userProfile = await fs.readFile(path.join(workspaceDir, "USER.md"), "utf-8");
+    } catch {
+      userProfile = "（用户画像尚未创建）";
+    }
+
+    try {
+      const memoryContent = await fs.readFile(path.join(workspaceDir, "MEMORY.md"), "utf-8");
+      // Summarize if too long
+      memorySummary = memoryContent.length > 2000
+        ? memoryContent.slice(0, 2000) + "\n\n...(更多记忆已省略)"
+        : memoryContent;
+    } catch {
+      memorySummary = "（长期记忆尚未创建）";
+    }
+
+    const systemPrompt = `你是用户的语音助手。
 
 ## 用户画像
-{待从 USER.md 加载}
+${userProfile}
 
 ## 重要记忆
-{待从 MEMORY.md 加载}
+${memorySummary}
 
 ## 规则
-1. 日常对话直接回答
-2. 复杂任务 → 说确认语，调用 openclaw_help
-3. 收到后台回复后自然说出来
+1. 日常对话直接回答，保持简洁自然
+2. 复杂任务（搜索、计算、查询等）→ 说"好的，让我帮你查一下"，然后调用 openclaw_help
+3. 收到后台回复后，用自然的语气说出来
+4. 不要说"我是 AI"或"我无法..."，像朋友一样交流
 
-后台会自己处理记忆等事情，你不用管。`,
-    userProfile: "",
-    memorySummary: "",
-  };
+后台会自己处理记忆保存等事情，你不用管。`;
 
-  res.writeHead(200, {
-    "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*",
-  });
-  res.end(JSON.stringify(response));
+    const response = {
+      systemPrompt,
+      userProfile,
+      memorySummary,
+    };
+
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+    });
+    res.end(JSON.stringify(response));
+  } catch (err) {
+    api.logger.error(`[realtime] Bootstrap error: ${err}`);
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: String(err) }));
+  }
 }

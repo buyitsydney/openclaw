@@ -24,8 +24,10 @@ export interface RealtimeConfig {
   };
 }
 
+// Singleton state - persists across plugin loads
 let server: RealtimeServer | null = null;
 let fileWatcher: FileWatcher | null = null;
+let serverStarting = false;
 
 const realtimePlugin: OpenClawPluginDefinition = {
   id: "realtime",
@@ -44,44 +46,62 @@ const realtimePlugin: OpenClawPluginDefinition = {
 
     const port = config.port ?? 18790;
 
-    api.logger.info("[realtime] Starting Realtime plugin...");
+    // Skip server startup if already running or starting
+    // This prevents port conflicts when embedded agent loads plugins
+    if (server !== null) {
+      api.logger.info("[realtime] Server already running, skipping startup");
+      return;
+    }
 
-    // Start WebSocket server
-    server = await startRealtimeServer({
-      port,
-      api,
-    });
+    if (serverStarting) {
+      api.logger.info("[realtime] Server is starting, skipping duplicate startup");
+      return;
+    }
 
-    // Setup file watcher for USER.md and MEMORY.md
-    fileWatcher = setupFileWatcher({
-      server,
-      api,
-    });
+    serverStarting = true;
 
-    // Register before_agent_start hook for backend mode
-    api.on("before_agent_start", async (
-      event: PluginHookBeforeAgentStartEvent,
-      ctx: PluginHookAgentContext,
-    ) => {
-      // Check if this request is from realtime
-      // We'll use sessionKey to identify realtime sessions
-      if (!ctx.sessionKey?.startsWith("realtime:")) {
-        return {}; // Not a realtime request, don't modify
-      }
+    try {
+      api.logger.info("[realtime] Starting Realtime plugin...");
 
-      api.logger.info("[realtime] Injecting backend mode system prompt");
+      // Start WebSocket server
+      server = await startRealtimeServer({
+        port,
+        api,
+      });
 
-      // Get current conversation from server
-      const conversation = server?.getConversation(ctx.sessionKey) ?? "";
+      // Setup file watcher for USER.md and MEMORY.md
+      fileWatcher = setupFileWatcher({
+        server,
+        api,
+      });
 
-      return {
-        systemPrompt: buildBackendModePrompt(conversation),
-      };
-    });
+      // Register before_agent_start hook for backend mode
+      api.on("before_agent_start", async (
+        event: PluginHookBeforeAgentStartEvent,
+        ctx: PluginHookAgentContext,
+      ) => {
+        // Check if this request is from realtime
+        // We'll use sessionKey to identify realtime sessions
+        if (!ctx.sessionKey?.startsWith("realtime:")) {
+          return {}; // Not a realtime request, don't modify
+        }
 
-    api.logger.info(`[realtime] Realtime plugin activated on port ${port}`);
-    api.logger.info(`[realtime] WebSocket: ws://localhost:${port}/ws`);
-    api.logger.info(`[realtime] Bootstrap: http://localhost:${port}/api/realtime/bootstrap`);
+        api.logger.info("[realtime] Injecting backend mode system prompt");
+
+        // Get current conversation from server
+        const conversation = server?.getConversation(ctx.sessionKey) ?? "";
+
+        return {
+          systemPrompt: buildBackendModePrompt(conversation),
+        };
+      });
+
+      api.logger.info(`[realtime] Realtime plugin activated on port ${port}`);
+      api.logger.info(`[realtime] WebSocket: ws://localhost:${port}/ws`);
+      api.logger.info(`[realtime] Bootstrap: http://localhost:${port}/api/realtime/bootstrap`);
+    } finally {
+      serverStarting = false;
+    }
   },
 };
 
