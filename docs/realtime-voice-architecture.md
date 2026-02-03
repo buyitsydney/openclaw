@@ -643,3 +643,217 @@ WebSocket 广播给 Live 客户端
 │  git push carher dev:main      # 推送到 CarHer                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 详细 TODO 清单
+
+### OpenClaw 侧（插件开发）
+
+#### Phase 1：插件骨架
+
+| ID | 任务 | 文件 | 状态 |
+|----|------|------|------|
+| O-1.1 | 创建插件目录结构 | `extensions/realtime/` | ⬜ |
+| O-1.2 | 编写 `openclaw.plugin.json` | `extensions/realtime/openclaw.plugin.json` | ⬜ |
+| O-1.3 | 编写 `package.json`，添加依赖 `ws`, `chokidar` | `extensions/realtime/package.json` | ⬜ |
+| O-1.4 | 编写插件入口 `index.ts` | `extensions/realtime/src/index.ts` | ⬜ |
+| O-1.5 | 实现独立 HTTP 服务器（端口 18790） | `extensions/realtime/src/server.ts` | ⬜ |
+| O-1.6 | 实现 WebSocket 连接管理 | `extensions/realtime/src/server.ts` | ⬜ |
+| O-1.7 | 实现 `/api/realtime/bootstrap` HTTP 端点 | `extensions/realtime/src/server.ts` | ⬜ |
+| O-1.8 | 添加日志输出，方便调试 | 所有文件 | ⬜ |
+
+#### Phase 2：双向通信
+
+| ID | 任务 | 文件 | 状态 |
+|----|------|------|------|
+| O-2.1 | 实现 WebSocket 消息解析（transcript/help） | `extensions/realtime/src/message-handler.ts` | ⬜ |
+| O-2.2 | 实现 `transcript` 消息处理：存入对话上下文 | `extensions/realtime/src/message-handler.ts` | ⬜ |
+| O-2.3 | 实现 `help` 消息处理：调用 OpenClaw Agent | `extensions/realtime/src/message-handler.ts` | ⬜ |
+| O-2.4 | 实现 `before_agent_start` hook | `extensions/realtime/src/prompt-hook.ts` | ⬜ |
+| O-2.5 | 实现后台模式 System Prompt 模板 | `extensions/realtime/src/prompt-hook.ts` | ⬜ |
+| O-2.6 | 实现 `help_result` 响应返回给 Live | `extensions/realtime/src/message-handler.ts` | ⬜ |
+| O-2.7 | 实现 `inject` 消息推送机制 | `extensions/realtime/src/injector.ts` | ⬜ |
+| O-2.8 | 实现对话上下文管理（按客户端隔离） | `extensions/realtime/src/context.ts` | ⬜ |
+
+#### Phase 3：自动同步
+
+| ID | 任务 | 文件 | 状态 |
+|----|------|------|------|
+| O-3.1 | 实现 chokidar 文件监听 | `extensions/realtime/src/file-watcher.ts` | ⬜ |
+| O-3.2 | 监听 `USER.md` 变化 | `extensions/realtime/src/file-watcher.ts` | ⬜ |
+| O-3.3 | 监听 `MEMORY.md` 变化 | `extensions/realtime/src/file-watcher.ts` | ⬜ |
+| O-3.4 | 实现文件内容摘要生成 | `extensions/realtime/src/summarizer.ts` | ⬜ |
+| O-3.5 | 实现 `prompt_update` 广播 | `extensions/realtime/src/file-watcher.ts` | ⬜ |
+| O-3.6 | 实现对话存入 OpenClaw session | `extensions/realtime/src/session.ts` | ⬜ |
+
+#### Phase 4：健壮性
+
+| ID | 任务 | 文件 | 状态 |
+|----|------|------|------|
+| O-4.1 | 实现客户端心跳检测 | `extensions/realtime/src/server.ts` | ⬜ |
+| O-4.2 | 实现连接断开重连处理 | `extensions/realtime/src/server.ts` | ⬜ |
+| O-4.3 | 实现错误处理和日志 | 所有文件 | ⬜ |
+| O-4.4 | 实现多客户端支持 | `extensions/realtime/src/context.ts` | ⬜ |
+| O-4.5 | 添加配置项（端口、超时等） | `extensions/realtime/src/config.ts` | ⬜ |
+
+---
+
+### Live 侧（前端开发）
+
+#### Phase 1：基础连接
+
+| ID | 任务 | 文件 | 状态 |
+|----|------|------|------|
+| L-1.1 | 创建 Live 前端项目目录 | `apps/realtime-web/` | ⬜ |
+| L-1.2 | 复制 Gemini Live 官方 demo 代码 | `apps/realtime-web/` | ⬜ |
+| L-1.3 | 实现连接 Gemini Live API | `apps/realtime-web/src/gemini-client.ts` | ⬜ |
+| L-1.4 | 实现连接 OpenClaw Realtime WebSocket | `apps/realtime-web/src/openclaw-client.ts` | ⬜ |
+| L-1.5 | 实现 `/api/realtime/bootstrap` 调用 | `apps/realtime-web/src/openclaw-client.ts` | ⬜ |
+| L-1.6 | 初始化 System Prompt（从 bootstrap 获取） | `apps/realtime-web/src/setup.ts` | ⬜ |
+
+#### Phase 2：对话流转
+
+| ID | 任务 | 文件 | 状态 |
+|----|------|------|------|
+| L-2.1 | 实现用户语音输入捕获 | `apps/realtime-web/src/audio.ts` | ⬜ |
+| L-2.2 | 实现 Gemini Live 语音响应播放 | `apps/realtime-web/src/audio.ts` | ⬜ |
+| L-2.3 | 实现 `transcript` 消息发送到 OpenClaw | `apps/realtime-web/src/sync.ts` | ⬜ |
+| L-2.4 | 配置 `openclaw_help` Tool | `apps/realtime-web/src/tools.ts` | ⬜ |
+| L-2.5 | 实现 Tool 调用时发送 `help` 消息 | `apps/realtime-web/src/tools.ts` | ⬜ |
+| L-2.6 | 实现接收 `help_result` 并返回给 Gemini | `apps/realtime-web/src/tools.ts` | ⬜ |
+
+#### Phase 3：同步处理
+
+| ID | 任务 | 文件 | 状态 |
+|----|------|------|------|
+| L-3.1 | 实现接收 `inject` 消息 | `apps/realtime-web/src/sync.ts` | ⬜ |
+| L-3.2 | 实现 `inject` 内容注入 Gemini 上下文 | `apps/realtime-web/src/sync.ts` | ⬜ |
+| L-3.3 | 实现接收 `prompt_update` 消息 | `apps/realtime-web/src/sync.ts` | ⬜ |
+| L-3.4 | 实现动态更新 Gemini System Prompt | `apps/realtime-web/src/sync.ts` | ⬜ |
+
+#### Phase 4：UI 体验
+
+| ID | 任务 | 文件 | 状态 |
+|----|------|------|------|
+| L-4.1 | 实现连接状态显示 | `apps/realtime-web/src/ui.ts` | ⬜ |
+| L-4.2 | 实现语音波形显示 | `apps/realtime-web/src/ui.ts` | ⬜ |
+| L-4.3 | 实现对话历史显示 | `apps/realtime-web/src/ui.ts` | ⬜ |
+| L-4.4 | 实现 Tool 调用状态显示 | `apps/realtime-web/src/ui.ts` | ⬜ |
+| L-4.5 | 实现断线重连 UI 提示 | `apps/realtime-web/src/ui.ts` | ⬜ |
+
+---
+
+## 测试方案
+
+### 单元测试
+
+| 测试 ID | 测试内容 | 测试文件 |
+|--------|---------|---------|
+| UT-1 | WebSocket 消息解析 | `extensions/realtime/src/message-handler.test.ts` |
+| UT-2 | 后台模式 System Prompt 生成 | `extensions/realtime/src/prompt-hook.test.ts` |
+| UT-3 | 文件变化摘要生成 | `extensions/realtime/src/summarizer.test.ts` |
+| UT-4 | 对话上下文管理 | `extensions/realtime/src/context.test.ts` |
+
+### 集成测试
+
+| 测试 ID | 测试场景 | 预期结果 |
+|--------|---------|---------|
+| IT-1 | Live 连接 OpenClaw WebSocket | 连接成功，收到欢迎消息 |
+| IT-2 | Live 发送 transcript | OpenClaw 收到并记录 |
+| IT-3 | Live 调用 openclaw_help | OpenClaw 返回 help_result |
+| IT-4 | 修改 USER.md | Live 收到 prompt_update |
+| IT-5 | 修改 MEMORY.md | Live 收到 prompt_update |
+
+### 端到端测试
+
+| 测试 ID | 测试场景 | 步骤 | 预期结果 |
+|--------|---------|------|---------|
+| E2E-1 | 简单对话 | 1. 用户说"你好"<br>2. Live 回复 | Live 直接回复，OpenClaw 记录对话 |
+| E2E-2 | Help 调用 | 1. 用户说"北京天气"<br>2. Live 调用 help<br>3. OpenClaw 返回结果 | Live 播报天气信息 |
+| E2E-3 | 记忆同步 | 1. 用户说"我喜欢咖啡"<br>2. OpenClaw 更新 USER.md<br>3. 用户问"我喜欢什么" | Live 知道用户喜欢咖啡 |
+| E2E-4 | 主动提醒 | 1. 用户说"明天订会议室"<br>2. OpenClaw 发现日程冲突 | Live 主动提醒用户 |
+| E2E-5 | 断线重连 | 1. 正常对话中<br>2. 断开 WebSocket<br>3. 自动重连 | 重连后继续对话，上下文保持 |
+
+### 手动验收测试
+
+```bash
+# 1. 启动 OpenClaw Gateway
+pnpm openclaw gateway --verbose
+
+# 2. 确认 Realtime 插件加载
+# 日志应显示：[realtime] Realtime plugin activated
+# 日志应显示：[realtime] WebSocket server listening on port 18790
+
+# 3. 启动 Live 前端
+cd apps/realtime-web && pnpm dev
+
+# 4. 打开浏览器 http://localhost:3000
+
+# 5. 执行测试场景（见下方验收清单）
+```
+
+---
+
+## 验收标准
+
+### Phase 1 验收：插件骨架
+
+| 验收项 | 验收标准 | 验收方式 |
+|-------|---------|---------|
+| ✅ 插件加载 | Gateway 启动时日志显示 `Realtime plugin activated` | 查看日志 |
+| ✅ WebSocket 服务 | 端口 18790 可访问 | `curl http://localhost:18790/health` |
+| ✅ Bootstrap API | 返回初始 System Prompt | `curl http://localhost:18790/api/realtime/bootstrap` |
+| ✅ WebSocket 连接 | 客户端可连接 | `wscat -c ws://localhost:18790/ws` |
+
+### Phase 2 验收：双向通信
+
+| 验收项 | 验收标准 | 验收方式 |
+|-------|---------|---------|
+| ✅ Transcript 接收 | 发送 transcript 消息，日志显示收到 | 发送 JSON 消息查看日志 |
+| ✅ Help 处理 | 发送 help 消息，收到 help_result | 发送 JSON 消息检查响应 |
+| ✅ 后台模式 | help 请求使用后台模式 System Prompt | 查看 Agent 日志 |
+| ✅ 完整流程 | Live 说"查天气"，能收到天气结果 | 语音交互测试 |
+
+### Phase 3 验收：自动同步
+
+| 验收项 | 验收标准 | 验收方式 |
+|-------|---------|---------|
+| ✅ 文件监听 | 修改 USER.md 后日志显示检测到变化 | 编辑文件查看日志 |
+| ✅ Prompt 更新 | 修改 USER.md 后 Live 收到 prompt_update | 检查 WebSocket 消息 |
+| ✅ 记忆同步 | 告诉 AI 喜好变化，后续能记住 | 语音交互测试 |
+| ✅ Session 记录 | 对话保存到 OpenClaw session | 查看 session 文件 |
+
+### 最终验收：完整体验
+
+| 验收项 | 验收标准 |
+|-------|---------|
+| ✅ 低延迟 | 日常对话响应 < 500ms |
+| ✅ 智能升级 | 复杂问题能正确调用 OpenClaw |
+| ✅ 记忆一致 | Live 和 OpenClaw 对用户认知一致 |
+| ✅ 零影响 | WebChat/Telegram 体验不变 |
+| ✅ 稳定性 | 连续对话 30 分钟无崩溃 |
+
+---
+
+## 调试命令
+
+```bash
+# 查看 Realtime 插件日志
+pnpm openclaw gateway --verbose 2>&1 | grep realtime
+
+# 测试 WebSocket 连接
+wscat -c ws://localhost:18790/ws
+
+# 测试 Bootstrap API
+curl http://localhost:18790/api/realtime/bootstrap | jq
+
+# 发送测试消息
+wscat -c ws://localhost:18790/ws -x '{"type":"transcript","role":"user","text":"你好"}'
+
+# 查看 OpenClaw session 文件
+ls -la ~/.openclaw/agents/main/sessions/
+
+# 查看 USER.md 内容
+cat ~/.openclaw/workspace/USER.md
+```
