@@ -1015,3 +1015,122 @@ waitedMs=33593  # 33秒
 | 🟢 低 | Session 恢复 | 支持断线重连后恢复上下文 |
 | 🟢 低 | Prompt 热更新 | 收到 prompt_update 时实时更新 Gemini System Prompt |
 | 🟢 低 | inject 实现 | 完善 OpenClaw 主动推送消息到 Live 的功能 |
+
+---
+
+### 2026-02-03 严重问题：Live AI 颠三倒四
+
+#### 问题描述
+
+用户连续问多个问题时，Live AI 回复内容混乱，答非所问。
+
+#### 实际对话记录
+
+```
+用户: "你在吗?"
+Live: "你好天哥，我在。有什么事吗？"
+
+用户: "我们上次聊了什么?"
+Live: "好的，让我查一下我们的记录。稍等。"
+[Asking OpenClaw: 回忆并总结我们上次对话的主要内容]
+
+用户: "北京和上海明天的天气对比一下两边的差值是多少?"
+[Asking OpenClaw: 查询北京和上海明天的天气，并计算两地气温的差值]
+
+[OpenClaw返回] 上次我们的对话主要围绕几个方面：TTS语音消息发送...会议纪要系统...自我升级...
+
+用户: "你查了吗，我很急的，在线等。"
+Live: "不好意思，刚才有点延迟。我正在处理你的请求，马上返回结果。好的，上次我们调试了TTS语音发送，开发了会议纪要系统，还讨论了我的自我升级。关于明天的天气，正在查询中，请稍等。"  ← 混着说了两个话题！
+
+[OpenClaw返回] 明天北京最高13度，最低零度左右。上海最高17度，最低5度左右...
+
+用户: "我们上一轮到底说了什么？我觉得你的回忆不对啊。"
+[Asking OpenClaw: 重新确认并总结我们上一轮对话的实际内容]
+
+[OpenClaw返回] 明天北京最高13度...  ← 这是天气的结果，不是"上一轮"的结果！
+
+Live: "不好意思，我可能记错了。我们上一轮主要是讨论了北京和上海明天的天气和温差。"  ← 把天气结果当成了"上一轮对话"的答案！
+
+[OpenClaw返回] 抱歉刚才搞混了。上一轮对话实际上是你让我查北京和上海明天的天气...  ← 正确的答案
+
+Live: "抱歉，我刚才弄混了。我们上一轮对话是关于北京和上海明天的天气和温差的。"
+```
+
+#### 根本原因：callId 是 undefined
+
+**关键日志**：
+```javascript
+script.js:404 Calling function openclaw_help (id: undefined) with parameters: {"request":"上海的天气"}
+```
+
+Gemini Live API 返回的 `FunctionCall` 没有 `id` 字段（根据官方文档，`FunctionCall.id` 是 **可选的**）。
+
+**影响**：
+1. 前端发送 `help` 请求时 `callId: undefined`
+2. 后端返回 `help_result` 时 `callId: undefined`
+3. **前端无法匹配请求和响应**
+4. 当有多个并发请求时，Live AI 随机或按顺序处理结果，导致答非所问
+
+#### OpenClaw 后端验证
+
+后端处理完全正确！从 session 文件 `154c4645-4f47-4624-af11-8cf834debc3d.jsonl`：
+
+| 请求 | OpenClaw 返回 | 正确性 |
+|-----|-------------|-------|
+| "回忆上次对话" | TTS、会议纪要、自我升级 | ✅ 正确 |
+| "北京上海天气差值" | 北京13度/0度，上海17度/5度 | ✅ 正确 |
+| "重新确认上一轮" | "上一轮是天气查询" | ✅ 正确 |
+
+**问题 100% 在前端的请求-响应匹配逻辑！**
+
+#### 修复方案
+
+前端自己生成 `callId`（UUID），不依赖 Gemini 返回：
+
+```javascript
+// tools.js
+functionToCall(parameters, functionCallId) {
+  // 如果 Gemini 没给 id，前端自己生成
+  const callId = functionCallId || crypto.randomUUID();
+  this.openclawConnection.sendHelp(request, callId);
+  return { pending: true, callId };
+}
+```
+
+然后在 `onHelpResult` 回调中根据 `callId` 匹配对应的请求。
+
+#### 优先级
+
+🔴 **严重** - 多轮对话基本不可用
+
+---
+
+### 2026-02-03 问题：Memory 不自动写入
+
+#### 问题描述
+
+今天（2/3）的所有对话都没有被写入 memory 文件。
+
+```bash
+ls /Users/buyitian/.openclaw/workspace/memory/
+# 只有 2026-02-02.md，没有 2026-02-03.md
+```
+
+#### 原因分析
+
+从 session 日志看，OpenClaw Agent **没有调用 write 工具写 memory**。
+
+`prompt.ts` 第 23 行写着：
+```
+2. 自主判断是否需要保存记忆、更新用户画像
+```
+
+Agent 自主判断这些对话（天气查询等）不够重要，不需要记忆。
+
+#### 影响
+
+临时性对话不会被记录，用户问"刚才说了什么"时可能得不到正确答案。
+
+#### 优先级
+
+🟡 中 - 可能是预期行为，取决于对话重要性判断
