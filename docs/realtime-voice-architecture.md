@@ -654,38 +654,38 @@ WebSocket 广播给 Live 客户端
 
 | ID | 任务 | 文件 | 状态 |
 |----|------|------|------|
-| O-1.1 | 创建插件目录结构 | `extensions/realtime/` | ⬜ |
-| O-1.2 | 编写 `openclaw.plugin.json` | `extensions/realtime/openclaw.plugin.json` | ⬜ |
-| O-1.3 | 编写 `package.json`，添加依赖 `ws`, `chokidar` | `extensions/realtime/package.json` | ⬜ |
-| O-1.4 | 编写插件入口 `index.ts` | `extensions/realtime/src/index.ts` | ⬜ |
-| O-1.5 | 实现独立 HTTP 服务器（端口 18790） | `extensions/realtime/src/server.ts` | ⬜ |
-| O-1.6 | 实现 WebSocket 连接管理 | `extensions/realtime/src/server.ts` | ⬜ |
-| O-1.7 | 实现 `/api/realtime/bootstrap` HTTP 端点 | `extensions/realtime/src/server.ts` | ⬜ |
-| O-1.8 | 添加日志输出，方便调试 | 所有文件 | ⬜ |
+| O-1.1 | 创建插件目录结构 | `extensions/realtime/` | ✅ |
+| O-1.2 | 编写 `openclaw.plugin.json` | `extensions/realtime/openclaw.plugin.json` | ✅ |
+| O-1.3 | 编写 `package.json`，添加依赖 `ws`, `chokidar` | `extensions/realtime/package.json` | ✅ |
+| O-1.4 | 编写插件入口 `index.ts` | `extensions/realtime/src/index.ts` | ✅ |
+| O-1.5 | 实现独立 HTTP 服务器（端口 18790） | `extensions/realtime/src/server.ts` | ✅ |
+| O-1.6 | 实现 WebSocket 连接管理 | `extensions/realtime/src/server.ts` | ✅ |
+| O-1.7 | 实现 `/api/realtime/bootstrap` HTTP 端点 | `extensions/realtime/src/server.ts` | ✅ |
+| O-1.8 | 添加日志输出，方便调试 | 所有文件 | ✅ |
 
 #### Phase 2：双向通信
 
 | ID | 任务 | 文件 | 状态 |
 |----|------|------|------|
-| O-2.1 | 实现 WebSocket 消息解析（transcript/help） | `extensions/realtime/src/message-handler.ts` | ⬜ |
-| O-2.2 | 实现 `transcript` 消息处理：存入对话上下文 | `extensions/realtime/src/message-handler.ts` | ⬜ |
-| O-2.3 | 实现 `help` 消息处理：调用 OpenClaw Agent | `extensions/realtime/src/message-handler.ts` | ⬜ |
-| O-2.4 | 实现 `before_agent_start` hook | `extensions/realtime/src/prompt-hook.ts` | ⬜ |
-| O-2.5 | 实现后台模式 System Prompt 模板 | `extensions/realtime/src/prompt-hook.ts` | ⬜ |
-| O-2.6 | 实现 `help_result` 响应返回给 Live | `extensions/realtime/src/message-handler.ts` | ⬜ |
-| O-2.7 | 实现 `inject` 消息推送机制 | `extensions/realtime/src/injector.ts` | ⬜ |
-| O-2.8 | 实现对话上下文管理（按客户端隔离） | `extensions/realtime/src/context.ts` | ⬜ |
+| O-2.1 | 实现 WebSocket 消息解析（transcript/help） | `extensions/realtime/src/server.ts` | ✅ |
+| O-2.2 | 实现 `transcript` 消息处理：存入对话上下文 | `extensions/realtime/src/server.ts` | ✅ |
+| O-2.3 | 实现 `help` 消息处理：调用 OpenClaw Agent | `extensions/realtime/src/server.ts` | ✅ |
+| O-2.4 | 实现 `before_agent_start` hook | `extensions/realtime/index.ts` | ✅ |
+| O-2.5 | 实现后台模式 System Prompt 模板 | `extensions/realtime/src/prompt.ts` | ✅ |
+| O-2.6 | 实现 `help_result` 响应返回给 Live | `extensions/realtime/src/server.ts` | ✅ |
+| O-2.7 | 实现 `inject` 消息推送机制 | `extensions/realtime/src/server.ts` | ✅ |
+| O-2.8 | 实现对话上下文管理（按客户端隔离） | `extensions/realtime/src/server.ts` | ✅ |
 
 #### Phase 3：自动同步
 
 | ID | 任务 | 文件 | 状态 |
 |----|------|------|------|
-| O-3.1 | 实现 chokidar 文件监听 | `extensions/realtime/src/file-watcher.ts` | ⬜ |
-| O-3.2 | 监听 `USER.md` 变化 | `extensions/realtime/src/file-watcher.ts` | ⬜ |
+| O-3.1 | 实现 chokidar 文件监听 | `extensions/realtime/src/file-watcher.ts` | ✅ |
+| O-3.2 | 监听 `USER.md` 变化 | `extensions/realtime/src/file-watcher.ts` | ✅ |
 | O-3.3 | 监听 `MEMORY.md` 变化 | `extensions/realtime/src/file-watcher.ts` | ⬜ |
-| O-3.4 | 实现文件内容摘要生成 | `extensions/realtime/src/summarizer.ts` | ⬜ |
-| O-3.5 | 实现 `prompt_update` 广播 | `extensions/realtime/src/file-watcher.ts` | ⬜ |
-| O-3.6 | 实现对话存入 OpenClaw session | `extensions/realtime/src/session.ts` | ⬜ |
+| O-3.4 | 实现文件内容摘要生成 | `extensions/realtime/src/file-watcher.ts` | ✅ (基础实现) |
+| O-3.5 | 实现 `prompt_update` 广播 | `extensions/realtime/src/file-watcher.ts` | ✅ |
+| O-3.6 | 实现对话存入 OpenClaw session | `extensions/realtime/src/server.ts` | ✅ |
 
 #### Phase 4：健壮性
 
@@ -705,42 +705,42 @@ WebSocket 广播给 Live 客户端
 
 | ID | 任务 | 文件 | 状态 |
 |----|------|------|------|
-| L-1.1 | 创建 Live 前端项目目录 | `apps/realtime-web/` | ⬜ |
-| L-1.2 | 复制 Gemini Live 官方 demo 代码 | `apps/realtime-web/` | ⬜ |
-| L-1.3 | 实现连接 Gemini Live API | `apps/realtime-web/src/gemini-client.ts` | ⬜ |
-| L-1.4 | 实现连接 OpenClaw Realtime WebSocket | `apps/realtime-web/src/openclaw-client.ts` | ⬜ |
-| L-1.5 | 实现 `/api/realtime/bootstrap` 调用 | `apps/realtime-web/src/openclaw-client.ts` | ⬜ |
-| L-1.6 | 初始化 System Prompt（从 bootstrap 获取） | `apps/realtime-web/src/setup.ts` | ⬜ |
+| L-1.1 | 创建 Live 前端项目目录 | `extensions/realtime/live-frontend/` | ✅ |
+| L-1.2 | 复制 Gemini Live 官方 demo 代码 | `extensions/realtime/live-frontend/` | ✅ |
+| L-1.3 | 实现连接 Gemini Live API | `extensions/realtime/live-frontend/frontend/geminilive.js` | ✅ |
+| L-1.4 | 实现连接 OpenClaw Realtime WebSocket | `extensions/realtime/live-frontend/frontend/tools.js` | ✅ |
+| L-1.5 | 实现 `/api/realtime/bootstrap` 调用 | `extensions/realtime/live-frontend/frontend/script.js` | ✅ |
+| L-1.6 | 初始化 System Prompt（从 bootstrap 获取） | `extensions/realtime/live-frontend/frontend/script.js` | ✅ |
 
 #### Phase 2：对话流转
 
 | ID | 任务 | 文件 | 状态 |
 |----|------|------|------|
-| L-2.1 | 实现用户语音输入捕获 | `apps/realtime-web/src/audio.ts` | ⬜ |
-| L-2.2 | 实现 Gemini Live 语音响应播放 | `apps/realtime-web/src/audio.ts` | ⬜ |
-| L-2.3 | 实现 `transcript` 消息发送到 OpenClaw | `apps/realtime-web/src/sync.ts` | ⬜ |
-| L-2.4 | 配置 `openclaw_help` Tool | `apps/realtime-web/src/tools.ts` | ⬜ |
-| L-2.5 | 实现 Tool 调用时发送 `help` 消息 | `apps/realtime-web/src/tools.ts` | ⬜ |
-| L-2.6 | 实现接收 `help_result` 并返回给 Gemini | `apps/realtime-web/src/tools.ts` | ⬜ |
+| L-2.1 | 实现用户语音输入捕获 | `extensions/realtime/live-frontend/frontend/script.js` | ✅ |
+| L-2.2 | 实现 Gemini Live 语音响应播放 | `extensions/realtime/live-frontend/frontend/script.js` | ✅ |
+| L-2.3 | 实现 `transcript` 消息发送到 OpenClaw | `extensions/realtime/live-frontend/frontend/script.js` | ✅ |
+| L-2.4 | 配置 `openclaw_help` Tool | `extensions/realtime/live-frontend/frontend/tools.js` | ✅ |
+| L-2.5 | 实现 Tool 调用时发送 `help` 消息 | `extensions/realtime/live-frontend/frontend/tools.js` | ✅ |
+| L-2.6 | 实现接收 `help_result` 并返回给 Gemini | `extensions/realtime/live-frontend/frontend/script.js` | ✅ |
 
 #### Phase 3：同步处理
 
 | ID | 任务 | 文件 | 状态 |
 |----|------|------|------|
-| L-3.1 | 实现接收 `inject` 消息 | `apps/realtime-web/src/sync.ts` | ⬜ |
-| L-3.2 | 实现 `inject` 内容注入 Gemini 上下文 | `apps/realtime-web/src/sync.ts` | ⬜ |
-| L-3.3 | 实现接收 `prompt_update` 消息 | `apps/realtime-web/src/sync.ts` | ⬜ |
-| L-3.4 | 实现动态更新 Gemini System Prompt | `apps/realtime-web/src/sync.ts` | ⬜ |
+| L-3.1 | 实现接收 `inject` 消息 | `extensions/realtime/live-frontend/frontend/tools.js` | ✅ |
+| L-3.2 | 实现 `inject` 内容注入 Gemini 上下文 | `extensions/realtime/live-frontend/frontend/script.js` | ⬜ (回调定义了但未完全实现) |
+| L-3.3 | 实现接收 `prompt_update` 消息 | `extensions/realtime/live-frontend/frontend/tools.js` | ✅ |
+| L-3.4 | 实现动态更新 Gemini System Prompt | `extensions/realtime/live-frontend/frontend/script.js` | ⬜ (存储了但未热更新) |
 
 #### Phase 4：UI 体验
 
 | ID | 任务 | 文件 | 状态 |
 |----|------|------|------|
-| L-4.1 | 实现连接状态显示 | `apps/realtime-web/src/ui.ts` | ⬜ |
-| L-4.2 | 实现语音波形显示 | `apps/realtime-web/src/ui.ts` | ⬜ |
-| L-4.3 | 实现对话历史显示 | `apps/realtime-web/src/ui.ts` | ⬜ |
-| L-4.4 | 实现 Tool 调用状态显示 | `apps/realtime-web/src/ui.ts` | ⬜ |
-| L-4.5 | 实现断线重连 UI 提示 | `apps/realtime-web/src/ui.ts` | ⬜ |
+| L-4.1 | 实现连接状态显示 | `extensions/realtime/live-frontend/frontend/index.html` | ✅ |
+| L-4.2 | 实现语音波形显示 | `extensions/realtime/live-frontend/frontend/script.js` | ✅ (Gemini demo 自带) |
+| L-4.3 | 实现对话历史显示 | `extensions/realtime/live-frontend/frontend/script.js` | ✅ |
+| L-4.4 | 实现 Tool 调用状态显示 | `extensions/realtime/live-frontend/frontend/script.js` | ✅ |
+| L-4.5 | 实现断线重连 UI 提示 | `extensions/realtime/live-frontend/frontend/script.js` | ⬜ |
 
 ---
 
@@ -857,3 +857,161 @@ ls -la ~/.openclaw/agents/main/sessions/
 # 查看 USER.md 内容
 cat ~/.openclaw/workspace/USER.md
 ```
+
+---
+
+## 已知问题与下一步 TODO
+
+### 2026-02-03 测试发现的问题
+
+基于实际测试日志分析，闭环已完成，但存在以下需要优化的问题：
+
+#### 问题 1：Transcript 内容为空
+
+**现象**：
+```
+12:15:57 [plugins] [realtime] realtime:... | 用户: 
+12:15:59 [plugins] [realtime] realtime:... | Live: 
+```
+日志中 `用户:` 和 `Live:` 后面的文本内容为空。
+
+**原因**：前端发送 transcript 时，`text` 字段可能为空（增量转写时 `finished=true` 但 `text=""`)
+
+**优先级**：中
+
+**修复方案**：
+- 前端累积转写文本，只在有实际内容时发送
+- 或后端过滤空 transcript
+
+---
+
+#### 问题 2：重复的 Help 请求
+
+**现象**：
+```
+12:29:50 [plugins] [realtime] Help request: 查询今天的天气
+12:30:14 [plugins] [realtime] Help request: 查询今天的天气
+12:30:34 [plugins] [realtime] Help request: 查询今天的天气
+```
+同一个请求被发送了 3 次。
+
+**原因**：
+1. 用户可能多次说了相同的话
+2. Live AI 在等待期间重复调用 tool
+3. 没有请求去重机制
+
+**影响**：
+```
+12:30:52 [diagnostic] lane wait exceeded: waitedMs=38645 queueAhead=1
+```
+队列堆积导致等待时间增加。
+
+**优先级**：高
+
+**修复方案**：
+- 添加请求去重（相同 callId 跳过）
+- 添加节流机制（短时间内相同请求合并）
+- 前端在等待响应时禁止重复调用
+
+---
+
+#### 问题 3：Agent 响应时间过长
+
+**现象**：
+```
+waitedMs=38645  # 38秒
+waitedMs=22751  # 22秒
+waitedMs=33593  # 33秒
+```
+
+**原因**：OpenClaw Agent 执行复杂任务需要时间（网络请求、工具调用链）
+
+**影响**：用户等待体验差，Live 可能在等待期间静默
+
+**优先级**：中
+
+**改进方案**：
+- Live 在调用 help 后立即给用户反馈（"让我查一下..."）
+- Agent 支持流式返回中间状态
+- 添加超时机制和友好提示
+
+---
+
+#### 问题 4：Agent 偶发失败
+
+**现象**：
+```
+12:36:08 [plugins] [realtime] Agent reply: 抱歉，我暂时无法处理这个请求。
+```
+
+**原因**：Agent 处理失败或超时
+
+**优先级**：中
+
+**修复方案**：
+- 添加重试机制
+- 更好的错误信息返回
+- 记录失败原因便于调试
+
+---
+
+#### 问题 5：Session 隔离问题
+
+**现象**：
+```
+12:29:21 Client connected: realtime:1770121761112-dc7rjc
+12:29:50 Created new agent session: 18f7aedd-8308-4f43-97d6-245ace592e1c
+...
+12:31:39 Client disconnected: realtime:1770121761112-dc7rjc
+12:31:41 Client connected: realtime:1770121901888-yb3uiv
+12:32:01 Created new agent session: 0482a6cf-a992-42fa-81c4-849cad3443ff
+```
+每次重连都创建新的 Agent session。
+
+**影响**：短时间内的对话上下文可能丢失
+
+**优先级**：低
+
+**改进方案**：
+- 支持 session 恢复（前端传递上次 sessionId）
+- 或使用持久化的 session 映射
+
+---
+
+#### 已验证正常工作的功能
+
+✅ **核心闭环**：Live 语音 → OpenClaw 处理 → 结果返回 → Live 语音输出
+
+✅ **Help 调用成功**：
+```
+12:16:37 Help request: 查询我是否有权限访问Apple Notes
+12:16:50 Agent reply: 好消息：我确实有权限访问Apple Notes...
+```
+
+✅ **复杂任务处理**：
+```
+12:21:14 Help request: 今天最热门的科技新闻
+12:21:42 Agent reply: 今天科技圈最热的几条新闻：OpenAI发布了Codex App...
+```
+
+✅ **记忆更新同步**：
+```
+12:33:53 Help request: 记录天哥老婆开始创业
+12:34:09 File changed: USER.md
+12:34:09 Broadcasting prompt_update for user_profile
+12:34:23 Agent reply: 好的，已经记下来了。
+```
+
+---
+
+### 下一步 TODO
+
+| 优先级 | 任务 | 描述 |
+|-------|------|------|
+| 🔴 高 | 请求去重 | 防止同一 help 请求重复发送 |
+| 🟡 中 | 空 transcript 过滤 | 跳过空内容的转写消息 |
+| 🟡 中 | 等待期反馈 | Live 调用 help 后立即给用户语音反馈 |
+| 🟡 中 | 错误处理 | Agent 失败时返回更友好的消息 |
+| 🟢 低 | Session 恢复 | 支持断线重连后恢复上下文 |
+| 🟢 低 | Prompt 热更新 | 收到 prompt_update 时实时更新 Gemini System Prompt |
+| 🟢 低 | inject 实现 | 完善 OpenClaw 主动推送消息到 Live 的功能 |
