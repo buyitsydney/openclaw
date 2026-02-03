@@ -7,6 +7,7 @@
 1. **极简**：Live 只需要 1 个 Tool，上下文自动同步
 2. **无感**：Live 不需要关心记忆、同步，OpenClaw 自己是大脑
 3. **零冲击**：不影响 OpenClaw 现有的 WebChat/Telegram 体验
+4. **零侵入**：作为独立插件实现，不修改 OpenClaw 核心代码，方便同步上游更新
 
 ## 系统参与者
 
@@ -334,130 +335,279 @@ src/
 │   └── system-prompt.ts         # 新增后台模式模板
 ```
 
-## 技术实现细节
+## 技术实现：零侵入插件方案
+
+### 为什么要零侵入？
+
+CarHer 是 OpenClaw 的 Fork，需要定期同步上游 bugfix：
+
+```
+git fetch origin          # 拉取 openclaw 上游更新
+git merge origin/main     # 合并 bugfix
+```
+
+**如果修改核心代码**：每次合并都可能冲突，维护成本高
+**零侵入插件方案**：只在 `extensions/` 下开发，几乎不会冲突
+
+### 插件架构
+
+OpenClaw 已有完善的插件机制，Realtime 功能完全可以作为独立插件实现：
+
+```
+extensions/
+├── voice-call/              # 已有插件（参考）
+└── realtime/                # 新增插件（CarHer 专用）
+    ├── openclaw.plugin.json # 插件 manifest
+    ├── package.json
+    └── src/
+        ├── index.ts         # 插件入口
+        ├── server.ts        # 独立 HTTP/WebSocket 服务器
+        ├── prompt-hook.ts   # before_agent_start hook
+        └── file-watcher.ts  # 监听记忆文件变化
+```
+
+### 插件能力对照
+
+| 功能 | 实现方式 | 侵入核心代码？ |
+|------|---------|--------------|
+| WebSocket 端点 | 插件创建独立 HTTP 服务器 | **否** |
+| 后台模式 System Prompt | `before_agent_start` hook | **否** |
+| 监听 USER.md 变化 | chokidar 文件监听 | **否** |
+| 广播给 Live 客户端 | 插件自己管理客户端连接 | **否** |
+
+### 代码改动清单
+
+| 位置 | 改动类型 | 冲突风险 |
+|------|---------|---------|
+| `extensions/realtime/` | **新增目录** | **无** |
+| OpenClaw 核心代码 | **不改** | **无** |
+
+### 关键代码示例
+
+**1. 插件 Manifest**
+
+```json
+// extensions/realtime/openclaw.plugin.json
+{
+  "name": "realtime",
+  "version": "0.1.0",
+  "description": "Gemini Live + OpenClaw realtime voice integration",
+  "main": "dist/index.js",
+  "openclaw": {
+    "minVersion": "2024.1.0"
+  }
+}
+```
+
+**2. 插件入口 - 注册服务和 Hook**
+
+```typescript
+// extensions/realtime/src/index.ts
+import type { PluginAPI } from "openclaw/plugin-sdk";
+import { startRealtimeServer } from "./server.js";
+import { setupPromptHook } from "./prompt-hook.js";
+import { setupFileWatcher } from "./file-watcher.js";
+
+export async function activate(api: PluginAPI) {
+  // 1. 启动独立的 WebSocket 服务器（参考 voice-call 插件）
+  const server = await startRealtimeServer(api);
+  
+  // 2. 注册 before_agent_start hook（修改 System Prompt）
+  setupPromptHook(api, server);
+  
+  // 3. 监听记忆文件变化
+  setupFileWatcher(api, server);
+  
+  api.log.info("Realtime plugin activated");
+}
+```
+
+**3. 独立 WebSocket 服务器**
+
+```typescript
+// extensions/realtime/src/server.ts
+import http from "node:http";
+import { WebSocketServer } from "ws";
+
+export async function startRealtimeServer(api: PluginAPI) {
+  const port = 18790; // 独立端口，不占用 Gateway 端口
+  const clients = new Set<WebSocket>();
+  
+  const httpServer = http.createServer();
+  const wss = new WebSocketServer({ server: httpServer });
+  
+  wss.on("connection", (ws) => {
+    clients.add(ws);
+    ws.on("message", (data) => handleLiveMessage(api, ws, data));
+    ws.on("close", () => clients.delete(ws));
+  });
+  
+  httpServer.listen(port);
+  api.log.info(`Realtime WebSocket server listening on port ${port}`);
+  
+  return { clients, broadcast: (msg) => clients.forEach(c => c.send(msg)) };
+}
+```
+
+**4. before_agent_start Hook（修改 System Prompt）**
+
+```typescript
+// extensions/realtime/src/prompt-hook.ts
+export function setupPromptHook(api: PluginAPI, server: RealtimeServer) {
+  api.on("before_agent_start", async (event, ctx) => {
+    // 判断是否来自 Realtime
+    if (ctx.source !== "realtime") {
+      return {}; // 不是 Realtime 请求，不修改
+    }
+    
+    // 返回后台模式 System Prompt
+    return {
+      systemPrompt: buildBackendModePrompt(ctx),
+    };
+  });
+}
+
+function buildBackendModePrompt(ctx: AgentContext): string {
+  return `
+# 你是后台支援者
+
+你不直接与用户交流。前台有一个语音助手（Live）正在和用户实时对话。
+你的回复是给 Live 说的，不是直接给用户的。
+
+## 当前对话
+${ctx.realtimeConversation || "（暂无）"}
+
+## 你需要做什么
+1. 收到 help 请求时，执行任务，返回给 Live 说的内容
+2. 自主判断是否需要保存记忆、更新用户画像
+3. 发现需要提醒用户的事情时，主动推送给 Live
+
+## 输出要求
+- 直接输出希望 Live 说的内容
+- 口语化，适合语音播报
+- 简洁
+`;
+}
+```
+
+**5. 文件监听与推送**
+
+```typescript
+// extensions/realtime/src/file-watcher.ts
+import chokidar from "chokidar";
+import { readFile } from "node:fs/promises";
+
+export function setupFileWatcher(api: PluginAPI, server: RealtimeServer) {
+  const workspaceDir = api.workspace.getPath();
+  const watchPaths = [
+    `${workspaceDir}/USER.md`,
+    `${workspaceDir}/MEMORY.md`,
+  ];
+  
+  const watcher = chokidar.watch(watchPaths, {
+    ignoreInitial: true,
+    awaitWriteFinish: { stabilityThreshold: 500 },
+  });
+  
+  watcher.on("change", async (filePath) => {
+    api.log.info(`Memory file changed: ${filePath}`);
+    
+    const content = await readFile(filePath, "utf-8");
+    const section = filePath.includes("USER.md") ? "user_profile" : "memory";
+    
+    // 广播给所有 Live 客户端
+    server.broadcast(JSON.stringify({
+      type: "prompt_update",
+      section,
+      content: summarize(content), // 生成摘要
+    }));
+  });
+}
+```
 
 ### System Prompt 推送机制
 
 **重要：推送是代码自动做的，不是 OpenClaw AI 调用 tool！**
 
 ```
-OpenClaw 写入 USER.md（通过 write tool）
+OpenClaw 通过 write tool 写入 USER.md
        │
-       │ 代码层面监听（写入后触发）
+       │ chokidar 监听到文件变化
        ▼
-检测到重要文件变化
+插件检测到 USER.md 变化
        │
-       │ 调用现有 broadcast() 函数
+       │ 插件自己的 broadcast() 函数
        ▼
 WebSocket 广播给 Live 客户端
 ```
 
-现有 Gateway 已有 broadcast 机制（`src/gateway/server-broadcast.ts`），可以复用。
+### 冲突风险评估
 
-### 代码改动清单
+| 场景 | 冲突概率 |
+|------|---------|
+| OpenClaw 更新核心代码 | **0%** - 我们不改核心 |
+| OpenClaw 更新插件 API | **极低** - 插件 API 通常向后兼容 |
+| OpenClaw 更新 extensions/ 目录结构 | **极低** - 我们在自己的 realtime/ 下 |
 
-| 文件 | 改动类型 | 说明 |
-|------|---------|------|
-| `src/realtime/` | **新增目录** | Realtime 专用代码 |
-| `src/realtime/websocket.ts` | **新增** | Live 客户端 WebSocket 处理 |
-| `src/realtime/prompt-sync.ts` | **新增** | 监听记忆变化，广播更新 |
-| `src/agents/system-prompt.ts` | **小改** | 新增 `backend` 模式 |
-| `src/gateway/server.impl.ts` | **小改** | 注册 `/realtime` 端点 |
-| 其他现有代码 | **不改** | WebChat/Telegram 完全不受影响 |
-
-### 关键代码示例
-
-**1. 新增后台模式 System Prompt**
-
-```typescript
-// src/agents/system-prompt.ts
-
-// 新增模式
-export type PromptMode = "full" | "minimal" | "none" | "backend";
-
-// 后台模式模板
-function buildBackendModeSection() {
-  return [
-    "# 你是后台支援者",
-    "你不直接与用户交流。前台有一个语音助手（Live）正在和用户实时对话。",
-    "你的回复是给 Live 说的，不是直接给用户的。",
-    "",
-  ];
-}
-```
-
-**2. 记忆变化监听与推送**
-
-```typescript
-// src/realtime/prompt-sync.ts
-
-import { broadcast } from "../gateway/server-broadcast.js";
-
-// 在 write tool 写入 USER.md/MEMORY.md 后调用
-export async function onMemoryFileChanged(filePath: string, realtimeClients: Set<WsClient>) {
-  if (!filePath.includes('USER.md') && !filePath.includes('MEMORY.md')) {
-    return;
-  }
-  
-  // 生成新的摘要（代码自动，不是 AI 调用）
-  const newSummary = await generateProfileSummary(filePath);
-  
-  // 广播给所有 Realtime 客户端
-  for (const client of realtimeClients) {
-    client.send(JSON.stringify({
-      type: 'prompt_update',
-      section: filePath.includes('USER.md') ? 'user_profile' : 'memory',
-      content: newSummary
-    }));
-  }
-}
-```
-
-**3. 请求来源判断**
-
-```typescript
-// 在 Agent Runner 中判断来源
-const promptMode = context.source === 'realtime' ? 'backend' : 'full';
-const systemPrompt = buildAgentSystemPrompt({ mode: promptMode, ... });
-```
+**结论：几乎不会和上游产生冲突！**
 
 ## 实现步骤
 
-### Phase 1：最小可用（2-3 天）
+### Phase 1：插件骨架（1-2 天）
 
-1. **Realtime WebSocket 端点**
-   - 新增 `src/realtime/websocket.ts`
+1. **创建插件目录**
+   ```bash
+   mkdir -p extensions/realtime/src
+   ```
+
+2. **插件 Manifest 和 package.json**
+   - `openclaw.plugin.json`
+   - 依赖：`ws`, `chokidar`
+
+3. **独立 WebSocket 服务器**
+   - 端口 18790（不占用 Gateway 端口）
    - 处理 Live 客户端连接
-   - 转发对话到 Agent
 
-2. **后台模式 System Prompt**
-   - 修改 `src/agents/system-prompt.ts`
-   - 新增 `backend` 模式
-   - 根据请求来源选择模式
+4. **验证**：Live 可以连接到插件的 WebSocket
 
-3. **Live 配置**
-   - 1 个 Tool：openclaw_help
-   - 连接 Gateway WebSocket
+### Phase 2：双向通信（2-3 天）
 
-### Phase 2：自动同步（3-5 天）
+1. **Live → OpenClaw**
+   - 接收对话 transcript
+   - 接收 openclaw_help 请求
+   - 转发给 OpenClaw Agent
 
-1. **对话自动记录**
-   - WebSocket 收到的对话存入 session
+2. **OpenClaw → Live**
+   - 返回 help 结果
+   - 推送 inject 消息
 
-2. **记忆变化广播**
-   - 新增 `src/realtime/prompt-sync.ts`
-   - 监听 USER.md / MEMORY.md 写入
-   - 自动广播更新给 Live
+3. **before_agent_start Hook**
+   - 判断请求来源
+   - 注入后台模式 System Prompt
 
-3. **OpenClaw 自主判断**
-   - 看到对话后自己决定是否保存
-   - 不需要 Live 告诉它
+4. **验证**：完整的 help 调用流程
 
-### Phase 3：优化（可选）
+### Phase 3：自动同步（2-3 天）
 
-1. **主动提醒**
+1. **文件监听**
+   - chokidar 监听 USER.md / MEMORY.md
+   - 变化时生成摘要
+
+2. **System Prompt 推送**
+   - 广播 prompt_update 给 Live
+   - Live 更新自己的 System Prompt
+
+3. **对话记录**
+   - 存入 OpenClaw session
+
+4. **验证**：用户偏好变化能同步到 Live
+
+### Phase 4：优化（可选）
+
+1. **主动提醒机制**
 2. **上下文压缩**
-3. **多 Live 支持**
+3. **多 Live 客户端支持**
+4. **重连机制**
 
 ## 总结
 
@@ -469,5 +619,27 @@ const systemPrompt = buildAgentSystemPrompt({ mode: promptMode, ... });
 │  3. OpenClaw 是大脑，自己判断保存、提醒                                     │
 │  4. System Prompt 变化自动同步给 Live                                       │
 │  5. 对现有 WebChat/Telegram 体验零影响                                      │
+│  6. 零侵入插件方案，不修改 OpenClaw 核心代码                                │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+代码结构：
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  extensions/realtime/          ← 全部新代码都在这里                         │
+│  ├── openclaw.plugin.json      ← 插件 manifest                             │
+│  ├── src/                                                                  │
+│  │   ├── index.ts              ← 插件入口                                  │
+│  │   ├── server.ts             ← 独立 WebSocket 服务器                     │
+│  │   ├── prompt-hook.ts        ← before_agent_start hook                  │
+│  │   └── file-watcher.ts       ← 监听记忆文件变化                          │
+│  └── package.json                                                          │
+│                                                                             │
+│  OpenClaw 核心代码              ← 完全不改！                                │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+同步上游：
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  git fetch origin              # 拉取 openclaw 上游更新                    │
+│  git merge origin/main         # 合并（几乎不会冲突！）                     │
+│  git push carher dev:main      # 推送到 CarHer                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
