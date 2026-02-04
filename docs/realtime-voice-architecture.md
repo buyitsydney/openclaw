@@ -349,6 +349,60 @@ interface BootstrapResponse {
 
 当前实现只覆盖了 help 请求触发 Agent；没有任何 transcript 驱动的监督触发，因此“全自动监督/记忆/提醒”不会发生。
 
+### 方案 B（推荐）：每一轮 user+live 都输入给 OpenClaw（上帝视角后台大哥）
+
+目标：即使 Live 没有调用 `openclaw_help`，OpenClaw 也能基于实时对话**主动发现冲突/风险**，并通过 `inject` 反向提醒 Live 去确认用户。
+
+典型例子：
+
+```
+用户: 开车去上次和王总喝酒的地方。
+Live: 好的，是不是泰和酒店，我们预计 30min 到达。
+
+# OpenClaw 在后台看到这一轮对话后发现：你 1 小时后有政府接待。
+# OpenClaw → Live: inject 提醒用户确认行程冲突。
+```
+
+关键原则：
+
+- **Live 无感**：Live 不需要“主动求助”才能触发后台监督
+- **OpenClaw 被动接收**：每一轮对话（用户 + Live）会自动送达 OpenClaw
+- **低成本可验证**：先只做“监督 + inject”，不强制写记忆、不强制热更新 prompt
+
+### Turn（轮次）闭环：独立模块（可迭代，不影响其它功能）
+
+为保证“每一轮 user+live 对话都输入给 OpenClaw”，需要一个最小的 Turn 闭环模块（turn assembler）。它只负责把流式 transcript 组合成稳定的“轮次”输入，不做业务决策。
+
+**规则 1（只采 final/完成态 transcript）**：
+
+- 只在“转写完成”的时刻把文本纳入 turn（避免增量转写的噪声/空内容）
+
+**规则 2（turn 闭合条件：user + live 组成一轮）**：
+
+- 典型闭合：收到一条 `user` final 后，再收到一条 `live` final，形成一个 turn
+- Turn 组装逻辑必须是独立模块，后续可以不断迭代更聪明的闭合规则，但不应影响 WebChat/Telegram 等既有链路
+
+**规则 3（inject 去抖/限频）**：
+
+- 暂不实现（先跑通监督闭环与核心价值，再根据测试决定是否需要）
+
+### 监督任务（Supervisor Run）：每个 turn 都触发一次“监督判断”
+
+一旦 turn 闭合，立刻触发一次监督任务（不依赖 `openclaw_help`）：
+
+- **输入**：本 turn（用户+Live 两行）+ 少量近期 turn（可选）+ OpenClaw 可用的记忆/日程/工具
+- **输出**：只允许两类结果
+  - `NO_REPLY`：无需打断
+  - `INJECT: ...`：需要前台确认/提醒的一句话（尽量短、可口语播报）
+
+然后插件将 `INJECT:` 内容通过 WebSocket 发给 Live：
+
+```json
+{ "type": "inject", "reply": "提醒用户：你 1 小时后有政府接待，确认现在去泰和酒店是否来得及？" }
+```
+
+> 注意：这是“监督与纠错”，不是“代替 Live 完成所有任务”。真正需要执行复杂任务时，Live 仍可以使用 `openclaw_help`。
+
 ### Turn（轮次）边界必须被定义
 
 文档后续将统一以 turn 为最小监督单位：
