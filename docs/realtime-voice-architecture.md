@@ -1045,6 +1045,52 @@ cat ~/.openclaw/workspace/USER.md
 **已实现（2026-02-04）**：
 - 新增 `logs/live-gemini-output.md`：记录 GEMINI→LIVE 的 `inputTranscription` / `outputTranscription` / `modelTurn.text` / `toolCall` / `interrupted` / `turnComplete`
 
+---
+
+### 2026-02-04 状态：语音“卡顿”在不连接 OpenClaw 时仍复现（需要优先排查）
+
+#### 现象（用户实测）
+
+- 在**同一网络/同一设备**下：
+  - ✅ `gemini-live-official/.../plain-js-demo-app`（官方原版）语音体验**明显更流畅**
+  - ❌ Car Her（`openclaw/extensions/realtime/live-frontend`）即使**不连接 OpenClaw**（不走 `ws://localhost:18790/ws`），仍出现语音**断断续续/频繁被打断**的体感
+
+#### 初步结论（基于确定性差异，不猜测）
+
+这说明“卡顿”**不依赖** OpenClaw 的 transcript/help/inject 链路本身（至少不是 *必须条件*），需要优先从 **Live Proxy / 进程负载 / 前端日志量** 方向排查。
+
+#### 代码层确定性差异（已对比官方 demo 与 Car Her）
+
+1) **Live Proxy 关日志并不等于零开销**（高怀疑）
+
+- Car Her 的 `extensions/realtime/live-frontend/server.py` 在 `proxy_task()` 内部，即使 `LIVE_GEMINI_LOG=0`（`ENABLE_MARKDOWN_LOGS=False`），仍会对**每条消息**执行：
+  - `await asyncio.to_thread(_append_markdown_log_output, ...)`
+  - `await asyncio.to_thread(_append_markdown_log, ...)`
+- 这两处在函数内部会立刻 return，但 **thread 调度开销仍存在**；并且在 `bytes` 分支还会先尝试 `decode("utf-8")` + `json.loads()`。
+
+这与官方原版 `plain-js-demo-app/server.py`（无上述逻辑）存在本质差异，可能导致实时音频链路抖动。
+
+2) **Car Her 常与 Gateway 同时运行**（资源竞争）
+
+- 当前根目录 `start.sh` 会同时启动 Gateway + Live 前端 proxy；
+- 官方 demo 典型只跑一个 demo server。
+
+同机多进程（Node gateway + Python proxy + 浏览器音频 worklet）在 CPU/IO 紧张时，会放大“卡顿”体感。
+
+3) **前端侧额外逻辑与日志量**
+
+- Car Her 前端新增了 debugLog、额外 UI 输出、以及为 inject/音频 drain 引入的 idle/active 跟踪（`mediaUtils.js` / `playback.worklet.js`）。
+- 这些逻辑即使不连接 OpenClaw，也可能引入更多主线程工作与 `console.log`（DevTools 打开时尤其明显）。
+
+#### 不改代码的下一步 Debug（按优先级）
+
+- **P0**：在 Car Her 环境下确保 `LIVE_GEMINI_LOG=0`，并用 Activity Monitor 对比：
+  - 只跑 Live proxy（不跑 gateway） vs 同时跑 gateway
+  - 浏览器 DevTools 关闭 vs 打开
+- **P0**：同一句话对比“官方 plain-js demo”与“Car Her live-frontend”，记录：
+  - 是否仍出现 `Interrupted`（只看体验不够，要配合 `live-gemini-output.md` 或 console 事件时间戳对齐）
+  - CPU 占用是否显著差异（Python/Node/Chrome）
+
 ### 2026-02-03 测试发现的问题
 
 ### 2026-02-03 测试发现的问题

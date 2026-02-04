@@ -29,6 +29,9 @@ DEBUG = False  # Set to True for verbose logging
 HTTP_PORT = 8000  # Port for HTTP server
 WS_PORT = 8080  # Port for WebSocket server
 
+# Set LIVE_GEMINI_LOG=0 to disable markdown logging (improves realtime audio smoothness).
+ENABLE_MARKDOWN_LOGS = os.environ.get("LIVE_GEMINI_LOG", "1").strip() not in ("0", "false", "False", "no", "NO")
+
 
 def _resolve_repo_root() -> Path:
     """Resolve repo root by walking up for .git directory."""
@@ -185,6 +188,8 @@ def _extract_human_summary(data: dict) -> str:
 
 
 def _append_markdown_log(conn_id: str, data: dict) -> None:
+    if not ENABLE_MARKDOWN_LOGS:
+        return
     repo_root = _resolve_repo_root()
     log_dir = repo_root / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -311,6 +316,8 @@ def _extract_server_human_summary(data: dict) -> str:
 
 
 def _append_markdown_log_output(conn_id: str, data: dict) -> None:
+    if not ENABLE_MARKDOWN_LOGS:
+        return
     repo_root = _resolve_repo_root()
     log_dir = repo_root / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -603,7 +610,14 @@ async def serve_static_file(request):
     try:
         with open(file_path, "rb") as f:
             content = f.read()
-        return web.Response(body=content, content_type=content_type)
+        # Deterministic dev behavior: always fetch the latest frontend assets.
+        # This avoids stale JS after refresh due to aggressive browser caching.
+        headers = {
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        }
+        return web.Response(body=content, content_type=content_type, headers=headers)
     except Exception as e:
         print(f"Error serving file {path}: {e}")
         return web.Response(text="Internal server error", status=500)

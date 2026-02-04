@@ -10,11 +10,16 @@ const state = {
   video: { streamer: null, isStreaming: false },
   screen: { capture: null, isSharing: false },
   openclaw: { connected: false, userProfile: "", memorySummary: "" },
+  gemini: {
+    // Only inject after Gemini completes a turn (TURN_COMPLETE).
+    turnComplete: true,
+  },
   // Accumulate transcripts before sending to OpenClaw
   pendingUserTranscript: "",
   pendingLiveTranscript: "",
   // Serialize inject delivery to Gemini to avoid interrupting active audio playback.
   injectChain: Promise.resolve(),
+  pendingInjects: [],
 };
 
 // Debug logger for tracking message flow
@@ -193,21 +198,10 @@ async function connectOpenClaw() {
       // Make inject visible in the chat UI for deterministic verification.
       addMessage(`[Inject] ${reply}`, "inject");
 
-      // IMPORTANT:
-      // Sending a new text turn to Gemini while it's speaking triggers "interrupted"
-      // and causes local playback to stop. To avoid this, we wait until the current
-      // audio playback queue drains before delivering the inject text to Gemini.
-      state.injectChain = state.injectChain
-        .then(async () => {
-          if (!state.client) return;
-          if (state.audio.player && typeof state.audio.player.waitForIdle === "function") {
-            await state.audio.player.waitForIdle();
-          }
-          state.client.sendTextMessage(`[后台提醒] ${reply}`);
-        })
-        .catch((err) => {
-          console.error("Inject delivery failed:", err);
-        });
+      // Queue injects and deliver them only after Gemini finishes its current turn.
+      // Live API contract: any clientContent message can interrupt current model generation.
+      state.pendingInjects.push(reply);
+      tryDeliverInjects();
     };
     
   } catch (error) {
@@ -421,6 +415,8 @@ function handleMessage(message) {
     case MultimodalLiveResponseType.SETUP_COMPLETE:
       console.log("Setup complete:", message.data);
       addMessage("Ready!", "system");
+      state.gemini.turnComplete = true;
+      tryDeliverInjects();
 
       // Display the setup JSON
       if (state.client && state.client.lastSetupMessage) {
@@ -464,6 +460,8 @@ function handleMessage(message) {
       console.log("Turn complete:", message.data);
       debugLog("GEMINI→LIVE", "TURN_COMPLETE", {});
       updateStatus("debugInfo", "Turn complete");
+      state.gemini.turnComplete = true;
+      tryDeliverInjects();
       // Ensure backend supervisor triggers even if OUTPUT_TRANSCRIPTION text is empty.
       if (state.openclaw.connected) {
         openclawConnection.sendTurnComplete();
@@ -477,6 +475,29 @@ function handleMessage(message) {
       if (state.audio.player) state.audio.player.interrupt();
       break;
   }
+}
+
+function tryDeliverInjects() {
+  if (!state.client) return;
+  if (!state.gemini.turnComplete) return;
+  if (!state.pendingInjects.length) return;
+
+  // Deliver at most one inject per TURN_COMPLETE to avoid spamming Gemini.
+  const reply = state.pendingInjects.shift();
+  state.injectChain = state.injectChain
+    .then(async () => {
+      if (!state.client) return;
+      // Gemini finished its turn; still wait for local playback to fully drain.
+      if (state.audio.player && typeof state.audio.player.waitForIdle === "function") {
+        await state.audio.player.waitForIdle();
+      }
+      // Mark as in-progress until the next TURN_COMPLETE arrives.
+      state.gemini.turnComplete = false;
+      state.client.sendTextMessage(`[后台提醒] ${reply}`);
+    })
+    .catch((err) => {
+      console.error("Inject delivery failed:", err);
+    });
 }
 
 // Connection handlers

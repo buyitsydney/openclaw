@@ -45,20 +45,42 @@ check_port() {
 echo -e "${YELLOW}[3/5] 检查端口...${NC}"
 check_port 18789
 check_port 18790
+check_port 8000
+check_port 8080
 echo -e "${GREEN}  ✓ 端口就绪${NC}"
 
-# 启动 Gateway
-echo -e "${YELLOW}[4/5] 启动 Gateway...${NC}"
+# 启动 Gateway + Live Frontend Proxy
+echo -e "${YELLOW}[4/5] 启动 Gateway + Live Frontend...${NC}"
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${GREEN}  Gateway:  http://localhost:18789${NC}"
 echo -e "${GREEN}  Realtime: http://localhost:18790 (WebSocket: ws://localhost:18790/ws)${NC}"
+echo -e "${GREEN}  Live UI:  http://localhost:8000 (Proxy WS: ws://localhost:8080)${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
 
 # 启动 Gateway（后台运行）
 pnpm openclaw gateway --port 18789 --verbose &
 GATEWAY_PID=$!
+
+# 启动 Live Frontend Proxy（后台运行）
+# 默认关闭 markdown 落盘，避免影响实时音频流畅度。
+LIVE_GEMINI_LOG="${LIVE_GEMINI_LOG:-0}"
+echo -e "${YELLOW}启动 Live Frontend Proxy (LIVE_GEMINI_LOG=$LIVE_GEMINI_LOG)...${NC}"
+(cd "extensions/realtime/live-frontend" && LIVE_GEMINI_LOG="$LIVE_GEMINI_LOG" python3 server.py) &
+LIVE_FRONTEND_PID=$!
+
+cleanup() {
+  echo ""
+  echo -e "${YELLOW}Stopping processes...${NC}"
+  if [ -n "${LIVE_FRONTEND_PID:-}" ]; then
+    kill "$LIVE_FRONTEND_PID" 2>/dev/null || true
+  fi
+  if [ -n "${GATEWAY_PID:-}" ]; then
+    kill "$GATEWAY_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
 
 # 等待 Gateway 启动
 echo -e "${YELLOW}等待 Gateway 启动...${NC}"
@@ -73,6 +95,7 @@ fi
 # 自动打开前端页面（带 token）
 echo -e "${GREEN}[5/5] 打开前端页面...${NC}"
 open "http://localhost:18789/?token=${TOKEN}"
+open "http://localhost:8000"
 
 echo ""
 echo -e "${GREEN}✓ Gateway 已启动 (PID: $GATEWAY_PID)${NC}"
