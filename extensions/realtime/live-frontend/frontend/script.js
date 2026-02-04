@@ -188,6 +188,8 @@ async function connectOpenClaw() {
     
     openclawConnection.onInject = (reply) => {
       console.log("🦞 Inject:", reply);
+      // Make inject visible in the chat UI for deterministic verification.
+      addMessage(`[Inject] ${reply}`, "inject");
       // Inject message into Gemini conversation
       if (state.client) {
         state.client.sendTextMessage(`[后台提醒] ${reply}`);
@@ -448,6 +450,11 @@ function handleMessage(message) {
       console.log("Turn complete:", message.data);
       debugLog("GEMINI→LIVE", "TURN_COMPLETE", {});
       updateStatus("debugInfo", "Turn complete");
+      // Ensure backend supervisor triggers even if OUTPUT_TRANSCRIPTION text is empty.
+      if (state.openclaw.connected) {
+        openclawConnection.sendTurnComplete();
+        debugLog("LIVE→OPENCLAW", "TURN_COMPLETE", {});
+      }
       break;
 
     case MultimodalLiveResponseType.INTERRUPTED:

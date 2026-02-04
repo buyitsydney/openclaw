@@ -16,15 +16,19 @@
 - OpenClaw 会“实时看到所有对话并自主监督/记忆/提醒”
 - Live 说“好的，记住了”即可，OpenClaw 会自动写入记忆并同步回 Live
 
-**结合当前代码与运行日志，这两个假设都不成立。** 当前实现的真实行为是：
+**结合当前代码与运行日志，这两个假设在早期确实不成立；但现在已经补齐了“监督回路”。** 当前实现的真实行为是：
 
-- `transcript` 仅被记录（内存数组 + 打日志），**不会触发后台 Agent 自动分析**
-- OpenClaw 只有在收到 `help` 请求时才会启动 Agent 执行任务（此时才可能写入 USER/MEMORY）
+- `transcript` 会被记录（内存数组 + 打日志），并进入 turn 组装器
+- 每次 `turn_complete`（或 user+live 形成完整 turn）都会触发一次后台 Supervisor Run（独立于 `help`）
+- Supervisor Run 可能：
+  - 写入 `USER.md` / `MEMORY.md`（从而触发 `prompt_update`）
+  - 输出一条需要立刻提醒用户的短句（通过 `inject` 推送到前端）
+  - 输出空/`NO_REPLY`（协议层视为“不提醒”，不会 inject）
 - Live 的“system prompt 文本”和“tools/function declarations”属于两部分配置：  
   - 文本来自 `/api/realtime/bootstrap.systemPrompt`  
   - tools 定义来自 Gemini Live 的 setup payload（不在 system prompt 文本里）
 
-因此，若目标是“OpenClaw 上帝视角监督（主动提醒/自动记忆）”，必须补一条**监督回路（supervision loop）**，详见后文「监督回路：把 transcript 变成行动」。
+因此，若目标是“OpenClaw 上帝视角监督（主动提醒/自动记忆）”，关键是让 transcript 流稳定地闭合为 turn，并在每个 turn 上触发 Supervisor Run（已实现；详见后文）。
 ## 系统参与者
 
 ```
@@ -46,8 +50,8 @@
 ┌─────────────────────────────────┴───────────────────────────────────────────┐
 │                         OpenClaw (后台大哥)                                  │
 │                                                                             │
-│    现状：只有在 help 时才会启动 Agent；transcript 目前只记录不分析             │
-│    目标：能基于 transcript 的“轮次/回合”进行监督、记忆、提醒（需要监督回路）   │
+│    现状：help 触发 Agent；同时每个 turn 会触发 Supervisor Run（可 inject/写记忆）│
+│    目标：基于 transcript 的“轮次/回合”进行监督、记忆、提醒（已跑通可验证链路）  │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -61,9 +65,10 @@ Live 与 OpenClaw 之间通过 WebSocket 长连接传递事件流。
 - `help`（由 Live tool 调用触发）→ OpenClaw 插件调用后台 Agent 并返回结果
 - `prompt_update`（当 USER.md/MEMORY.md 被写入时）→ 插件广播给 Live
 
-当前未实现但文档早期版本曾假设存在的“自动流”：
+当前已实现的“自动流”补齐项：
 
-- OpenClaw 基于 transcript 自动监督/自动记忆/自动 inject（需要新增监督回路）
+- OpenClaw 基于 transcript turn 自动监督（Supervisor Run）
+- OpenClaw 主动 `inject`（已在 WS Frames 中验证可到达前端）
 
 事件流示意如下：
 
@@ -121,12 +126,12 @@ OpenClaw 自己判断：
 用户: "我现在更喜欢喝咖啡了，不喝茶了"
 Live: "好的，记住了"
 
-# WebSocket transcript 自动同步给 OpenClaw（已实现：接收/记录）
-# 但“OpenClaw 自己判断并写入记忆”当前不会发生，除非触发 help 或引入监督回路。
+# WebSocket transcript 自动同步给 OpenClaw（已实现）
+# 监督回路会基于 turn 触发 Supervisor Run，可能写入 USER/MEMORY 或 inject。
 
 OpenClaw:
-  1.（需要实现）监督回路触发后台 Agent 分析这轮对话
-  2.（需要实现）Agent 决定是否写入 USER.md / MEMORY.md
+  1.（已实现）监督回路触发后台 Supervisor Run 分析这一轮对话
+  2.（已实现）Supervisor 决定是否写入 USER.md / MEMORY.md，或输出 inject 提醒文本
   3.（已实现）若文件被写入，插件广播 prompt_update 给 Live
 
 OpenClaw → Live (WebSocket):
@@ -285,10 +290,8 @@ Live: 播报 "北京今天15度，晴"
 用户: "我现在喜欢喝咖啡了"
 Live: "好的，记住了"
 
-# 现状（已实现）：transcript 会被同步到 OpenClaw 插件并记录
-# 现状（未实现）：OpenClaw 不会仅凭 transcript 自动写入 USER/MEMORY
-#
-# 结论：如果希望“全自动记忆”，必须引入监督回路（supervision loop）。
+# 现状（已实现）：transcript 会被同步到 OpenClaw 插件并记录，并以 turn 为单位触发 Supervisor Run
+# Supervisor Run 会自主判断：是否值得写入 USER/MEMORY（并不保证每次都写）
 ```
 
 ### 场景 4：主动提醒
@@ -317,6 +320,8 @@ Live: 自然播报这句提醒
 type LiveMessage = 
   | { type: "transcript", role: "user" | "live", text: string }
   | { type: "help", request: string, callId: string }
+  | { type: "turn_complete" }
+  | { type: "gemini_event", event: string, data: unknown, timestamp: number }
 
 // OpenClaw → Live
 type OpenClawMessage =
@@ -334,7 +339,7 @@ interface BootstrapResponse {
 }
 ```
 
-## 监督回路：把 transcript 变成行动（关键缺口）
+## 监督回路：把 transcript 变成行动（已实现）
 
 如果目标是“Live 无感、OpenClaw 上帝视角后台监督”，必须在 `transcript` 流之上增加一个**监督回路**：
 
@@ -347,7 +352,7 @@ interface BootstrapResponse {
   - `inject`（立即提醒前台 Live）
   - 无动作（大多数日常对话）
 
-当前实现只覆盖了 help 请求触发 Agent；没有任何 transcript 驱动的监督触发，因此“全自动监督/记忆/提醒”不会发生。
+当前实现已包含 transcript 驱动的监督触发：以 turn 为单位触发 Supervisor Run，并可选 inject / 写入 USER/MEMORY。
 
 ### 方案 B（推荐）：每一轮 user+live 都输入给 OpenClaw（上帝视角后台大哥）
 
@@ -391,14 +396,15 @@ Live: 好的，是不是泰和酒店，我们预计 30min 到达。
 一旦 turn 闭合，立刻触发一次监督任务（不依赖 `openclaw_help`）：
 
 - **输入**：本 turn（用户+Live 两行）+ 少量近期 turn（可选）+ OpenClaw 可用的记忆/日程/工具
-- **输出**：只允许两类结果
-  - `NO_REPLY`：无需打断
-  - `INJECT: ...`：需要前台确认/提醒的一句话（尽量短、可口语播报）
+- **输出**：协议层只关心三种结果
+  - 空字符串：无需打断（不 inject）
+  - `NO_REPLY`：静默 token（不 inject）
+  - 其它任意非空文本：视为需要前台播报的一句话（通过 `inject` 发送）
 
-然后插件将 `INJECT:` 内容通过 WebSocket 发给 Live：
+然后插件将输出文本通过 WebSocket 发给 Live：
 
 ```json
-{ "type": "inject", "reply": "提醒用户：你 1 小时后有政府接待，确认现在去泰和酒店是否来得及？" }
+{ "type": "inject", "reply": "你 1 小时后有政府接待，确认现在去泰和酒店是否来得及？" }
 ```
 
 > 注意：这是“监督与纠错”，不是“代替 Live 完成所有任务”。真正需要执行复杂任务时，Live 仍可以使用 `openclaw_help`。
@@ -1256,10 +1262,10 @@ Agent 自主判断这些对话（天气查询等）不够重要，不需要记�
 
 | 能力 | 目标 | 当前实现状态 | 备注 |
 |------|------|-------------|------|
-| transcript 自动同步到 OpenClaw | ✅ | ✅ 已实现 | 目前只记录，不触发监督 |
+| transcript 自动同步到 OpenClaw | ✅ | ✅ 已实现 | 记录 + 参与 turn 组装 |
 | help → OpenClaw Agent → help_result | ✅ | ✅ 已实现 | 这是当前唯一稳定的“触发大脑”路径 |
-| OpenClaw 基于 transcript 自动监督/记忆 | ✅ | ❌ 未实现 | 需要监督回路 + turn 边界 |
-| OpenClaw 主动 inject 提醒 Live | ✅ | ⚠️ 半实现 | 协议/前端接收有了，但缺少后台触发决策 |
+| OpenClaw 基于 transcript 自动监督/记忆 | ✅ | ✅ 已实现 | Supervisor Run 以 turn 为单位触发（可写 USER/MEMORY） |
+| OpenClaw 主动 inject 提醒 Live | ✅ | ✅ 已实现 | 已在 WS Frames 中验证前端可收到 inject |
 | USER.md/MEMORY.md 变更 → prompt_update | ✅ | ✅ 已实现 | 只监控这两个文件 |
 | prompt_update 热更新到 Gemini Live 会话 | ✅ | ⚠️ 未完成 | 目前只更新前端缓存，未必影响 live 会话 |
 | 多并发 tool call 的请求-响应匹配 | ✅ | ✅ 方案已明确 | 必须使用稳定 callId（自生成） |

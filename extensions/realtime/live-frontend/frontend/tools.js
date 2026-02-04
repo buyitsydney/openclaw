@@ -136,6 +136,13 @@ class OpenClawConnection {
     }));
   }
 
+  sendTurnComplete() {
+    if (!this.isConnected()) return;
+    this.ws.send(JSON.stringify({
+      type: "turn_complete"
+    }));
+  }
+
   sendHelp(request, callId) {
     if (!this.isConnected()) return;
     

@@ -15,11 +15,14 @@ import { WebSocket, WebSocketServer } from "ws";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { loadCoreAgentDeps, type CoreAgentDeps, type CoreConfig } from "./core-bridge.js";
 import { buildBackendModePrompt } from "./prompt.js";
+import { TurnAssembler, type Turn } from "./turn-assembler.js";
 
 // Message types from Live
 export type LiveMessage =
   | { type: "transcript"; role: "user" | "live"; text: string }
-  | { type: "help"; request: string; callId: string };
+  | { type: "help"; request: string; callId: string }
+  | { type: "turn_complete" }
+  | { type: "gemini_event"; event: string; data: unknown; timestamp: number };
 
 // Message types to Live
 export type OpenClawMessage =
@@ -40,6 +43,8 @@ interface RealtimeClient {
   sessionId: string;
   conversation: string[];
   agentSessionId?: string; // UUID for agent session
+  turnAssembler: TurnAssembler;
+  supervisorChain: Promise<void>;
 }
 
 // Session entry type (matches OpenClaw's session store)
@@ -87,6 +92,8 @@ export async function startRealtimeServer(params: {
       ws,
       sessionId,
       conversation: [],
+      turnAssembler: new TurnAssembler(sessionId),
+      supervisorChain: Promise.resolve(),
     };
     clients.set(sessionId, client);
 
@@ -98,7 +105,9 @@ export async function startRealtimeServer(params: {
     ws.on("message", (data) => {
       try {
         const msg = JSON.parse(data.toString()) as LiveMessage;
-        handleMessage(client, msg, api);
+        void handleMessage(client, msg, api).catch((err) => {
+          api.logger.error(`[realtime] handleMessage failed: ${String(err)}`);
+        });
       } catch (err) {
         api.logger.error(`[realtime] Failed to parse message: ${err}`);
       }
@@ -172,14 +181,27 @@ async function handleMessage(
       const prefix = msg.role === "user" ? "用户" : "Live";
       client.conversation.push(`${prefix}: ${msg.text}`);
       api.logger.info(`[realtime] ${client.sessionId} | ${prefix}: ${msg.text}`);
+
+      // Assemble turn and run supervisor when a turn closes (user + live)
+      const turns = client.turnAssembler.push({ role: msg.role, text: msg.text });
+      for (const turn of turns) {
+        enqueueSupervisorTurn(client, turn, api);
+      }
+      break;
+    }
+
+    case "turn_complete": {
+      api.logger.info(`[realtime] ${client.sessionId} | Turn complete`);
+      const turns = client.turnAssembler.flushTurnComplete();
+      for (const turn of turns) {
+        enqueueSupervisorTurn(client, turn, api);
+      }
       break;
     }
 
     case "help": {
       api.logger.info(`[realtime] ${client.sessionId} | Help request: ${msg.request}`);
 
-      // TODO: Call OpenClaw agent to handle the request
-      // For now, return a placeholder response
       const reply = await handleHelpRequest(client, msg.request, api);
 
       sendToClient(client.ws, {
@@ -192,14 +214,13 @@ async function handleMessage(
 
     case "gemini_event": {
       // Log all Gemini events to file for debugging
-      const event = msg as { type: string; event: string; data: unknown; timestamp: number };
       const logLine = JSON.stringify({
         sessionId: client.sessionId,
-        timestamp: event.timestamp,
-        event: event.event,
-        data: event.data,
+        timestamp: msg.timestamp,
+        event: msg.event,
+        data: msg.data,
       });
-      api.logger.info(`[realtime] ${client.sessionId} | Gemini: ${event.event}`);
+      api.logger.info(`[realtime] ${client.sessionId} | Gemini: ${msg.event}`);
       
       // Append to session log file
       const logFile = `/tmp/realtime-${client.sessionId}.jsonl`;
@@ -210,6 +231,30 @@ async function handleMessage(
     default:
       api.logger.warn(`[realtime] Unknown message type: ${(msg as { type: string }).type}`);
   }
+}
+
+function enqueueSupervisorTurn(client: RealtimeClient, turn: Turn, api: OpenClawPluginApi) {
+  client.supervisorChain = client.supervisorChain
+    .then(() => runSupervisorTurn(client, turn, api))
+    .catch((err) => {
+      api.logger.error(`[realtime] Supervisor run failed: ${String(err)}`);
+    });
+}
+
+function tailConversationLines(lines: string[], maxChars: number): string {
+  if (lines.length === 0) {
+    return "";
+  }
+  let acc = "";
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i] ?? "";
+    const next = acc ? `${line}\n${acc}` : line;
+    if (next.length > maxChars) {
+      break;
+    }
+    acc = next;
+  }
+  return acc;
 }
 
 async function handleHelpRequest(
@@ -332,6 +377,127 @@ ${request}
     api.logger.error(`[realtime] Failed to call agent: ${err}`);
     return `抱歉，处理请求时出错了：${err instanceof Error ? err.message : String(err)}`;
   }
+}
+
+async function runSupervisorTurn(client: RealtimeClient, turn: Turn, api: OpenClawPluginApi): Promise<void> {
+  // Load core dependencies (cached after first call)
+  if (!coreDeps) {
+    api.logger.info("[realtime] Loading core dependencies...");
+    coreDeps = await loadCoreAgentDeps();
+  }
+
+  const cfg = api.config as CoreConfig;
+  const agentId = "main";
+
+  // Resolve paths
+  const storePath = coreDeps.resolveStorePath(cfg.session?.store, { agentId });
+  const agentDir = coreDeps.resolveAgentDir(cfg, agentId);
+  const workspaceDir = coreDeps.resolveAgentWorkspaceDir(cfg, agentId);
+
+  // Ensure workspace exists
+  await coreDeps.ensureAgentWorkspace({ dir: workspaceDir });
+
+  // Load or create session (same mapping as help: sessionKey === realtime sessionId)
+  const sessionStore = coreDeps.loadSessionStore(storePath);
+  const sessionKey = client.sessionId;
+
+  let sessionEntry = sessionStore[sessionKey] as SessionEntry | undefined;
+  if (!sessionEntry) {
+    const agentSessionId = crypto.randomUUID();
+    sessionEntry = {
+      sessionId: agentSessionId,
+      updatedAt: Date.now(),
+    };
+    sessionStore[sessionKey] = sessionEntry;
+    await coreDeps.saveSessionStore(storePath, sessionStore);
+    client.agentSessionId = agentSessionId;
+    api.logger.info(`[realtime] Created new agent session (supervisor): ${agentSessionId}`);
+  } else {
+    // Touch updatedAt to keep the session fresh
+    sessionEntry.updatedAt = Date.now();
+    sessionStore[sessionKey] = sessionEntry;
+    await coreDeps.saveSessionStore(storePath, sessionStore);
+    client.agentSessionId = sessionEntry.sessionId;
+  }
+
+  const sessionFile = coreDeps.resolveSessionFilePath(
+    sessionEntry.sessionId,
+    sessionEntry,
+    { agentId },
+  );
+
+  // Keep context bounded for cost/latency while still giving recent history.
+  const conversationTail = tailConversationLines(client.conversation, 8_000);
+  const extraSystemPrompt = buildBackendModePrompt(conversationTail);
+
+  // Protocol note: keep the input minimal; the long-lived system prompt already defines
+  // role/capabilities. We only provide fresh context and a lightweight "speak or stay silent"
+  // contract so the server can decide whether to inject.
+  const supervisorPrompt = `## 最近对话（节选）
+${conversationTail || "（暂无）"}
+
+## 最新一轮对话（turn）
+用户: ${turn.userText}
+Live: ${turn.liveText}
+
+如果你认为需要立刻提醒用户，请直接输出一句 Live 应该对用户说的中文短句。
+如果不需要提醒，请输出空字符串（不要解释）。`;
+
+  // Resolve model configuration from config
+  const agentDefaults = (cfg as Record<string, unknown>).agents as
+    | { defaults?: { model?: { primary?: string } } }
+    | undefined;
+  const modelRef = agentDefaults?.defaults?.model?.primary
+    || `${coreDeps.DEFAULT_PROVIDER}/${coreDeps.DEFAULT_MODEL}`;
+
+  const parts = modelRef.split("/");
+  const provider = parts[0] || coreDeps.DEFAULT_PROVIDER;
+  const model = parts.slice(1).join("/") || coreDeps.DEFAULT_MODEL;
+
+  const thinkLevel = coreDeps.resolveThinkingDefault({ cfg, provider, model });
+  const timeoutMs = coreDeps.resolveAgentTimeoutMs({ cfg });
+
+  api.logger.info(
+    `[realtime] Supervisor run: session=${sessionEntry.sessionId} turn=${turn.turnId} model=${provider}/${model}`,
+  );
+
+  const result = await coreDeps.runEmbeddedPiAgent({
+    sessionId: sessionEntry.sessionId,
+    sessionKey,
+    messageProvider: "realtime",
+    sessionFile,
+    workspaceDir,
+    config: cfg,
+    prompt: supervisorPrompt,
+    provider,
+    model,
+    thinkLevel,
+    verboseLevel: "off",
+    timeoutMs,
+    runId: `realtime:supervisor:${client.sessionId}:${turn.turnId}`,
+    lane: "realtime",
+    extraSystemPrompt,
+    agentDir,
+  });
+
+  const texts = (result.payloads ?? [])
+    .filter((p) => p.text && !p.isError)
+    .map((p) => p.text?.trim())
+    .filter(Boolean);
+
+  const reply = (texts.join(" ") || "").trim();
+  if (!reply) {
+    return;
+  }
+
+  // OpenClaw core system prompt uses a "silent reply" token. That token must never be
+  // injected into Gemini; treat it as empty output at the protocol layer.
+  if (reply === "NO_REPLY") {
+    api.logger.info(`[realtime] Supervisor silent reply (NO_REPLY) turn=${turn.turnId}`);
+    return;
+  }
+
+  sendToClient(client.ws, { type: "inject", reply });
 }
 
 async function handleBootstrap(
