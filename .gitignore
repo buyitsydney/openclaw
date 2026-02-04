@@ -74,3 +74,6 @@ USER.md
 
 # Local logs (debug, prompt dumps, etc)
 logs/
+
+# Python bytecode (local)
+__pycache__/

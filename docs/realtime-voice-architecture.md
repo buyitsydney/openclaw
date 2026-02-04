@@ -991,6 +991,62 @@ cat ~/.openclaw/workspace/USER.md
 
 ## 已知问题与下一步 TODO
 
+### 2026-02-04 语音链路“混乱”复盘（基于 `logs/live-gemini-*.md`）
+
+> 目标：先用**双向日志**把时间线对齐，再逐项收敛输入结构，减少 Live 侧错乱。
+
+#### 问题 A：Supervisor（监督者）现状看到的 input 不完整
+
+**现状输入构成**（以当前代码为准）：
+- **最近对话**：仅来自 `transcript`（`用户:` / `Live:` 行），存于内存数组 `client.conversation[]`
+- **本轮 turn**：`TurnAssembler` 闭合得到的 `turn.userText` / `turn.liveText`（可能为空）
+- **不包含**：Gemini 的 toolCall / OpenClaw help 请求与结果（当前未写入 `client.conversation`）
+
+**影响**：
+- 监督者无法“智能地”判断：本轮是否已经通过 `openclaw_help` 给出答复 → 容易出现 help 与 inject 并行、重复提醒。
+
+**讨论中的对策方向（未实现）**：
+- 将 help 链路关键事件（toolCall / help request / help_result / tool_response）以“事件行”追加进 `client.conversation`，让 Supervisor 在同一个输入里看到全貌，从而由 OpenClaw 自己决策“本轮是否 inject”。
+
+---
+
+#### 问题 B：OpenClaw inject 目前在 Gemini Live 里被当作 `user` 发言
+
+**证据**：当前前端通过 `sendTextMessage()` 将 inject 作为 `client_content.turns[].role="user"` 发送给 Gemini，因此 Gemini 会把它当成“用户又说了一句话”，而不是后台监督信息。
+
+**影响**：
+- 语义权重错误：后台提醒被当成用户意图 → 更容易触发重复调用、跑偏、自我对话感。
+
+**讨论中的对策方向（未实现）**：
+- 研究并使用 Live API 支持的 `clientContent.turns[].role="model"`（用于回放/追加模型侧上下文），将 inject 结构化为“后台模型侧上下文”，并在 system prompt 中加入最小协议声明，避免被当作“模型已说过的话”。
+
+---
+
+#### 问题 C：help 链路与 inject 链路互不知情，导致叠加/重复提醒
+
+**现状**：
+- 链路 1：Gemini toolCall → `openclaw_help` → 前端回 `tool_response`
+- 链路 2：Supervisor 生成 inject → 前端以新一轮文本注入 Gemini
+
+**影响**：
+- 同一主题（例如禁酒/酒驾）可能被两条链路重复灌入上下文，造成“抢话/重复/错乱”。
+
+**讨论中的对策方向（未实现）**：
+- 不做前端语义相似度去重（避免复杂逻辑与 bug 风险），改为让 OpenClaw 在 Supervisor 输入中看到 help 的请求/结果，由 OpenClaw 自己做智能抉择：若本轮 help 已覆盖则禁止 inject。
+
+---
+
+#### 问题 D：缺少 GEMINI→LIVE 的文字级证据链（ASR/模型输出/ToolCall）
+
+**现状**：
+- UI 能看到 ASR（`inputTranscription`）与模型输出（`modelTurn`）文本
+- 但只记录 LIVE→GEMINI 输入会导致“看起来像系统在自说自话”，无法肉眼对齐时间线
+
+**已实现（2026-02-04）**：
+- 新增 `logs/live-gemini-output.md`：记录 GEMINI→LIVE 的 `inputTranscription` / `outputTranscription` / `modelTurn.text` / `toolCall` / `interrupted` / `turnComplete`
+
+### 2026-02-03 测试发现的问题
+
 ### 2026-02-03 测试发现的问题
 
 基于实际测试日志分析，闭环已完成，但存在以下需要优化的问题：
