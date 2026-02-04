@@ -4,11 +4,27 @@
 
 ## 设计原则
 
-1. **极简**：Live 只需要 1 个 Tool，上下文自动同步
-2. **无感**：Live 不需要关心记忆、同步，OpenClaw 自己是大脑
+1. **极简**：Live 只需要 1 个 Tool（`openclaw_help(request)`），其余走自动事件流
+2. **无感**：Live 不需要理解“同步协议细节”，但**并不等于**“永远不需要调用 tool”
 3. **零冲击**：不影响 OpenClaw 现有的 WebChat/Telegram 体验
 4. **零侵入**：作为独立插件实现，不修改 OpenClaw 核心代码，方便同步上游更新
 
+## 重要纠偏：设计假设 vs 当前实现（必读）
+
+本文件早期版本隐含了两个强假设：
+
+- OpenClaw 会“实时看到所有对话并自主监督/记忆/提醒”
+- Live 说“好的，记住了”即可，OpenClaw 会自动写入记忆并同步回 Live
+
+**结合当前代码与运行日志，这两个假设都不成立。** 当前实现的真实行为是：
+
+- `transcript` 仅被记录（内存数组 + 打日志），**不会触发后台 Agent 自动分析**
+- OpenClaw 只有在收到 `help` 请求时才会启动 Agent 执行任务（此时才可能写入 USER/MEMORY）
+- Live 的“system prompt 文本”和“tools/function declarations”属于两部分配置：  
+  - 文本来自 `/api/realtime/bootstrap.systemPrompt`  
+  - tools 定义来自 Gemini Live 的 setup payload（不在 system prompt 文本里）
+
+因此，若目标是“OpenClaw 上帝视角监督（主动提醒/自动记忆）”，必须补一条**监督回路（supervision loop）**，详见后文「监督回路：把 transcript 变成行动」。
 ## 系统参与者
 
 ```
@@ -30,15 +46,26 @@
 ┌─────────────────────────────────┴───────────────────────────────────────────┐
 │                         OpenClaw (后台大哥)                                  │
 │                                                                             │
-│    上帝视角：实时看到所有对话（WebSocket 自动收到）                           │
-│    自主决策：自己判断要保存什么、要提醒什么                                   │
-│    Live 不需要告诉它"请保存"，它自己是大脑！                                  │
+│    现状：只有在 help 时才会启动 Agent；transcript 目前只记录不分析             │
+│    目标：能基于 transcript 的“轮次/回合”进行监督、记忆、提醒（需要监督回路）   │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## WebSocket 自动同步
 
-Live 与 OpenClaw 之间通过 WebSocket 长连接自动同步，Live 完全无感：
+Live 与 OpenClaw 之间通过 WebSocket 长连接传递事件流。
+
+当前已实现的“自动流”：
+
+- `transcript`（用户/Live 的转写文本）→ OpenClaw 插件接收并记录
+- `help`（由 Live tool 调用触发）→ OpenClaw 插件调用后台 Agent 并返回结果
+- `prompt_update`（当 USER.md/MEMORY.md 被写入时）→ 插件广播给 Live
+
+当前未实现但文档早期版本曾假设存在的“自动流”：
+
+- OpenClaw 基于 transcript 自动监督/自动记忆/自动 inject（需要新增监督回路）
+
+事件流示意如下：
 
 ```
 ┌─────────┐                           ┌─────────┐
@@ -52,17 +79,18 @@ Live 与 OpenClaw 之间通过 WebSocket 长连接自动同步，Live 完全无�
 Live 不需要：
 - 手动调用 sync
 - 在 Tool 参数中传递对话上下文
-- 告诉 OpenClaw 保存什么
+- 把完整对话塞进 tool 参数（对话会通过 transcript 流送达）
 
 OpenClaw 自己判断：
-- 这个信息要保存吗
-- 有冲突要提醒吗
-- 用户画像要更新吗
+-（目标）这个信息要保存吗 / 有冲突要提醒吗 / 用户画像要更新吗
+-（现状）只有在 help 时才会做上述判断
 ```
 
 ## System Prompt 同步
 
 ### Live 的 System Prompt 结构
+
+重要：这里的 “System Prompt” 指**文本指令**。Gemini Live 的 tools/function declarations 是 setup payload 的另一部分配置，不会出现在该文本中。
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -93,13 +121,13 @@ OpenClaw 自己判断：
 用户: "我现在更喜欢喝咖啡了，不喝茶了"
 Live: "好的，记住了"
 
-# WebSocket 自动同步给 OpenClaw
-# OpenClaw 自己判断：这是用户偏好变化！
+# WebSocket transcript 自动同步给 OpenClaw（已实现：接收/记录）
+# 但“OpenClaw 自己判断并写入记忆”当前不会发生，除非触发 help 或引入监督回路。
 
 OpenClaw:
-  1. 更新 USER.md（偏好：咖啡）
-  2. 判断：这影响 Live 对用户的认知
-  3. 推送 System Prompt 更新给 Live
+  1.（需要实现）监督回路触发后台 Agent 分析这轮对话
+  2.（需要实现）Agent 决定是否写入 USER.md / MEMORY.md
+  3.（已实现）若文件被写入，插件广播 prompt_update 给 Live
 
 OpenClaw → Live (WebSocket):
   {
@@ -108,8 +136,7 @@ OpenClaw → Live (WebSocket):
     content: "用户偏好：喜欢咖啡，不喜欢茶..."
   }
 
-Live: 更新自己 System Prompt 的用户画像部分
-# 下次对话就知道用户喜欢咖啡了
+Live:（部分实现）收到 prompt_update 后更新前端缓存；是否“热更新到 Gemini Live 会话”需要单独实现
 ```
 
 ## OpenClaw 双模式设计
@@ -258,12 +285,10 @@ Live: 播报 "北京今天15度，晴"
 用户: "我现在喜欢喝咖啡了"
 Live: "好的，记住了"
 
-# WebSocket 自动同步
-# OpenClaw 自己判断：用户偏好变化，要保存！
-# 更新 USER.md
-# 推送 System Prompt 更新给 Live
-
-# Live 不需要调用任何 tool！
+# 现状（已实现）：transcript 会被同步到 OpenClaw 插件并记录
+# 现状（未实现）：OpenClaw 不会仅凭 transcript 自动写入 USER/MEMORY
+#
+# 结论：如果希望“全自动记忆”，必须引入监督回路（supervision loop）。
 ```
 
 ### 场景 4：主动提醒
@@ -272,8 +297,7 @@ Live: "好的，记住了"
 用户: "明天帮我订个会议室"
 Live: "好的"
 
-# OpenClaw 看到后，检查日程
-# 发现：用户明天要出差北京！
+# 目标：OpenClaw 在监督回路中看到这轮对话，检查日程并发现冲突/提醒点
 
 OpenClaw → Live: {
   type: "inject",
@@ -309,6 +333,43 @@ interface BootstrapResponse {
   memorySummary: string;
 }
 ```
+
+## 监督回路：把 transcript 变成行动（关键缺口）
+
+如果目标是“Live 无感、OpenClaw 上帝视角后台监督”，必须在 `transcript` 流之上增加一个**监督回路**：
+
+- **输入**：持续到达的 transcript（用户/Live 的文本转写）
+- **触发**：以“轮次/回合（turn）”为单位触发，或节流触发（例如每 N 轮/每 T 秒）
+- **处理者**：OpenClaw 后台 Agent（以后台支援者身份运行）
+- **输出（动作）**：
+  - 写入 `USER.md`（更新用户画像）
+  - 写入 `MEMORY.md`（长期记忆摘要）
+  - `inject`（立即提醒前台 Live）
+  - 无动作（大多数日常对话）
+
+当前实现只覆盖了 help 请求触发 Agent；没有任何 transcript 驱动的监督触发，因此“全自动监督/记忆/提醒”不会发生。
+
+### Turn（轮次）边界必须被定义
+
+文档后续将统一以 turn 为最小监督单位：
+
+- 典型 turn：用户一句话（或一个转写完成事件）+ Live 一句回复（或一个转写完成事件）
+- 如果只有用户语音没有 Live 回复，也应视为“未闭合 turn”（可超时闭合）
+
+没有 turn 边界，就无法做到“每一轮自动同步并触发监督”的确定性行为。
+
+## 文件与会话：到底会有几份 USER/MEMORY？
+
+当前实现（以及 OpenClaw 默认运行方式）中：
+
+- `~/.openclaw/workspace/USER.md` 与 `~/.openclaw/workspace/MEMORY.md` 是**单一版本**（workspace/agent 级别），不是 per-session
+- 不同的对话 session 隔离主要体现在 `~/.openclaw/agents/<agentId>/sessions/*.jsonl`（会话日志）上
+- `~/.openclaw/workspace/memory/YYYY-MM-DD.md` 是“按天记忆文件”，但当前 realtime 插件的 prompt_sync 只监控 `USER.md` 与 `MEMORY.md`，**不会自动同步按天文件**
+
+因此，同一时间 WebChat 与 Live 并行对话时：
+
+- 两边读取/写入的 USER/MEMORY 是同一套
+- 但它们各自的 session 上下文（jsonl）是分开的
 
 ## 对现有系统的影响
 
@@ -1134,3 +1195,17 @@ Agent 自主判断这些对话（天气查询等）不够重要，不需要记�
 #### 优先级
 
 🟡 中 - 可能是预期行为，取决于对话重要性判断
+
+---
+
+## 实现状态总览（以当前代码/日志为准）
+
+| 能力 | 目标 | 当前实现状态 | 备注 |
+|------|------|-------------|------|
+| transcript 自动同步到 OpenClaw | ✅ | ✅ 已实现 | 目前只记录，不触发监督 |
+| help → OpenClaw Agent → help_result | ✅ | ✅ 已实现 | 这是当前唯一稳定的“触发大脑”路径 |
+| OpenClaw 基于 transcript 自动监督/记忆 | ✅ | ❌ 未实现 | 需要监督回路 + turn 边界 |
+| OpenClaw 主动 inject 提醒 Live | ✅ | ⚠️ 半实现 | 协议/前端接收有了，但缺少后台触发决策 |
+| USER.md/MEMORY.md 变更 → prompt_update | ✅ | ✅ 已实现 | 只监控这两个文件 |
+| prompt_update 热更新到 Gemini Live 会话 | ✅ | ⚠️ 未完成 | 目前只更新前端缓存，未必影响 live 会话 |
+| 多并发 tool call 的请求-响应匹配 | ✅ | ✅ 方案已明确 | 必须使用稳定 callId（自生成） |

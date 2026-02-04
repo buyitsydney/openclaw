@@ -190,6 +190,23 @@ async function handleMessage(
       break;
     }
 
+    case "gemini_event": {
+      // Log all Gemini events to file for debugging
+      const event = msg as { type: string; event: string; data: unknown; timestamp: number };
+      const logLine = JSON.stringify({
+        sessionId: client.sessionId,
+        timestamp: event.timestamp,
+        event: event.event,
+        data: event.data,
+      });
+      api.logger.info(`[realtime] ${client.sessionId} | Gemini: ${event.event}`);
+      
+      // Append to session log file
+      const logFile = `/tmp/realtime-${client.sessionId}.jsonl`;
+      await fs.appendFile(logFile, logLine + "\n");
+      break;
+    }
+
     default:
       api.logger.warn(`[realtime] Unknown message type: ${(msg as { type: string }).type}`);
   }

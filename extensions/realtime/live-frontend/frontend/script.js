@@ -10,7 +10,19 @@ const state = {
   video: { streamer: null, isStreaming: false },
   screen: { capture: null, isSharing: false },
   openclaw: { connected: false, userProfile: "", memorySummary: "" },
+  // Accumulate transcripts before sending to OpenClaw
+  pendingUserTranscript: "",
+  pendingLiveTranscript: "",
 };
+
+// Debug logger for tracking message flow
+function debugLog(direction, eventType, data = {}) {
+  const ts = new Date().toISOString().slice(11, 23);
+  const dataStr = Object.entries(data)
+    .map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`)
+    .join(' | ');
+  console.log(`[${ts}] ${direction.padEnd(15)} | ${eventType.padEnd(18)} | ${dataStr}`);
+}
 
 // DOM element cache
 const elements = {};
@@ -150,9 +162,11 @@ async function connectOpenClaw() {
     // Set up callbacks
     openclawConnection.onHelpResult = (callId, reply) => {
       console.log(`🦞 Help result for ${callId}:`, reply);
+      debugLog("OPENCLAW→LIVE", "HELP_RESULT", { callId: callId, reply: reply.slice(0, 50) + "..." });
       // Send tool response back to Gemini with official format
       // See: https://ai.google.dev/api/live#BidiGenerateContentToolResponse
       if (state.client) {
+        debugLog("LIVE→GEMINI", "TOOL_RESPONSE", { id: callId, name: "openclaw_help", response: reply.slice(0, 50) + "..." });
         state.client.sendToolResponse(
           callId, 
           "openclaw_help",  // Function name is required per API docs
@@ -359,22 +373,32 @@ function handleMessage(message) {
     case MultimodalLiveResponseType.INPUT_TRANSCRIPTION:
       console.log("Input transcription:", message.data);
       if (!message.data.finished) {
+        // Accumulate transcript text
+        state.pendingUserTranscript += message.data.text || "";
         addMessage(message.data.text, "user-transcript", (append = true));
-      }
-      // Sync transcript to OpenClaw
-      if (message.data.finished && state.openclaw.connected) {
-        openclawConnection.sendTranscript("user", message.data.text);
+      } else {
+        // finished=true, send accumulated transcript to OpenClaw
+        if (state.openclaw.connected && state.pendingUserTranscript) {
+          openclawConnection.sendTranscript("user", state.pendingUserTranscript);
+          debugLog("LIVE→OPENCLAW", "TRANSCRIPT_USER", { text: state.pendingUserTranscript.slice(0, 50) });
+        }
+        state.pendingUserTranscript = "";  // Reset
       }
       break;
 
     case MultimodalLiveResponseType.OUTPUT_TRANSCRIPTION:
       console.log("Output transcription:", message.data);
       if (!message.data.finished) {
+        // Accumulate transcript text
+        state.pendingLiveTranscript += message.data.text || "";
         addMessage(message.data.text, "assistant", (append = true));
-      }
-      // Sync transcript to OpenClaw
-      if (message.data.finished && state.openclaw.connected) {
-        openclawConnection.sendTranscript("live", message.data.text);
+      } else {
+        // finished=true, send accumulated transcript to OpenClaw
+        if (state.openclaw.connected && state.pendingLiveTranscript) {
+          openclawConnection.sendTranscript("live", state.pendingLiveTranscript);
+          debugLog("LIVE→OPENCLAW", "TRANSCRIPT_LIVE", { text: state.pendingLiveTranscript.slice(0, 50) });
+        }
+        state.pendingLiveTranscript = "";  // Reset
       }
       break;
 
@@ -399,13 +423,11 @@ function handleMessage(message) {
       for (let index = 0; index < functionCalls.length; index++) {
         const functionCall = functionCalls[index];
         const functionName = functionCall.name;
-        const functionCallId = functionCall.id;
+        // Generate UUID if Gemini doesn't provide id
+        const functionCallId = functionCall.id || crypto.randomUUID();
         const parameters = functionCall.args;
-        console.log(
-          `Calling function ${functionName} (id: ${functionCallId}) with parameters: ${JSON.stringify(
-            parameters
-          )}`
-        );
+        
+        debugLog("GEMINI→LIVE", "TOOL_CALL", { geminiId: functionCall.id, usedId: functionCallId, name: functionName, args: parameters });
         
         // Special handling for OpenClaw help tool (async)
         if (functionName === "openclaw_help") {
@@ -424,6 +446,7 @@ function handleMessage(message) {
 
     case MultimodalLiveResponseType.TURN_COMPLETE:
       console.log("Turn complete:", message.data);
+      debugLog("GEMINI→LIVE", "TURN_COMPLETE", {});
       updateStatus("debugInfo", "Turn complete");
       break;
 

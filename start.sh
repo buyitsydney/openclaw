@@ -1,8 +1,12 @@
 #!/bin/bash
 # CarHer Gateway 启动脚本
-# 自动杀掉旧进程，启动新的 Gateway
+# 确定性重编译 + 启动 Gateway（建议永远只通过此脚本启动）
 
 set -e
+
+# 确保在仓库根目录执行（脚本所在目录）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 # 颜色定义
 RED='\033[0;31m'
@@ -13,8 +17,15 @@ NC='\033[0m' # No Color
 echo -e "${YELLOW}🚀 CarHer Gateway 启动脚本${NC}"
 echo ""
 
+# 确定性重编译（后端 dist + 控制台 UI）
+echo -e "${YELLOW}[1/5] 重编译后端与前端资源...${NC}"
+pnpm build
+pnpm ui:build
+echo -e "${GREEN}  ✓ 编译完成${NC}"
+echo ""
+
 # 杀掉已有的 Gateway 进程
-echo -e "${YELLOW}[1/3] 停止旧进程...${NC}"
+echo -e "${YELLOW}[2/5] 停止旧进程...${NC}"
 pkill -f "openclaw-gateway" 2>/dev/null && echo -e "${GREEN}  ✓ 已停止旧 Gateway${NC}" || echo -e "  ℹ 没有旧进程"
 pkill -f "openclaw gateway" 2>/dev/null || true
 
@@ -31,13 +42,13 @@ check_port() {
   fi
 }
 
-echo -e "${YELLOW}[2/3] 检查端口...${NC}"
+echo -e "${YELLOW}[3/5] 检查端口...${NC}"
 check_port 18789
 check_port 18790
 echo -e "${GREEN}  ✓ 端口就绪${NC}"
 
 # 启动 Gateway
-echo -e "${YELLOW}[3/3] 启动 Gateway...${NC}"
+echo -e "${YELLOW}[4/5] 启动 Gateway...${NC}"
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${GREEN}  Gateway:  http://localhost:18789${NC}"
@@ -60,7 +71,7 @@ if [ -z "$TOKEN" ]; then
 fi
 
 # 自动打开前端页面（带 token）
-echo -e "${GREEN}[4/4] 打开前端页面...${NC}"
+echo -e "${GREEN}[5/5] 打开前端页面...${NC}"
 open "http://localhost:18789/?token=${TOKEN}"
 
 echo ""

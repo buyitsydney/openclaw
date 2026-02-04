@@ -71,3 +71,6 @@ USER.md
 
 # local tooling
 .serena/
+
+# Local logs (debug, prompt dumps, etc)
+logs/

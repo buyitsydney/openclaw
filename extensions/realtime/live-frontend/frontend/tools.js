@@ -26,7 +26,8 @@ class OpenClawHelpTool extends FunctionCallDefinition {
 
   functionToCall(parameters, functionCallId) {
     const request = parameters.request || "";
-    console.log(`🦞 OpenClaw help request: ${request}`);
+    const ts = new Date().toISOString().slice(11, 23);
+    console.log(`[${ts}] LIVE→OPENCLAW     | HELP_REQUEST       | callId=${functionCallId} | request=${request}`);
     
     if (this.openclawConnection && this.openclawConnection.isConnected()) {
       // Send help request to OpenClaw

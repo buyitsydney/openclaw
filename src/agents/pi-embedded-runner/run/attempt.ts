@@ -4,6 +4,7 @@ import { streamSimple } from "@mariozechner/pi-ai";
 import { createAgentSession, SessionManager, SettingsManager } from "@mariozechner/pi-coding-agent";
 import fs from "node:fs/promises";
 import os from "node:os";
+import path from "node:path";
 import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
 import { resolveHeartbeatPrompt } from "../../../auto-reply/heartbeat.js";
 import { resolveChannelCapabilities } from "../../../config/channel-capabilities.js";
@@ -86,6 +87,182 @@ import {
 import { splitSdkTools } from "../tool-split.js";
 import { describeUnknownError, mapThinkingLevel } from "../utils.js";
 import { detectAndLoadPromptImages } from "./images.js";
+
+let openclawRepoRootCache: string | null = null;
+
+function safeJsonStringify(value: unknown): string {
+  const seen = new WeakSet<object>();
+  return JSON.stringify(value, (_key, v) => {
+    if (typeof v === "bigint") {
+      return v.toString();
+    }
+    if (typeof v === "function") {
+      return `[Function${v.name ? ` ${v.name}` : ""}]`;
+    }
+    if (typeof v === "symbol") {
+      return v.toString();
+    }
+    if (v && typeof v === "object") {
+      if (seen.has(v)) {
+        return "[Circular]";
+      }
+      seen.add(v);
+    }
+    return v;
+  });
+}
+
+function safeJsonStringifyPretty(value: unknown): string {
+  const seen = new WeakSet<object>();
+  return JSON.stringify(
+    value,
+    (_key, v) => {
+      if (typeof v === "bigint") {
+        return v.toString();
+      }
+      if (typeof v === "function") {
+        return `[Function${v.name ? ` ${v.name}` : ""}]`;
+      }
+      if (typeof v === "symbol") {
+        return v.toString();
+      }
+      if (v && typeof v === "object") {
+        if (seen.has(v)) {
+          return "[Circular]";
+        }
+        seen.add(v);
+      }
+      return v;
+    },
+    2,
+  );
+}
+
+function fence(content: string, lang: string): string {
+  // Always use 4 backticks so embedded ``` in prompts won't break formatting.
+  // Avoid using backticks inside a template literal.
+  const ticks = "````";
+  return `\n${ticks}${lang}\n${content}\n${ticks}\n`;
+}
+
+async function resolveOpenClawRepoRoot(): Promise<string | null> {
+  if (openclawRepoRootCache) {
+    return openclawRepoRootCache;
+  }
+
+  const urlPath = (() => {
+    try {
+      return new URL(import.meta.url).pathname;
+    } catch {
+      return "";
+    }
+  })();
+
+  const candidates = [
+    // Works from dist path: dist/agents/pi-embedded-runner/run/attempt.js → repo root
+    urlPath ? path.resolve(path.dirname(urlPath), "../../../../") : "",
+    // Might still be repo root early in process, but can change after chdir.
+    process.cwd(),
+  ].filter((p) => Boolean(p));
+
+  for (const startDir of candidates) {
+    let dir = startDir;
+    for (;;) {
+      const pkgPath = path.join(dir, "package.json");
+      try {
+        const raw = await fs.readFile(pkgPath, "utf8");
+        const pkg = JSON.parse(raw) as { name?: string };
+        if (pkg.name === "openclaw") {
+          openclawRepoRootCache = dir;
+          return dir;
+        }
+      } catch {
+        // ignore and keep walking
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) {
+        break;
+      }
+      dir = parent;
+    }
+  }
+
+  return null;
+}
+
+function resolvePromptDumpPath(params: {
+  messageProvider?: string;
+  sessionKey?: string;
+}): string | null {
+  const provider = params.messageProvider?.trim().toLowerCase();
+  const isRealtime = provider === "realtime" || params.sessionKey?.startsWith("realtime:");
+  // Web UI sessions currently don't always provide a stable messageProvider.
+  // Treat missing provider as webchat so prompt dumps are reliably captured.
+  const isWebchat = provider === "webchat" || !provider;
+
+  if (!isRealtime && !isWebchat) {
+    return null;
+  }
+
+  // Repo-root logs/ is easier to inspect and can be gitignored.
+  // Resolve repo root best-effort; if unavailable, skip dumping.
+  return isRealtime ? "logs/prompts-realtime.md" : "logs/prompts-webchat.md";
+}
+
+async function appendPromptDump(params: {
+  messageProvider?: string;
+  sessionKey?: string;
+  sessionId: string;
+  runId: string;
+  provider: string;
+  modelId: string;
+  workspaceDir: string;
+  systemPrompt: string;
+  userPrompt: string;
+  messages: AgentMessage[];
+  toolNames: string[];
+}) {
+  const relativePath = resolvePromptDumpPath({
+    messageProvider: params.messageProvider,
+    sessionKey: params.sessionKey,
+  });
+  if (!relativePath) {
+    return;
+  }
+
+  const repoRoot = await resolveOpenClawRepoRoot();
+  if (!repoRoot) {
+    return;
+  }
+
+  const filePath = path.join(repoRoot, relativePath);
+
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+
+  const header = [
+    "\n---",
+    `# prompt_dump`,
+    ``,
+    `- timestamp: ${new Date().toISOString()}`,
+    `- runId: ${params.runId}`,
+    `- sessionId: ${params.sessionId}`,
+    `- sessionKey: ${params.sessionKey ?? ""}`,
+    `- messageProvider: ${params.messageProvider ?? ""}`,
+    `- model: ${params.provider}/${params.modelId}`,
+    `- workspaceDir: ${params.workspaceDir}`,
+    `- toolNames: ${params.toolNames.join(", ")}`,
+    "",
+    "## systemPrompt",
+    fence(params.systemPrompt, "text").trimEnd(),
+    "## userPrompt",
+    fence(params.userPrompt, "text").trimEnd(),
+    "## messages (full)",
+    fence(safeJsonStringifyPretty(params.messages), "json").trimEnd(),
+    "",
+  ].join("\n");
+
+  await fs.appendFile(filePath, header + "\n", "utf8");
+}
 
 export function injectHistoryImagesIntoMessages(
   messages: AgentMessage[],
@@ -697,6 +874,7 @@ export async function runEmbeddedAttempt(
       const hookRunner = getGlobalHookRunner();
 
       let promptError: unknown = null;
+      let effectivePromptUsed: string = params.prompt;
       try {
         const promptStartedAt = Date.now();
 
@@ -726,6 +904,7 @@ export async function runEmbeddedAttempt(
             log.warn(`before_agent_start hook failed: ${String(hookErr)}`);
           }
         }
+        effectivePromptUsed = effectivePrompt;
 
         log.debug(`embedded run prompt start: runId=${params.runId} sessionId=${params.sessionId}`);
         cacheTrace?.recordStage("prompt:before", {
@@ -859,6 +1038,20 @@ export async function runEmbeddedAttempt(
         clearActiveEmbeddedRun(params.sessionId, queueHandle);
         params.abortSignal?.removeEventListener?.("abort", onAbort);
       }
+
+      await appendPromptDump({
+        messageProvider: params.messageProvider,
+        sessionKey: params.sessionKey,
+        sessionId: sessionIdUsed,
+        runId: params.runId,
+        provider: params.provider,
+        modelId: params.modelId,
+        workspaceDir: effectiveWorkspace,
+        systemPrompt: systemPromptText,
+        userPrompt: effectivePromptUsed,
+        messages: messagesSnapshot,
+        toolNames: tools.map((t) => t.name),
+      });
 
       const lastAssistant = messagesSnapshot
         .slice()
