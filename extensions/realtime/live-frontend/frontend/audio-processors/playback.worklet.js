@@ -6,23 +6,14 @@ class PCMProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     this.audioQueue = [];
-    this.isActive = false;
 
     this.port.onmessage = (event) => {
       if (event.data === "interrupt") {
         // Clear the queue on interrupt
         this.audioQueue = [];
-        if (this.isActive) {
-          this.isActive = false;
-          this.port.postMessage({ type: "idle", reason: "interrupt" });
-        }
       } else if (event.data instanceof Float32Array) {
         // Add audio data to the queue
         this.audioQueue.push(event.data);
-        if (!this.isActive) {
-          this.isActive = true;
-          this.port.postMessage({ type: "active" });
-        }
       }
     };
   }
@@ -63,12 +54,6 @@ class PCMProcessor extends AudioWorkletProcessor {
     // Fill remaining output with silence
     while (outputIndex < channel.length) {
       channel[outputIndex++] = 0;
-    }
-
-    // Notify main thread when playback becomes idle (queue drained).
-    if (this.isActive && this.audioQueue.length === 0) {
-      this.isActive = false;
-      this.port.postMessage({ type: "idle", reason: "drain" });
     }
 
     return true;

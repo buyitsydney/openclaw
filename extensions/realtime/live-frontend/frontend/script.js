@@ -13,8 +13,6 @@ const state = {
   // Accumulate transcripts before sending to OpenClaw
   pendingUserTranscript: "",
   pendingLiveTranscript: "",
-  // Serialize inject delivery to Gemini to avoid interrupting active audio playback.
-  injectChain: Promise.resolve(),
 };
 
 // Debug logger for tracking message flow
@@ -192,22 +190,10 @@ async function connectOpenClaw() {
       console.log("🦞 Inject:", reply);
       // Make inject visible in the chat UI for deterministic verification.
       addMessage(`[Inject] ${reply}`, "inject");
-
-      // IMPORTANT:
-      // Sending a new text turn to Gemini while it's speaking triggers "interrupted"
-      // and causes local playback to stop. To avoid this, we wait until the current
-      // audio playback queue drains before delivering the inject text to Gemini.
-      state.injectChain = state.injectChain
-        .then(async () => {
-          if (!state.client) return;
-          if (state.audio.player && typeof state.audio.player.waitForIdle === "function") {
-            await state.audio.player.waitForIdle();
-          }
-          state.client.sendTextMessage(`[后台提醒] ${reply}`);
-        })
-        .catch((err) => {
-          console.error("Inject delivery failed:", err);
-        });
+      // Inject message into Gemini conversation
+      if (state.client) {
+        state.client.sendTextMessage(`[后台提醒] ${reply}`);
+      }
     };
     
   } catch (error) {

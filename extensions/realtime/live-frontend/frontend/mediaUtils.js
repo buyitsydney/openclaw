@@ -406,8 +406,6 @@ class AudioPlayer {
     this.isInitialized = false;
     this.volume = 1.0;
     this.sampleRate = 24000; // Gemini outputs at 24kHz
-    this.isIdle = true;
-    this.idleWaiters = [];
   }
 
   /**
@@ -441,24 +439,6 @@ class AudioPlayer {
       // Connect nodes
       this.workletNode.connect(this.gainNode);
       this.gainNode.connect(this.audioContext.destination);
-
-      // Track playback activity so we can wait for audio to fully drain.
-      this.workletNode.port.onmessage = (event) => {
-        const msg = event?.data;
-        if (!msg || typeof msg !== "object") return;
-        if (msg.type === "active") {
-          this.isIdle = false;
-          return;
-        }
-        if (msg.type === "idle") {
-          this.isIdle = true;
-          const waiters = this.idleWaiters;
-          this.idleWaiters = [];
-          for (const resolve of waiters) {
-            resolve();
-          }
-        }
-      };
 
       this.isInitialized = true;
       console.log("🔊 Audio player initialized");
@@ -497,25 +477,11 @@ class AudioPlayer {
       }
 
       // Send to worklet for playback
-      this.isIdle = false;
       this.workletNode.port.postMessage(float32Data);
     } catch (error) {
       console.error("Error playing audio chunk:", error);
       throw error;
     }
-  }
-
-  /**
-   * Wait until playback queue fully drains (no more audio output).
-   */
-  async waitForIdle() {
-    if (!this.isInitialized) {
-      await this.init();
-    }
-    if (this.isIdle) return;
-    await new Promise((resolve) => {
-      this.idleWaiters.push(resolve);
-    });
   }
 
   /**
