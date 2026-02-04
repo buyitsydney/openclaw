@@ -409,6 +409,45 @@ Live: 好的，是不是泰和酒店，我们预计 30min 到达。
 
 > 注意：这是“监督与纠错”，不是“代替 Live 完成所有任务”。真正需要执行复杂任务时，Live 仍可以使用 `openclaw_help`。
 
+#### 已验证问题：inject 可能导致 Live 音频被打断（INTERRUPTED）
+
+**现象（已在真实测试中发生）**：
+
+- OpenClaw 发来 `inject`
+- 前端把 `inject.reply` 作为一条新的文本 turn 送入 Gemini Live
+- Gemini Live 返回 `serverContent.interrupted=true`
+- 前端收到 `INTERRUPTED` 后会调用本地音频播放器的 `interrupt()`，用户听感上表现为“正在说的话被打断”
+
+**根因（实现层面）**：
+
+- 当前注入方式等价于“在 Gemini 正在播报时插入一条新的用户输入”，协议层会触发 interrupted
+
+**修复策略（已实现）**：
+
+- 前端对 inject 做串行队列
+- **每条 inject 必须等待当前 Live 音频播放队列完全耗尽（AudioPlayer idle/drain）后，才允许把注入文本送入 Gemini**
+
+这保证了：inject 不会因为我们自己的注入行为而中断当前播报（用户语音体验优先）。
+
+#### 已验证问题：inject 内容可能让 Live 产生“已执行动作”的幻觉（错乱）
+
+**现象（已在真实测试中发生）**：
+
+- Supervisor 输出的 inject 文案包含“我现在就帮你…/我已经帮你联系…/保证…”这类**现实动作承诺**
+- 前端会把 inject 文本作为一条新的用户 turn 送入 Gemini Live（`sendTextMessage("[后台提醒] ...")`）
+- Gemini Live 会把这条文本当成“当前对话输入”，从而在语音里继续顺着说“我已经联系代驾了/我已经安排好了…”
+- 用户听感上会出现“Live 神志错乱/胡乱承诺已经完成”的效果
+
+**根因（协议层面）**：
+
+- inject 的协议只定义了“把文本送给 Live”，但没有约束文本必须是“对用户的提醒/提问”
+- Supervisor 可能输出了“评价 Live / 承诺已执行动作 / 自我表功”这类不该播报的内容
+
+**修复策略（已实现）**：
+
+- 后端协议层增加确定性过滤：仅允许 inject 为“对用户的单句提醒/提问”
+- 一旦检测到“评价 Live”或“承诺已执行现实动作”，直接丢弃该 inject（视为 NO_REPLY），避免误导用户
+
 ### Turn（轮次）边界必须被定义
 
 文档后续将统一以 turn 为最小监督单位：

@@ -441,6 +441,9 @@ ${conversationTail || "（暂无）"}
 Live: ${turn.liveText}
 
 如果你认为需要立刻提醒用户，请直接输出一句 Live 应该对用户说的中文短句。
+严格要求：
+- 只能输出“对用户说的一句话提醒/提问”，不要评价 Live，不要解释你的思考。
+- 不要承诺你已经完成任何现实动作（例如“我已经联系代驾/我已经下单/我来安排/保证…”）；如果需要行动，请输出一句让 Live 继续询问用户确认并收集必要信息的短句。
 如果不需要提醒，请输出空字符串（不要解释）。`;
 
   // Resolve model configuration from config
@@ -487,6 +490,32 @@ Live: ${turn.liveText}
 
   const reply = (texts.join(" ") || "").trim();
   if (!reply) {
+    return;
+  }
+
+  // Protocol hardening:
+  // The only safe inject is a single user-facing reminder/question.
+  // Drop "meta" commentary (e.g. praising Live) or action promises that would
+  // cause the frontend model to hallucinate having already executed real-world actions.
+  const lower = reply.toLowerCase();
+  const isLiveCommentary =
+    reply.includes("Live")
+    || reply.includes("回答得很好")
+    || reply.includes("信息完全正确")
+    || lower.includes("live ");
+  const isActionPromise =
+    reply.includes("我已经")
+    || reply.includes("我现在就")
+    || reply.includes("我帮你")
+    || reply.includes("我来安排")
+    || reply.includes("保证")
+    || reply.includes("已联系")
+    || reply.includes("已经联系")
+    || reply.includes("已经帮你");
+  if (isLiveCommentary || isActionPromise) {
+    api.logger.info(
+      `[realtime] Supervisor inject dropped (unsafe) turn=${turn.turnId} liveCommentary=${String(isLiveCommentary)} actionPromise=${String(isActionPromise)} reply=${JSON.stringify(reply.slice(0, 200))}`,
+    );
     return;
   }
 
