@@ -409,6 +409,14 @@ Live: 好的，是不是泰和酒店，我们预计 30min 到达。
 
 > 注意：这是“监督与纠错”，不是“代替 Live 完成所有任务”。真正需要执行复杂任务时，Live 仍可以使用 `openclaw_help`。
 
+#### 已验证行为：inject 不再导致语音被打断（INTERRUPTED）
+
+**问题**：前端收到 `inject` 后，会把文本作为新的 user turn 送入 Gemini。若此时 Gemini 正在输出语音，协议可能返回 `serverContent.interrupted=true`，前端会中断当前播放，用户听感被打断。
+
+**当前实现**：前端对 inject 做串行队列，并在把注入文本送入 Gemini 之前，**等待当前音频播放队列完全耗尽（audio drain / idle）**。
+
+**验证结果**：已在本地测试确认——触发 inject 时**不再出现** `[Interrupted]`。
+
 ### Turn（轮次）边界必须被定义
 
 文档后续将统一以 turn 为最小监督单位：
