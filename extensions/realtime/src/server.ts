@@ -16,6 +16,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { loadCoreAgentDeps, type CoreAgentDeps, type CoreConfig } from "./core-bridge.js";
 import { buildBackendModePrompt } from "./prompt.js";
 import { TurnAssembler, type Turn } from "./turn-assembler.js";
+import { generateLiveMemoryCapsule } from "./live-memory-capsule-agent.js";
 
 // Message types from Live
 export type LiveMessage =
@@ -55,6 +56,11 @@ interface SessionEntry {
 
 // Cached core dependencies
 let coreDeps: CoreAgentDeps | null = null;
+
+let cachedLiveMemoryCapsule: { text: string; hash: string; updatedAt: number } | null = null;
+let capsuleInFlight: Promise<{ text: string; hash: string }> | null = null;
+
+const LIVE_MEMORY_CAPSULE_PROMPT_VERSION = "v3.1";
 
 export async function startRealtimeServer(params: {
   port: number;
@@ -513,48 +519,66 @@ async function handleBootstrap(
 
     const cfg = api.config as CoreConfig;
     const agentId = "main";
+    const agentDir = coreDeps.resolveAgentDir(cfg, agentId);
     const workspaceDir = coreDeps.resolveAgentWorkspaceDir(cfg, agentId);
 
     // Read USER.md and MEMORY.md
-    let userProfile = "";
-    let memorySummary = "";
+    let userProfileMd = "";
+    let memoryMd = "";
 
     try {
-      userProfile = await fs.readFile(path.join(workspaceDir, "USER.md"), "utf-8");
+      userProfileMd = await fs.readFile(path.join(workspaceDir, "USER.md"), "utf-8");
     } catch {
-      userProfile = "（用户画像尚未创建）";
+      userProfileMd = "";
     }
 
     try {
-      const memoryContent = await fs.readFile(path.join(workspaceDir, "MEMORY.md"), "utf-8");
-      // Summarize if too long
-      memorySummary = memoryContent.length > 2000
-        ? memoryContent.slice(0, 2000) + "\n\n...(更多记忆已省略)"
-        : memoryContent;
+      memoryMd = await fs.readFile(path.join(workspaceDir, "MEMORY.md"), "utf-8");
     } catch {
-      memorySummary = "（长期记忆尚未创建）";
+      memoryMd = "";
     }
 
-    const systemPrompt = `你是用户的语音助手。
+    const sourceHash = crypto
+      .createHash("sha256")
+      .update(LIVE_MEMORY_CAPSULE_PROMPT_VERSION)
+      .update("\n")
+      .update(userProfileMd)
+      .update("\n---\n")
+      .update(memoryMd)
+      .digest("hex");
 
-## 用户画像
-${userProfile}
+    if (cachedLiveMemoryCapsule && cachedLiveMemoryCapsule.hash === sourceHash) {
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      });
+      res.end(JSON.stringify({ liveMemoryCapsule: cachedLiveMemoryCapsule.text }));
+      return;
+    }
 
-## 重要记忆
-${memorySummary}
+    if (!capsuleInFlight) {
+      capsuleInFlight = (async () => {
+        const text = await generateLiveMemoryCapsule({
+          coreDeps,
+          cfg,
+          agentId,
+          agentDir,
+          workspaceDir,
+          userProfileMd,
+          memoryMd,
+        });
+        return { text, hash: sourceHash };
+      })().finally(() => {
+        capsuleInFlight = null;
+      });
+    }
 
-## 规则
-1. 日常对话直接回答，保持简洁自然
-2. 复杂任务（搜索、计算、查询等）→ 说"好的，让我帮你查一下"，然后调用 openclaw_help
-3. 收到后台回复后，用自然的语气说出来
-4. 不要说"我是 AI"或"我无法..."，像朋友一样交流
-
-后台会自己处理记忆保存等事情，你不用管。`;
+    const capsule = await capsuleInFlight;
+    cachedLiveMemoryCapsule = { ...capsule, updatedAt: Date.now() };
 
     const response = {
-      systemPrompt,
-      userProfile,
-      memorySummary,
+      // IMPORTANT: only send the capsule, never send full USER.md/MEMORY.md to the browser.
+      liveMemoryCapsule: cachedLiveMemoryCapsule.text,
     };
 
     res.writeHead(200, {

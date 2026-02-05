@@ -10,6 +10,8 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { RealtimeServer } from "./server.js";
+import { loadCoreAgentDeps, type CoreAgentDeps, type CoreConfig } from "./core-bridge.js";
+import { generateLiveMemoryCapsule } from "./live-memory-capsule-agent.js";
 
 export interface FileWatcher {
   close: () => Promise<void>;
@@ -23,6 +25,7 @@ export function setupFileWatcher(params: {
 
   // Get workspace directory from config
   const workspaceDir = resolveWorkspaceDir(api);
+  let coreDeps: CoreAgentDeps | null = null;
 
   if (!workspaceDir) {
     api.logger.warn("[realtime] Could not resolve workspace directory, file watcher disabled");
@@ -48,16 +51,35 @@ export function setupFileWatcher(params: {
     api.logger.info(`[realtime] File changed: ${filePath}`);
 
     try {
-      const content = await readFile(filePath, "utf-8");
-      const section = filePath.includes("USER.md") ? "user_profile" : "memory";
-      const summary = summarizeContent(content);
+      if (!coreDeps) {
+        coreDeps = await loadCoreAgentDeps();
+      }
 
-      api.logger.info(`[realtime] Broadcasting prompt_update for ${section}`);
+      const cfg = api.config as CoreConfig;
+      const agentId = "main";
+      const agentDir = coreDeps.resolveAgentDir(cfg, agentId);
+
+      // Rebuild capsule from BOTH files to keep it consistent.
+      const [userProfileMd, memoryMd] = await Promise.all([
+        readFile(join(workspaceDir, "USER.md"), "utf-8").catch(() => ""),
+        readFile(join(workspaceDir, "MEMORY.md"), "utf-8").catch(() => ""),
+      ]);
+      const capsule = await generateLiveMemoryCapsule({
+        coreDeps,
+        cfg,
+        agentId,
+        agentDir,
+        workspaceDir,
+        userProfileMd,
+        memoryMd,
+      });
+
+      api.logger.info(`[realtime] Broadcasting prompt_update for live_memory_capsule`);
 
       server.broadcast({
         type: "prompt_update",
-        section,
-        content: summary,
+        section: "live_memory_capsule",
+        content: capsule,
       });
     } catch (err) {
       api.logger.error(`[realtime] Failed to read file ${filePath}: ${err}`);
@@ -91,12 +113,4 @@ function resolveWorkspaceDir(api: OpenClawPluginApi): string | null {
   return null;
 }
 
-function summarizeContent(content: string): string {
-  // For now, just return the first 2000 characters
-  // TODO: Implement smarter summarization
-  const maxLength = 2000;
-  if (content.length <= maxLength) {
-    return content;
-  }
-  return content.slice(0, maxLength) + "\n\n...(内容已截断)";
-}
+// No summarizeContent: we always produce a deterministic allowlist capsule.

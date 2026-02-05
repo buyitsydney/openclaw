@@ -9,10 +9,16 @@ const state = {
   audio: { streamer: null, player: null, isStreaming: false },
   video: { streamer: null, isStreaming: false },
   screen: { capture: null, isSharing: false },
-  openclaw: { connected: false, userProfile: "", memorySummary: "" },
+  openclaw: { connected: false, liveMemoryCapsule: "" },
   gemini: {
     // Only inject after Gemini completes a turn (TURN_COMPLETE).
     turnComplete: true,
+  },
+  // Track short frontend acknowledgement speech while waiting for OpenClaw.
+  // This keeps voice UX responsive even if backend takes tens of seconds.
+  toolAck: {
+    // callId -> Promise<void>
+    pending: new Map(),
   },
   // Audio observability counters (client-side, O(1) overhead per audio chunk).
   audioObs: {
@@ -175,6 +181,35 @@ function updateStatus(elementId, text) {
   }
 }
 
+function speakFrontendAckForTool(callId) {
+  // Keep it short and neutral; user should immediately hear "I'm on it".
+  const text = "好的，我确认一下，马上回来。";
+
+  // Web Speech API (browser TTS). This is local and does not depend on Gemini output.
+  // Note: This can be picked up by the microphone if speakers are loud; users should prefer headphones.
+  const synth = window.speechSynthesis;
+  if (!synth || typeof window.SpeechSynthesisUtterance !== "function") {
+    console.warn("speechSynthesis not available; skipping tool ack speech");
+    return Promise.resolve();
+  }
+
+  // Cancel any previous queued utterances so the ack is immediate.
+  synth.cancel();
+
+  return new Promise((resolve) => {
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = "zh-CN";
+    utter.rate = 1.05;
+    utter.pitch = 1.0;
+    utter.volume = 1.0;
+    utter.onend = () => resolve();
+    utter.onerror = () => resolve();
+    synth.speak(utter);
+  }).finally(() => {
+    state.toolAck.pending.delete(callId);
+  });
+}
+
 // Connect to OpenClaw backend
 async function connectOpenClaw() {
   const url = elements.openclawUrl?.value || "ws://localhost:18790/ws";
@@ -183,16 +218,14 @@ async function connectOpenClaw() {
   try {
     updateStatus("openclawStatus", "Connecting...");
     
-    // First, fetch bootstrap data (USER.md, MEMORY.md)
+    // First, fetch bootstrap data (Live memory capsule)
     try {
       const bootstrapResp = await fetch(`${httpUrl}/api/realtime/bootstrap`);
       if (bootstrapResp.ok) {
         const bootstrap = await bootstrapResp.json();
-        state.openclaw.userProfile = bootstrap.userProfile || "";
-        state.openclaw.memorySummary = bootstrap.memorySummary || "";
+        state.openclaw.liveMemoryCapsule = bootstrap.liveMemoryCapsule || "";
         console.log("🦞 Bootstrap loaded:", { 
-          userProfile: state.openclaw.userProfile.slice(0, 100) + "...",
-          memorySummary: state.openclaw.memorySummary.slice(0, 100) + "..."
+          liveMemoryCapsule: state.openclaw.liveMemoryCapsule.slice(0, 120) + "..."
         });
       }
     } catch (e) {
@@ -211,24 +244,38 @@ async function connectOpenClaw() {
       // Send tool response back to Gemini with official format
       // See: https://ai.google.dev/api/live#BidiGenerateContentToolResponse
       if (state.client) {
-        debugLog("LIVE→GEMINI", "TOOL_RESPONSE", { id: callId, name: "openclaw_help", response: reply.slice(0, 50) + "..." });
-        state.client.sendToolResponse(
-          callId, 
-          "openclaw_help",  // Function name is required per API docs
-          { result: reply }
-        );
-        addMessage(`[OpenClaw] ${reply}`, "system");
+        const ackPromise = state.toolAck.pending.get(callId);
+        const send = () => {
+          debugLog("LIVE→GEMINI", "TOOL_RESPONSE", {
+            id: callId,
+            name: "openclaw_help",
+            response: reply.slice(0, 50) + "...",
+          });
+          state.client.sendToolResponse(
+            callId,
+            "openclaw_help", // Function name is required per API docs
+            { result: reply },
+          );
+          addMessage(`[OpenClaw] ${reply}`, "system");
+        };
+
+        // Prefer letting the short ack finish, so Gemini speech won't overlap.
+        if (ackPromise) {
+          ackPromise.then(send).catch(send);
+        } else {
+          send();
+        }
       }
     };
     
     openclawConnection.onPromptUpdate = (section, content) => {
       console.log(`🦞 Prompt update [${section}]:`, content.slice(0, 100) + "...");
-      if (section === "user_profile") {
-        state.openclaw.userProfile = content;
-      } else if (section === "memory") {
-        state.openclaw.memorySummary = content;
+      if (section === "live_memory_capsule") {
+        state.openclaw.liveMemoryCapsule = content;
+        addMessage("[Live memory capsule updated: reconnect Gemini to apply]", "system");
+      } else {
+        // Ignore legacy sections to avoid leaking full USER.md / MEMORY.md to the browser.
       }
-      addMessage(`[Memory updated: ${section}]`, "system");
     };
     
     openclawConnection.onInject = (reply) => {
@@ -253,21 +300,13 @@ async function connectOpenClaw() {
 function buildSystemInstructions() {
   let instructions = elements.systemInstructions.value || "";
   
-  // If OpenClaw is connected and we have user profile/memory, enhance the instructions
-  if (state.openclaw.connected && (state.openclaw.userProfile || state.openclaw.memorySummary)) {
+  // If OpenClaw is connected and we have a capsule, enhance instructions safely.
+  // IMPORTANT: never embed full USER.md / MEMORY.md here — it causes Live prompt pollution.
+  if (state.openclaw.connected && state.openclaw.liveMemoryCapsule) {
     instructions += `
 
-## 用户画像
-${state.openclaw.userProfile || "(暂无)"}
-
-## 重要记忆
-${state.openclaw.memorySummary || "(暂无)"}
-
-## 规则
-1. 日常对话直接回答，保持简洁自然
-2. 复杂任务（搜索、计算、查询、需要记忆的内容等）→ 说"好的，让我帮你查一下"，然后调用 openclaw_help
-3. 收到后台回复后，用自然的语气说出来
-4. 不要说"我是 AI"或"我无法..."，像朋友一样交流`;
+${state.openclaw.liveMemoryCapsule}
+`;
   }
   
   return instructions;
@@ -500,6 +539,11 @@ function handleMessage(message) {
         
         // Special handling for OpenClaw help tool (async)
         if (functionName === "openclaw_help") {
+          // Immediate voice ack so user doesn't wait in silence.
+          // This is local TTS and happens even if OpenClaw takes a long time.
+          const ackPromise = speakFrontendAckForTool(functionCallId);
+          state.toolAck.pending.set(functionCallId, ackPromise);
+
           addMessage(`[Asking OpenClaw: ${parameters.request}]`, "system");
           const tool = state.client.functionsMap[functionName];
           if (tool) {
