@@ -857,7 +857,7 @@ WebSocket 广播给 Live 客户端
 | ID | 任务 | 文件 | 状态 |
 |----|------|------|------|
 | L-3.1 | 实现接收 `inject` 消息 | `extensions/realtime/live-frontend/frontend/tools.js` | ✅ |
-| L-3.2 | 实现 `inject` 内容注入 Gemini 上下文 | `extensions/realtime/live-frontend/frontend/script.js` | ⬜ (回调定义了但未完全实现) |
+| L-3.2 | 实现 `inject` 内容注入 Gemini 上下文 | `extensions/realtime/live-frontend/frontend/script.js` | ✅（以 `client_content.turns[].role="model"` 注入，并使用稳定前缀 `【大哥提醒】`；串行队列 + 音频 drain 后投递） |
 | L-3.3 | 实现接收 `prompt_update` 消息 | `extensions/realtime/live-frontend/frontend/tools.js` | ✅ |
 | L-3.4 | 实现动态更新 Gemini System Prompt | `extensions/realtime/live-frontend/frontend/script.js` | ⬜ (存储了但未热更新) |
 
@@ -1152,6 +1152,45 @@ cat ~/.openclaw/workspace/USER.md
 - **会话（昨天卡顿反馈）**：`conn-1770211697474`
   - ≥2s 且无边界的疑似停顿：6 次（top=3s）
   - 说明昨天“断断续续”在日志里确实对应到“模型音频 chunk 在一个输出段内部出现秒级空洞”，而不是纯粹的回合切换。
+
+#### 2026-02-05 对话复盘（“历史性的一刻”）：两条通路并存，导致“看起来 Live 不调用 help”
+
+这次复盘覆盖两个不同的 Gemini Live 连接（`conn-*`），它们的行为差异非常关键：
+
+1) **连接 A：`conn-1770269306636`（工具调用确实发生）**
+
+- `setup.system_instruction` 已包含：
+  - 三方角色与分层协议（`role=user` / `role=model + 【大哥提醒】` / `tool_response`）
+  - `openclaw_help` 工具声明
+  - `## Live 必知记忆（胶囊）`
+- Gemini 在该连接内实际触发了 `toolCall openclaw_help`（示例）：
+  - 2026-02-05 13:28:52：请求“介绍一下天哥…”
+  - 2026-02-05 13:30:14：请求“解释 OpenClaw 如何处理用户画像/检索原理…”
+- 该连接内也出现了 OpenClaw 注入的 `inject`，并且已按协议以 `client_content.turns[].role="model"` 投递（带 `【大哥提醒】` 前缀）。
+
+> 结论：在连接 A，“Live 不调用 help”这个感知是错的——**它调用了**；但“调用前先口头回执一句”并不稳定（属于模型服从度问题）。
+
+2) **连接 B：`conn-1770269887502`（用户主观感受成立：几乎全靠 inject）**
+
+- 该连接同样注入了上述 system_instruction（含工具声明与胶囊）。
+- 但在该连接的对应日志范围内，**没有观察到** `toolCall openclaw_help`；与此同时，出现了多条 `client_content(role="model")` 的 `【大哥提醒】...` 注入文本（例如“医疗病历转录市场头部玩家/市场份额”等）。
+- 这会造成一个强烈的 UX 偏差：
+  - 用户听到的是 Live 的播报 + OpenClaw 的“提醒式注入”，
+  - 但 **Gemini 并没有自己发起 toolCall**，因此你会直观觉得“Live 从来不调用 help 工具”。
+
+> 结论：在连接 B，**工具链路被“监督注入链路”替代了**。这不是 system prompt 是否注入的问题，而是“后台 inject 的策略边界”问题：inject 一旦提供了足够多的事实内容，Gemini 就更没有动力触发 toolCall。
+
+3) **副作用：Live 仍可能“照读/复述” `【大哥提醒】` 前缀**
+
+虽然 system_instruction 已明确要求“不要照读/不要把 `【大哥提醒】` 当用户输入”，但在真实对话中仍观察到 Live 在面向用户的自然语言里出现诸如“`【大哥提醒】 查到了…`”的播报（即把协议前缀说出口）。
+
+> 结论：**仅靠提示词无法 100%阻止协议前缀被读出来**。我们需要把 inject 的责任边界收紧（优先只注入“路由/安全提醒/让 Live 去调用 help 的指令”，避免注入可直接播报的长事实段），否则模型会更频繁地“复述看到的文本”。
+
+4) **“切换女性声音”为什么不可能（必须写进架构约束）**
+
+Gemini Live 的语音音色来自 `setup.generation_config.speech_config.voice_config.prebuilt_voice_config.voice_name`（例如 `Puck`），这属于 setup 固化配置。对话中让 Live 口头承诺“已切换女性声音”并不会改变音色；要切换音色只能通过前端 UI 选择并重新建立会话（新的 setup）。
+
+> 结论：需要在 Live system_instruction 中明确：**禁止对用户宣称“已切换音色”**（除非会话已重建并在 setup 中生效）。
 
 #### 重要说明：`interrupted` 与“听感卡顿”不是同一件事
 

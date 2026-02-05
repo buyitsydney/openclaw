@@ -369,16 +369,24 @@ class GeminiLiveAPI {
     this.sendMessage(sessionSetupMessage);
   }
 
-  sendTextMessage(text) {
+  /**
+   * Send a single text turn into conversation history.
+   * IMPORTANT: role controls how the model interprets the turn.
+   * - role="user": real user input
+   * - role="model": non-user injected context (e.g. "大哥提醒") or restored model turns
+   */
+  sendTextMessage(text, opts = {}) {
+    const role = opts.role || "user";
+    const turnComplete = typeof opts.turnComplete === "boolean" ? opts.turnComplete : true;
     const textMessage = {
       client_content: {
         turns: [
           {
-            role: "user",
-            parts: [{ text: text }],
+            role,
+            parts: [{ text }],
           },
         ],
-        turn_complete: true,
+        turn_complete: turnComplete,
       },
     };
     this.sendMessage(textMessage);

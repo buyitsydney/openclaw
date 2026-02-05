@@ -14,12 +14,6 @@ const state = {
     // Only inject after Gemini completes a turn (TURN_COMPLETE).
     turnComplete: true,
   },
-  // Track short frontend acknowledgement speech while waiting for OpenClaw.
-  // This keeps voice UX responsive even if backend takes tens of seconds.
-  toolAck: {
-    // callId -> Promise<void>
-    pending: new Map(),
-  },
   // Audio observability counters (client-side, O(1) overhead per audio chunk).
   audioObs: {
     lastAudioRecvAtMs: null,
@@ -181,35 +175,6 @@ function updateStatus(elementId, text) {
   }
 }
 
-function speakFrontendAckForTool(callId) {
-  // Keep it short and neutral; user should immediately hear "I'm on it".
-  const text = "好的，我确认一下，马上回来。";
-
-  // Web Speech API (browser TTS). This is local and does not depend on Gemini output.
-  // Note: This can be picked up by the microphone if speakers are loud; users should prefer headphones.
-  const synth = window.speechSynthesis;
-  if (!synth || typeof window.SpeechSynthesisUtterance !== "function") {
-    console.warn("speechSynthesis not available; skipping tool ack speech");
-    return Promise.resolve();
-  }
-
-  // Cancel any previous queued utterances so the ack is immediate.
-  synth.cancel();
-
-  return new Promise((resolve) => {
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.lang = "zh-CN";
-    utter.rate = 1.05;
-    utter.pitch = 1.0;
-    utter.volume = 1.0;
-    utter.onend = () => resolve();
-    utter.onerror = () => resolve();
-    synth.speak(utter);
-  }).finally(() => {
-    state.toolAck.pending.delete(callId);
-  });
-}
-
 // Connect to OpenClaw backend
 async function connectOpenClaw() {
   const url = elements.openclawUrl?.value || "ws://localhost:18790/ws";
@@ -244,27 +209,17 @@ async function connectOpenClaw() {
       // Send tool response back to Gemini with official format
       // See: https://ai.google.dev/api/live#BidiGenerateContentToolResponse
       if (state.client) {
-        const ackPromise = state.toolAck.pending.get(callId);
-        const send = () => {
-          debugLog("LIVE→GEMINI", "TOOL_RESPONSE", {
-            id: callId,
-            name: "openclaw_help",
-            response: reply.slice(0, 50) + "...",
-          });
-          state.client.sendToolResponse(
-            callId,
-            "openclaw_help", // Function name is required per API docs
-            { result: reply },
-          );
-          addMessage(`[OpenClaw] ${reply}`, "system");
-        };
-
-        // Prefer letting the short ack finish, so Gemini speech won't overlap.
-        if (ackPromise) {
-          ackPromise.then(send).catch(send);
-        } else {
-          send();
-        }
+        debugLog("LIVE→GEMINI", "TOOL_RESPONSE", {
+          id: callId,
+          name: "openclaw_help",
+          response: reply.slice(0, 50) + "...",
+        });
+        state.client.sendToolResponse(
+          callId,
+          "openclaw_help", // Function name is required per API docs
+          { result: reply },
+        );
+        addMessage(`[OpenClaw] ${reply}`, "system");
       }
     };
     
@@ -539,11 +494,6 @@ function handleMessage(message) {
         
         // Special handling for OpenClaw help tool (async)
         if (functionName === "openclaw_help") {
-          // Immediate voice ack so user doesn't wait in silence.
-          // This is local TTS and happens even if OpenClaw takes a long time.
-          const ackPromise = speakFrontendAckForTool(functionCallId);
-          state.toolAck.pending.set(functionCallId, ackPromise);
-
           addMessage(`[Asking OpenClaw: ${parameters.request}]`, "system");
           const tool = state.client.functionsMap[functionName];
           if (tool) {
@@ -625,7 +575,8 @@ function tryDeliverInjects() {
       }
       // Mark as in-progress until the next TURN_COMPLETE arrives.
       state.gemini.turnComplete = false;
-      state.client.sendTextMessage(`[后台提醒] ${reply}`);
+      // IMPORTANT: inject is NOT user input. Send as role=model with a stable tag.
+      state.client.sendTextMessage(`【大哥提醒】 ${reply}`, { role: "model" });
     })
     .catch((err) => {
       console.error("Inject delivery failed:", err);
