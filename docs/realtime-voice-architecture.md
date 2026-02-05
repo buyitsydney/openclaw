@@ -857,7 +857,7 @@ WebSocket 广播给 Live 客户端
 | ID | 任务 | 文件 | 状态 |
 |----|------|------|------|
 | L-3.1 | 实现接收 `inject` 消息 | `extensions/realtime/live-frontend/frontend/tools.js` | ✅ |
-| L-3.2 | 实现 `inject` 内容注入 Gemini 上下文 | `extensions/realtime/live-frontend/frontend/script.js` | ✅（以 `client_content.turns[].role="model"` 注入，并使用稳定前缀 `[[from_backend_ai]]`；串行队列 + 音频 drain 后投递） |
+| L-3.2 | 实现 `inject` 内容注入 Gemini 上下文 | `extensions/realtime/live-frontend/frontend/script.js` | ✅（以 `client_content.turns[].role="model"` 注入；串行队列 + 音频 drain 后投递；注入文本使用可用户侧朗读的前缀，例如 `OpenClaw 查到：...`，避免内部标签被读出） |
 | L-3.3 | 实现接收 `prompt_update` 消息 | `extensions/realtime/live-frontend/frontend/tools.js` | ✅ |
 | L-3.4 | 实现动态更新 Gemini System Prompt | `extensions/realtime/live-frontend/frontend/script.js` | ⬜ (存储了但未热更新) |
 
@@ -1268,7 +1268,7 @@ waitedMs=33593  # 33秒
 **优先级**：中
 
 **改进方案（方向，未实现）**：
-- **两段式工具协议（强烈推荐）**：`openclaw_help` 立即回一个“已开始处理”的极短 tool_response（让 her 立刻有机会继续说话），最终结果用 `inject`（`[[from_backend_ai]] ...`）异步补齐。
+- **两段式工具协议（强烈推荐）**：`openclaw_help` 立即回一个“已开始处理”的极短 tool_response（让 her 立刻有机会继续说话），最终结果用 `inject`（例如 `OpenClaw 查到：...`）异步补齐。
 - **去重/合并**：当用户打断/重复表达时，避免重复触发 `openclaw_help`，否则会造成 OpenClaw 队列堆积，进一步加剧等待。
 - **可观测性**：记录“toolCall 发出时间 / tool_response 返回时间 / 队列长度”，用硬指标区分慢在 OpenClaw 还是链路。
 
@@ -1624,16 +1624,18 @@ Live 前端在建立 Gemini Live session 的 `setup.system_instruction` 时，�
   - 连续的 `inputTranscription`（用户音频被识别）
   - 随后 `turnCompleteReason: "RESPONSE_REJECTED"`
 
-#### 触发类型（从日志能推出的唯一结论）
+#### 触发类型（已通过测试确认）
 
-- 在 11:44:26 这一轮，ASR 文本里出现了明显的高风险片段（例如“在我的怀里 … …”这类亲密/暧昧语义），随后立即 `RESPONSE_REJECTED`。
-- 日志没有提供更细的 `promptFeedback/safetyRatings/blockedReason` 字段，因此 **无法从现有日志 100%判定具体是哪条策略**；但可以确定是“输入内容触发→该轮输出被拒绝”。
+**主因：`proactiveAudio: true`**（默认开启）— Gemini 拒绝响应"非真正用户请求"（如语气词 "hm"、回声）。
 
-#### 下一步（方向）
+- **测试复现**：`gemini-proxy.contract.test.ts` 模拟音频 + `activity_start/end` + inject 冲突，稳定 60% reject 率。
+- **线上实际**：正常使用 reject 率很低（9分钟对话仅 1 次），inject 通常在用户等待时发送不冲突。
+- **硬件因素**：iPhone mic 回声会触发误打断；使用 AirPods 隔离回声可显著改善。
 
-- **恢复策略**：一旦检测到 `turnCompleteReason=RESPONSE_REJECTED` 达到阈值（例如连续 1~N 次），触发“自动重连 Gemini session”以恢复可用性（与上文“胶囊更新重连”是同一类机制）。
-- **体验策略**：在重连窗口内，避免高频 inject 轰炸用户；inject 应更像“后台状态/提示”，而不是替代 Live 的持续对话。
+#### 下一步
 
+- inject 前检查用户活动状态，或研究 `tool_response` 替代 `client_content`。
+- 连续 N 次 reject 时自动重连 session。
 ---
 
 ## 2026-02-05 新发现：`toolCall(openclaw_help)` 会同步阻塞 her，导致“用户傻等”与“回复变慢”
@@ -1675,7 +1677,7 @@ Gemini Live 的 tool 调用是“同步等待”语义：一旦模型在该轮�
 将 `openclaw_help` 从“等 OpenClaw 完成才回 tool_response”改为：
 
 1) **立即 tool_response（<200ms）**：只返回“已开始处理 + 任务标识”（让 Gemini 继续生成并让 her 立刻开口回执）。
-2) **最终结果异步投递**：OpenClaw 完成后通过 realtime ws `inject` → 前端以 `client_content(role="model")` + `[[from_backend_ai]]` 注入 Gemini，让 her 在下一次合适的时机播报“OpenClaw 查到的结果”。
+2) **最终结果异步投递**：OpenClaw 完成后通过 realtime ws `inject` → 前端以 `client_content(role="model")` 注入 Gemini，让 her 在下一次合适的时机播报“OpenClaw 查到的结果”。（注入文本使用可朗读前缀，例如 `OpenClaw 查到：...`，避免内部标签被读出）
 
 并配套：
 
@@ -1717,7 +1719,7 @@ Gemini Live 的 tool 调用是“同步等待”语义：一旦模型在该轮�
   - `interrupted=true`（模型生成被打断）
 - LIVE→GEMINI
   - **tool_response（立即 ACK）**：表示“已开始处理”
-  - `client_content(role="model")`：用于注入 `[[from_backend_ai]] ...` 的异步结果（在安全窗口投递）
+  - `client_content(role="model")`：用于注入“最终结果文本”（在安全窗口投递；建议使用可朗读前缀 `OpenClaw 查到：...`）
 - OPENCLAW→LIVE（realtime ws）
   - `help_result(jobId, finalText, priority)`
   - （可选）`help_progress(jobId, progressText)`：用于 UI/日志观测，不直接播报（避免噪声）
@@ -1728,7 +1730,7 @@ Gemini Live 的 tool 调用是“同步等待”语义：一旦模型在该轮�
 - `ack_sent`：已向 Gemini 发送“立即 tool_response ACK”
 - `running`：已把任务发给 OpenClaw 并在执行
 - `final_ready`：OpenClaw 返回最终结果（进入队列）
-- `delivered_to_gemini`：在安全窗口把 `[[from_backend_ai]] ...` 注入 Gemini
+- `delivered_to_gemini`：在安全窗口把“最终结果文本”注入 Gemini
 - `spoken_or_skipped`：结果已被播报（或被后续更高优先级/更新结果取代并标记为跳过）
 
 ---
@@ -1780,7 +1782,7 @@ OpenClaw 在后台执行任务（可能很慢：浏览器/联网/多工具链）
 
 满足窗口后：
 
-- Live 发送 `client_content(role="model")`，内容为：`[[from_backend_ai]] <finalText>`  
+- Live 发送 `client_content(role="model")`，内容为：`OpenClaw 查到：<finalText>`  
 - her 在下一轮以自然口语向用户播报，并明确命名来源（“OpenClaw 查到：……”）。
 
 ### Step 6：安全例外（强插播报）
@@ -1817,7 +1819,7 @@ OpenClaw 在后台执行任务（可能很慢：浏览器/联网/多工具链）
 - **Realtime 插件（`extensions/realtime/`）**：需要修改/扩展其 help 结果返回协议（携带 jobId、priority；以及可选 progress 事件）。
 - **Live 前端（`extensions/realtime/live-frontend/`）**：需要调整工具回包策略：
   - tool_response 只用于“立即 ACK”
-  - 最终结果改走 `[[from_backend_ai]]` 注入 + 队列化（B）
+  - 最终结果改走“队列化注入（B）”（例如 `OpenClaw 查到：...`）并在安全窗口投递
 
 ### 对现有功能影响（结论：不会影响 WebChat/Telegram 等）
 

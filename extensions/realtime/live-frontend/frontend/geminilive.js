@@ -10,6 +10,7 @@ const MultimodalLiveResponseType = {
   SETUP_COMPLETE: "SETUP COMPLETE",
   INTERRUPTED: "INTERRUPTED",
   TURN_COMPLETE: "TURN COMPLETE",
+  RESPONSE_REJECTED: "RESPONSE_REJECTED",
   TOOL_CALL: "TOOL_CALL",
   ERROR: "ERROR",
   INPUT_TRANSCRIPTION: "INPUT_TRANSCRIPTION",
@@ -35,8 +36,15 @@ class MultimodalLiveResponseMessage {
         console.log("🏁 SETUP COMPLETE response", data);
         this.type = MultimodalLiveResponseType.SETUP_COMPLETE;
       } else if (data?.serverContent?.turnComplete) {
-        console.log("🏁 TURN COMPLETE response");
-        this.type = MultimodalLiveResponseType.TURN_COMPLETE;
+        // Check for RESPONSE_REJECTED reason
+        const reason = data?.serverContent?.turnCompleteReason;
+        if (reason === "RESPONSE_REJECTED") {
+          console.log("🚫 RESPONSE_REJECTED - Gemini refused to respond");
+          this.type = MultimodalLiveResponseType.RESPONSE_REJECTED;
+        } else {
+          console.log("🏁 TURN COMPLETE response");
+          this.type = MultimodalLiveResponseType.TURN_COMPLETE;
+        }
       } else if (data?.serverContent?.interrupted) {
         console.log("🗣️ INTERRUPTED response");
         this.type = MultimodalLiveResponseType.INTERRUPTED;

@@ -194,6 +194,8 @@ def _append_markdown_log(conn_id: str, data: dict, meta=None) -> None:
     log_dir = repo_root / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "live-gemini-input.md"
+    # Also write to unified log
+    unified_log_path = log_dir / "live-gemini.md"
 
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime())
     kind = _classify_message(data)
@@ -233,6 +235,9 @@ def _append_markdown_log(conn_id: str, data: dict, meta=None) -> None:
     )
 
     with open(log_path, "a", encoding="utf-8") as f:
+        f.write(entry)
+    # Write to unified log as well
+    with open(unified_log_path, "a", encoding="utf-8") as f:
         f.write(entry)
 
 
@@ -330,6 +335,8 @@ def _append_markdown_log_output(conn_id: str, data: dict, meta=None) -> None:
     log_dir = repo_root / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "live-gemini-output.md"
+    # Also write to unified log
+    unified_log_path = log_dir / "live-gemini.md"
 
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime())
     kind = _classify_server_message(data)
@@ -344,6 +351,12 @@ def _append_markdown_log_output(conn_id: str, data: dict, meta=None) -> None:
         meta_lines.append(f"- proxy_handle_ms: {meta.get('proxy_handle_ms')}")
     if "payload" in meta:
         meta_lines.append(f"- payload: {meta.get('payload')}")
+
+    # Check for RESPONSE_REJECTED
+    sc = data.get("serverContent", {}) if isinstance(data.get("serverContent"), dict) else {}
+    reject_reason = sc.get("turnCompleteReason")
+    if reject_reason:
+        meta_lines.append(f"- turnCompleteReason: {reject_reason}")
 
     entry = "\n".join(
         [
@@ -369,6 +382,9 @@ def _append_markdown_log_output(conn_id: str, data: dict, meta=None) -> None:
     )
 
     with open(log_path, "a", encoding="utf-8") as f:
+        f.write(entry)
+    # Write to unified log as well
+    with open(unified_log_path, "a", encoding="utf-8") as f:
         f.write(entry)
 
 

@@ -31,6 +31,15 @@ const state = {
   pendingInjects: [],
 };
 
+// Backend inject control line (internal). This line is used to force Gemini to
+// continue generation after we inject backend context as role=model.
+//
+// IMPORTANT:
+// - This text MUST be treated as internal-only by the model (see system prompt rules).
+// - Never display it to end users; never read it aloud.
+const BACKEND_INJECT_CONTROL =
+  "以上信息来自 backend ai，请你根据实际情况回复用户信息！";
+
 // Debug logger for tracking message flow
 function debugLog(direction, eventType, data = {}) {
   const ts = new Date().toISOString().slice(11, 23);
@@ -203,21 +212,16 @@ async function connectOpenClaw() {
     openclawConnection.onHelpResult = (callId, reply) => {
       console.log(`🦞 Help result for ${callId}:`, reply);
       debugLog("OPENCLAW→LIVE", "HELP_RESULT", { callId: callId, reply: reply.slice(0, 50) + "..." });
-      // Send tool response back to Gemini with official format
-      // See: https://ai.google.dev/api/live#BidiGenerateContentToolResponse
-      if (state.client) {
-        debugLog("LIVE→GEMINI", "TOOL_RESPONSE", {
-          id: callId,
-          name: "openclaw_help",
-          response: reply.slice(0, 50) + "...",
-        });
-        state.client.sendToolResponse(
-          callId,
-          "openclaw_help", // Function name is required per API docs
-          { result: reply },
-        );
-        addMessage(`[OpenClaw] ${reply}`, "system");
-      }
+      // IMPORTANT:
+      // - We already sent an immediate "processing ACK" tool_response when the toolCall arrived,
+      //   to unblock Gemini and let her speak immediately.
+      // - The final result must NOT be sent as a second tool_response (undefined behavior).
+      // - Instead, enqueue the final result and deliver it in a safe window (B: weak-trigger).
+      addMessage(`[OpenClaw] ${reply}`, "system");
+      // Queue raw backend result. We will inject it as role=model, then send a
+      // role=user control line to force Gemini to speak (without using any tags).
+      state.pendingInjects.push(reply);
+      tryDeliverInjects();
     };
     
     openclawConnection.onPromptUpdate = (section, content) => {
@@ -511,6 +515,19 @@ function handleMessage(message) {
         // Special handling for OpenClaw help tool (async)
         if (functionName === "openclaw_help") {
           addMessage(`[Asking OpenClaw: ${parameters.request}]`, "system");
+
+          // Two-stage tool protocol (P0):
+          // 1) Immediately ACK the toolCall to unblock Gemini so her can speak right away.
+          // 2) Run the real OpenClaw task in parallel; the final result will be injected later.
+          if (state.client) {
+            debugLog("LIVE→GEMINI", "TOOL_RESPONSE_ACK", { id: functionCallId, name: functionName });
+            state.client.sendToolResponse(functionCallId, "openclaw_help", {
+              ok: true,
+              status: "processing",
+              jobId: functionCallId,
+            });
+          }
+
           const tool = state.client.functionsMap[functionName];
           if (tool) {
             tool.functionToCall(parameters, functionCallId);
@@ -572,31 +589,28 @@ function handleMessage(message) {
       addMessage("[Interrupted]", "system");
       if (state.audio.player) state.audio.player.interrupt();
       break;
+
+    case MultimodalLiveResponseType.RESPONSE_REJECTED:
+      console.log("🚫 RESPONSE_REJECTED - Gemini refused to respond (proactiveAudio)");
+      addMessage("[REJECTED] Gemini 拒绝响应", "system");
+      break;
   }
 }
 
 function tryDeliverInjects() {
   if (!state.client) return;
-  if (!state.gemini.turnComplete) return;
-  if (!state.pendingInjects.length) return;
+  if (!globalThis.OpenClawInjectDelivery?.deliverNextInject) {
+    console.error("Inject delivery helper missing: inject-delivery.js not loaded");
+    return;
+  }
 
-  // Deliver at most one inject per TURN_COMPLETE to avoid spamming Gemini.
-  const reply = state.pendingInjects.shift();
-  state.injectChain = state.injectChain
-    .then(async () => {
-      if (!state.client) return;
-      // Gemini finished its turn; still wait for local playback to fully drain.
-      if (state.audio.player && typeof state.audio.player.waitForIdle === "function") {
-        await state.audio.player.waitForIdle();
-      }
-      // Mark as in-progress until the next TURN_COMPLETE arrives.
-      state.gemini.turnComplete = false;
-      // IMPORTANT: inject is NOT user input. Send as role=model with a stable tag.
-      state.client.sendTextMessage(`[[from_backend_ai]] ${reply}`, { role: "model" });
-    })
-    .catch((err) => {
-      console.error("Inject delivery failed:", err);
-    });
+  globalThis.OpenClawInjectDelivery.deliverNextInject({
+    client: state.client,
+    audioPlayer: state.audio.player,
+    state,
+    controlLine: BACKEND_INJECT_CONTROL,
+    onError: (err) => console.error("Inject delivery failed:", err),
+  });
 }
 
 // Connection handlers
