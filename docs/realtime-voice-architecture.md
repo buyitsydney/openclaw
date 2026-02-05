@@ -857,7 +857,7 @@ WebSocket 广播给 Live 客户端
 | ID | 任务 | 文件 | 状态 |
 |----|------|------|------|
 | L-3.1 | 实现接收 `inject` 消息 | `extensions/realtime/live-frontend/frontend/tools.js` | ✅ |
-| L-3.2 | 实现 `inject` 内容注入 Gemini 上下文 | `extensions/realtime/live-frontend/frontend/script.js` | ✅（以 `client_content.turns[].role="model"` 注入，并使用稳定前缀 `【大哥提醒】`；串行队列 + 音频 drain 后投递） |
+| L-3.2 | 实现 `inject` 内容注入 Gemini 上下文 | `extensions/realtime/live-frontend/frontend/script.js` | ✅（以 `client_content.turns[].role="model"` 注入，并使用稳定前缀 `[[from_backend_ai]]`；串行队列 + 音频 drain 后投递） |
 | L-3.3 | 实现接收 `prompt_update` 消息 | `extensions/realtime/live-frontend/frontend/tools.js` | ✅ |
 | L-3.4 | 实现动态更新 Gemini System Prompt | `extensions/realtime/live-frontend/frontend/script.js` | ⬜ (存储了但未热更新) |
 
@@ -1261,16 +1261,16 @@ waitedMs=22751  # 22秒
 waitedMs=33593  # 33秒
 ```
 
-**原因**：OpenClaw Agent 执行复杂任务需要时间（网络请求、工具调用链）
+**原因（更精确）**：一旦 Gemini Live 在该轮触发 `toolCall(openclaw_help)`，这轮后续的可播报输出会被 **tool_response** 同步阻塞。OpenClaw Agent 执行复杂任务（网络请求/浏览器/工具链）又可能需要几十秒，两者叠加会让用户感觉 her “在傻等、回复很慢”。
 
 **影响**：用户等待体验差，Live 可能在等待期间静默
 
 **优先级**：中
 
-**改进方案**：
-- Live 在调用 help 后立即给用户反馈（"让我查一下..."）
-- Agent 支持流式返回中间状态
-- 添加超时机制和友好提示
+**改进方案（方向，未实现）**：
+- **两段式工具协议（强烈推荐）**：`openclaw_help` 立即回一个“已开始处理”的极短 tool_response（让 her 立刻有机会继续说话），最终结果用 `inject`（`[[from_backend_ai]] ...`）异步补齐。
+- **去重/合并**：当用户打断/重复表达时，避免重复触发 `openclaw_help`，否则会造成 OpenClaw 队列堆积，进一步加剧等待。
+- **可观测性**：记录“toolCall 发出时间 / tool_response 返回时间 / 队列长度”，用硬指标区分慢在 OpenClaw 还是链路。
 
 ---
 
@@ -1633,3 +1633,53 @@ Live 前端在建立 Gemini Live session 的 `setup.system_instruction` 时，�
 
 - **恢复策略**：一旦检测到 `turnCompleteReason=RESPONSE_REJECTED` 达到阈值（例如连续 1~N 次），触发“自动重连 Gemini session”以恢复可用性（与上文“胶囊更新重连”是同一类机制）。
 - **体验策略**：在重连窗口内，避免高频 inject 轰炸用户；inject 应更像“后台状态/提示”，而不是替代 Live 的持续对话。
+
+---
+
+## 2026-02-05 新发现：`toolCall(openclaw_help)` 会同步阻塞 her，导致“用户傻等”与“回复变慢”
+
+### 现象（用户视角）
+
+- 用户提出一个需要后台处理的问题（路线/天气/机票/打开浏览器/科技新闻等）。
+- her 没有立刻用语音给出“我在处理”的短回执，而是进入明显的静默等待。
+- 当用户着急追问或打断时，会进一步触发更多 `openclaw_help`，体感更慢、更乱。
+
+### 证据（硬日志，可复核）
+
+在同一条 Gemini Live 连接 `conn-1770273128032`：
+
+- 2026-02-05 14:32:53：Gemini→Live 发起 `toolCall openclaw_help(request="查询海南近期天气预报")`
+- 2026-02-05 14:33:30：Live→Gemini 才回 `tool_response`（相隔约 37 秒）
+
+同一会话中还观察到：
+
+- 2026-02-05 14:34:55：`toolCall openclaw_help(request="打开浏览器…查询机票")`
+- 2026-02-05 14:35:37：`tool_response` 返回（相隔约 42 秒）
+
+同时 `proxy_handle_ms` 量级为 \(0.01\sim0.1\) ms，说明“慢”不在代理转发，而在工具等待（OpenClaw 执行耗时 + Gemini toolCall 同步等待）。
+
+### 根因（确定性结论）
+
+Gemini Live 的 tool 调用是“同步等待”语义：一旦模型在该轮触发 `toolCall`，该轮后续可播报输出会被 tool_response 阻塞；如果 tool_response 需要几十秒才回来，用户就会感觉 her “卡住/发呆/傻等”。
+
+### P0 设计目标（不改产品语义，只改交互时序）
+
+从用户视角，必须满足：
+
+- her **立刻**给出短回执（例如“好，我在查。”），让用户知道系统在工作；
+- 后台结果到达后，her **明确命名来源**（“OpenClaw 查到：…”）并压缩播报；
+- 用户中途继续说话时，系统不会因为同步等待而“失语”，也不会无限堆积重复请求。
+
+### P0 方案（方向，未实现）：两段式工具返回 + 异步补齐
+
+将 `openclaw_help` 从“等 OpenClaw 完成才回 tool_response”改为：
+
+1) **立即 tool_response（<200ms）**：只返回“已开始处理 + 任务标识”（让 Gemini 继续生成并让 her 立刻开口回执）。
+2) **最终结果异步投递**：OpenClaw 完成后通过 realtime ws `inject` → 前端以 `client_content(role="model")` + `[[from_backend_ai]]` 注入 Gemini，让 her 在下一次合适的时机播报“OpenClaw 查到的结果”。
+
+并配套：
+
+- **去重/合并策略（确定性）**：同一“任务标识”未完成前，后续相同意图请求不再触发新任务，只更新/复用已有任务。
+- **队列上限**：限制并发后台任务数，避免浏览器自动化类请求把队列拖爆。
+
+> 备注：这份方案的价值在于它不依赖“模型先说一句再 toolCall”的服从度；即使模型立刻 toolCall，我们也能在工具层面快速释放阻塞，让 her 不至于长时间沉默。

@@ -81,14 +81,12 @@ function initDOM() {
     "enableInputTranscription",
     "enableOutputTranscription",
     "enableAudioObs",
-    "enableGrounding",
     "enableAffectiveDialog",
     "enableAlertTool",
     "enableCssStyleTool",
-    "enableOpenClawTool",
     "openclawUrl",
     "openclawStatus",
-    "connectOpenClawBtn",
+    "startBtn",
     "enableProactiveAudio",
     "voiceSelect",
     "temperature",
@@ -99,8 +97,6 @@ function initDOM() {
     "endSpeechSensitivity",
     "startSpeechSensitivity",
     "activityHandling",
-    "connectBtn",
-    "disconnectBtn",
     "connectionStatus",
     "startAudioBtn",
     "startVideoBtn",
@@ -183,19 +179,20 @@ async function connectOpenClaw() {
   try {
     updateStatus("openclawStatus", "Connecting...");
     
-    // First, fetch bootstrap data (Live memory capsule)
-    try {
-      const bootstrapResp = await fetch(`${httpUrl}/api/realtime/bootstrap`);
-      if (bootstrapResp.ok) {
-        const bootstrap = await bootstrapResp.json();
-        state.openclaw.liveMemoryCapsule = bootstrap.liveMemoryCapsule || "";
-        console.log("🦞 Bootstrap loaded:", { 
-          liveMemoryCapsule: state.openclaw.liveMemoryCapsule.slice(0, 120) + "..."
-        });
-      }
-    } catch (e) {
-      console.warn("Failed to fetch bootstrap:", e);
+    // MUST fetch bootstrap data (Live memory capsule) before connecting Gemini.
+    // This call blocks until the server has generated/loaded the capsule.
+    const bootstrapResp = await fetch(`${httpUrl}/api/realtime/bootstrap`);
+    if (!bootstrapResp.ok) {
+      throw new Error(`Bootstrap failed: HTTP ${bootstrapResp.status}`);
     }
+    const bootstrap = await bootstrapResp.json();
+    state.openclaw.liveMemoryCapsule = bootstrap.liveMemoryCapsule || "";
+    if (!state.openclaw.liveMemoryCapsule) {
+      throw new Error("Bootstrap failed: liveMemoryCapsule is empty");
+    }
+    console.log("🦞 Bootstrap loaded:", {
+      liveMemoryCapsule: state.openclaw.liveMemoryCapsule.slice(0, 120) + "...",
+    });
     
     // Connect WebSocket
     await openclawConnection.connect(url);
@@ -248,6 +245,7 @@ async function connectOpenClaw() {
     console.error("OpenClaw connection failed:", error);
     updateStatus("openclawStatus", "Failed: " + error.message);
     state.openclaw.connected = false;
+    throw error;
   }
 }
 
@@ -267,8 +265,17 @@ ${state.openclaw.liveMemoryCapsule}
   return instructions;
 }
 
-// Connect to Gemini
-async function connect() {
+function assertReadyForGeminiSetup() {
+  if (!state.openclaw.connected) {
+    throw new Error("OpenClaw not connected (must start with OpenClaw first)");
+  }
+  if (!state.openclaw.liveMemoryCapsule) {
+    throw new Error("Live memory capsule missing (bootstrap must complete first)");
+  }
+}
+
+// Connect to Gemini (only called from the single-button start flow)
+async function connectGemini() {
   const proxyUrl = elements.proxyUrl.value || null;
   const projectId = elements.projectId.value;
   const model = elements.model.value;
@@ -279,6 +286,7 @@ async function connect() {
   }
 
   try {
+    assertReadyForGeminiSetup();
     updateStatus("connectionStatus", "Connecting...");
 
     // Create GeminiLiveAPI instance directly
@@ -290,7 +298,8 @@ async function connect() {
       elements.enableInputTranscription.checked;
     state.client.outputAudioTranscription =
       elements.enableOutputTranscription.checked;
-    state.client.googleGrounding = elements.enableGrounding.checked;
+    // Hard-disable Google grounding: it disables custom tools and causes racey setups.
+    state.client.googleGrounding = false;
     state.client.enableAffectiveDialog = elements.enableAffectiveDialog.checked;
     state.client.responseModalities = ["AUDIO"];
     state.client.voiceName = elements.voiceSelect.value;
@@ -313,35 +322,22 @@ async function connect() {
     // Set activity handling
     state.client.activityHandling = elements.activityHandling.value;
 
-    // Add custom tools only if Google grounding is disabled
-    const isGroundingEnabled = elements.enableGrounding.checked;
-
-    if (!isGroundingEnabled) {
-      // Add alert tool if enabled
-      if (elements.enableAlertTool.checked) {
-        const alertTool = new ShowAlertTool();
-        state.client.addFunction(alertTool);
-        console.log("✅ Alert tool enabled");
-      }
-
-      // Add CSS style tool if enabled
-      if (elements.enableCssStyleTool.checked) {
-        const cssStyleTool = new AddCSSStyleTool();
-        state.client.addFunction(cssStyleTool);
-        console.log("✅ CSS style tool enabled");
-      }
-      
-      // Add OpenClaw help tool if enabled and connected
-      if (elements.enableOpenClawTool?.checked && state.openclaw.connected) {
-        const openclawTool = new OpenClawHelpTool(openclawConnection);
-        state.client.addFunction(openclawTool);
-        console.log("✅ OpenClaw help tool enabled");
-      }
-    } else {
-      console.log(
-        "⚠️ Custom tools disabled due to Google grounding being enabled"
-      );
+    // Optional local demo tools
+    if (elements.enableAlertTool.checked) {
+      const alertTool = new ShowAlertTool();
+      state.client.addFunction(alertTool);
+      console.log("✅ Alert tool enabled");
     }
+    if (elements.enableCssStyleTool.checked) {
+      const cssStyleTool = new AddCSSStyleTool();
+      state.client.addFunction(cssStyleTool);
+      console.log("✅ CSS style tool enabled");
+    }
+
+    // ALWAYS register OpenClaw help tool (single-button flow guarantees OpenClaw is connected).
+    const openclawTool = new OpenClawHelpTool(openclawConnection);
+    state.client.addFunction(openclawTool);
+    console.log("✅ OpenClaw help tool enabled");
 
     // Set callbacks
     state.client.onReceiveResponse = handleMessage;
@@ -363,6 +359,26 @@ async function connect() {
     console.error("Connection failed:", error);
     updateStatus("connectionStatus", "Connection failed: " + error.message);
     updateStatus("debugInfo", "Error: " + error.message);
+  }
+}
+
+function disconnectAll() {
+  disconnect();
+  openclawConnection.disconnect();
+  state.openclaw.connected = false;
+  updateStatus("openclawStatus", "未连接");
+}
+
+// Single-button deterministic startup:
+// OpenClaw (bootstrap capsule) → OpenClaw WS → Gemini (setup includes capsule + openclaw_help)
+async function start() {
+  if (elements.startBtn) elements.startBtn.disabled = true;
+  try {
+    disconnectAll();
+    await connectOpenClaw();
+    await connectGemini();
+  } finally {
+    if (elements.startBtn) elements.startBtn.disabled = false;
   }
 }
 
@@ -576,7 +592,7 @@ function tryDeliverInjects() {
       // Mark as in-progress until the next TURN_COMPLETE arrives.
       state.gemini.turnComplete = false;
       // IMPORTANT: inject is NOT user input. Send as role=model with a stable tag.
-      state.client.sendTextMessage(`【大哥提醒】 ${reply}`, { role: "model" });
+      state.client.sendTextMessage(`[[from_backend_ai]] ${reply}`, { role: "model" });
     })
     .catch((err) => {
       console.error("Inject delivery failed:", err);
@@ -760,12 +776,9 @@ function updateTemperature() {
 
 // Event listeners
 function initEventListeners() {
-  elements.connectBtn.addEventListener("click", connect);
-  elements.disconnectBtn.addEventListener("click", disconnect);
-  
-  // OpenClaw connection
-  if (elements.connectOpenClawBtn) {
-    elements.connectOpenClawBtn.addEventListener("click", connectOpenClaw);
+  // Single-button start: OpenClaw → capsule → Gemini (tool registered in setup)
+  if (elements.startBtn) {
+    elements.startBtn.addEventListener("click", start);
   }
   elements.startAudioBtn.addEventListener("click", toggleAudio);
   elements.startVideoBtn.addEventListener("click", toggleVideo);
