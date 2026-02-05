@@ -1064,6 +1064,28 @@ cat ~/.openclaw/workspace/USER.md
 
 ---
 
+#### 问题 E：定时提醒（cron/systemEvent）目前只会投递到 WebChat（main session），不会提醒 Live
+
+**现象**：
+- 在 Live 里通过 `openclaw_help` 请求“2分钟后提醒”，确实能在 WebChat 界面看到系统提醒弹出：
+  - `System: [2026-02-05 08:44:21 GMT+8] ⏰ 提醒：这是你两分钟前设置的测试提醒...`
+  - `System: [2026-02-05 08:47:00 GMT+8] ⏰ 测试提醒来了！...`
+- 但在 Live（Gemini Live 前端）侧没有收到任何对应提醒，也没有语音播报。
+
+**证据（100%可复核）**：
+- `logs/prompts-webchat.md` 中出现上述两条 `System:` 提醒（WebChat 会话输入中可见）
+- `logs/live-gemini-input.md` 中**检索不到**上述提醒文本（说明没有通过 inject→`client_content` 投递给 Gemini Live）
+
+**根本原因（以当前代码为准）**：
+- cron 的 `sessionTarget="main"` 会将 payload.kind=`systemEvent` 的文本通过 `enqueueSystemEvent(...)` 投递到 **main session（WebChat）**。
+- 当前没有“cron systemEvent → realtime/live 会话 inject”的桥接层，因此 Live 不会被提醒。
+
+**对策方向（讨论中，未实现）**：
+- 增加“通知路由协议”：当提醒是从 Live 发起时，需要携带 `deliveryTarget`（例如 realtime `sessionId`/连接标识），到点后走 realtime ws `inject` 定向推送给 Live（并在 UI/语音播报）。
+- 或者在 OpenClaw 侧将提醒拆为两条：`systemEvent`（写入 main）+ `inject`（推送到 live），但前提是我们有稳定的 live 目标定位（不能“广播”靠运气）。
+
+---
+
 ### 2026-02-04 状态：语音“卡顿”在不连接 OpenClaw 时仍复现（需要优先排查）
 
 #### 现象（用户实测）
@@ -1422,3 +1444,102 @@ Agent 自主判断这些对话（天气查询等）不够重要，不需要记�
 | USER.md/MEMORY.md 变更 → prompt_update | ✅ | ✅ 已实现 | 只监控这两个文件 |
 | prompt_update 热更新到 Gemini Live 会话 | ✅ | ⚠️ 未完成 | 目前只更新前端缓存，未必影响 live 会话 |
 | 多并发 tool call 的请求-响应匹配 | ✅ | ✅ 已实现 | 前端 `TOOL_CALL` 处自生成 UUID，保障 callId 稳定 |
+
+---
+
+## 2026-02-05 结论：问题 A（Live 记忆污染）与 v3 解决方案（记忆胶囊）
+
+### 现象
+
+Live（Gemini Live 前台）出现“错乱/自信过头/能力幻觉”，例如误以为自己能“修改配置/修改代码/已执行后台动作”，导致对话不可信。
+
+### 根因（100% 可复现）
+
+Live 前端在建立 Gemini Live session 的 `setup.system_instruction` 时，把 OpenClaw 的 `USER.md` / `MEMORY.md`（包含后台工具经验、命令、路径、自我修改能力等 lore）拼进了 system prompt。
+
+一旦这些 lore 进入 Live 的 system prompt，Live 会把它当作“自己的永久知识/能力”，从而产生错乱。
+
+### v3 目标（只靠环境描述，不做工程化白名单/写死业务词）
+
+把“全量 USER.md/MEMORY.md → Live system prompt”的路径彻底断开，改为：
+
+- OpenClaw 在后台自动生成一段 **Live 必知记忆（胶囊）**
+- Live 只注入胶囊到 Gemini Live 的 `setup.system_instruction`
+- 其余信息由 Live 通过 `openclaw_help` 请求后台（而不是直接塞进 Live 的长期上下文）
+
+### 关键约束（来自 Gemini Live 协议）
+
+- Gemini Live 的 `system_instruction` 只能在 session 建立时通过 `setup` 发送一次。
+- 因此胶囊更新要生效：必须重建 Gemini Live session（断开→重连→重发 setup）。
+
+### 共享环境描述（v3，可复用）
+
+> 说明：下面这段作为 OpenClaw 的“共享背景块”，在 Supervisor / Help / Capsule 三个场景中复用。只讲清角色与边界，不写死路径/命令/工具名/业务词。
+
+```text
+你是 OpenClaw，是后台的大脑与监督者（后台大哥）。你不会直接对用户说话。
+
+系统有三方：
+- 用户：真实人类。用户只与 Live 语音对话，用户也只能听到 Live 的回复。
+- Live：前台语音助手，负责低延时语音对话与播报。它的智能/上下文/工具能力都弱于你。
+- 你（OpenClaw）：后台高智能代理。你旁观 Live↔用户对话，在需要时支援 Live。
+
+路由语义：
+- 你收到的“对话上下文/事件”都来自 Live 的同步。
+- 你输出的任何文字都会被送给 Live，由 Live 决定如何对用户表达；用户不会直接看到你。
+
+目标：
+- Live 保证低延时与自然对话体验；
+- 你在关键时刻提供强智能支援（补全信息、纠错、提醒、规划）。
+```
+
+### 三个场景的独立 prompt（v3）
+
+#### 场景 1：Supervisor（监督 → 是否提醒/注入）
+
+```text
+你将看到最近对话片段（包含用户一句与 Live 一句）。
+
+请判断是否需要立刻提醒用户。
+- 如果需要：输出一句 Live 可以直接播报给用户的短句（口语化、简短、只输出这一句）。
+- 如果不需要：输出空字符串。
+```
+
+#### 场景 2：Help（求助 → 完成明确请求）
+
+```text
+你将看到对话上下文（可能为空）与“当前请求”。
+
+请输出你希望 Live 对用户说的结果。
+如果信息不足，请输出你希望 Live 向用户追问的最少问题（越少越好）。
+```
+
+#### 场景 3：Capsule（生成 Live 的长期最小背景）
+
+```text
+你将看到两份材料：USER.md（用户画像）与 MEMORY.md（长期记忆）。
+
+请把其中“Live 必须长期掌握”的信息压缩成一段高密度胶囊，供 Live 放入它的 system prompt。
+要求：
+- 只保留能显著提升 Live 对话质量的“用户层事实/偏好/安全约束/称呼/时区/沟通偏好”等。
+- 内容要短、密度高、可直接粘贴进 system prompt（不要写解释，不要写过程）。
+输出格式：
+以“## Live 必知记忆（胶囊）”开头，后面只用项目符号列表。
+```
+
+### 代码落点（最小改造）
+
+- Realtime 插件新增“胶囊生成”调用：启动后或首次 bootstrap 时，读取 `USER.md` + `MEMORY.md`，用独立 session 运行一次“Capsule 生成”任务，得到胶囊文本并缓存。
+- bootstrap：`GET /api/realtime/bootstrap` 返回 `liveMemoryCapsule`（只返回胶囊，不返回全量 USER/MEMORY）。
+- watcher：`USER.md` 或 `MEMORY.md` 变化时，重算胶囊并广播 `prompt_update(section="live_memory_capsule")`。
+- 前端：连接 Gemini 前，拼接 `基础 system 指令 + liveMemoryCapsule`；不再拼接全量 USER/MEMORY。
+
+### 自动重连（让用户无感）— 后续实现方向
+
+当收到 `prompt_update(live_memory_capsule)` 且 Gemini 已连接时：
+
+- 等待 `TURN_COMPLETE` + 本地音频播放 idle（避免打断）
+- 静默断开 Gemini WS
+- 立刻重连并重发 `setup`（带最新胶囊）
+
+注意：重连是新 session，会丢失 Gemini Live 会话内历史；如需“更无感”，可在重连后由 Live 注入一条极短的上下文摘要（需谨慎，避免再次污染）。
