@@ -1267,10 +1267,9 @@ waitedMs=33593  # 33秒
 
 **优先级**：中
 
-**改进方案（方向，未实现）**：
-- **两段式工具协议（强烈推荐）**：`openclaw_help` 立即回一个“已开始处理”的极短 tool_response（让 her 立刻有机会继续说话），最终结果用 `inject`（例如 `OpenClaw 查到：...`）异步补齐。
-- **去重/合并**：当用户打断/重复表达时，避免重复触发 `openclaw_help`，否则会造成 OpenClaw 队列堆积，进一步加剧等待。
-- **可观测性**：记录“toolCall 发出时间 / tool_response 返回时间 / 队列长度”，用硬指标区分慢在 OpenClaw 还是链路。
+**改进方案（✅ 已实现）**：
+- **两段式工具协议**：`openclaw_help` 收到后立即返回 `{ok: true, status: "processing"}` 的 tool_response，最终结果通过 `inject` 异步投递。
+- **安全窗口投递**：inject 入队 `pendingInjects`，等待 `TURN_COMPLETE` + `audioPlayer.waitForIdle()` 后才投递。
 
 ---
 
@@ -1347,11 +1346,11 @@ waitedMs=33593  # 33秒
 |-------|------|------|
 | 🔴 高 | 请求去重 | 防止同一 help 请求重复发送 |
 | 🟡 中 | 空 transcript 过滤 | 跳过空内容的转写消息 |
-| 🟡 中 | 等待期反馈 | Live 调用 help 后立即给用户语音反馈 |
+| ✅ | 等待期反馈 | 两段式 ACK：toolCall 后立即返回 processing |
 | 🟡 中 | 错误处理 | Agent 失败时返回更友好的消息 |
 | 🟢 低 | Session 恢复 | 支持断线重连后恢复上下文 |
 | 🟢 低 | Prompt 热更新 | 收到 prompt_update 时实时更新 Gemini System Prompt |
-| 🟢 低 | inject 实现 | 完善 OpenClaw 主动推送消息到 Live 的功能 |
+| ✅ | inject 实现 | `inject-delivery.js` 实现安全窗口投递 |
 
 ---
 
@@ -1672,7 +1671,7 @@ Gemini Live 的 tool 调用是“同步等待”语义：一旦模型在该轮�
 - 后台结果到达后，her **明确命名来源**（“OpenClaw 查到：…”）并压缩播报；
 - 用户中途继续说话时，系统不会因为同步等待而“失语”，也不会无限堆积重复请求。
 
-### P0 方案（方向，未实现）：两段式工具返回 + 异步补齐
+### P0 方案（✅ 已实现）：两段式工具返回 + 异步补齐
 
 将 `openclaw_help` 从“等 OpenClaw 完成才回 tool_response”改为：
 
