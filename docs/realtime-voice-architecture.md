@@ -1,1520 +1,269 @@
-# Realtime Voice Architecture
+# Realtime Voice Architecture v2
 
-实时语音交互架构设计：Gemini Live + OpenClaw 双脑协作
+实时语音交互架构：Her (快思考) + OpenClaw (慢思考)
 
 ## 设计原则
 
-1. **极简**：Live 只需要 1 个 Tool（`openclaw_help(request)`），其余走自动事件流
-2. **无感**：Live 不需要理解“同步协议细节”，但**并不等于**“永远不需要调用 tool”
-3. **零冲击**：不影响 OpenClaw 现有的 WebChat/Telegram 体验
-4. **零侵入**：作为独立插件实现，不修改 OpenClaw 核心代码，方便同步上游更新
+1. **极简**：Her 只有 1 个 Tool（`openclaw_help`），无其他复杂协议
+2. **快慢分离**：Her 负责即时响应，OpenClaw 负责深度处理
+3. **单一数据流**：所有结果通过 `tool_response` 返回，无 inject/监督者
+4. **零侵入**：作为独立插件实现，不修改 OpenClaw 核心代码
 
-## 重要纠偏：设计假设 vs 当前实现（必读）
+---
 
-本文件早期版本隐含了两个强假设：
+## 角色定义
 
-- OpenClaw 会“实时看到所有对话并自主监督/记忆/提醒”
-- Live 说“好的，记住了”即可，OpenClaw 会自动写入记忆并同步回 Live
+### Her（前台，快思考）
 
-**结合当前代码与运行日志，这两个假设在早期确实不成立；但现在已经补齐了“监督回路”。** 当前实现的真实行为是：
+**身份**：车载语音助手，负责低延时语音对话
 
-- `transcript` 会被记录（内存数组 + 打日志），并进入 turn 组装器
-- 每次 `turn_complete`（或 user+live 形成完整 turn）都会触发一次后台 Supervisor Run（独立于 `help`）
-- Supervisor Run 可能：
-  - 写入 `USER.md` / `MEMORY.md`（从而触发 `prompt_update`）
-  - 输出一条需要立刻提醒用户的短句（通过 `inject` 推送到前端）
-  - 输出空/`NO_REPLY`（协议层视为“不提醒”，不会 inject）
-- Live 的“system prompt 文本”和“tools/function declarations”属于两部分配置：  
-  - 文本来自 `/api/realtime/bootstrap.systemPrompt`  
-  - tools 定义来自 Gemini Live 的 setup payload（不在 system prompt 文本里）
+**能力边界**：
+- 基于 prompt 内的信息即时回答
+- 简单问候、情感交流、闲聊
+- 用户画像里已有的信息（来自 liveMemoryCapsule）
 
-因此，若目标是“OpenClaw 上帝视角监督（主动提醒/自动记忆）”，关键是让 transcript 流稳定地闭合为 turn，并在每个 turn 上触发 Supervisor Run（已实现；详见后文）。
-## 系统参与者
+**不具备**：
+- 可靠的长期记忆检索
+- 外部信息查询能力
+- 复杂推理/规划能力
+- 任何外部操作能力
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              用户                                            │
-└─────────────────────────────────┬───────────────────────────────────────────┘
-                                  │ 语音
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         Gemini Live (前台)                                   │
-│                                                                             │
-│    职责：语音交互、简单对话                                                   │
-│    Tool：openclaw_help(request)  ← 只有 1 个参数！                           │
-│    上下文：WebSocket 自动同步（Live 无感）                                    │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                  │
-                      WebSocket 长连接（自动双向同步）
-                                  │
-┌─────────────────────────────────┴───────────────────────────────────────────┐
-│                         OpenClaw (后台大哥)                                  │
-│                                                                             │
-│    现状：help 触发 Agent；同时每个 turn 会触发 Supervisor Run（可 inject/写记忆）│
-│    目标：基于 transcript 的“轮次/回合”进行监督、记忆、提醒（已跑通可验证链路）  │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+**核心规则**：
+- 简单问题直接回答，要亲切称呼用户（如"天哥"）
+- 不知道用户称呼时主动询问
+- 任何不确定的事情 → 调用 `openclaw_help`
+- **宁可多问 OpenClaw，不要瞎猜**
 
-## WebSocket 自动同步
+### OpenClaw（后台，慢思考）
 
-Live 与 OpenClaw 之间通过 WebSocket 长连接传递事件流。
+**身份**：后台高智能代理，负责深度任务处理
 
-当前已实现的“自动流”：
+**能力**：
+- 复杂任务：编程、写文章、做报告、数据分析
+- 记忆检索：USER.md / MEMORY.md
+- 外部操作：搜索、浏览器、发消息、设置提醒
+- 深度推理：规划、对比、归纳、纠错
 
-- `transcript`（用户/Live 的转写文本）→ OpenClaw 插件接收并记录
-- `help`（由 Live tool 调用触发）→ OpenClaw 插件调用后台 Agent 并返回结果
-- `prompt_update`（当 USER.md/MEMORY.md 被写入时）→ 插件广播给 Live
+**核心规则**：
+- 收到请求后完整处理
+- 审视对话上下文，发现需要补充的信息
+- 在处理过程中自动更新 Memory
+- 返回给 Her 的内容要口语化、简洁
 
-当前已实现的“自动流”补齐项：
+---
 
-- OpenClaw 基于 transcript turn 自动监督（Supervisor Run）
-- OpenClaw 主动 `inject`（已在 WS Frames 中验证可到达前端）
-
-事件流示意如下：
+## 数据流
 
 ```
-┌─────────┐                           ┌─────────┐
-│  Live   │ ─── user: "你好" ──────→  │OpenClaw │
-│         │ ─── live: "你好天哥" ───→  │         │
-│         │                           │ 实时    │
-│  无感   │ ←── inject: "提醒..." ─── │ 看到    │
-│  自动   │ ←── prompt_update ─────── │ 所有    │
-└─────────┘                           └─────────┘
-
-Live 不需要：
-- 手动调用 sync
-- 在 Tool 参数中传递对话上下文
-- 把完整对话塞进 tool 参数（对话会通过 transcript 流送达）
-
-OpenClaw 自己判断：
--（目标）这个信息要保存吗 / 有冲突要提醒吗 / 用户画像要更新吗
--（现状）只有在 help 时才会做上述判断
-```
-
-## System Prompt 同步
-
-### Live 的 System Prompt 结构
-
-重要：这里的 “System Prompt” 指**文本指令**。Gemini Live 的 tools/function declarations 是 setup payload 的另一部分配置，不会出现在该文本中。
-
-```
+                          用户
+                            │
+                       语音输入
+                            ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│  ## 用户画像                                                     │ ← OpenClaw 同步
-│  {来自 OpenClaw USER.md 的内容}                                  │
-├─────────────────────────────────────────────────────────────────┤
-│  ## 重要记忆                                                     │ ← OpenClaw 同步
-│  {来自 OpenClaw MEMORY.md 的摘要}                                │
-├─────────────────────────────────────────────────────────────────┤
-│  ## 行为规则                                                     │ ← Live 特有，不同步
-│  1. 日常对话直接回答                                             │
-│  2. 复杂任务调用 openclaw_help                                   │
-│  3. 收到后台回复后自然说出来                                     │
+│                      Her (快思考)                                │
+│                                                                 │
+│  收到用户输入 → 判断能否快思考解决                               │
+│                                                                 │
+│  ┌─────────────┐              ┌──────────────────────────┐     │
+│  │ 能解决      │              │ 不能解决 / 不确定         │     │
+│  │ - 问候闲聊  │              │ - 需要记忆/查询的事情     │     │
+│  │ - 已知信息  │              │ - 复杂任务/外部操作       │     │
+│  │ - 简单常识  │              │ - 任何拿不准的情况        │     │
+│  └──────┬──────┘              └───────────┬──────────────┘     │
+│         │                                  │                    │
+│         ↓                                  ↓                    │
+│    直接回答              toolCall(openclaw_help, request)       │
+│    "天哥你好！"                            │                    │
+└─────────────────────────────────────────────┼────────────────────┘
+                                             │
+                                             ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                     OpenClaw (慢思考)                            │
+│                                                                 │
+│  收到：请求 + 完整对话上下文                                     │
+│                                                                 │
+│  处理：                                                         │
+│  1. 执行任务（查询/编程/写作/设置提醒等）                        │
+│  2. 审视上下文，发现需要补充的信息                               │
+│  3. 自动更新 Memory（如有必要）                                  │
+│                                                                 │
+│  返回：tool_response                                            │
+│  - 任务结果（口语化，适合播报）                                  │
+│  - 上下文补充信息（如有）                                        │
+└─────────────────────────────────────────────┬────────────────────┘
+                                             │
+                                             ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                      Her (快思考)                                │
+│                                                                 │
+│  收到 tool_response → 用自己的话播报给用户                       │
 └─────────────────────────────────────────────────────────────────┘
+                            │
+                       语音输出
+                            ↓
+                          用户
 ```
 
-### 同步机制
+---
 
-| 内容 | 来源 | 同步方向 | 触发时机 |
-|------|------|---------|---------|
-| 用户画像 | OpenClaw USER.md | OpenClaw → Live | USER.md 更新时 |
-| 重要记忆 | OpenClaw MEMORY.md | OpenClaw → Live | MEMORY.md 更新时 |
-| 行为规则 | Live 特有 | 不同步 | - |
+## 场景推演
 
-### 自动更新流程
+### 场景 1：简单问候（快思考直接解决）
 
 ```
-用户: "我现在更喜欢喝咖啡了，不喝茶了"
-Live: "好的，记住了"
+用户: "你好啊"
+Her: [快思考] 这是问候，我可以直接回答
+Her: "天哥你好！开车还顺利吗？"
+```
 
-# WebSocket transcript 自动同步给 OpenClaw（已实现）
-# 监督回路会基于 turn 触发 Supervisor Run，可能写入 USER/MEMORY 或 inject。
+**关键**：Her 要亲切称呼用户（从 liveMemoryCapsule 获取）
+
+### 场景 2：需要记忆的问题
+
+```
+用户: "我爸爸在哪？"
+Her: [快思考] 这涉及用户家人信息，liveMemoryCapsule 里有
+Her: "你爸妈在海南度假呢，计划待三个月。"
+```
+
+**关键**：如果 liveMemoryCapsule 里已有信息，Her 可以直接回答
+
+### 场景 3：复杂查询
+
+```
+用户: "查一下明天上海的天气"
+Her: [快思考] 天气查询需要外部信息
+Her: "好，我查一下" → toolCall(openclaw_help)
 
 OpenClaw:
-  1.（已实现）监督回路触发后台 Supervisor Run 分析这一轮对话
-  2.（已实现）Supervisor 决定是否写入 USER.md / MEMORY.md，或输出 inject 提醒文本
-  3.（已实现）若文件被写入，插件广播 prompt_update 给 Live
+  - 执行天气查询
+  - 返回 tool_response: "明天上海多云，气温10到15度，傍晚可能有小雨"
 
-OpenClaw → Live (WebSocket):
-  {
-    type: "prompt_update",
-    section: "user_profile",
-    content: "用户偏好：喜欢咖啡，不喜欢茶..."
-  }
-
-Live:（部分实现）收到 prompt_update 后更新前端缓存；是否“热更新到 Gemini Live 会话”需要单独实现
+Her: "明天上海多云，10到15度，傍晚可能下雨，记得带把伞。"
 ```
 
-## OpenClaw 双模式设计
-
-**核心：OpenClaw 根据请求来源自动切换模式，对现有体验零影响！**
+### 场景 4：长任务
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              OpenClaw                                        │
-│                                                                             │
-│    请求来源判断：                                                            │
-│    ├─ WebChat/Telegram → 直接模式（现有，完全不变！）                        │
-│    └─ Realtime WebSocket → 后台模式（新增）                                 │
-│                                                                             │
-│    ┌─────────────────────────────┐    ┌─────────────────────────────┐       │
-│    │      直接模式（现有）        │    │     后台模式（新增）         │       │
-│    │                             │    │                             │       │
-│    │  - 直接面向用户             │    │  - 面向 Live                │       │
-│    │  - 输出直接给用户看         │    │  - 输出给 Live 说           │       │
-│    │  - 现有 System Prompt       │    │  - 后台 System Prompt       │       │
-│    │  - 完全不改动！             │    │  - 知道自己是后台支援者     │       │
-│    └─────────────────────────────┘    └─────────────────────────────┘       │
-└─────────────────────────────────────────────────────────────────────────────┘
+用户: "帮我查明天去海南的机票"
+Her: [快思考] 机票查询是复杂任务
+Her: "好的，我帮你查" → toolCall(openclaw_help)
+
+[两段式协议]
+1. 立即返回 ACK: tool_response({status: "processing"})
+   → Her 可以继续说话："正在查，稍等一下"
+
+2. OpenClaw 完成后，结果进入 pendingResults 队列
+   → 在安全窗口（TURN_COMPLETE + audio idle）自动投递给 Gemini
+   → Her 播报："机票查好了，最便宜的是..."
 ```
 
-### 直接模式（现有，不变）
+**关键**：
+- 立即 ACK 解除阻塞，Her 不会傻等
+- 结果在安全窗口自动投递，不需要用户追问
 
-用户通过 WebChat、Telegram 等渠道直接和 OpenClaw 对话：
-
-```
-用户 (WebChat) → OpenClaw → 回复给用户
-
-# 完全不受 Realtime 功能影响
-# 现有体验保持不变
-```
-
-### 后台模式（新增）
-
-用户通过 Live 语音交互，OpenClaw 在后台支援：
+### 场景 5：Her 没意识到的问题
 
 ```
-用户 (语音) → Live → (WebSocket) → OpenClaw (后台模式)
-                                        │
-                                        ↓
-                                   返回给 Live 说的内容
+用户: "今晚聚会我准备喝点"
+Her: [快思考] 闲聊，我直接回应
+Her: "听起来挺有意思！"
+
+用户: "对了，查一下明天的天气"
+Her: → toolCall(openclaw_help, "查明天天气")
+
+OpenClaw:
+  - 执行天气查询
+  - 同时审视对话上下文，发现用户提到"喝点"
+  - 查 Memory，发现用户有健康相关记录
+  - 返回: "明天天气多云...另外，刚才你提到要喝酒，提醒你注意健康。"
+
+Her: "明天多云，15度左右。对了，你刚说要喝点，身体能行吗？"
 ```
 
-### 后台模式 System Prompt
+**关键**：OpenClaw 每次被调用时都会审视完整上下文，有机会发现 Her 遗漏的问题
 
-```markdown
-# 你是后台支援者
+---
 
-你不直接与用户交流。前台有一个语音助手（Live）正在和用户实时对话。
+## 为什么去掉 Supervisor（监督者）
 
-## 你的角色
-- 你是幕后的"大哥"，拥有上帝视角
-- 你实时看到 Live 和用户的所有对话
-- 你的回复是给 Live 说的，不是直接给用户的
+### 之前的问题
 
-## 当前对话
-{REALTIME_CONVERSATION}
+1. **context 不同步**：Supervisor 和 Help 的 conversation 都只有转录，不包含已经投递给 Gemini 的内容
+2. **重复投递**：Help 返回结果后，Supervisor 不知道，可能再投递一遍类似内容
+3. **时机问题**：Supervisor 的 TurnAssembler 可能在 Gemini 还没播报完时就触发
+4. **协议复杂**：inject + 控制句机制容易被 RESPONSE_REJECTED
 
-## 你需要做什么
-1. 收到 help 请求时，执行任务，返回给 Live 说的内容
-2. 自主判断是否需要保存记忆、更新用户画像
-3. 发现需要提醒用户的事情时，主动推送给 Live
+### 新设计
 
-## 输出要求
-- 直接输出希望 Live 说的内容
-- 口语化，适合语音播报
-- 简洁
-```
+| 原来 Supervisor 做的事 | 新架构里谁做 |
+|------------------------|-------------|
+| 监控对话 | OpenClaw 每次被调用时都能看到完整上下文 |
+| 发现需要提醒的事情 | OpenClaw 在处理任务时顺便检查 |
+| 更新 Memory | OpenClaw 在处理任务时自动更新 |
 
-## Live 配置
+**结论**：Supervisor 的所有职责都可以在 OpenClaw 被调用时完成，不需要单独的监督者。
 
-### System Prompt
+---
 
-```
-你是天哥的语音助手。
+## Prompt 设计
 
-## 用户画像
-{USER_PROFILE}  ← OpenClaw 同步更新
+### Her (Gemini Live) 的 System Prompt
 
-## 重要记忆
-{MEMORY_SUMMARY}  ← OpenClaw 同步更新
-
-## 规则
-1. 日常对话直接回答
-2. 复杂任务 → 说确认语，调用 openclaw_help
-3. 收到后台回复后自然说出来
-
-后台会自己处理记忆等事情，你不用管。
-```
-
-### Tool 定义（只有 1 个！）
-
-```javascript
-const tools = [{
-  name: "openclaw_help",
-  description: "请求后台帮助处理复杂任务（搜索、计算、分析等）",
-  parameters: {
-    type: "object",
-    properties: {
-      request: { 
-        type: "string", 
-        description: "需要帮助的内容" 
-      }
-    },
-    required: ["request"]
-  }
-}];
-
-// 不需要传 conversation！
-// OpenClaw 通过 WebSocket 已经知道所有上下文
-```
-
-## 信息流
-
-### 场景 1：普通对话
+> **变化**：相比原来，大幅简化。去掉了"控制句"、"inject 协议"等复杂规则。
 
 ```
-用户: "你好"
-Live: "你好天哥！"
+你是 Her，车载语音助手，负责快思考。用户正在开车。
 
-# WebSocket 自动同步，OpenClaw 记录到 session
-# Live 无感，不需要做任何额外操作
+## 你的身份
+- 你是用户的贴心助手，温柔、自然
+- 如果知道用户名字（见下方画像），要亲切称呼
+- 如果不知道，第一次对话时可以礼貌询问
+
+## 能力边界
+你只能基于以下信息做快思考：
+- 用户刚说的话
+- 下方的用户画像摘要（liveMemoryCapsule）
+- 常识
+
+你不具备：
+- 可靠的长期记忆检索
+- 外部信息查询
+- 复杂推理能力
+- 任何外部操作能力
+
+## 判断规则
+收到用户输入后判断：
+
+**快思考能解决** → 直接回答：
+- 问候、闲聊、情感交流
+- 画像摘要里明确有的信息
+- 简单常识
+
+**需要慢思考** → 调用 openclaw_help：
+- 画像里没有的用户信息
+- 需要查询/检索的事情
+- 深度思考/规划/分析
+- 设置提醒、发消息、编程等操作
+- 任何不确定的事情
+
+**核心原则：宁可多问 OpenClaw，不要瞎猜！**
+
+## 工具调用后
+收到 tool_response 后，用你自己的话对用户播报结论，简洁、口语化。
+
+## 用户画像摘要
+{liveMemoryCapsule}
 ```
 
-### 场景 2：需要帮助
+### OpenClaw 处理 Help 请求时的 Prompt
 
-```
-用户: "北京天气怎么样"
-Live: "好的，让我查一下"
-Live: 调用 openclaw_help("查北京天气")
+> **原则**：基于现有 `buildBackendModePrompt` 改进，不是完全重写。现有的三方角色定义保留。
 
-# OpenClaw 已经知道完整上下文（WebSocket 自动同步）
-# 执行天气查询
-# 返回：{ reply: "北京今天15度，晴" }
-
-Live: 播报 "北京今天15度，晴"
-```
-
-### 场景 3：自动保存记忆
-
-```
-用户: "我现在喜欢喝咖啡了"
-Live: "好的，记住了"
-
-# 现状（已实现）：transcript 会被同步到 OpenClaw 插件并记录，并以 turn 为单位触发 Supervisor Run
-# Supervisor Run 会自主判断：是否值得写入 USER/MEMORY（并不保证每次都写）
-```
-
-### 场景 4：主动提醒
-
-```
-用户: "明天帮我订个会议室"
-Live: "好的"
-
-# 目标：OpenClaw 在监督回路中看到这轮对话，检查日程并发现冲突/提醒点
-
-OpenClaw → Live: {
-  type: "inject",
-  reply: "等等，你明天不是要去北京出差吗？会议是线上的吗？"
-}
-
-Live: 自然播报这句提醒
-```
-
-## API 设计（极简）
+**现有 prompt 核心内容（保留不变）**：
 
 ```typescript
-// WebSocket /api/realtime/ws
-// 建立连接后自动双向同步
-
-// Live → OpenClaw（自动流，Live 无感）
-type LiveMessage = 
-  | { type: "transcript", role: "user" | "live", text: string }
-  | { type: "help", request: string, callId: string }
-  | { type: "turn_complete" }
-  | { type: "gemini_event", event: string, data: unknown, timestamp: number }
-
-// OpenClaw → Live
-type OpenClawMessage =
-  | { type: "help_result", callId: string, reply: string }
-  | { type: "inject", reply: string }
-  | { type: "prompt_update", section: string, content: string }
-
-// HTTP（只需要 1 个）
-// GET /api/realtime/bootstrap
-// 返回初始 System Prompt
-interface BootstrapResponse {
-  systemPrompt: string;
-  userProfile: string;
-  memorySummary: string;
-}
-```
-
-## 监督回路：把 transcript 变成行动（已实现）
-
-如果目标是“Live 无感、OpenClaw 上帝视角后台监督”，必须在 `transcript` 流之上增加一个**监督回路**：
-
-- **输入**：持续到达的 transcript（用户/Live 的文本转写）
-- **触发**：以“轮次/回合（turn）”为单位触发，或节流触发（例如每 N 轮/每 T 秒）
-- **处理者**：OpenClaw 后台 Agent（以后台支援者身份运行）
-- **输出（动作）**：
-  - 写入 `USER.md`（更新用户画像）
-  - 写入 `MEMORY.md`（长期记忆摘要）
-  - `inject`（立即提醒前台 Live）
-  - 无动作（大多数日常对话）
-
-当前实现已包含 transcript 驱动的监督触发：以 turn 为单位触发 Supervisor Run，并可选 inject / 写入 USER/MEMORY。
-
-### 方案 B（推荐）：每一轮 user+live 都输入给 OpenClaw（上帝视角后台大哥）
-
-目标：即使 Live 没有调用 `openclaw_help`，OpenClaw 也能基于实时对话**主动发现冲突/风险**，并通过 `inject` 反向提醒 Live 去确认用户。
-
-典型例子：
-
-```
-用户: 开车去上次和王总喝酒的地方。
-Live: 好的，是不是泰和酒店，我们预计 30min 到达。
-
-# OpenClaw 在后台看到这一轮对话后发现：你 1 小时后有政府接待。
-# OpenClaw → Live: inject 提醒用户确认行程冲突。
-```
-
-关键原则：
-
-- **Live 无感**：Live 不需要“主动求助”才能触发后台监督
-- **OpenClaw 被动接收**：每一轮对话（用户 + Live）会自动送达 OpenClaw
-- **低成本可验证**：先只做“监督 + inject”，不强制写记忆、不强制热更新 prompt
-
-### Turn（轮次）闭环：独立模块（可迭代，不影响其它功能）
-
-为保证“每一轮 user+live 对话都输入给 OpenClaw”，需要一个最小的 Turn 闭环模块（turn assembler）。它只负责把流式 transcript 组合成稳定的“轮次”输入，不做业务决策。
-
-**规则 1（只采 final/完成态 transcript）**：
-
-- 只在“转写完成”的时刻把文本纳入 turn（避免增量转写的噪声/空内容）
-
-**规则 2（turn 闭合条件：user + live 组成一轮）**：
-
-- 典型闭合：收到一条 `user` final 后，再收到一条 `live` final，形成一个 turn
-- Turn 组装逻辑必须是独立模块，后续可以不断迭代更聪明的闭合规则，但不应影响 WebChat/Telegram 等既有链路
-
-**规则 3（inject 去抖/限频）**：
-
-- 暂不实现（先跑通监督闭环与核心价值，再根据测试决定是否需要）
-
-### 监督任务（Supervisor Run）：每个 turn 都触发一次“监督判断”
-
-一旦 turn 闭合，立刻触发一次监督任务（不依赖 `openclaw_help`）：
-
-- **输入**：本 turn（用户+Live 两行）+ 少量近期 turn（可选）+ OpenClaw 可用的记忆/日程/工具
-- **输出**：协议层只关心三种结果
-  - 空字符串：无需打断（不 inject）
-  - `NO_REPLY`：静默 token（不 inject）
-  - 其它任意非空文本：视为需要前台播报的一句话（通过 `inject` 发送）
-
-然后插件将输出文本通过 WebSocket 发给 Live：
-
-```json
-{ "type": "inject", "reply": "你 1 小时后有政府接待，确认现在去泰和酒店是否来得及？" }
-```
-
-> 注意：这是“监督与纠错”，不是“代替 Live 完成所有任务”。真正需要执行复杂任务时，Live 仍可以使用 `openclaw_help`。
-
-#### 已验证行为：inject 不再导致语音被打断（INTERRUPTED）
-
-**问题**：前端收到 `inject` 后，会把文本作为新的 user turn 送入 Gemini。若此时 Gemini 正在输出语音，协议可能返回 `serverContent.interrupted=true`，前端会中断当前播放，用户听感被打断。
-
-**当前实现**：前端对 inject 做串行队列，并在把注入文本送入 Gemini 之前，**等待当前音频播放队列完全耗尽（audio drain / idle）**。
-
-**验证结果**：已在本地测试确认——触发 inject 时**不再出现** `[Interrupted]`。
-
-### Turn（轮次）边界必须被定义
-
-文档后续将统一以 turn 为最小监督单位：
-
-- 典型 turn：用户一句话（或一个转写完成事件）+ Live 一句回复（或一个转写完成事件）
-- 如果只有用户语音没有 Live 回复，也应视为“未闭合 turn”（可超时闭合）
-
-没有 turn 边界，就无法做到“每一轮自动同步并触发监督”的确定性行为。
-
-## 文件与会话：到底会有几份 USER/MEMORY？
-
-当前实现（以及 OpenClaw 默认运行方式）中：
-
-- `~/.openclaw/workspace/USER.md` 与 `~/.openclaw/workspace/MEMORY.md` 是**单一版本**（workspace/agent 级别），不是 per-session
-- 不同的对话 session 隔离主要体现在 `~/.openclaw/agents/<agentId>/sessions/*.jsonl`（会话日志）上
-- `~/.openclaw/workspace/memory/YYYY-MM-DD.md` 是“按天记忆文件”，但当前 realtime 插件的 prompt_sync 只监控 `USER.md` 与 `MEMORY.md`，**不会自动同步按天文件**
-
-因此，同一时间 WebChat 与 Live 并行对话时：
-
-- 两边读取/写入的 USER/MEMORY 是同一套
-- 但它们各自的 session 上下文（jsonl）是分开的
-
-## 对现有系统的影响
-
-| 组件 | 影响 | 说明 |
-|------|------|------|
-| WebChat 体验 | **零影响** | 直接模式不变 |
-| Telegram 体验 | **零影响** | 直接模式不变 |
-| 核心代码 | **新增模式** | 根据来源判断模式 |
-| System Prompt | **新增模板** | 后台模式专用 |
-| API | **新增端点** | /api/realtime/* |
-| 记忆系统 | **复用** | USER.md, MEMORY.md |
-
-### 代码变更
-
-```
-src/
-├── realtime/                    # 新增目录
-│   ├── websocket.ts             # WebSocket 服务
-│   ├── mode.ts                  # 后台模式逻辑
-│   ├── prompt-sync.ts           # System Prompt 同步
-│   └── bootstrap.ts             # 初始化
-│
-├── agents/
-│   └── system-prompt.ts         # 新增后台模式模板
-```
-
-## 技术实现：零侵入插件方案
-
-### 为什么要零侵入？
-
-CarHer 是 OpenClaw 的 Fork，需要定期同步上游 bugfix：
-
-```
-git fetch origin          # 拉取 openclaw 上游更新
-git merge origin/main     # 合并 bugfix
-```
-
-**如果修改核心代码**：每次合并都可能冲突，维护成本高
-**零侵入插件方案**：只在 `extensions/` 下开发，几乎不会冲突
-
-### 插件架构
-
-OpenClaw 已有完善的插件机制，Realtime 功能完全可以作为独立插件实现：
-
-```
-extensions/
-├── voice-call/              # 已有插件（参考）
-└── realtime/                # 新增插件（CarHer 专用）
-    ├── openclaw.plugin.json # 插件 manifest
-    ├── package.json
-    └── src/
-        ├── index.ts         # 插件入口
-        ├── server.ts        # 独立 HTTP/WebSocket 服务器
-        ├── prompt-hook.ts   # before_agent_start hook
-        └── file-watcher.ts  # 监听记忆文件变化
-```
-
-### 插件能力对照
-
-| 功能 | 实现方式 | 侵入核心代码？ |
-|------|---------|--------------|
-| WebSocket 端点 | 插件创建独立 HTTP 服务器 | **否** |
-| 后台模式 System Prompt | `before_agent_start` hook | **否** |
-| 监听 USER.md 变化 | chokidar 文件监听 | **否** |
-| 广播给 Live 客户端 | 插件自己管理客户端连接 | **否** |
-
-### 代码改动清单
-
-| 位置 | 改动类型 | 冲突风险 |
-|------|---------|---------|
-| `extensions/realtime/` | **新增目录** | **无** |
-| OpenClaw 核心代码 | **不改** | **无** |
-
-### 关键代码示例
-
-**1. 插件 Manifest**
-
-```json
-// extensions/realtime/openclaw.plugin.json
-{
-  "name": "realtime",
-  "version": "0.1.0",
-  "description": "Gemini Live + OpenClaw realtime voice integration",
-  "main": "dist/index.js",
-  "openclaw": {
-    "minVersion": "2024.1.0"
-  }
-}
-```
-
-**2. 插件入口 - 注册服务和 Hook**
-
-```typescript
-// extensions/realtime/src/index.ts
-import type { PluginAPI } from "openclaw/plugin-sdk";
-import { startRealtimeServer } from "./server.js";
-import { setupPromptHook } from "./prompt-hook.js";
-import { setupFileWatcher } from "./file-watcher.js";
-
-export async function activate(api: PluginAPI) {
-  // 1. 启动独立的 WebSocket 服务器（参考 voice-call 插件）
-  const server = await startRealtimeServer(api);
-  
-  // 2. 注册 before_agent_start hook（修改 System Prompt）
-  setupPromptHook(api, server);
-  
-  // 3. 监听记忆文件变化
-  setupFileWatcher(api, server);
-  
-  api.log.info("Realtime plugin activated");
-}
-```
-
-**3. 独立 WebSocket 服务器**
-
-```typescript
-// extensions/realtime/src/server.ts
-import http from "node:http";
-import { WebSocketServer } from "ws";
-
-export async function startRealtimeServer(api: PluginAPI) {
-  const port = 18790; // 独立端口，不占用 Gateway 端口
-  const clients = new Set<WebSocket>();
-  
-  const httpServer = http.createServer();
-  const wss = new WebSocketServer({ server: httpServer });
-  
-  wss.on("connection", (ws) => {
-    clients.add(ws);
-    ws.on("message", (data) => handleLiveMessage(api, ws, data));
-    ws.on("close", () => clients.delete(ws));
-  });
-  
-  httpServer.listen(port);
-  api.log.info(`Realtime WebSocket server listening on port ${port}`);
-  
-  return { clients, broadcast: (msg) => clients.forEach(c => c.send(msg)) };
-}
-```
-
-**4. before_agent_start Hook（修改 System Prompt）**
-
-```typescript
-// extensions/realtime/src/prompt-hook.ts
-export function setupPromptHook(api: PluginAPI, server: RealtimeServer) {
-  api.on("before_agent_start", async (event, ctx) => {
-    // 判断是否来自 Realtime
-    if (ctx.source !== "realtime") {
-      return {}; // 不是 Realtime 请求，不修改
-    }
-    
-    // 返回后台模式 System Prompt
-    return {
-      systemPrompt: buildBackendModePrompt(ctx),
-    };
-  });
-}
-
-function buildBackendModePrompt(ctx: AgentContext): string {
-  return `
-# 你是后台支援者
-
-你不直接与用户交流。前台有一个语音助手（Live）正在和用户实时对话。
-你的回复是给 Live 说的，不是直接给用户的。
-
-## 当前对话
-${ctx.realtimeConversation || "（暂无）"}
-
-## 你需要做什么
-1. 收到 help 请求时，执行任务，返回给 Live 说的内容
-2. 自主判断是否需要保存记忆、更新用户画像
-3. 发现需要提醒用户的事情时，主动推送给 Live
-
-## 输出要求
-- 直接输出希望 Live 说的内容
-- 口语化，适合语音播报
-- 简洁
-`;
-}
-```
-
-**5. 文件监听与推送**
-
-```typescript
-// extensions/realtime/src/file-watcher.ts
-import chokidar from "chokidar";
-import { readFile } from "node:fs/promises";
-
-export function setupFileWatcher(api: PluginAPI, server: RealtimeServer) {
-  const workspaceDir = api.workspace.getPath();
-  const watchPaths = [
-    `${workspaceDir}/USER.md`,
-    `${workspaceDir}/MEMORY.md`,
-  ];
-  
-  const watcher = chokidar.watch(watchPaths, {
-    ignoreInitial: true,
-    awaitWriteFinish: { stabilityThreshold: 500 },
-  });
-  
-  watcher.on("change", async (filePath) => {
-    api.log.info(`Memory file changed: ${filePath}`);
-    
-    const content = await readFile(filePath, "utf-8");
-    const section = filePath.includes("USER.md") ? "user_profile" : "memory";
-    
-    // 广播给所有 Live 客户端
-    server.broadcast(JSON.stringify({
-      type: "prompt_update",
-      section,
-      content: summarize(content), // 生成摘要
-    }));
-  });
-}
-```
-
-### System Prompt 推送机制
-
-**重要：推送是代码自动做的，不是 OpenClaw AI 调用 tool！**
-
-```
-OpenClaw 通过 write tool 写入 USER.md
-       │
-       │ chokidar 监听到文件变化
-       ▼
-插件检测到 USER.md 变化
-       │
-       │ 插件自己的 broadcast() 函数
-       ▼
-WebSocket 广播给 Live 客户端
-```
-
-### 冲突风险评估
-
-| 场景 | 冲突概率 |
-|------|---------|
-| OpenClaw 更新核心代码 | **0%** - 我们不改核心 |
-| OpenClaw 更新插件 API | **极低** - 插件 API 通常向后兼容 |
-| OpenClaw 更新 extensions/ 目录结构 | **极低** - 我们在自己的 realtime/ 下 |
-
-**结论：几乎不会和上游产生冲突！**
-
-## 实现步骤
-
-### Phase 1：插件骨架（1-2 天）
-
-1. **创建插件目录**
-   ```bash
-   mkdir -p extensions/realtime/src
-   ```
-
-2. **插件 Manifest 和 package.json**
-   - `openclaw.plugin.json`
-   - 依赖：`ws`, `chokidar`
-
-3. **独立 WebSocket 服务器**
-   - 端口 18790（不占用 Gateway 端口）
-   - 处理 Live 客户端连接
-
-4. **验证**：Live 可以连接到插件的 WebSocket
-
-### Phase 2：双向通信（2-3 天）
-
-1. **Live → OpenClaw**
-   - 接收对话 transcript
-   - 接收 openclaw_help 请求
-   - 转发给 OpenClaw Agent
-
-2. **OpenClaw → Live**
-   - 返回 help 结果
-   - 推送 inject 消息
-
-3. **before_agent_start Hook**
-   - 判断请求来源
-   - 注入后台模式 System Prompt
-
-4. **验证**：完整的 help 调用流程
-
-### Phase 3：自动同步（2-3 天）
-
-1. **文件监听**
-   - chokidar 监听 USER.md / MEMORY.md
-   - 变化时生成摘要
-
-2. **System Prompt 推送**
-   - 广播 prompt_update 给 Live
-   - Live 更新自己的 System Prompt
-
-3. **对话记录**
-   - 存入 OpenClaw session
-
-4. **验证**：用户偏好变化能同步到 Live
-
-### Phase 4：优化（可选）
-
-1. **主动提醒机制**
-2. **上下文压缩**
-3. **多 Live 客户端支持**
-4. **重连机制**
-
-## 总结
-
-```
-核心设计：
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  1. Live 只有 1 个 Tool：openclaw_help(request)                             │
-│  2. 上下文通过 WebSocket 自动同步，Live 无感                                │
-│  3. OpenClaw 是大脑，自己判断保存、提醒                                     │
-│  4. System Prompt 变化自动同步给 Live                                       │
-│  5. 对现有 WebChat/Telegram 体验零影响                                      │
-│  6. 零侵入插件方案，不修改 OpenClaw 核心代码                                │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-代码结构：
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  extensions/realtime/          ← 全部新代码都在这里                         │
-│  ├── openclaw.plugin.json      ← 插件 manifest                             │
-│  ├── src/                                                                  │
-│  │   ├── index.ts              ← 插件入口                                  │
-│  │   ├── server.ts             ← 独立 WebSocket 服务器                     │
-│  │   ├── prompt-hook.ts        ← before_agent_start hook                  │
-│  │   └── file-watcher.ts       ← 监听记忆文件变化                          │
-│  └── package.json                                                          │
-│                                                                             │
-│  OpenClaw 核心代码              ← 完全不改！                                │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-同步上游：
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  git fetch origin              # 拉取 openclaw 上游更新                    │
-│  git merge origin/main         # 合并（几乎不会冲突！）                     │
-│  git push carher dev:main      # 推送到 CarHer                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 详细 TODO 清单
-
-### OpenClaw 侧（插件开发）
-
-#### Phase 1：插件骨架
-
-| ID | 任务 | 文件 | 状态 |
-|----|------|------|------|
-| O-1.1 | 创建插件目录结构 | `extensions/realtime/` | ✅ |
-| O-1.2 | 编写 `openclaw.plugin.json` | `extensions/realtime/openclaw.plugin.json` | ✅ |
-| O-1.3 | 编写 `package.json`，添加依赖 `ws`, `chokidar` | `extensions/realtime/package.json` | ✅ |
-| O-1.4 | 编写插件入口 `index.ts` | `extensions/realtime/src/index.ts` | ✅ |
-| O-1.5 | 实现独立 HTTP 服务器（端口 18790） | `extensions/realtime/src/server.ts` | ✅ |
-| O-1.6 | 实现 WebSocket 连接管理 | `extensions/realtime/src/server.ts` | ✅ |
-| O-1.7 | 实现 `/api/realtime/bootstrap` HTTP 端点 | `extensions/realtime/src/server.ts` | ✅ |
-| O-1.8 | 添加日志输出，方便调试 | 所有文件 | ✅ |
-
-#### Phase 2：双向通信
-
-| ID | 任务 | 文件 | 状态 |
-|----|------|------|------|
-| O-2.1 | 实现 WebSocket 消息解析（transcript/help） | `extensions/realtime/src/server.ts` | ✅ |
-| O-2.2 | 实现 `transcript` 消息处理：存入对话上下文 | `extensions/realtime/src/server.ts` | ✅ |
-| O-2.3 | 实现 `help` 消息处理：调用 OpenClaw Agent | `extensions/realtime/src/server.ts` | ✅ |
-| O-2.4 | 实现 `before_agent_start` hook | `extensions/realtime/index.ts` | ✅ |
-| O-2.5 | 实现后台模式 System Prompt 模板 | `extensions/realtime/src/prompt.ts` | ✅ |
-| O-2.6 | 实现 `help_result` 响应返回给 Live | `extensions/realtime/src/server.ts` | ✅ |
-| O-2.7 | 实现 `inject` 消息推送机制 | `extensions/realtime/src/server.ts` | ✅ |
-| O-2.8 | 实现对话上下文管理（按客户端隔离） | `extensions/realtime/src/server.ts` | ✅ |
-
-#### Phase 3：自动同步
-
-| ID | 任务 | 文件 | 状态 |
-|----|------|------|------|
-| O-3.1 | 实现 chokidar 文件监听 | `extensions/realtime/src/file-watcher.ts` | ✅ |
-| O-3.2 | 监听 `USER.md` 变化 | `extensions/realtime/src/file-watcher.ts` | ✅ |
-| O-3.3 | 监听 `MEMORY.md` 变化 | `extensions/realtime/src/file-watcher.ts` | ⬜ |
-| O-3.4 | 实现文件内容摘要生成 | `extensions/realtime/src/file-watcher.ts` | ✅ (基础实现) |
-| O-3.5 | 实现 `prompt_update` 广播 | `extensions/realtime/src/file-watcher.ts` | ✅ |
-| O-3.6 | 实现对话存入 OpenClaw session | `extensions/realtime/src/server.ts` | ✅ |
-
-#### Phase 4：健壮性
-
-| ID | 任务 | 文件 | 状态 |
-|----|------|------|------|
-| O-4.1 | 实现客户端心跳检测 | `extensions/realtime/src/server.ts` | ⬜ |
-| O-4.2 | 实现连接断开重连处理 | `extensions/realtime/src/server.ts` | ⬜ |
-| O-4.3 | 实现错误处理和日志 | 所有文件 | ⬜ |
-| O-4.4 | 实现多客户端支持 | `extensions/realtime/src/context.ts` | ⬜ |
-| O-4.5 | 添加配置项（端口、超时等） | `extensions/realtime/src/config.ts` | ⬜ |
-
----
-
-### Live 侧（前端开发）
-
-#### Phase 1：基础连接
-
-| ID | 任务 | 文件 | 状态 |
-|----|------|------|------|
-| L-1.1 | 创建 Live 前端项目目录 | `extensions/realtime/live-frontend/` | ✅ |
-| L-1.2 | 复制 Gemini Live 官方 demo 代码 | `extensions/realtime/live-frontend/` | ✅ |
-| L-1.3 | 实现连接 Gemini Live API | `extensions/realtime/live-frontend/frontend/geminilive.js` | ✅ |
-| L-1.4 | 实现连接 OpenClaw Realtime WebSocket | `extensions/realtime/live-frontend/frontend/tools.js` | ✅ |
-| L-1.5 | 实现 `/api/realtime/bootstrap` 调用 | `extensions/realtime/live-frontend/frontend/script.js` | ✅ |
-| L-1.6 | 初始化 System Prompt（从 bootstrap 获取） | `extensions/realtime/live-frontend/frontend/script.js` | ✅ |
-
-#### Phase 2：对话流转
-
-| ID | 任务 | 文件 | 状态 |
-|----|------|------|------|
-| L-2.1 | 实现用户语音输入捕获 | `extensions/realtime/live-frontend/frontend/script.js` | ✅ |
-| L-2.2 | 实现 Gemini Live 语音响应播放 | `extensions/realtime/live-frontend/frontend/script.js` | ✅ |
-| L-2.3 | 实现 `transcript` 消息发送到 OpenClaw | `extensions/realtime/live-frontend/frontend/script.js` | ✅ |
-| L-2.4 | 配置 `openclaw_help` Tool | `extensions/realtime/live-frontend/frontend/tools.js` | ✅ |
-| L-2.5 | 实现 Tool 调用时发送 `help` 消息 | `extensions/realtime/live-frontend/frontend/tools.js` | ✅ |
-| L-2.6 | 实现接收 `help_result` 并返回给 Gemini | `extensions/realtime/live-frontend/frontend/script.js` | ✅ |
-
-#### Phase 3：同步处理
-
-| ID | 任务 | 文件 | 状态 |
-|----|------|------|------|
-| L-3.1 | 实现接收 `inject` 消息 | `extensions/realtime/live-frontend/frontend/tools.js` | ✅ |
-| L-3.2 | 实现 `inject` 内容注入 Gemini 上下文 | `extensions/realtime/live-frontend/frontend/script.js` | ✅（以 `client_content.turns[].role="model"` 注入；串行队列 + 音频 drain 后投递；注入文本使用可用户侧朗读的前缀，例如 `OpenClaw 查到：...`，避免内部标签被读出） |
-| L-3.3 | 实现接收 `prompt_update` 消息 | `extensions/realtime/live-frontend/frontend/tools.js` | ✅ |
-| L-3.4 | 实现动态更新 Gemini System Prompt | `extensions/realtime/live-frontend/frontend/script.js` | ⬜ (存储了但未热更新) |
-
-#### Phase 4：UI 体验
-
-| ID | 任务 | 文件 | 状态 |
-|----|------|------|------|
-| L-4.1 | 实现连接状态显示 | `extensions/realtime/live-frontend/frontend/index.html` | ✅ |
-| L-4.2 | 实现语音波形显示 | `extensions/realtime/live-frontend/frontend/script.js` | ✅ (Gemini demo 自带) |
-| L-4.3 | 实现对话历史显示 | `extensions/realtime/live-frontend/frontend/script.js` | ✅ |
-| L-4.4 | 实现 Tool 调用状态显示 | `extensions/realtime/live-frontend/frontend/script.js` | ✅ |
-| L-4.5 | 实现断线重连 UI 提示 | `extensions/realtime/live-frontend/frontend/script.js` | ⬜ |
-
----
-
-## 测试方案
-
-### 单元测试
-
-| 测试 ID | 测试内容 | 测试文件 |
-|--------|---------|---------|
-| UT-1 | WebSocket 消息解析 | `extensions/realtime/src/message-handler.test.ts` |
-| UT-2 | 后台模式 System Prompt 生成 | `extensions/realtime/src/prompt-hook.test.ts` |
-| UT-3 | 文件变化摘要生成 | `extensions/realtime/src/summarizer.test.ts` |
-| UT-4 | 对话上下文管理 | `extensions/realtime/src/context.test.ts` |
-
-### 集成测试
-
-| 测试 ID | 测试场景 | 预期结果 |
-|--------|---------|---------|
-| IT-1 | Live 连接 OpenClaw WebSocket | 连接成功，收到欢迎消息 |
-| IT-2 | Live 发送 transcript | OpenClaw 收到并记录 |
-| IT-3 | Live 调用 openclaw_help | OpenClaw 返回 help_result |
-| IT-4 | 修改 USER.md | Live 收到 prompt_update |
-| IT-5 | 修改 MEMORY.md | Live 收到 prompt_update |
-
-### 端到端测试
-
-| 测试 ID | 测试场景 | 步骤 | 预期结果 |
-|--------|---------|------|---------|
-| E2E-1 | 简单对话 | 1. 用户说"你好"<br>2. Live 回复 | Live 直接回复，OpenClaw 记录对话 |
-| E2E-2 | Help 调用 | 1. 用户说"北京天气"<br>2. Live 调用 help<br>3. OpenClaw 返回结果 | Live 播报天气信息 |
-| E2E-3 | 记忆同步 | 1. 用户说"我喜欢咖啡"<br>2. OpenClaw 更新 USER.md<br>3. 用户问"我喜欢什么" | Live 知道用户喜欢咖啡 |
-| E2E-4 | 主动提醒 | 1. 用户说"明天订会议室"<br>2. OpenClaw 发现日程冲突 | Live 主动提醒用户 |
-| E2E-5 | 断线重连 | 1. 正常对话中<br>2. 断开 WebSocket<br>3. 自动重连 | 重连后继续对话，上下文保持 |
-
-### 手动验收测试
-
-```bash
-# 1. 启动 OpenClaw Gateway
-pnpm openclaw gateway --verbose
-
-# 2. 确认 Realtime 插件加载
-# 日志应显示：[realtime] Realtime plugin activated
-# 日志应显示：[realtime] WebSocket server listening on port 18790
-
-# 3. 启动 Live 前端
-cd apps/realtime-web && pnpm dev
-
-# 4. 打开浏览器 http://localhost:3000
-
-# 5. 执行测试场景（见下方验收清单）
-```
-
----
-
-## 验收标准
-
-### Phase 1 验收：插件骨架
-
-| 验收项 | 验收标准 | 验收方式 |
-|-------|---------|---------|
-| ✅ 插件加载 | Gateway 启动时日志显示 `Realtime plugin activated` | 查看日志 |
-| ✅ WebSocket 服务 | 端口 18790 可访问 | `curl http://localhost:18790/health` |
-| ✅ Bootstrap API | 返回初始 System Prompt | `curl http://localhost:18790/api/realtime/bootstrap` |
-| ✅ WebSocket 连接 | 客户端可连接 | `wscat -c ws://localhost:18790/ws` |
-
-### Phase 2 验收：双向通信
-
-| 验收项 | 验收标准 | 验收方式 |
-|-------|---------|---------|
-| ✅ Transcript 接收 | 发送 transcript 消息，日志显示收到 | 发送 JSON 消息查看日志 |
-| ✅ Help 处理 | 发送 help 消息，收到 help_result | 发送 JSON 消息检查响应 |
-| ✅ 后台模式 | help 请求使用后台模式 System Prompt | 查看 Agent 日志 |
-| ✅ 完整流程 | Live 说"查天气"，能收到天气结果 | 语音交互测试 |
-
-### Phase 3 验收：自动同步
-
-| 验收项 | 验收标准 | 验收方式 |
-|-------|---------|---------|
-| ✅ 文件监听 | 修改 USER.md 后日志显示检测到变化 | 编辑文件查看日志 |
-| ✅ Prompt 更新 | 修改 USER.md 后 Live 收到 prompt_update | 检查 WebSocket 消息 |
-| ✅ 记忆同步 | 告诉 AI 喜好变化，后续能记住 | 语音交互测试 |
-| ✅ Session 记录 | 对话保存到 OpenClaw session | 查看 session 文件 |
-
-### 最终验收：完整体验
-
-| 验收项 | 验收标准 |
-|-------|---------|
-| ✅ 低延迟 | 日常对话响应 < 500ms |
-| ✅ 智能升级 | 复杂问题能正确调用 OpenClaw |
-| ✅ 记忆一致 | Live 和 OpenClaw 对用户认知一致 |
-| ✅ 零影响 | WebChat/Telegram 体验不变 |
-| ✅ 稳定性 | 连续对话 30 分钟无崩溃 |
-
----
-
-## 调试命令
-
-```bash
-# 查看 Realtime 插件日志
-pnpm openclaw gateway --verbose 2>&1 | grep realtime
-
-# 测试 WebSocket 连接
-wscat -c ws://localhost:18790/ws
-
-# 测试 Bootstrap API
-curl http://localhost:18790/api/realtime/bootstrap | jq
-
-# 发送测试消息
-wscat -c ws://localhost:18790/ws -x '{"type":"transcript","role":"user","text":"你好"}'
-
-# 查看 OpenClaw session 文件
-ls -la ~/.openclaw/agents/main/sessions/
-
-# 查看 USER.md 内容
-cat ~/.openclaw/workspace/USER.md
-```
-
----
-
-## 已知问题与下一步 TODO
-
-### 观测链（Audio stutter observability）
-
-> 目标：当用户反馈“语音播报中间断断续续”时，能快速区分是 **上游音频供给间歇**（网络/服务）还是 **本机播放/调度**（浏览器/代理）导致。
-
-- **Live 前端 UI 开关**：`Enable audio observability`（`enableAudioObs`）
-  - TURN_COMPLETE 时会在 `Debug Info` 输出一行指标：
-    - `recvGap*`：浏览器端收到 Gemini `AUDIO` chunk 的间隔统计（越大越可能是上游供给/网络/代理导致）
-    - `drainGap*`：本机播放队列 drain→active 的静默间隔统计（越大越可能是“播放队列被喂空”）
-- **Proxy 日志增强（当 `LIVE_GEMINI_LOG=1`）**：
-  - `live-gemini-*.md` 条目会附带 `proxy_handle_ms`（proxy 单条消息的处理耗时），用于判断是否是代理侧抖动
-
-**指标解读（非常关键）**：
-- `recvGap*`：浏览器收到 `AUDIO` chunk 的间隔（更偏“上游供给/网络/代理 → 浏览器”链路抖动）
-- `drainGap*`：本机播放队列被播空（drain）后到下一段音频开始（active）的静默间隔
-  - 这不一定是“卡顿”，也可能是模型自然停顿/换轮/等待用户说话
-  - 真正的“播报中间断断续续”通常表现为：在你主观认为“模型正在连续讲话”时，`drainGapMax` 仍出现明显峰值，同时 `recvGap` 不高
-
-### 2026-02-04 语音链路“混乱”复盘（基于 `logs/live-gemini-*.md`）
-
-> 目标：先用**双向日志**把时间线对齐，再逐项收敛输入结构，减少 Live 侧错乱。
-
-#### 问题 A：Supervisor（监督者）现状看到的 input 不完整
-
-**现状输入构成**（以当前代码为准）：
-- **最近对话**：仅来自 `transcript`（`用户:` / `Live:` 行），存于内存数组 `client.conversation[]`
-- **本轮 turn**：`TurnAssembler` 闭合得到的 `turn.userText` / `turn.liveText`（可能为空）
-- **不包含**：Gemini 的 toolCall / OpenClaw help 请求与结果（当前未写入 `client.conversation`）
-
-**影响**：
-- 监督者无法“智能地”判断：本轮是否已经通过 `openclaw_help` 给出答复 → 容易出现 help 与 inject 并行、重复提醒。
-
-**讨论中的对策方向（未实现）**：
-- 将 help 链路关键事件（toolCall / help request / help_result / tool_response）以“事件行”追加进 `client.conversation`，让 Supervisor 在同一个输入里看到全貌，从而由 OpenClaw 自己决策“本轮是否 inject”。
-
----
-
-#### 问题 B：OpenClaw inject 目前在 Gemini Live 里被当作 `user` 发言
-
-**证据**：当前前端通过 `sendTextMessage()` 将 inject 作为 `client_content.turns[].role="user"` 发送给 Gemini，因此 Gemini 会把它当成“用户又说了一句话”，而不是后台监督信息。
-
-**影响**：
-- 语义权重错误：后台提醒被当成用户意图 → 更容易触发重复调用、跑偏、自我对话感。
-
-**讨论中的对策方向（未实现）**：
-- 研究并使用 Live API 支持的 `clientContent.turns[].role="model"`（用于回放/追加模型侧上下文），将 inject 结构化为“后台模型侧上下文”，并在 system prompt 中加入最小协议声明，避免被当作“模型已说过的话”。
-
----
-
-#### 问题 C：help 链路与 inject 链路互不知情，导致叠加/重复提醒
-
-**现状**：
-- 链路 1：Gemini toolCall → `openclaw_help` → 前端回 `tool_response`
-- 链路 2：Supervisor 生成 inject → 前端以新一轮文本注入 Gemini
-
-**影响**：
-- 同一主题（例如禁酒/酒驾）可能被两条链路重复灌入上下文，造成“抢话/重复/错乱”。
-
-**讨论中的对策方向（未实现）**：
-- 不做前端语义相似度去重（避免复杂逻辑与 bug 风险），改为让 OpenClaw 在 Supervisor 输入中看到 help 的请求/结果，由 OpenClaw 自己做智能抉择：若本轮 help 已覆盖则禁止 inject。
-
----
-
-#### 问题 D：缺少 GEMINI→LIVE 的文字级证据链（ASR/模型输出/ToolCall）
-
-**现状**：
-- UI 能看到 ASR（`inputTranscription`）与模型输出（`modelTurn`）文本
-- 但只记录 LIVE→GEMINI 输入会导致“看起来像系统在自说自话”，无法肉眼对齐时间线
-
-**已实现（2026-02-04）**：
-- 新增 `logs/live-gemini-output.md`：记录 GEMINI→LIVE 的 `inputTranscription` / `outputTranscription` / `modelTurn.text` / `toolCall` / `interrupted` / `turnComplete`
-
----
-
-#### 问题 E：定时提醒（cron/systemEvent）目前只会投递到 WebChat（main session），不会提醒 Live
-
-**现象**：
-- 在 Live 里通过 `openclaw_help` 请求“2分钟后提醒”，确实能在 WebChat 界面看到系统提醒弹出：
-  - `System: [2026-02-05 08:44:21 GMT+8] ⏰ 提醒：这是你两分钟前设置的测试提醒...`
-  - `System: [2026-02-05 08:47:00 GMT+8] ⏰ 测试提醒来了！...`
-- 但在 Live（Gemini Live 前端）侧没有收到任何对应提醒，也没有语音播报。
-
-**证据（100%可复核）**：
-- `logs/prompts-webchat.md` 中出现上述两条 `System:` 提醒（WebChat 会话输入中可见）
-- `logs/live-gemini-input.md` 中**检索不到**上述提醒文本（说明没有通过 inject→`client_content` 投递给 Gemini Live）
-
-**根本原因（以当前代码为准）**：
-- cron 的 `sessionTarget="main"` 会将 payload.kind=`systemEvent` 的文本通过 `enqueueSystemEvent(...)` 投递到 **main session（WebChat）**。
-- 当前没有“cron systemEvent → realtime/live 会话 inject”的桥接层，因此 Live 不会被提醒。
-
-**对策方向（讨论中，未实现）**：
-- 增加“通知路由协议”：当提醒是从 Live 发起时，需要携带 `deliveryTarget`（例如 realtime `sessionId`/连接标识），到点后走 realtime ws `inject` 定向推送给 Live（并在 UI/语音播报）。
-- 或者在 OpenClaw 侧将提醒拆为两条：`systemEvent`（写入 main）+ `inject`（推送到 live），但前提是我们有稳定的 live 目标定位（不能“广播”靠运气）。
-
----
-
-### 2026-02-04 状态：语音“卡顿”在不连接 OpenClaw 时仍复现（需要优先排查）
-
-#### 现象（用户实测）
-
-- 在**同一网络/同一设备**下：
-  - ✅ `gemini-live-official/.../plain-js-demo-app`（官方原版）语音体验**明显更流畅**
-  - ❌ Car Her（`openclaw/extensions/realtime/live-frontend`）即使**不连接 OpenClaw**（不走 `ws://localhost:18790/ws`），仍出现语音**断断续续/频繁被打断**的体感
-
-#### 初步结论（基于确定性差异，不猜测）
-
-这说明“卡顿”**不依赖** OpenClaw 的 transcript/help/inject 链路本身（至少不是 *必须条件*），需要优先从 **Live Proxy / 进程负载 / 前端日志量** 方向排查。
-
-#### 代码层确定性差异（已对比官方 demo 与 Car Her）
-
-1) **Live Proxy 关日志并不等于零开销**（高怀疑）
-
-- Car Her 的 `extensions/realtime/live-frontend/server.py` 在 `proxy_task()` 内部，即使 `LIVE_GEMINI_LOG=0`（`ENABLE_MARKDOWN_LOGS=False`），仍会对**每条消息**执行：
-  - `await asyncio.to_thread(_append_markdown_log_output, ...)`
-  - `await asyncio.to_thread(_append_markdown_log, ...)`
-- 这两处在函数内部会立刻 return，但 **thread 调度开销仍存在**；并且在 `bytes` 分支还会先尝试 `decode("utf-8")` + `json.loads()`。
-
-这与官方原版 `plain-js-demo-app/server.py`（无上述逻辑）存在本质差异，可能导致实时音频链路抖动。
-
-2) **Car Her 常与 Gateway 同时运行**（资源竞争）
-
-- 当前根目录 `start.sh` 会同时启动 Gateway + Live 前端 proxy；
-- 官方 demo 典型只跑一个 demo server。
-
-同机多进程（Node gateway + Python proxy + 浏览器音频 worklet）在 CPU/IO 紧张时，会放大“卡顿”体感。
-
-3) **前端侧额外逻辑与日志量**
-
-- Car Her 前端新增了 debugLog、额外 UI 输出、以及为 inject/音频 drain 引入的 idle/active 跟踪（`mediaUtils.js` / `playback.worklet.js`）。
-- 这些逻辑即使不连接 OpenClaw，也可能引入更多主线程工作与 `console.log`（DevTools 打开时尤其明显）。
-
-#### 不改代码的下一步 Debug（按优先级）
-
-- **P0**：在 Car Her 环境下确保 `LIVE_GEMINI_LOG=0`，并用 Activity Monitor 对比：
-  - 只跑 Live proxy（不跑 gateway） vs 同时跑 gateway
-  - 浏览器 DevTools 关闭 vs 打开
-- **P0**：同一句话对比“官方 plain-js demo”与“Car Her live-frontend”，记录：
-  - 是否仍出现 `Interrupted`（只看体验不够，要配合 `live-gemini-output.md` 或 console 事件时间戳对齐）
-  - CPU 占用是否显著差异（Python/Node/Chrome）
-
-#### 2026-02-05 最新测试结论（基于 `live-gemini-*.md` 的硬指标）
-
-> 结论：今天（2/5）体验“丝滑”不是错觉；从日志看，**“音频中途无边界停顿”数量显著下降**，同时 inject→interrupted 的关联度也下降。
-
-- **会话（今天丝滑）**：`conn-1770246914908`
-  - inject（`[后台提醒]` 实际投递到 Gemini）次数：5
-  - `interrupted` 次数：4
-  - inject 后 2 秒内出现 `interrupted`：2/5（40%）
-  - **音频 chunk 间隔分布（粗粒度到秒）**：
-    - 0s：411 次（同一秒内多 chunk）
-    - 1s：38 次
-    - ≥2s 且 **期间没有** `turnComplete/generationComplete`（即“疑似播放中途停顿”）：**0 次**
-
-- **会话（昨天 inject 影响最强）**：`conn-1770213615851`
-  - inject：2
-  - `interrupted`：5
-  - inject 后 2 秒内出现 `interrupted`：2/2（100%）
-  - ≥2s 且无边界的疑似停顿：1 次（2s）
-
-- **会话（昨天卡顿反馈）**：`conn-1770211697474`
-  - ≥2s 且无边界的疑似停顿：6 次（top=3s）
-  - 说明昨天“断断续续”在日志里确实对应到“模型音频 chunk 在一个输出段内部出现秒级空洞”，而不是纯粹的回合切换。
-
-#### 2026-02-05 对话复盘（“历史性的一刻”）：两条通路并存，导致“看起来 Live 不调用 help”
-
-这次复盘覆盖两个不同的 Gemini Live 连接（`conn-*`），它们的行为差异非常关键：
-
-1) **连接 A：`conn-1770269306636`（工具调用确实发生）**
-
-- `setup.system_instruction` 已包含：
-  - 三方角色与分层协议（`role=user` / `role=model + 【大哥提醒】` / `tool_response`）
-  - `openclaw_help` 工具声明
-  - `## Live 必知记忆（胶囊）`
-- Gemini 在该连接内实际触发了 `toolCall openclaw_help`（示例）：
-  - 2026-02-05 13:28:52：请求“介绍一下天哥…”
-  - 2026-02-05 13:30:14：请求“解释 OpenClaw 如何处理用户画像/检索原理…”
-- 该连接内也出现了 OpenClaw 注入的 `inject`，并且已按协议以 `client_content.turns[].role="model"` 投递（带 `【大哥提醒】` 前缀）。
-
-> 结论：在连接 A，“Live 不调用 help”这个感知是错的——**它调用了**；但“调用前先口头回执一句”并不稳定（属于模型服从度问题）。
-
-2) **连接 B：`conn-1770269887502`（用户主观感受成立：几乎全靠 inject）**
-
-- 该连接同样注入了上述 system_instruction（含工具声明与胶囊）。
-- 但在该连接的对应日志范围内，**没有观察到** `toolCall openclaw_help`；与此同时，出现了多条 `client_content(role="model")` 的 `【大哥提醒】...` 注入文本（例如“医疗病历转录市场头部玩家/市场份额”等）。
-- 这会造成一个强烈的 UX 偏差：
-  - 用户听到的是 Live 的播报 + OpenClaw 的“提醒式注入”，
-  - 但 **Gemini 并没有自己发起 toolCall**，因此你会直观觉得“Live 从来不调用 help 工具”。
-
-> 结论：在连接 B，**工具链路被“监督注入链路”替代了**。这不是 system prompt 是否注入的问题，而是“后台 inject 的策略边界”问题：inject 一旦提供了足够多的事实内容，Gemini 就更没有动力触发 toolCall。
-
-3) **副作用：Live 仍可能“照读/复述” `【大哥提醒】` 前缀**
-
-虽然 system_instruction 已明确要求“不要照读/不要把 `【大哥提醒】` 当用户输入”，但在真实对话中仍观察到 Live 在面向用户的自然语言里出现诸如“`【大哥提醒】 查到了…`”的播报（即把协议前缀说出口）。
-
-> 结论：**仅靠提示词无法 100%阻止协议前缀被读出来**。我们需要把 inject 的责任边界收紧（优先只注入“路由/安全提醒/让 Live 去调用 help 的指令”，避免注入可直接播报的长事实段），否则模型会更频繁地“复述看到的文本”。
-
-4) **“切换女性声音”为什么不可能（必须写进架构约束）**
-
-Gemini Live 的语音音色来自 `setup.generation_config.speech_config.voice_config.prebuilt_voice_config.voice_name`（例如 `Puck`），这属于 setup 固化配置。对话中让 Live 口头承诺“已切换女性声音”并不会改变音色；要切换音色只能通过前端 UI 选择并重新建立会话（新的 setup）。
-
-> 结论：需要在 Live system_instruction 中明确：**禁止对用户宣称“已切换音色”**（除非会话已重建并在 setup 中生效）。
-
-#### 重要说明：`interrupted` 与“听感卡顿”不是同一件事
-
-- `interrupted=true` 可能发生在用户发声/回声/背景噪声触发 VAD 的时刻，也可能发生在模型输出边界附近；
-- 只有当它发生在“模型正在连续播报音频的中间”并导致音频流断开，用户才会明显感知“被打断/卡顿”。
-
-### 2026-02-03 测试发现的问题
-
-### 2026-02-03 测试发现的问题
-
-基于实际测试日志分析，闭环已完成，但存在以下需要优化的问题：
-
-#### 问题 1：Transcript 内容为空
-
-**现象**：
-```
-12:15:57 [plugins] [realtime] realtime:... | 用户: 
-12:15:59 [plugins] [realtime] realtime:... | Live: 
-```
-日志中 `用户:` 和 `Live:` 后面的文本内容为空。
-
-**原因**：前端发送 transcript 时，`text` 字段可能为空（增量转写时 `finished=true` 但 `text=""`)
-
-**优先级**：中
-
-**修复方案**：
-- 前端累积转写文本，只在有实际内容时发送
-- 或后端过滤空 transcript
-
----
-
-#### 问题 2：重复的 Help 请求
-
-**现象**：
-```
-12:29:50 [plugins] [realtime] Help request: 查询今天的天气
-12:30:14 [plugins] [realtime] Help request: 查询今天的天气
-12:30:34 [plugins] [realtime] Help request: 查询今天的天气
-```
-同一个请求被发送了 3 次。
-
-**原因**：
-1. 用户可能多次说了相同的话
-2. Live AI 在等待期间重复调用 tool
-3. 没有请求去重机制
-
-**影响**：
-```
-12:30:52 [diagnostic] lane wait exceeded: waitedMs=38645 queueAhead=1
-```
-队列堆积导致等待时间增加。
-
-**优先级**：高
-
-**修复方案**：
-- 添加请求去重（相同 callId 跳过）
-- 添加节流机制（短时间内相同请求合并）
-- 前端在等待响应时禁止重复调用
-
----
-
-#### 问题 3：Agent 响应时间过长
-
-**现象**：
-```
-waitedMs=38645  # 38秒
-waitedMs=22751  # 22秒
-waitedMs=33593  # 33秒
-```
-
-**原因（更精确）**：一旦 Gemini Live 在该轮触发 `toolCall(openclaw_help)`，这轮后续的可播报输出会被 **tool_response** 同步阻塞。OpenClaw Agent 执行复杂任务（网络请求/浏览器/工具链）又可能需要几十秒，两者叠加会让用户感觉 her “在傻等、回复很慢”。
-
-**影响**：用户等待体验差，Live 可能在等待期间静默
-
-**优先级**：中
-
-**改进方案（✅ 已实现）**：
-- **两段式工具协议**：`openclaw_help` 收到后立即返回 `{ok: true, status: "processing"}` 的 tool_response，最终结果通过 `inject` 异步投递。
-- **安全窗口投递**：inject 入队 `pendingInjects`，等待 `TURN_COMPLETE` + `audioPlayer.waitForIdle()` 后才投递。
-
----
-
-#### 问题 4：Agent 偶发失败
-
-**现象**：
-```
-12:36:08 [plugins] [realtime] Agent reply: 抱歉，我暂时无法处理这个请求。
-```
-
-**原因**：Agent 处理失败或超时
-
-**优先级**：中
-
-**修复方案**：
-- 添加重试机制
-- 更好的错误信息返回
-- 记录失败原因便于调试
-
----
-
-#### 问题 5：Session 隔离问题
-
-**现象**：
-```
-12:29:21 Client connected: realtime:1770121761112-dc7rjc
-12:29:50 Created new agent session: 18f7aedd-8308-4f43-97d6-245ace592e1c
-...
-12:31:39 Client disconnected: realtime:1770121761112-dc7rjc
-12:31:41 Client connected: realtime:1770121901888-yb3uiv
-12:32:01 Created new agent session: 0482a6cf-a992-42fa-81c4-849cad3443ff
-```
-每次重连都创建新的 Agent session。
-
-**影响**：短时间内的对话上下文可能丢失
-
-**优先级**：低
-
-**改进方案**：
-- 支持 session 恢复（前端传递上次 sessionId）
-- 或使用持久化的 session 映射
-
----
-
-#### 已验证正常工作的功能
-
-✅ **核心闭环**：Live 语音 → OpenClaw 处理 → 结果返回 → Live 语音输出
-
-✅ **Help 调用成功**：
-```
-12:16:37 Help request: 查询我是否有权限访问Apple Notes
-12:16:50 Agent reply: 好消息：我确实有权限访问Apple Notes...
-```
-
-✅ **复杂任务处理**：
-```
-12:21:14 Help request: 今天最热门的科技新闻
-12:21:42 Agent reply: 今天科技圈最热的几条新闻：OpenAI发布了Codex App...
-```
-
-✅ **记忆更新同步**：
-```
-12:33:53 Help request: 记录天哥老婆开始创业
-12:34:09 File changed: USER.md
-12:34:09 Broadcasting prompt_update for user_profile
-12:34:23 Agent reply: 好的，已经记下来了。
-```
-
----
-
-### 下一步 TODO
-
-| 优先级 | 任务 | 描述 |
-|-------|------|------|
-| 🔴 高 | 请求去重 | 防止同一 help 请求重复发送 |
-| 🟡 中 | 空 transcript 过滤 | 跳过空内容的转写消息 |
-| ✅ | 等待期反馈 | 两段式 ACK：toolCall 后立即返回 processing |
-| 🟡 中 | 错误处理 | Agent 失败时返回更友好的消息 |
-| 🟢 低 | Session 恢复 | 支持断线重连后恢复上下文 |
-| 🟢 低 | Prompt 热更新 | 收到 prompt_update 时实时更新 Gemini System Prompt |
-| ✅ | inject 实现 | `inject-delivery.js` 实现安全窗口投递 |
-
----
-
-### 2026-02-03 严重问题：Live AI 颠三倒四
-
-#### 问题描述
-
-用户连续问多个问题时，Live AI 回复内容混乱，答非所问。
-
-#### 实际对话记录
-
-```
-用户: "你在吗?"
-Live: "你好天哥，我在。有什么事吗？"
-
-用户: "我们上次聊了什么?"
-Live: "好的，让我查一下我们的记录。稍等。"
-[Asking OpenClaw: 回忆并总结我们上次对话的主要内容]
-
-用户: "北京和上海明天的天气对比一下两边的差值是多少?"
-[Asking OpenClaw: 查询北京和上海明天的天气，并计算两地气温的差值]
-
-[OpenClaw返回] 上次我们的对话主要围绕几个方面：TTS语音消息发送...会议纪要系统...自我升级...
-
-用户: "你查了吗，我很急的，在线等。"
-Live: "不好意思，刚才有点延迟。我正在处理你的请求，马上返回结果。好的，上次我们调试了TTS语音发送，开发了会议纪要系统，还讨论了我的自我升级。关于明天的天气，正在查询中，请稍等。"  ← 混着说了两个话题！
-
-[OpenClaw返回] 明天北京最高13度，最低零度左右。上海最高17度，最低5度左右...
-
-用户: "我们上一轮到底说了什么？我觉得你的回忆不对啊。"
-[Asking OpenClaw: 重新确认并总结我们上一轮对话的实际内容]
-
-[OpenClaw返回] 明天北京最高13度...  ← 这是天气的结果，不是"上一轮"的结果！
-
-Live: "不好意思，我可能记错了。我们上一轮主要是讨论了北京和上海明天的天气和温差。"  ← 把天气结果当成了"上一轮对话"的答案！
-
-[OpenClaw返回] 抱歉刚才搞混了。上一轮对话实际上是你让我查北京和上海明天的天气...  ← 正确的答案
-
-Live: "抱歉，我刚才弄混了。我们上一轮对话是关于北京和上海明天的天气和温差的。"
-```
-
-#### 根本原因：callId 是 undefined
-
-**关键日志**：
-```javascript
-script.js:404 Calling function openclaw_help (id: undefined) with parameters: {"request":"上海的天气"}
-```
-
-Gemini Live API 返回的 `FunctionCall` 没有 `id` 字段（根据官方文档，`FunctionCall.id` 是 **可选的**）。
-
-**影响**：
-1. 前端发送 `help` 请求时 `callId: undefined`
-2. 后端返回 `help_result` 时 `callId: undefined`
-3. **前端无法匹配请求和响应**
-4. 当有多个并发请求时，Live AI 随机或按顺序处理结果，导致答非所问
-
-#### OpenClaw 后端验证
-
-后端处理完全正确！从 session 文件 `154c4645-4f47-4624-af11-8cf834debc3d.jsonl`：
-
-| 请求 | OpenClaw 返回 | 正确性 |
-|-----|-------------|-------|
-| "回忆上次对话" | TTS、会议纪要、自我升级 | ✅ 正确 |
-| "北京上海天气差值" | 北京13度/0度，上海17度/5度 | ✅ 正确 |
-| "重新确认上一轮" | "上一轮是天气查询" | ✅ 正确 |
-
-**问题 100% 在前端的请求-响应匹配逻辑！**
-
-#### 修复方案
-
-前端自己生成 `callId`（UUID），不依赖 Gemini 返回：
-
-```javascript
-// extensions/realtime/live-frontend/frontend/script.js
-// 在 TOOL_CALL 处理处：如果 Gemini 没给 id，前端自己生成 UUID
-const functionCallId = functionCall.id || crypto.randomUUID();
-```
-
-然后在 `onHelpResult` 回调中根据 `callId` 匹配对应的请求。
-
-**当前状态（2026-02-05）**：✅ 已实现（前端不再依赖 `FunctionCall.id`）。
-
-#### 优先级
-
-🔴 **严重** - 多轮对话基本不可用
-
----
-
-### 2026-02-03 问题：Memory 不自动写入
-
-#### 问题描述
-
-今天（2/3）的所有对话都没有被写入 memory 文件。
-
-```bash
-ls /Users/buyitian/.openclaw/workspace/memory/
-# 只有 2026-02-02.md，没有 2026-02-03.md
-```
-
-#### 原因分析
-
-从 session 日志看，OpenClaw Agent **没有调用 write 工具写 memory**。
-
-`prompt.ts` 第 23 行写着：
-```
-2. 自主判断是否需要保存记忆、更新用户画像
-```
-
-Agent 自主判断这些对话（天气查询等）不够重要，不需要记忆。
-
-#### 影响
-
-临时性对话不会被记录，用户问"刚才说了什么"时可能得不到正确答案。
-
-#### 优先级
-
-🟡 中 - 可能是预期行为，取决于对话重要性判断
-
----
-
-## 实现状态总览（以当前代码/日志为准）
-
-| 能力 | 目标 | 当前实现状态 | 备注 |
-|------|------|-------------|------|
-| transcript 自动同步到 OpenClaw | ✅ | ✅ 已实现 | 记录 + 参与 turn 组装 |
-| help → OpenClaw Agent → help_result | ✅ | ✅ 已实现 | 这是当前唯一稳定的“触发大脑”路径 |
-| OpenClaw 基于 transcript 自动监督/记忆 | ✅ | ✅ 已实现 | Supervisor Run 以 turn 为单位触发（可写 USER/MEMORY） |
-| OpenClaw 主动 inject 提醒 Live | ✅ | ✅ 已实现 | 已在 WS Frames 中验证前端可收到 inject |
-| USER.md/MEMORY.md 变更 → prompt_update | ✅ | ✅ 已实现 | 只监控这两个文件 |
-| prompt_update 热更新到 Gemini Live 会话 | ✅ | ⚠️ 未完成 | 目前只更新前端缓存，未必影响 live 会话 |
-| 多并发 tool call 的请求-响应匹配 | ✅ | ✅ 已实现 | 前端 `TOOL_CALL` 处自生成 UUID，保障 callId 稳定 |
-
----
-
-## 2026-02-05 结论：问题 A（Live 记忆污染）与 v3 解决方案（记忆胶囊）
-
-### 现象
-
-Live（Gemini Live 前台）出现“错乱/自信过头/能力幻觉”，例如误以为自己能“修改配置/修改代码/已执行后台动作”，导致对话不可信。
-
-### 根因（100% 可复现）
-
-Live 前端在建立 Gemini Live session 的 `setup.system_instruction` 时，把 OpenClaw 的 `USER.md` / `MEMORY.md`（包含后台工具经验、命令、路径、自我修改能力等 lore）拼进了 system prompt。
-
-一旦这些 lore 进入 Live 的 system prompt，Live 会把它当作“自己的永久知识/能力”，从而产生错乱。
-
-### v3 目标（只靠环境描述，不做工程化白名单/写死业务词）
-
-把“全量 USER.md/MEMORY.md → Live system prompt”的路径彻底断开，改为：
-
-- OpenClaw 在后台自动生成一段 **Live 必知记忆（胶囊）**
-- Live 只注入胶囊到 Gemini Live 的 `setup.system_instruction`
-- 其余信息由 Live 通过 `openclaw_help` 请求后台（而不是直接塞进 Live 的长期上下文）
-
-### 关键约束（来自 Gemini Live 协议）
-
-- Gemini Live 的 `system_instruction` 只能在 session 建立时通过 `setup` 发送一次。
-- 因此胶囊更新要生效：必须重建 Gemini Live session（断开→重连→重发 setup）。
-
-### 共享环境描述（v3，可复用）
-
-> 说明：下面这段作为 OpenClaw 的“共享背景块”，在 Supervisor / Help / Capsule 三个场景中复用。只讲清角色与边界，不写死路径/命令/工具名/业务词。
-
-```text
+// extensions/realtime/src/prompt.ts
 你是 OpenClaw，是后台的大脑与监督者（后台大哥）。你不会直接对用户说话。
 
 系统有三方：
@@ -1523,7 +272,7 @@ Live 前端在建立 Gemini Live session 的 `setup.system_instruction` 时，�
 - 你（OpenClaw）：后台高智能代理。你旁观 Live↔用户对话，在需要时支援 Live。
 
 路由语义：
-- 你收到的“对话上下文/事件”都来自 Live 的同步。
+- 你收到的"对话上下文/事件"都来自 Live 的同步。
 - 你输出的任何文字都会被送给 Live，由 Live 决定如何对用户表达；用户不会直接看到你。
 
 目标：
@@ -1531,296 +280,101 @@ Live 前端在建立 Gemini Live session 的 `setup.system_instruction` 时，�
 - 你在关键时刻提供强智能支援（补全信息、纠错、提醒、规划）。
 ```
 
-### 三个场景的独立 prompt（v3）
+**建议在动态 prompt（handleHelpRequest）中增加**：
 
-#### 场景 1：Supervisor（监督 → 是否提醒/注入）
+```
+## 处理要求
 
-```text
-你将看到最近对话片段（包含用户一句与 Live 一句）。
+1. **执行任务**：完成 Live 请求的具体事项
 
-请判断是否需要立刻提醒用户。
-- 如果需要：输出一句 Live 可以直接播报给用户的短句（口语化、简短、只输出这一句）。
-- 如果不需要：输出空字符串。
+2. **审视上下文**：处理时检查对话是否有需要补充的信息
+   - 发现重要事项但 Live 没注意到 → 在结果后提醒
+
+3. **输出格式**：
+   - 口语化，适合语音播报
+   - 简洁，不要长篇大论
 ```
 
-#### 场景 2：Help（求助 → 完成明确请求）
+> **注意**：OpenClaw 原有能力已包含自动更新 USER.md / MEMORY.md，不需要额外提醒。
 
-```text
-你将看到对话上下文（可能为空）与“当前请求”。
+---
 
-请输出你希望 Live 对用户说的结果。
-如果信息不足，请输出你希望 Live 向用户追问的最少问题（越少越好）。
+## 技术实现要点
+
+### 现有代码分析
+
+**1. 立即 ACK（保留）**：
+```javascript
+// script.js line 524-528
+state.client.sendToolResponse(functionCallId, "openclaw_help", {
+  ok: true,
+  status: "processing",
+  jobId: functionCallId,
+});
 ```
 
-#### 场景 3：Capsule（生成 Live 的长期最小背景）
+**2. 异步结果投递（现有实现）**：
+```javascript
+// script.js onHelpResult
+openclawConnection.onHelpResult = (callId, reply) => {
+  state.pendingInjects.push(reply);  // 进入队列
+  tryDeliverInjects();
+};
 
-```text
-你将看到两份材料：USER.md（用户画像）与 MEMORY.md（长期记忆）。
-
-请把其中“Live 必须长期掌握”的信息压缩成一段高密度胶囊，供 Live 放入它的 system prompt。
-要求：
-- 只保留能显著提升 Live 对话质量的“用户层事实/偏好/安全约束/称呼/时区/沟通偏好”等。
-- 内容要短、密度高、可直接粘贴进 system prompt（不要写解释，不要写过程）。
-输出格式：
-以“## Live 必知记忆（胶囊）”开头，后面只用项目符号列表。
+// inject-delivery.js deliverNextInject
+client.sendTextMessage(reply, { role: "model" });     // inject 内容
+client.sendTextMessage(controlLine, { role: "user" }); // 控制句（触发 Gemini 播报）
 ```
 
-### 代码落点（最小改造）
+### 新设计
 
-- Realtime 插件新增“胶囊生成”调用：启动后或首次 bootstrap 时，读取 `USER.md` + `MEMORY.md`，用独立 session 运行一次“Capsule 生成”任务，得到胶囊文本并缓存。
-- bootstrap：`GET /api/realtime/bootstrap` 返回 `liveMemoryCapsule`（只返回胶囊，不返回全量 USER/MEMORY）。
-- watcher：`USER.md` 或 `MEMORY.md` 变化时，重算胶囊并广播 `prompt_update(section="live_memory_capsule")`。
-- 前端：连接 Gemini 前，拼接 `基础 system 指令 + liveMemoryCapsule`；不再拼接全量 USER/MEMORY。
+**去掉控制句**：
+```javascript
+// inject-delivery.js 改为只发 role=model
+client.sendTextMessage(reply, { role: "model" });
+// 不发 controlLine
+```
 
-### 自动重连（让用户无感）— 后续实现方向
+**去掉 Supervisor 整个路径**：
+- 删除 `server.ts` 中 `runSupervisorTurn` 相关代码
+- 删除 `enqueueSupervisorTurn` 调用
+- 删除 `turnAssembler` 相关代码（如果只用于 Supervisor）
 
-当收到 `prompt_update(live_memory_capsule)` 且 Gemini 已连接时：
+### conversation 记录完整化
 
-- 等待 `TURN_COMPLETE` + 本地音频播放 idle（避免打断）
-- 静默断开 Gemini WS
-- 立刻重连并重发 `setup`（带最新胶囊）
+**现有问题**：`client.conversation` 只记录转录，不记录 tool 调用和结果
 
-注意：重连是新 session，会丢失 Gemini Live 会话内历史；如需“更无感”，可在重连后由 Live 注入一条极短的上下文摘要（需谨慎，避免再次污染）。
+**改进**：
+```typescript
+// 当 Help 返回结果时，也记录到 conversation
+client.conversation.push(`[OpenClaw]: ${result}`);
+```
 
----
-
-## 2026-02-05 状态更新：回执播报与 `RESPONSE_REJECTED`（基于最新日志的硬证据）
-
-> 目标：把“现象→原因→下一步”写清楚，避免误把协议/策略行为当成我们代码逻辑问题。
-
-### 现象 1：`openclaw_help` 触发时听到“女生机械音回执”
-
-#### 结论（确定）
-
-- 这段回执 **不是 Gemini Live 模型用 `speech_config.voice_config` 播报的语音**。
-- 如果你听到了“先回一句”的声音，同时 Gemini 日志显示这一轮 **直接 toolCall**，那么该回执只能来自 **浏览器本地 TTS（Web Speech API / `speechSynthesis`）**。
-
-#### 证据（日志）
-
-- 在 `conn-1770262933084`，Gemini 在 11:42:55 直接发起 `toolCall(openclaw_help)`，并没有先生成一段可播报的模型回复（而是立刻 `turnComplete` 进入等待工具结果）。
-- 因此“先回一句”无法来自 Gemini，只能来自前端本地播报。
-
-#### 影响
-
-- 本地 TTS 的声音由操作系统/浏览器决定，**无法保证与 Gemini Live 的声音一致**（例如：Live 设定为男声，但本地 TTS 可能是默认女声）。
-- 若回执文本写死，会违背“泛化、不要写死”的要求。
-
-#### 下一步（方向）
-
-- **优先方向**：不要使用本地 TTS 伪装成 Live 的声音；改为“非语音”的即时反馈（例如短提示音/视觉提示），并把真正的语音播报交给 Gemini Live。
-- **可选方向**：尝试让 Gemini Live 在调用工具前自行说一句极短口语回执（但这属于模型行为，无法 100%保证；只能通过 prompt 与交互约束尽量提高概率）。
-
-### 现象 2：Live “突然消失”，但 OpenClaw 还能持续 inject
-
-#### 结论（确定）
-
-- “Live 消失”的核心信号是 Gemini 返回 `turnCompleteReason: "RESPONSE_REJECTED"`：这代表 **模型这一轮原本要输出，但被策略层拒绝**，因此用户听不到正常回复。
-- OpenClaw 仍能 inject 的原因是：inject 走的是 Live↔OpenClaw 的通道，不依赖 Gemini 这一轮是否成功生成可播报回复；因此会出现“Gemini 沉默但后台还在提醒”的割裂体验。
-
-#### 证据（日志）
-
-- `conn-1770262933084` 在 11:44:26 出现：
-  - 连续的 `inputTranscription`（用户音频被识别）
-  - 随后 `turnCompleteReason: "RESPONSE_REJECTED"`
-
-#### 触发类型（已通过测试确认）
-
-**主因：`proactiveAudio: true`**（默认开启）— Gemini 拒绝响应"非真正用户请求"（如语气词 "hm"、回声）。
-
-- **测试复现**：`gemini-proxy.contract.test.ts` 模拟音频 + `activity_start/end` + inject 冲突，稳定 60% reject 率。
-- **线上实际**：正常使用 reject 率很低（9分钟对话仅 1 次），inject 通常在用户等待时发送不冲突。
-- **硬件因素**：iPhone mic 回声会触发误打断；使用 AirPods 隔离回声可显著改善。
-
-#### 下一步
-
-- inject 前检查用户活动状态，或研究 `tool_response` 替代 `client_content`。
-- 连续 N 次 reject 时自动重连 session。
----
-
-## 2026-02-05 新发现：`toolCall(openclaw_help)` 会同步阻塞 her，导致“用户傻等”与“回复变慢”
-
-### 现象（用户视角）
-
-- 用户提出一个需要后台处理的问题（路线/天气/机票/打开浏览器/科技新闻等）。
-- her 没有立刻用语音给出“我在处理”的短回执，而是进入明显的静默等待。
-- 当用户着急追问或打断时，会进一步触发更多 `openclaw_help`，体感更慢、更乱。
-
-### 证据（硬日志，可复核）
-
-在同一条 Gemini Live 连接 `conn-1770273128032`：
-
-- 2026-02-05 14:32:53：Gemini→Live 发起 `toolCall openclaw_help(request="查询海南近期天气预报")`
-- 2026-02-05 14:33:30：Live→Gemini 才回 `tool_response`（相隔约 37 秒）
-
-同一会话中还观察到：
-
-- 2026-02-05 14:34:55：`toolCall openclaw_help(request="打开浏览器…查询机票")`
-- 2026-02-05 14:35:37：`tool_response` 返回（相隔约 42 秒）
-
-同时 `proxy_handle_ms` 量级为 \(0.01\sim0.1\) ms，说明“慢”不在代理转发，而在工具等待（OpenClaw 执行耗时 + Gemini toolCall 同步等待）。
-
-### 根因（确定性结论）
-
-Gemini Live 的 tool 调用是“同步等待”语义：一旦模型在该轮触发 `toolCall`，该轮后续可播报输出会被 tool_response 阻塞；如果 tool_response 需要几十秒才回来，用户就会感觉 her “卡住/发呆/傻等”。
-
-### P0 设计目标（不改产品语义，只改交互时序）
-
-从用户视角，必须满足：
-
-- her **立刻**给出短回执（例如“好，我在查。”），让用户知道系统在工作；
-- 后台结果到达后，her **明确命名来源**（“OpenClaw 查到：…”）并压缩播报；
-- 用户中途继续说话时，系统不会因为同步等待而“失语”，也不会无限堆积重复请求。
-
-### P0 方案（✅ 已实现）：两段式工具返回 + 异步补齐
-
-将 `openclaw_help` 从“等 OpenClaw 完成才回 tool_response”改为：
-
-1) **立即 tool_response（<200ms）**：只返回“已开始处理 + 任务标识”（让 Gemini 继续生成并让 her 立刻开口回执）。
-2) **最终结果异步投递**：OpenClaw 完成后通过 realtime ws `inject` → 前端以 `client_content(role="model")` 注入 Gemini，让 her 在下一次合适的时机播报“OpenClaw 查到的结果”。（注入文本使用可朗读前缀，例如 `OpenClaw 查到：...`，避免内部标签被读出）
-
-并配套：
-
-- **去重/合并策略（确定性）**：同一“任务标识”未完成前，后续相同意图请求不再触发新任务，只更新/复用已有任务。
-- **队列上限**：限制并发后台任务数，避免浏览器自动化类请求把队列拖爆。
-
-> 备注：这份方案的价值在于它不依赖“模型先说一句再 toolCall”的服从度；即使模型立刻 toolCall，我们也能在工具层面快速释放阻塞，让 her 不至于长时间沉默。
+这样即使将来还需要审视上下文，也能看到完整信息。
 
 ---
 
-## 2026-02-05 架构决策：选择 B（弱触发/等窗口播报）作为默认策略
+## 实现状态
 
-> 背景：车载语音场景中，用户经常边开车边补充/插话；若“结果一到就抢话”（强触发），会频繁打断用户与 her 的当前播报，导致听感碎片化与 `interrupted` 激增。为保证可听清、可控和确定性，本设计选择 **B** 作为默认。
-
-### 决策结论（确定）
-
-- **默认策略：B（弱触发）**  
-  OpenClaw 的“最终结果”到达后，不立刻抢话，而是进入队列；只在满足“安全窗口”时，才把结果注入 Gemini 并播报给用户。
-- **安全例外（必须存在）：强插播报**  
-  对于明确的安全风险提醒（例如酒驾/重大健康禁忌/紧急危险），允许打断当前播报并立刻播报。  
-  这不是“选择 A”，而是 B 的一个 **确定性例外**：安全语义优先于“不中断”。
-
-### 目标（用户视角）
-
-1) 用户永远不会“傻等”：her 在 toolCall 后 **立刻**给出语音回执（不依赖提示词服从度）。
-2) 用户能听清：信息型结果不抢话，避免碎片化播报。
-3) 不漏报：结果不会只停留在 UI 的 `[OpenClaw] ...` 日志里，必须触发 her 在合适窗口播报。
-4) 可解释可验证：每条结果都有 jobId、队列、触发条件与日志证据。
+| 能力 | 状态 | 备注 |
+|------|------|------|
+| Her 调用 openclaw_help | ✅ 已实现 | |
+| 两段式 ACK | ✅ 已实现 | 立即返回 processing |
+| 结果异步投递 | ✅ 已实现 | 安全窗口投递 |
+| Supervisor 监督 | ❌ 建议去掉 | 简化架构 |
+| 控制句触发 | ❌ 建议去掉 | 减少 RESPONSE_REJECTED |
+| liveMemoryCapsule | ✅ 已实现 | 用户画像摘要 |
+| Her 亲切称呼用户 | ⚠️ 需改进 prompt | |
+| conversation 记录完整 | ⚠️ 需改进 | 加入 tool 调用记录 |
 
 ---
 
-## 事件与状态机（B 默认）
+## 下一步 TODO
 
-### 关键事件（按方向）
-
-- GEMINI→LIVE
-  - `toolCall(openclaw_help, request)`
-  - `TURN_COMPLETE`（模型回合输出结束）
-  - `interrupted=true`（模型生成被打断）
-- LIVE→GEMINI
-  - **tool_response（立即 ACK）**：表示“已开始处理”
-  - `client_content(role="model")`：用于注入“最终结果文本”（在安全窗口投递；建议使用可朗读前缀 `OpenClaw 查到：...`）
-- OPENCLAW→LIVE（realtime ws）
-  - `help_result(jobId, finalText, priority)`
-  - （可选）`help_progress(jobId, progressText)`：用于 UI/日志观测，不直接播报（避免噪声）
-
-### Job 状态（确定性）
-
-- `created`：收到 toolCall，生成 jobId
-- `ack_sent`：已向 Gemini 发送“立即 tool_response ACK”
-- `running`：已把任务发给 OpenClaw 并在执行
-- `final_ready`：OpenClaw 返回最终结果（进入队列）
-- `delivered_to_gemini`：在安全窗口把“最终结果文本”注入 Gemini
-- `spoken_or_skipped`：结果已被播报（或被后续更高优先级/更新结果取代并标记为跳过）
-
----
-
-## 具体流程（按步骤推演）
-
-### Step 0：前置约束（不变）
-
-- Live 与 OpenClaw 已通过 ws 连接；Gemini 已注册 `openclaw_help` tool（本设计不依赖手动 UI 开关）。
-
-### Step 1：Gemini 发起 toolCall（触发点）
-
-当 Gemini 产生 `toolCall(openclaw_help, request=...)`：
-
-- Live 生成 `jobId`（若 Gemini 未提供稳定 id，则使用前端生成的 UUID）。
-- Live 立刻将该 `jobId` 关联到“当前用户意图”（用于去重/合并与最终播报顺序）。
-
-### Step 2：立即 tool_response ACK（解除同步阻塞）
-
-Live **必须在 <200ms** 内向 Gemini 返回 tool_response，内容只表达：
-
-- `ok=true`
-- `status="processing"`
-- `jobId=...`
-
-此时 her 获得继续生成语音的机会，能够立刻对用户说一句短回执（例如“好，我在处理，请稍等。”）。  
-注意：这一句回执由 Gemini 播报，不使用本地 TTS。
-
-### Step 3：并行启动 OpenClaw 任务（后台执行）
-
-Live 同时向 OpenClaw 发送 help 请求，携带相同 `jobId`（或 callId 作为 jobId）。
-
-OpenClaw 在后台执行任务（可能很慢：浏览器/联网/多工具链），但 **不会再阻塞 Gemini 的说话**，因为 Step 2 已解除阻塞。
-
-### Step 4：最终结果返回 → 入队（弱触发）
-
-当 OpenClaw 返回最终结果：
-
-- Live 将结果入队 `pendingResults`（以 `jobId` 去重）。
-- 默认不立刻注入 Gemini，不抢话。
-
-### Step 5：安全窗口触发播报（B 的核心）
-
-当满足以下“安全窗口”条件时，Live 才把结果注入 Gemini：
-
-- 观察到 GEMINI→LIVE 的 `TURN_COMPLETE`
-- 本地音频播放队列 idle（避免打断正在播放的语音）
-- 用户当前不在说话（避免立即被 VAD 打断；以输入转写/活动信号判定）
-
-满足窗口后：
-
-- Live 发送 `client_content(role="model")`，内容为：`OpenClaw 查到：<finalText>`  
-- her 在下一轮以自然口语向用户播报，并明确命名来源（“OpenClaw 查到：……”）。
-
-### Step 6：安全例外（强插播报）
-
-如果 OpenClaw 返回的结果被明确标记为安全风险：
-
-- 该条结果以 `priority="urgent_safety"`（或独立消息类型）返回给 Live。
-- Live 允许跳过“安全窗口”检查，立刻注入 Gemini 并播报（即便会打断当前播报/用户发言）。
-
-> 关键约束：安全分类必须来自 OpenClaw 的明确标记，不能让 her 自己猜（避免不确定性）。
-
----
-
-## 去重/合并与“为什么不会漏报”
-
-### 为什么之前会出现“UI 有 `[OpenClaw] ...` 但用户没听到”
-
-之前的行为是：最终结果以 tool_response 返回，且经常在用户继续说话时到达，Gemini 生成被打断（`interrupted`）导致“没形成一次完整播报输出回合”。UI 只是前端日志，不等于用户听到。
-
-### 本设计如何保证不漏报（确定性机制）
-
-- 所有最终结果进入 `pendingResults` 队列，有明确的 `jobId` 状态。
-- 只要用户持续对话，总会出现 `TURN_COMPLETE` 窗口；窗口出现时队列必被消化。
-- 若用户一直插话导致长期没有窗口，系统仍能通过“回执 + 队列”保持可解释：不会丢，只是排队等待窗口。
-- 对安全类，允许强插，从而不会因为“等窗口”而错过关键提醒。
-
----
-
-## 对 OpenClaw 的侵入性与现有功能影响
-
-### 侵入性评估（结论：低，且可做到零侵入 core）
-
-- **OpenClaw 核心代码（`src/`）**：不需要修改（保持零侵入）。
-- **Realtime 插件（`extensions/realtime/`）**：需要修改/扩展其 help 结果返回协议（携带 jobId、priority；以及可选 progress 事件）。
-- **Live 前端（`extensions/realtime/live-frontend/`）**：需要调整工具回包策略：
-  - tool_response 只用于“立即 ACK”
-  - 最终结果改走“队列化注入（B）”（例如 `OpenClaw 查到：...`）并在安全窗口投递
-
-### 对现有功能影响（结论：不会影响 WebChat/Telegram 等）
-
-- WebChat/Telegram/其它渠道不走 realtime 插件与 Gemini Live，不受影响。
-- Realtime 侧的行为变化只影响“语音前端与 OpenClaw 插件的 help 协议”，不会改变 OpenClaw 在其它通道的 agent 行为。
+| 优先级 | 任务 | 描述 |
+|--------|------|------|
+| P0 | 去掉 Supervisor | 删除监督者相关代码 |
+| P0 | 去掉控制句 | 修改 inject-delivery.js |
+| P1 | 改进 Her prompt | 强调亲切称呼、快慢思考分工 |
+| P1 | conversation 完整化 | 记录 tool 调用和结果 |
+| P2 | 改进 OpenClaw prompt | 增加上下文审视要求 |
