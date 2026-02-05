@@ -1683,3 +1683,143 @@ Gemini Live 的 tool 调用是“同步等待”语义：一旦模型在该轮�
 - **队列上限**：限制并发后台任务数，避免浏览器自动化类请求把队列拖爆。
 
 > 备注：这份方案的价值在于它不依赖“模型先说一句再 toolCall”的服从度；即使模型立刻 toolCall，我们也能在工具层面快速释放阻塞，让 her 不至于长时间沉默。
+
+---
+
+## 2026-02-05 架构决策：选择 B（弱触发/等窗口播报）作为默认策略
+
+> 背景：车载语音场景中，用户经常边开车边补充/插话；若“结果一到就抢话”（强触发），会频繁打断用户与 her 的当前播报，导致听感碎片化与 `interrupted` 激增。为保证可听清、可控和确定性，本设计选择 **B** 作为默认。
+
+### 决策结论（确定）
+
+- **默认策略：B（弱触发）**  
+  OpenClaw 的“最终结果”到达后，不立刻抢话，而是进入队列；只在满足“安全窗口”时，才把结果注入 Gemini 并播报给用户。
+- **安全例外（必须存在）：强插播报**  
+  对于明确的安全风险提醒（例如酒驾/重大健康禁忌/紧急危险），允许打断当前播报并立刻播报。  
+  这不是“选择 A”，而是 B 的一个 **确定性例外**：安全语义优先于“不中断”。
+
+### 目标（用户视角）
+
+1) 用户永远不会“傻等”：her 在 toolCall 后 **立刻**给出语音回执（不依赖提示词服从度）。
+2) 用户能听清：信息型结果不抢话，避免碎片化播报。
+3) 不漏报：结果不会只停留在 UI 的 `[OpenClaw] ...` 日志里，必须触发 her 在合适窗口播报。
+4) 可解释可验证：每条结果都有 jobId、队列、触发条件与日志证据。
+
+---
+
+## 事件与状态机（B 默认）
+
+### 关键事件（按方向）
+
+- GEMINI→LIVE
+  - `toolCall(openclaw_help, request)`
+  - `TURN_COMPLETE`（模型回合输出结束）
+  - `interrupted=true`（模型生成被打断）
+- LIVE→GEMINI
+  - **tool_response（立即 ACK）**：表示“已开始处理”
+  - `client_content(role="model")`：用于注入 `[[from_backend_ai]] ...` 的异步结果（在安全窗口投递）
+- OPENCLAW→LIVE（realtime ws）
+  - `help_result(jobId, finalText, priority)`
+  - （可选）`help_progress(jobId, progressText)`：用于 UI/日志观测，不直接播报（避免噪声）
+
+### Job 状态（确定性）
+
+- `created`：收到 toolCall，生成 jobId
+- `ack_sent`：已向 Gemini 发送“立即 tool_response ACK”
+- `running`：已把任务发给 OpenClaw 并在执行
+- `final_ready`：OpenClaw 返回最终结果（进入队列）
+- `delivered_to_gemini`：在安全窗口把 `[[from_backend_ai]] ...` 注入 Gemini
+- `spoken_or_skipped`：结果已被播报（或被后续更高优先级/更新结果取代并标记为跳过）
+
+---
+
+## 具体流程（按步骤推演）
+
+### Step 0：前置约束（不变）
+
+- Live 与 OpenClaw 已通过 ws 连接；Gemini 已注册 `openclaw_help` tool（本设计不依赖手动 UI 开关）。
+
+### Step 1：Gemini 发起 toolCall（触发点）
+
+当 Gemini 产生 `toolCall(openclaw_help, request=...)`：
+
+- Live 生成 `jobId`（若 Gemini 未提供稳定 id，则使用前端生成的 UUID）。
+- Live 立刻将该 `jobId` 关联到“当前用户意图”（用于去重/合并与最终播报顺序）。
+
+### Step 2：立即 tool_response ACK（解除同步阻塞）
+
+Live **必须在 <200ms** 内向 Gemini 返回 tool_response，内容只表达：
+
+- `ok=true`
+- `status="processing"`
+- `jobId=...`
+
+此时 her 获得继续生成语音的机会，能够立刻对用户说一句短回执（例如“好，我在处理，请稍等。”）。  
+注意：这一句回执由 Gemini 播报，不使用本地 TTS。
+
+### Step 3：并行启动 OpenClaw 任务（后台执行）
+
+Live 同时向 OpenClaw 发送 help 请求，携带相同 `jobId`（或 callId 作为 jobId）。
+
+OpenClaw 在后台执行任务（可能很慢：浏览器/联网/多工具链），但 **不会再阻塞 Gemini 的说话**，因为 Step 2 已解除阻塞。
+
+### Step 4：最终结果返回 → 入队（弱触发）
+
+当 OpenClaw 返回最终结果：
+
+- Live 将结果入队 `pendingResults`（以 `jobId` 去重）。
+- 默认不立刻注入 Gemini，不抢话。
+
+### Step 5：安全窗口触发播报（B 的核心）
+
+当满足以下“安全窗口”条件时，Live 才把结果注入 Gemini：
+
+- 观察到 GEMINI→LIVE 的 `TURN_COMPLETE`
+- 本地音频播放队列 idle（避免打断正在播放的语音）
+- 用户当前不在说话（避免立即被 VAD 打断；以输入转写/活动信号判定）
+
+满足窗口后：
+
+- Live 发送 `client_content(role="model")`，内容为：`[[from_backend_ai]] <finalText>`  
+- her 在下一轮以自然口语向用户播报，并明确命名来源（“OpenClaw 查到：……”）。
+
+### Step 6：安全例外（强插播报）
+
+如果 OpenClaw 返回的结果被明确标记为安全风险：
+
+- 该条结果以 `priority="urgent_safety"`（或独立消息类型）返回给 Live。
+- Live 允许跳过“安全窗口”检查，立刻注入 Gemini 并播报（即便会打断当前播报/用户发言）。
+
+> 关键约束：安全分类必须来自 OpenClaw 的明确标记，不能让 her 自己猜（避免不确定性）。
+
+---
+
+## 去重/合并与“为什么不会漏报”
+
+### 为什么之前会出现“UI 有 `[OpenClaw] ...` 但用户没听到”
+
+之前的行为是：最终结果以 tool_response 返回，且经常在用户继续说话时到达，Gemini 生成被打断（`interrupted`）导致“没形成一次完整播报输出回合”。UI 只是前端日志，不等于用户听到。
+
+### 本设计如何保证不漏报（确定性机制）
+
+- 所有最终结果进入 `pendingResults` 队列，有明确的 `jobId` 状态。
+- 只要用户持续对话，总会出现 `TURN_COMPLETE` 窗口；窗口出现时队列必被消化。
+- 若用户一直插话导致长期没有窗口，系统仍能通过“回执 + 队列”保持可解释：不会丢，只是排队等待窗口。
+- 对安全类，允许强插，从而不会因为“等窗口”而错过关键提醒。
+
+---
+
+## 对 OpenClaw 的侵入性与现有功能影响
+
+### 侵入性评估（结论：低，且可做到零侵入 core）
+
+- **OpenClaw 核心代码（`src/`）**：不需要修改（保持零侵入）。
+- **Realtime 插件（`extensions/realtime/`）**：需要修改/扩展其 help 结果返回协议（携带 jobId、priority；以及可选 progress 事件）。
+- **Live 前端（`extensions/realtime/live-frontend/`）**：需要调整工具回包策略：
+  - tool_response 只用于“立即 ACK”
+  - 最终结果改走 `[[from_backend_ai]]` 注入 + 队列化（B）
+
+### 对现有功能影响（结论：不会影响 WebChat/Telegram 等）
+
+- WebChat/Telegram/其它渠道不走 realtime 插件与 Gemini Live，不受影响。
+- Realtime 侧的行为变化只影响“语音前端与 OpenClaw 插件的 help 协议”，不会改变 OpenClaw 在其它通道的 agent 行为。
