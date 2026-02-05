@@ -1543,3 +1543,54 @@ Live 前端在建立 Gemini Live session 的 `setup.system_instruction` 时，�
 - 立刻重连并重发 `setup`（带最新胶囊）
 
 注意：重连是新 session，会丢失 Gemini Live 会话内历史；如需“更无感”，可在重连后由 Live 注入一条极短的上下文摘要（需谨慎，避免再次污染）。
+
+---
+
+## 2026-02-05 状态更新：回执播报与 `RESPONSE_REJECTED`（基于最新日志的硬证据）
+
+> 目标：把“现象→原因→下一步”写清楚，避免误把协议/策略行为当成我们代码逻辑问题。
+
+### 现象 1：`openclaw_help` 触发时听到“女生机械音回执”
+
+#### 结论（确定）
+
+- 这段回执 **不是 Gemini Live 模型用 `speech_config.voice_config` 播报的语音**。
+- 如果你听到了“先回一句”的声音，同时 Gemini 日志显示这一轮 **直接 toolCall**，那么该回执只能来自 **浏览器本地 TTS（Web Speech API / `speechSynthesis`）**。
+
+#### 证据（日志）
+
+- 在 `conn-1770262933084`，Gemini 在 11:42:55 直接发起 `toolCall(openclaw_help)`，并没有先生成一段可播报的模型回复（而是立刻 `turnComplete` 进入等待工具结果）。
+- 因此“先回一句”无法来自 Gemini，只能来自前端本地播报。
+
+#### 影响
+
+- 本地 TTS 的声音由操作系统/浏览器决定，**无法保证与 Gemini Live 的声音一致**（例如：Live 设定为男声，但本地 TTS 可能是默认女声）。
+- 若回执文本写死，会违背“泛化、不要写死”的要求。
+
+#### 下一步（方向）
+
+- **优先方向**：不要使用本地 TTS 伪装成 Live 的声音；改为“非语音”的即时反馈（例如短提示音/视觉提示），并把真正的语音播报交给 Gemini Live。
+- **可选方向**：尝试让 Gemini Live 在调用工具前自行说一句极短口语回执（但这属于模型行为，无法 100%保证；只能通过 prompt 与交互约束尽量提高概率）。
+
+### 现象 2：Live “突然消失”，但 OpenClaw 还能持续 inject
+
+#### 结论（确定）
+
+- “Live 消失”的核心信号是 Gemini 返回 `turnCompleteReason: "RESPONSE_REJECTED"`：这代表 **模型这一轮原本要输出，但被策略层拒绝**，因此用户听不到正常回复。
+- OpenClaw 仍能 inject 的原因是：inject 走的是 Live↔OpenClaw 的通道，不依赖 Gemini 这一轮是否成功生成可播报回复；因此会出现“Gemini 沉默但后台还在提醒”的割裂体验。
+
+#### 证据（日志）
+
+- `conn-1770262933084` 在 11:44:26 出现：
+  - 连续的 `inputTranscription`（用户音频被识别）
+  - 随后 `turnCompleteReason: "RESPONSE_REJECTED"`
+
+#### 触发类型（从日志能推出的唯一结论）
+
+- 在 11:44:26 这一轮，ASR 文本里出现了明显的高风险片段（例如“在我的怀里 … …”这类亲密/暧昧语义），随后立即 `RESPONSE_REJECTED`。
+- 日志没有提供更细的 `promptFeedback/safetyRatings/blockedReason` 字段，因此 **无法从现有日志 100%判定具体是哪条策略**；但可以确定是“输入内容触发→该轮输出被拒绝”。
+
+#### 下一步（方向）
+
+- **恢复策略**：一旦检测到 `turnCompleteReason=RESPONSE_REJECTED` 达到阈值（例如连续 1~N 次），触发“自动重连 Gemini session”以恢复可用性（与上文“胶囊更新重连”是同一类机制）。
+- **体验策略**：在重连窗口内，避免高频 inject 轰炸用户；inject 应更像“后台状态/提示”，而不是替代 Live 的持续对话。
