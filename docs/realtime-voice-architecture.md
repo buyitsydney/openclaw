@@ -991,6 +991,23 @@ cat ~/.openclaw/workspace/USER.md
 
 ## 已知问题与下一步 TODO
 
+### 观测链（Audio stutter observability）
+
+> 目标：当用户反馈“语音播报中间断断续续”时，能快速区分是 **上游音频供给间歇**（网络/服务）还是 **本机播放/调度**（浏览器/代理）导致。
+
+- **Live 前端 UI 开关**：`Enable audio observability`（`enableAudioObs`）
+  - TURN_COMPLETE 时会在 `Debug Info` 输出一行指标：
+    - `recvGap*`：浏览器端收到 Gemini `AUDIO` chunk 的间隔统计（越大越可能是上游供给/网络/代理导致）
+    - `drainGap*`：本机播放队列 drain→active 的静默间隔统计（越大越可能是“播放队列被喂空”）
+- **Proxy 日志增强（当 `LIVE_GEMINI_LOG=1`）**：
+  - `live-gemini-*.md` 条目会附带 `proxy_handle_ms`（proxy 单条消息的处理耗时），用于判断是否是代理侧抖动
+
+**指标解读（非常关键）**：
+- `recvGap*`：浏览器收到 `AUDIO` chunk 的间隔（更偏“上游供给/网络/代理 → 浏览器”链路抖动）
+- `drainGap*`：本机播放队列被播空（drain）后到下一段音频开始（active）的静默间隔
+  - 这不一定是“卡顿”，也可能是模型自然停顿/换轮/等待用户说话
+  - 真正的“播报中间断断续续”通常表现为：在你主观认为“模型正在连续讲话”时，`drainGapMax` 仍出现明显峰值，同时 `recvGap` 不高
+
 ### 2026-02-04 语音链路“混乱”复盘（基于 `logs/live-gemini-*.md`）
 
 > 目标：先用**双向日志**把时间线对齐，再逐项收敛输入结构，减少 Live 侧错乱。
@@ -1090,6 +1107,34 @@ cat ~/.openclaw/workspace/USER.md
 - **P0**：同一句话对比“官方 plain-js demo”与“Car Her live-frontend”，记录：
   - 是否仍出现 `Interrupted`（只看体验不够，要配合 `live-gemini-output.md` 或 console 事件时间戳对齐）
   - CPU 占用是否显著差异（Python/Node/Chrome）
+
+#### 2026-02-05 最新测试结论（基于 `live-gemini-*.md` 的硬指标）
+
+> 结论：今天（2/5）体验“丝滑”不是错觉；从日志看，**“音频中途无边界停顿”数量显著下降**，同时 inject→interrupted 的关联度也下降。
+
+- **会话（今天丝滑）**：`conn-1770246914908`
+  - inject（`[后台提醒]` 实际投递到 Gemini）次数：5
+  - `interrupted` 次数：4
+  - inject 后 2 秒内出现 `interrupted`：2/5（40%）
+  - **音频 chunk 间隔分布（粗粒度到秒）**：
+    - 0s：411 次（同一秒内多 chunk）
+    - 1s：38 次
+    - ≥2s 且 **期间没有** `turnComplete/generationComplete`（即“疑似播放中途停顿”）：**0 次**
+
+- **会话（昨天 inject 影响最强）**：`conn-1770213615851`
+  - inject：2
+  - `interrupted`：5
+  - inject 后 2 秒内出现 `interrupted`：2/2（100%）
+  - ≥2s 且无边界的疑似停顿：1 次（2s）
+
+- **会话（昨天卡顿反馈）**：`conn-1770211697474`
+  - ≥2s 且无边界的疑似停顿：6 次（top=3s）
+  - 说明昨天“断断续续”在日志里确实对应到“模型音频 chunk 在一个输出段内部出现秒级空洞”，而不是纯粹的回合切换。
+
+#### 重要说明：`interrupted` 与“听感卡顿”不是同一件事
+
+- `interrupted=true` 可能发生在用户发声/回声/背景噪声触发 VAD 的时刻，也可能发生在模型输出边界附近；
+- 只有当它发生在“模型正在连续播报音频的中间”并导致音频流断开，用户才会明显感知“被打断/卡顿”。
 
 ### 2026-02-03 测试发现的问题
 
@@ -1319,16 +1364,14 @@ Gemini Live API 返回的 `FunctionCall` 没有 `id` 字段（根据官方文档
 前端自己生成 `callId`（UUID），不依赖 Gemini 返回：
 
 ```javascript
-// tools.js
-functionToCall(parameters, functionCallId) {
-  // 如果 Gemini 没给 id，前端自己生成
-  const callId = functionCallId || crypto.randomUUID();
-  this.openclawConnection.sendHelp(request, callId);
-  return { pending: true, callId };
-}
+// extensions/realtime/live-frontend/frontend/script.js
+// 在 TOOL_CALL 处理处：如果 Gemini 没给 id，前端自己生成 UUID
+const functionCallId = functionCall.id || crypto.randomUUID();
 ```
 
 然后在 `onHelpResult` 回调中根据 `callId` 匹配对应的请求。
+
+**当前状态（2026-02-05）**：✅ 已实现（前端不再依赖 `FunctionCall.id`）。
 
 #### 优先级
 
@@ -1378,4 +1421,4 @@ Agent 自主判断这些对话（天气查询等）不够重要，不需要记�
 | OpenClaw 主动 inject 提醒 Live | ✅ | ✅ 已实现 | 已在 WS Frames 中验证前端可收到 inject |
 | USER.md/MEMORY.md 变更 → prompt_update | ✅ | ✅ 已实现 | 只监控这两个文件 |
 | prompt_update 热更新到 Gemini Live 会话 | ✅ | ⚠️ 未完成 | 目前只更新前端缓存，未必影响 live 会话 |
-| 多并发 tool call 的请求-响应匹配 | ✅ | ✅ 方案已明确 | 必须使用稳定 callId（自生成） |
+| 多并发 tool call 的请求-响应匹配 | ✅ | ✅ 已实现 | 前端 `TOOL_CALL` 处自生成 UUID，保障 callId 稳定 |

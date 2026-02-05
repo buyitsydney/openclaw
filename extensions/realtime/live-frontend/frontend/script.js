@@ -14,6 +14,15 @@ const state = {
     // Only inject after Gemini completes a turn (TURN_COMPLETE).
     turnComplete: true,
   },
+  // Audio observability counters (client-side, O(1) overhead per audio chunk).
+  audioObs: {
+    lastAudioRecvAtMs: null,
+    recvGapCount: 0,
+    recvGapTotalMs: 0,
+    recvGapMaxMs: 0,
+    recvGapOver200Ms: 0,
+    recvGapOver500Ms: 0,
+  },
   // Accumulate transcripts before sending to OpenClaw
   pendingUserTranscript: "",
   pendingLiveTranscript: "",
@@ -34,6 +43,34 @@ function debugLog(direction, eventType, data = {}) {
 // DOM element cache
 const elements = {};
 
+function appendDebugInfoLine(line) {
+  const el = elements.debugInfo;
+  if (!el) return;
+  const ts = new Date().toISOString().slice(11, 23);
+  const entry = `[${ts}] ${line}`;
+
+  const prev = el.textContent || "";
+  const next = prev && prev !== "Ready to connect..." ? `${prev}\n${entry}` : entry;
+
+  // Keep last N lines so a long session stays copy/paste friendly.
+  const MAX_LINES = 400;
+  const lines = next.split("\n");
+  el.textContent = lines.length > MAX_LINES ? lines.slice(-MAX_LINES).join("\n") : next;
+  el.scrollTop = el.scrollHeight;
+}
+
+function resetAudioObsCounters() {
+  state.audioObs.lastAudioRecvAtMs = null;
+  state.audioObs.recvGapCount = 0;
+  state.audioObs.recvGapTotalMs = 0;
+  state.audioObs.recvGapMaxMs = 0;
+  state.audioObs.recvGapOver200Ms = 0;
+  state.audioObs.recvGapOver500Ms = 0;
+  if (state.audio.player && typeof state.audio.player.resetObs === "function") {
+    state.audio.player.resetObs();
+  }
+}
+
 // Initialize DOM references
 function initDOM() {
   const ids = [
@@ -43,6 +80,7 @@ function initDOM() {
     "systemInstructions",
     "enableInputTranscription",
     "enableOutputTranscription",
+    "enableAudioObs",
     "enableGrounding",
     "enableAffectiveDialog",
     "enableAlertTool",
@@ -365,7 +403,11 @@ function disconnect() {
 // Handle messages
 function handleMessage(message) {
   console.log("Message:", message);
-  updateStatus("debugInfo", `Message: ${message.type}`);
+  // When audio observability is enabled, keep Debug Info as an accumulating log.
+  // Don't overwrite it on every incoming message.
+  if (!elements.enableAudioObs?.checked) {
+    updateStatus("debugInfo", `Message: ${message.type}`);
+  }
 
   switch (message.type) {
     case MultimodalLiveResponseType.TEXT:
@@ -375,6 +417,21 @@ function handleMessage(message) {
 
     case MultimodalLiveResponseType.AUDIO:
       console.log("Audio message:");
+      // Track audio arrival jitter (proxy/network + browser WS delivery).
+      // This does NOT log per-chunk (to avoid DevTools overhead); it only updates counters.
+      {
+        const nowMs = performance.now();
+        const lastMs = state.audioObs.lastAudioRecvAtMs;
+        if (lastMs != null) {
+          const gapMs = nowMs - lastMs;
+          state.audioObs.recvGapCount += 1;
+          state.audioObs.recvGapTotalMs += gapMs;
+          state.audioObs.recvGapMaxMs = Math.max(state.audioObs.recvGapMaxMs, gapMs);
+          if (gapMs >= 200) state.audioObs.recvGapOver200Ms += 1;
+          if (gapMs >= 500) state.audioObs.recvGapOver500Ms += 1;
+        }
+        state.audioObs.lastAudioRecvAtMs = nowMs;
+      }
       if (state.audio.player) {
         state.audio.player.play(message.data);
       }
@@ -459,7 +516,38 @@ function handleMessage(message) {
     case MultimodalLiveResponseType.TURN_COMPLETE:
       console.log("Turn complete:", message.data);
       debugLog("GEMINI→LIVE", "TURN_COMPLETE", {});
-      updateStatus("debugInfo", "Turn complete");
+      if (elements.enableAudioObs?.checked) {
+        const avgRecvGapMs =
+          state.audioObs.recvGapCount > 0
+            ? state.audioObs.recvGapTotalMs / state.audioObs.recvGapCount
+            : 0;
+        const playerObs =
+          state.audio.player && typeof state.audio.player.getObsSnapshot === "function"
+            ? state.audio.player.getObsSnapshot()
+            : null;
+
+        const parts = [
+          "Turn complete",
+          `recvGapMax=${Math.round(state.audioObs.recvGapMaxMs)}ms`,
+          `recvGapAvg=${Math.round(avgRecvGapMs)}ms`,
+          `recvGap>=200ms=${state.audioObs.recvGapOver200Ms}`,
+          `recvGap>=500ms=${state.audioObs.recvGapOver500Ms}`,
+        ];
+
+        if (playerObs) {
+          parts.push(
+            `drainGapMax=${Math.round(playerObs.drainGapMaxMs)}ms`,
+            `drainGapAvg=${Math.round(playerObs.drainGapAvgMs)}ms`,
+            `drainGap>=200ms=${playerObs.drainGapOver200Ms}`
+          );
+        }
+
+        appendDebugInfoLine(parts.join(" | "));
+        // Make each line represent the last turn, not the entire session.
+        resetAudioObsCounters();
+      } else {
+        updateStatus("debugInfo", "Turn complete");
+      }
       state.gemini.turnComplete = true;
       tryDeliverInjects();
       // Ensure backend supervisor triggers even if OUTPUT_TRANSCRIPTION text is empty.

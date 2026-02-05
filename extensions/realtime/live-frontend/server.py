@@ -187,7 +187,7 @@ def _extract_human_summary(data: dict) -> str:
     return "## unknown"
 
 
-def _append_markdown_log(conn_id: str, data: dict) -> None:
+def _append_markdown_log(conn_id: str, data: dict, meta=None) -> None:
     if not ENABLE_MARKDOWN_LOGS:
         return
     repo_root = _resolve_repo_root()
@@ -202,6 +202,13 @@ def _append_markdown_log(conn_id: str, data: dict) -> None:
     raw_json = json.dumps(sanitized, ensure_ascii=False, indent=2)
     summary = _extract_human_summary(data)
 
+    meta = meta or {}
+    meta_lines = []
+    if "proxy_handle_ms" in meta:
+        meta_lines.append(f"- proxy_handle_ms: {meta.get('proxy_handle_ms')}")
+    if "payload" in meta:
+        meta_lines.append(f"- payload: {meta.get('payload')}")
+
     entry = "\n".join(
         [
             "",
@@ -212,6 +219,7 @@ def _append_markdown_log(conn_id: str, data: dict) -> None:
             f"- conn: {conn_id}",
             f"- dir: LIVE→GEMINI",
             f"- kind: {kind}",
+            *meta_lines,
             "",
             "## extracted",
             summary,
@@ -315,7 +323,7 @@ def _extract_server_human_summary(data: dict) -> str:
     return f"## {kind}"
 
 
-def _append_markdown_log_output(conn_id: str, data: dict) -> None:
+def _append_markdown_log_output(conn_id: str, data: dict, meta=None) -> None:
     if not ENABLE_MARKDOWN_LOGS:
         return
     repo_root = _resolve_repo_root()
@@ -330,6 +338,13 @@ def _append_markdown_log_output(conn_id: str, data: dict) -> None:
     raw_json = json.dumps(sanitized, ensure_ascii=False, indent=2)
     summary = _extract_server_human_summary(data)
 
+    meta = meta or {}
+    meta_lines = []
+    if "proxy_handle_ms" in meta:
+        meta_lines.append(f"- proxy_handle_ms: {meta.get('proxy_handle_ms')}")
+    if "payload" in meta:
+        meta_lines.append(f"- payload: {meta.get('payload')}")
+
     entry = "\n".join(
         [
             "",
@@ -340,6 +355,7 @@ def _append_markdown_log_output(conn_id: str, data: dict) -> None:
             f"- conn: {conn_id}",
             f"- dir: GEMINI→LIVE",
             f"- kind: {kind}",
+            *meta_lines,
             "",
             "## extracted",
             summary,
@@ -394,17 +410,34 @@ async def proxy_task(
                 # Therefore, if we receive bytes, we first try to decode+parse as JSON. Only if
                 # that fails do we treat it as a binary media frame.
                 if isinstance(message, (bytes, bytearray)):
+                    recv_perf = time.perf_counter()
                     try:
                         text = message.decode("utf-8")
                         data = json.loads(text)
                         # Parsed JSON from bytes: handle like text frame below.
                         if isinstance(data, dict):
-                            if is_server:
-                                await asyncio.to_thread(_append_markdown_log_output, conn_id, data)
-                            else:
-                                kind = _classify_message(data)
-                                if kind != "realtime_input":
-                                    await asyncio.to_thread(_append_markdown_log, conn_id, data)
+                            # IMPORTANT:
+                            # Even when logging is "disabled", scheduling a thread per message
+                            # can introduce jitter in the realtime audio path.
+                            # Therefore, we must NOT call asyncio.to_thread unless logging is enabled.
+                            if ENABLE_MARKDOWN_LOGS:
+                                pre_send_perf = time.perf_counter()
+                                meta = {
+                                    "proxy_handle_ms": round(
+                                        (pre_send_perf - recv_perf) * 1000, 3
+                                    ),
+                                    "payload": "bytes(json)",
+                                }
+                                if is_server:
+                                    await asyncio.to_thread(
+                                        _append_markdown_log_output, conn_id, data, meta
+                                    )
+                                else:
+                                    kind = _classify_message(data)
+                                    if kind != "realtime_input":
+                                        await asyncio.to_thread(
+                                            _append_markdown_log, conn_id, data, meta
+                                        )
                         await destination_websocket.send(text)
                         continue
                     except Exception:
@@ -413,6 +446,7 @@ async def proxy_task(
                         continue
 
                 # Text frames should be JSON.
+                recv_perf = time.perf_counter()
                 data = json.loads(message)
 
                 if DEBUG:
@@ -421,15 +455,25 @@ async def proxy_task(
                     )
 
                 if isinstance(data, dict):
-                    if is_server:
-                        # Log GEMINI->LIVE messages that contain transcripts / tool calls / turn flags.
-                        await asyncio.to_thread(_append_markdown_log_output, conn_id, data)
-                    else:
-                        # Log ONLY client->server messages (Live->Gemini inputs).
-                        # Skip realtime_input audio chunks to keep logs human-readable and small.
-                        kind = _classify_message(data)
-                        if kind != "realtime_input":
-                            await asyncio.to_thread(_append_markdown_log, conn_id, data)
+                    if ENABLE_MARKDOWN_LOGS:
+                        pre_send_perf = time.perf_counter()
+                        meta = {
+                            "proxy_handle_ms": round(
+                                (pre_send_perf - recv_perf) * 1000, 3
+                            ),
+                            "payload": "text(json)",
+                        }
+                        if is_server:
+                            # Log GEMINI->LIVE messages that contain transcripts / tool calls / turn flags.
+                            await asyncio.to_thread(
+                                _append_markdown_log_output, conn_id, data, meta
+                            )
+                        else:
+                            # Log ONLY client->server messages (Live->Gemini inputs).
+                            # Skip realtime_input audio chunks to keep logs human-readable and small.
+                            kind = _classify_message(data)
+                            if kind != "realtime_input":
+                                await asyncio.to_thread(_append_markdown_log, conn_id, data, meta)
 
                 # Forward original payload (preserve exact JSON casing/ordering).
                 await destination_websocket.send(message)

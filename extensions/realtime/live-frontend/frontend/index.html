@@ -36,6 +36,21 @@
         white-space: pre-wrap;
       }
 
+      #debugInfo {
+        width: 100%;
+        max-width: 100%;
+        box-sizing: border-box;
+        background-color: #f4f4f4;
+        padding: 10px;
+        border: 1px solid #ddd;
+        /* Keep each metric line on one row; allow horizontal scroll instead of wrapping. */
+        white-space: pre;
+        overflow-x: auto;
+        /* Accumulate lines with a vertical scrollbar. */
+        max-height: 260px;
+        overflow-y: auto;
+      }
+
       .user-transcript:before {
         content: "USER SPEECH: ";
         background-color: var(--google-yellow);
@@ -232,6 +247,14 @@
               <input type="checkbox" id="enableOutputTranscription" checked />
               <label for="enableOutputTranscription"
                 >Enable output transcription (Gemini responses)</label
+              >
+            </div>
+
+            <br />
+            <div>
+              <input type="checkbox" id="enableAudioObs" />
+              <label for="enableAudioObs"
+                >Enable audio observability (low overhead, helps debug stutter)</label
               >
             </div>
           </details>

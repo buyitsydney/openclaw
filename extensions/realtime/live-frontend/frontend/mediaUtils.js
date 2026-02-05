@@ -408,6 +408,16 @@ class AudioPlayer {
     this.sampleRate = 24000; // Gemini outputs at 24kHz
     this.isIdle = true;
     this.idleWaiters = [];
+
+    // Lightweight observability for playback jitter/starvation.
+    // This is intentionally O(1) counters (no unbounded arrays) to keep overhead negligible.
+    this.obs = {
+      lastDrainIdleAtMs: null,
+      drainGapCount: 0,
+      drainGapTotalMs: 0,
+      drainGapMaxMs: 0,
+      drainGapOver200Ms: 0,
+    };
   }
 
   /**
@@ -447,11 +457,28 @@ class AudioPlayer {
         const msg = event?.data;
         if (!msg || typeof msg !== "object") return;
         if (msg.type === "active") {
+          // If we previously went idle due to queue drain, measure the silent gap until next audio arrives.
+          if (this.obs.lastDrainIdleAtMs != null) {
+            const nowMs = performance.now();
+            const gapMs = nowMs - this.obs.lastDrainIdleAtMs;
+            this.obs.lastDrainIdleAtMs = null;
+
+            this.obs.drainGapCount += 1;
+            this.obs.drainGapTotalMs += gapMs;
+            this.obs.drainGapMaxMs = Math.max(this.obs.drainGapMaxMs, gapMs);
+            if (gapMs >= 200) this.obs.drainGapOver200Ms += 1;
+          }
           this.isIdle = false;
           return;
         }
         if (msg.type === "idle") {
           this.isIdle = true;
+          // Only treat a drain as a potential starvation signal (not interrupt).
+          if (msg.reason === "drain") {
+            this.obs.lastDrainIdleAtMs = performance.now();
+          } else {
+            this.obs.lastDrainIdleAtMs = null;
+          }
           const waiters = this.idleWaiters;
           this.idleWaiters = [];
           for (const resolve of waiters) {
@@ -525,6 +552,33 @@ class AudioPlayer {
     if (this.workletNode) {
       this.workletNode.port.postMessage("interrupt");
     }
+  }
+
+  /**
+   * Get current audio observability counters.
+   */
+  getObsSnapshot() {
+    const avgGapMs =
+      this.obs.drainGapCount > 0
+        ? this.obs.drainGapTotalMs / this.obs.drainGapCount
+        : 0;
+    return {
+      drainGapCount: this.obs.drainGapCount,
+      drainGapAvgMs: avgGapMs,
+      drainGapMaxMs: this.obs.drainGapMaxMs,
+      drainGapOver200Ms: this.obs.drainGapOver200Ms,
+    };
+  }
+
+  /**
+   * Reset observability counters (useful between experiments).
+   */
+  resetObs() {
+    this.obs.lastDrainIdleAtMs = null;
+    this.obs.drainGapCount = 0;
+    this.obs.drainGapTotalMs = 0;
+    this.obs.drainGapMaxMs = 0;
+    this.obs.drainGapOver200Ms = 0;
   }
 
   /**
