@@ -409,8 +409,20 @@ class AudioPlayer {
     this.isIdle = true;
     this.idleWaiters = [];
 
+    // Jitter buffer: accumulate audio chunks before sending to worklet.
+    // Trades latency for smoothness — eliminates stuttering from network jitter.
+    // Phase 1: buffer until threshold → flush (builds playback runway)
+    // Phase 2: pass-through (worklet's internal queue absorbs jitter)
+    this.jitterBufferMs = 0; // 0 = disabled (pass-through)
+    this._jitterQueue = []; // pending Float32Array chunks (phase 1 only)
+    this._jitterSamples = 0; // total samples queued
+    this._jitterFlushTimer = null;
+    this._jitterPhase = 0; // 0 = not started, 1 = buffering, 2 = streaming
+
     // Lightweight observability for playback jitter/starvation.
-    // This is intentionally O(1) counters (no unbounded arrays) to keep overhead negligible.
+    // Only measures mid-speech starvation (worklet runs dry while audio is expected).
+    // Does NOT count the natural gap after speech ends (waitForIdle + inject).
+    this._inSpeech = false; // true from first play() to onTurnComplete()
     this.obs = {
       lastDrainIdleAtMs: null,
       drainGapCount: 0,
@@ -457,7 +469,7 @@ class AudioPlayer {
         const msg = event?.data;
         if (!msg || typeof msg !== "object") return;
         if (msg.type === "active") {
-          // If we previously went idle due to queue drain, measure the silent gap until next audio arrives.
+          // If we previously went idle mid-speech, measure the starvation gap.
           if (this.obs.lastDrainIdleAtMs != null) {
             const nowMs = performance.now();
             const gapMs = nowMs - this.obs.lastDrainIdleAtMs;
@@ -473,8 +485,11 @@ class AudioPlayer {
         }
         if (msg.type === "idle") {
           this.isIdle = true;
-          // Only treat a drain as a potential starvation signal (not interrupt).
-          if (msg.reason === "drain") {
+          // Only measure drain gap if we're mid-speech (_inSpeech=true).
+          // After onTurnComplete(), _inSpeech=false — the drain is the natural
+          // end of speech, not a stutter. Don't pollute metrics with
+          // waitForIdle() + inject round-trip time.
+          if (msg.reason === "drain" && this._inSpeech) {
             this.obs.lastDrainIdleAtMs = performance.now();
           } else {
             this.obs.lastDrainIdleAtMs = null;
@@ -493,6 +508,14 @@ class AudioPlayer {
       console.error("Failed to initialize audio player:", error);
       throw error;
     }
+  }
+
+  /**
+   * Set jitter buffer size in milliseconds. 0 = disabled (pass-through).
+   * Typical values: 200-500ms for mobile over tunnels.
+   */
+  setJitterBufferMs(ms) {
+    this.jitterBufferMs = Math.max(0, Math.round(ms));
   }
 
   /**
@@ -523,13 +546,68 @@ class AudioPlayer {
         float32Data[i] = inputArray[i] / 32768;
       }
 
-      // Send to worklet for playback
+      this._inSpeech = true;
+
+      // Jitter buffer: phase 1 = accumulate initial buffer, phase 2 = pass-through.
+      if (this.jitterBufferMs > 0) {
+        // Phase 2: initial buffer already built, pass-through directly.
+        if (this._jitterPhase === 2) {
+          this.isIdle = false;
+          this.workletNode.port.postMessage(float32Data);
+          return;
+        }
+
+        // Phase 1: accumulate until threshold.
+        this._jitterQueue.push(float32Data);
+        this._jitterSamples += float32Data.length;
+        const thresholdSamples = (this.jitterBufferMs / 1000) * this.sampleRate;
+
+        if (this._jitterPhase === 0) {
+          // First chunk: start buffering with a safety timeout for short utterances.
+          this._jitterPhase = 1;
+          this._jitterFlushTimer = setTimeout(() => {
+            console.log(`⏱️ Jitter: timeout flush → streaming`);
+            this._flushJitterBuffer();
+            this._jitterPhase = 2;
+          }, this.jitterBufferMs);
+          console.log(`⏳ Jitter: buffering (target ${this.jitterBufferMs}ms)`);
+        }
+
+        if (this._jitterSamples >= thresholdSamples) {
+          console.log(`⏳ Jitter: threshold reached → streaming`);
+          this._flushJitterBuffer();
+          this._jitterPhase = 2; // switch to pass-through
+        }
+        return;
+      }
+
+      // No jitter buffer: send directly to worklet
       this.isIdle = false;
       this.workletNode.port.postMessage(float32Data);
     } catch (error) {
       console.error("Error playing audio chunk:", error);
       throw error;
     }
+  }
+
+  /** Flush all queued jitter buffer chunks to the worklet. */
+  _flushJitterBuffer() {
+    if (this._jitterFlushTimer) {
+      clearTimeout(this._jitterFlushTimer);
+      this._jitterFlushTimer = null;
+    }
+    if (this._jitterQueue.length === 0) return;
+
+    const chunks = this._jitterQueue.length;
+    const ms = Math.round((this._jitterSamples / this.sampleRate) * 1000);
+    console.log(`🔊 Jitter: flush ${chunks} chunks (${ms}ms audio)`);
+
+    this.isIdle = false;
+    for (const chunk of this._jitterQueue) {
+      this.workletNode.port.postMessage(chunk);
+    }
+    this._jitterQueue = [];
+    this._jitterSamples = 0;
   }
 
   /**
@@ -549,9 +627,34 @@ class AudioPlayer {
    * Interrupt current playback
    */
   interrupt() {
+    // Clear jitter buffer so queued audio doesn't play after interrupt.
+    // Keep phase 2 (pass-through) — don't re-buffer after interrupt,
+    // only re-buffer on new turn start (onTurnComplete resets to 0).
+    this._jitterQueue = [];
+    this._jitterSamples = 0;
+    this._inSpeech = false;
+    if (this._jitterFlushTimer) {
+      clearTimeout(this._jitterFlushTimer);
+      this._jitterFlushTimer = null;
+    }
+    if (this._jitterPhase === 1) {
+      // Was still buffering when interrupted — skip to pass-through.
+      this._jitterPhase = 2;
+    }
+    // If already phase 2 or 0, leave as-is.
     if (this.workletNode) {
       this.workletNode.port.postMessage("interrupt");
     }
+  }
+
+  /**
+   * Signal that a turn completed — flush any remaining jitter buffer and reset.
+   * Next turn will re-enter phase 1 (buffer) to rebuild the runway.
+   */
+  onTurnComplete() {
+    this._flushJitterBuffer();
+    this._jitterPhase = 0;
+    this._inSpeech = false; // next idle is natural end-of-speech, don't measure
   }
 
   /**
@@ -579,6 +682,7 @@ class AudioPlayer {
     this.obs.drainGapTotalMs = 0;
     this.obs.drainGapMaxMs = 0;
     this.obs.drainGapOver200Ms = 0;
+    this._inSpeech = false;
   }
 
   /**

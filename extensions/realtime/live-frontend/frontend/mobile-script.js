@@ -124,8 +124,32 @@ function initDOM() {
     "micBtn", "camBtn", "screenBtn", "volBtn", "debugBtn",
     "volume", "volLabel", "volumePopup", "debugOverlay",
     "dbgOcStatus", "dbgGeminiStatus", "dbgMicStatus", "dbgAudioObs", "dbgLog",
+    "jitterSlider", "jitterLabel",
   ];
   ids.forEach((id) => { el[id] = document.getElementById(id); });
+}
+
+// Jitter buffer: load saved value, apply to AudioPlayer, save on change.
+function initJitterBuffer() {
+  const saved = localStorage.getItem("carher.jitterBufferMs");
+  const ms = saved != null ? parseInt(saved, 10) : 0;
+  if (el.jitterSlider) el.jitterSlider.value = ms;
+  if (el.jitterLabel) el.jitterLabel.textContent = ms === 0 ? "关闭" : ms + "ms";
+
+  if (el.jitterSlider) {
+    el.jitterSlider.addEventListener("input", () => {
+      const val = parseInt(el.jitterSlider.value, 10);
+      el.jitterLabel.textContent = val === 0 ? "关闭" : val + "ms";
+      localStorage.setItem("carher.jitterBufferMs", val);
+      if (state.audio.player) state.audio.player.setJitterBufferMs(val);
+      dbgLog(`Jitter buffer: ${val}ms`);
+    });
+  }
+}
+
+function getJitterBufferMs() {
+  const saved = localStorage.getItem("carher.jitterBufferMs");
+  return saved != null ? parseInt(saved, 10) : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -345,9 +369,11 @@ async function connectGemini() {
     state.client.connect();
   });
 
-  // Init audio player
+  // Init audio player with saved jitter buffer setting
   state.audio.player = new AudioPlayer();
+  state.audio.player.setJitterBufferMs(getJitterBufferMs());
   await state.audio.player.init();
+  dbgLog(`AudioPlayer ready (jitter: ${state.audio.player.jitterBufferMs}ms)`);
 }
 
 // Auto-start microphone after connection
@@ -489,6 +515,8 @@ function handleMessage(message) {
 
     case MultimodalLiveResponseType.TURN_COMPLETE:
       dbgLog("Turn complete");
+      // Flush any remaining jitter-buffered audio before finalizing.
+      if (state.audio.player) state.audio.player.onTurnComplete();
       // Only append a line when this turn actually had audio data (skip empty turns).
       if (state.audioObs.recvGapCount > 0) {
         appendAudioObsLine();
@@ -640,8 +668,10 @@ function initEvents() {
 window.addEventListener("DOMContentLoaded", () => {
   initDOM();
   applyUrlParams();
+  initJitterBuffer();
   initEvents();
   dbgLog("Mobile UI initialized");
   dbgLog(`Proxy: ${CONFIG.proxyUrl}`);
   dbgLog(`OpenClaw: ${CONFIG.openclawUrl}`);
+  dbgLog(`Jitter buffer: ${getJitterBufferMs()}ms`);
 });

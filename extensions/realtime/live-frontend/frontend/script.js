@@ -120,11 +120,27 @@ function initDOM() {
     "debugInfo",
     "setupJsonSection",
     "setupJsonDisplay",
+    "jitterBufferMs",
+    "jitterBufferLabel",
   ];
 
   ids.forEach((id) => {
     elements[id] = document.getElementById(id);
   });
+
+  // Jitter buffer: restore saved value and wire up slider
+  const savedJitter = localStorage.getItem("carher.jitterBufferMs");
+  const jitterVal = savedJitter != null ? parseInt(savedJitter, 10) : 0;
+  if (elements.jitterBufferMs) {
+    elements.jitterBufferMs.value = jitterVal;
+    if (elements.jitterBufferLabel) elements.jitterBufferLabel.textContent = jitterVal === 0 ? "off" : jitterVal;
+    elements.jitterBufferMs.addEventListener("input", () => {
+      const v = parseInt(elements.jitterBufferMs.value, 10);
+      elements.jitterBufferLabel.textContent = v === 0 ? "off" : v;
+      localStorage.setItem("carher.jitterBufferMs", v);
+      if (state.audio.player) state.audio.player.setJitterBufferMs(v);
+    });
+  }
 }
 
 // Populate media device selectors
@@ -352,7 +368,11 @@ async function connectGemini() {
     state.video.streamer = new VideoStreamer(state.client);
     state.screen.capture = new ScreenCapture(state.client);
     state.audio.player = new AudioPlayer();
+    const savedJitter = localStorage.getItem("carher.jitterBufferMs");
+    if (savedJitter) state.audio.player.setJitterBufferMs(parseInt(savedJitter, 10));
     await state.audio.player.init();
+    console.log(`🔊 AudioPlayer ready (jitter buffer: ${state.audio.player.jitterBufferMs}ms)`);
+
 
     updateStatus("debugInfo", "Connected successfully");
   } catch (error) {
@@ -539,6 +559,8 @@ function handleMessage(message) {
     case MultimodalLiveResponseType.TURN_COMPLETE:
       console.log("Turn complete:", message.data);
       debugLog("GEMINI→LIVE", "TURN_COMPLETE", {});
+      // Flush remaining jitter-buffered audio before finalizing turn.
+      if (state.audio.player) state.audio.player.onTurnComplete();
       if (elements.enableAudioObs?.checked) {
         const avgRecvGapMs =
           state.audioObs.recvGapCount > 0

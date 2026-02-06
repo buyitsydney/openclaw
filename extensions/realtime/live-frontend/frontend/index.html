@@ -303,6 +303,12 @@
                 >Enable audio observability (low overhead, helps debug stutter)</label
               >
             </div>
+            <br />
+            <div>
+              <label for="jitterBufferMs">Jitter buffer (ms, 0=off):</label>
+              <input type="range" id="jitterBufferMs" min="0" max="1000" step="50" value="0" style="vertical-align: middle" />
+              <span id="jitterBufferLabel">0</span>
+            </div>
           </details>
 
           <!-- Activity Detection Settings -->

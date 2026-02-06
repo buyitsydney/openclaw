@@ -65,7 +65,7 @@ GATEWAY_PID=$!
 
 # 启动 Live Frontend Proxy（后台运行）
 # 默认关闭 markdown 落盘，避免影响实时音频流畅度。
-LIVE_GEMINI_LOG="${LIVE_GEMINI_LOG:-0}"
+LIVE_GEMINI_LOG="${LIVE_GEMINI_LOG:-1}"
 echo -e "${YELLOW}启动 Live Frontend Proxy (LIVE_GEMINI_LOG=$LIVE_GEMINI_LOG)...${NC}"
 (cd "extensions/realtime/live-frontend" && LIVE_GEMINI_LOG="$LIVE_GEMINI_LOG" python3 server.py) &
 LIVE_FRONTEND_PID=$!

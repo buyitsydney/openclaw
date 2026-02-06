@@ -492,6 +492,40 @@ frontend/
 | 手机专属极简界面 | ✅ 已实现 | mobile.html + mobile-script.js，暖白 Apple 风格 |
 | 一键启动脚本 | ✅ 已实现 | start-mobile.sh 根目录快捷入口，自动清理残留进程 |
 | Audio observability (手机) | ✅ 已实现 | 每轮一行滚动累积，与桌面版格式一致 |
+| Jitter buffer | ✅ 已实现 | 两阶段：初始缓冲 → 透传，UI 可调 + localStorage 记忆 |
+| Audio obs 修正 | ✅ 已修正 | drainGap 只测说话期间卡顿，不含 inject 往返延迟 |
+
+### Jitter Buffer 设计
+
+两阶段播放缓冲，用延迟换流畅度：
+
+- **Phase 1（缓冲期）**：turn 开头攒够设定 ms 的音频 → flush 给 worklet，建立播放跑道
+- **Phase 2（透传期）**：后续直送 worklet，内部队列吸收抖动
+- **interrupt 后**：跳过 phase 1 直接透传
+- **turn 结束**：重置 phase 0，下个 turn 重建跑道
+
+UI：0-1000ms 滑块，localStorage 记忆。桌面 0，手机建议 300ms。
+
+### Audio Obs 指标说明
+
+| 指标 | 含义 | 正常值 |
+|------|------|--------|
+| recvGapMax | 网络两块到达最大间隔 | <200ms |
+| recvGapAvg | 平均到达间隔 | <100ms |
+| drainGapMax | **说话期间** worklet 播放空白最长时间 | <100ms |
+| drainGap>=200ms | 说话期间可感知卡顿次数 | 0 |
+
+修正：drainGap 只在 `_inSpeech` 期间测量（`play()` → `onTurnComplete()`），不含 `waitForIdle` + inject 往返。
+
+### 手机端音频瓶颈
+
+| 链路 | recvGapAvg | recvGapMax | 体感 |
+|------|-----------|------------|------|
+| Mac+Phone 双 VPN | 59-495ms | 1828ms | 偶有卡顿 |
+| Mac VPN / Phone 4G | 198-293ms | 976ms | 略差 |
+| Mac localhost | <50ms | <100ms | 流畅 |
+
+瓶颈：Cloudflare TCP 隧道 + 跨国 VPN 抖动。根本解法见 `webrtc-upgrade-architecture.md`。
 
 ---
 
@@ -503,11 +537,12 @@ frontend/
 | P0 | 改进 Her prompt | ✅ 完成 — 快慢分工、亲切称呼、播报准确性约束 |
 | P0 | 远程手机访问 | ✅ 完成 — Cloudflare 隧道 + start-remote.sh 一键启动 |
 | P1 | conversation 完整化 | ✅ 完成 — help 请求和结果已记录 |
-| P1 | 手机专属极简界面 | ✅ 完成 — mobile.html + mobile-script.js，暖白 Apple 风格 |
-| P1 | start-mobile.sh 根目录快捷入口 | ✅ 完成 — 自动清理残留进程 + Ctrl+C 秒退 |
+| P1 | 手机专属极简界面 | ✅ 完成 |
+| P1 | Jitter buffer + audio obs 修正 | ✅ 完成 |
 | P1 | Her prompt 快思考边界优化 | 待开始 — 当前时间等 Gemini 自身能力不应转交 OpenClaw |
 | P1 | OpenClaw prompt 注入当前时间 | 待开始 — 避免 Claude 幻觉编造时间 |
+| P1 | WebRTC 语音升级 | 待开始 — 见 webrtc-upgrade-architecture.md |
 | P2 | 改进 OpenClaw prompt | 待开始 — 增加上下文审视要求、输出格式约束 |
 | P2 | RESPONSE_REJECTED 韧性 | 待开始 — 被拒后自动重试或降级 |
-| P2 | 手机端语音提醒 | 待设计 — Her 通过 OpenClaw 设置定时提醒，到点推送通知到手机 |
-| P3 | 长任务进度通知 | 待开始 — 超时未返回时 Her 主动安抚用户 |
+| P2 | 手机端语音提醒 | 待设计 |
+| P3 | 长任务进度通知 | 待开始 |
