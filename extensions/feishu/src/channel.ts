@@ -161,6 +161,14 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
       await sendFeishuText({ account, chatId: to, text });
       return { channel: "feishu" };
     },
+    // Media delivery: send caption text (media files not yet supported by the Feishu plugin).
+    sendMedia: async ({ to, text, accountId, cfg }) => {
+      const account = resolveFeishuAccount({ cfg, accountId });
+      if (text) {
+        await sendFeishuText({ account, chatId: to, text });
+      }
+      return { channel: "feishu" };
+    },
   },
   status: {
     defaultRuntime: {

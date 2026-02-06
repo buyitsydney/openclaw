@@ -10,7 +10,7 @@
 - **对现有 Her（realtime 插件）代码：零修改** -- 已验证
 - **全部新增代码限制在 `extensions/feishu/` 目录内** -- 已验证
 - **风险评估：极低** -- 已通过端到端测试确认
-- **实际新增代码：~420 行**（比预估的 765 行更精简）
+- **实际新增代码：~705 行**（包含 cron 直投修复）
 
 ---
 
@@ -190,25 +190,47 @@ await wsClient.start({ eventDispatcher });
 
 ### 3. 消息发送（outbound.ts）
 
+`sendFeishuText` 通过 `resolveReceiveId()` 智能识别飞书 ID 类型：
+
 ```typescript
+// 根据 ID 前缀自动推断 receive_id_type：
+//   oc_ -> chat_id（群聊）, ou_ -> open_id（用户）, on_ -> union_id
+// 同时自动 strip routeReply 可能添加的 "feishu:" 前缀
+function resolveReceiveId(raw: string): { receiveId, receiveIdType }
+
 export async function sendFeishuText(params: {
   account: ResolvedFeishuAccount;
   chatId: string;
   text: string;
 }): Promise<void> {
   const client = getFeishuClient(params.account);
+  const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
   await client.im.message.create({
-    params: { receive_id_type: "chat_id" },
-    data: {
-      receive_id: params.chatId,
-      content: JSON.stringify({ text: params.text }),
-      msg_type: "text",
-    },
+    params: { receive_id_type: receiveIdType },
+    data: { receive_id: receiveId, content: JSON.stringify({ text }), msg_type: "text" },
   });
 }
 ```
 
 Client 实例按 appId 缓存，避免重复创建和 token 获取。
+
+### 3.1 Outbound 适配器（channel.ts outbound）
+
+插件同时实现 `sendText` 和 `sendMedia`，确保 cron 定时任务的直投路径 (`deliverOutboundPayloads`) 能正常工作：
+
+```typescript
+outbound: {
+  deliveryMode: "gateway",
+  sendText: async ({ to, text, accountId, cfg }) => { ... },
+  sendMedia: async ({ to, text, accountId, cfg }) => {
+    // 媒体文件暂不支持，仅投递 caption 文本
+    if (text) await sendFeishuText({ account, chatId: to, text });
+    return { channel: "feishu" };
+  },
+}
+```
+
+**背景**：OpenClaw 的 cron 定时任务使用 `deliverOutboundPayloads` 直投路径（不经 gateway WebSocket），该路径要求通道同时实现 `sendText` + `sendMedia` 才视为已配置。
 
 ### 4. 配置存储
 
@@ -270,12 +292,12 @@ Client 实例按 appId 缓存，避免重复创建和 token 获取。
 | `openclaw.plugin.json` | 9 | 插件清单 |
 | `package.json` | 39 | 依赖 + 通道元数据 |
 | `index.ts` | 17 | 入口注册 |
-| `src/channel.ts` | 175 | ChannelPlugin 主体 |
+| `src/channel.ts` | 219 | ChannelPlugin 主体 + sendMedia 适配 |
 | `src/runtime.ts` | 15 | Runtime 单例 |
 | `src/gateway.ts` | 228 | WSClient + pipeline 集成 + 回复投递 |
-| `src/outbound.ts` | 55 | Lark SDK 消息发送 |
+| `src/outbound.ts` | 72 | Lark SDK 消息发送 + 智能 ID 类型识别 |
 | `src/accounts.ts` | 110 | 账户 / 凭证解析 |
-| **总计** | **~648** | 全部在 `extensions/feishu/` 内 |
+| **总计** | **~705** | 全部在 `extensions/feishu/` 内 |
 
 ---
 
@@ -336,12 +358,30 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 
 ---
 
+## 已修复的问题
+
+### Cron 定时任务投递修复 (2026-02-06)
+
+**问题**：通过 cron 工具设置的飞书定时提醒无法投递，报 `Outbound not configured for channel: feishu`。
+
+**根因**：
+1. `deliverOutboundPayloads`（cron 直投路径）要求通道同时实现 `sendText` + `sendMedia`，飞书插件缺少 `sendMedia`
+2. `sendFeishuText` 硬编码 `receive_id_type: "chat_id"`，但 cron payload 使用的是 `open_id`（`ou_` 前缀）
+
+**修复**：
+1. 在 `channel.ts` 添加 `sendMedia` 方法（文本投递，媒体暂不支持）
+2. 在 `outbound.ts` 新增 `resolveReceiveId()` 函数，根据 ID 前缀自动识别类型
+
+**验证**：修复后 cron 定时任务成功投递到飞书（`lastStatus: "ok"`）
+
+---
+
 ## 后续增强方向
 
-当前 MVP 实现覆盖了核心聊天功能，以下为可选增强：
+当前 MVP 实现覆盖了核心聊天 + 定时任务功能，以下为可选增强：
 
 1. **富文本回复**：Markdown -> 飞书 Post 格式转换，支持加粗/链接/代码块
-2. **图片/文件收发**：通过 `im:resource` 权限处理媒体附件
+2. **图片/文件收发**：通过 `im:resource` 权限处理媒体附件（当前 `sendMedia` 仅投递文本）
 3. **交互卡片**：使用飞书 Interactive Card 展示结构化回复
 4. **群聊支持**：@mention 检测、群权限策略、群级别配置
 5. **Onboarding CLI**：`openclaw setup` 交互式引导配置飞书凭证
@@ -354,7 +394,7 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 
 飞书通道本质上是在 OpenClaw 的通道体系中新增一个标准通道插件。它与 Her（realtime 语音通道）完全平行，与 Telegram/Slack/Discord 完全同构。
 
-- 实际新增代码 ~648 行，全部在 `extensions/feishu/` 内
+- 实际新增代码 ~705 行，全部在 `extensions/feishu/` 内
 - 不修改 OpenClaw 核心代码的任何一行
 - 不修改 Her（realtime 插件）的任何一行
 - 不修改任何已有扩展的任何一行

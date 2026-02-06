@@ -19,17 +19,35 @@ export function getFeishuClient(account: ResolvedFeishuAccount): Lark.Client {
   return client;
 }
 
-/** Send a plain text message to a Feishu chat. */
+/**
+ * Strip the optional `feishu:` routing prefix that routeReply may prepend,
+ * then infer the Feishu receive_id_type from the ID prefix:
+ *   oc_ -> chat_id, ou_ -> open_id, on_ -> union_id, else open_id.
+ */
+function resolveReceiveId(raw: string): {
+  receiveId: string;
+  receiveIdType: "chat_id" | "open_id" | "union_id";
+} {
+  const stripped = raw.replace(/^feishu:/i, "");
+  if (stripped.startsWith("oc_")) return { receiveId: stripped, receiveIdType: "chat_id" };
+  if (stripped.startsWith("ou_")) return { receiveId: stripped, receiveIdType: "open_id" };
+  if (stripped.startsWith("on_")) return { receiveId: stripped, receiveIdType: "union_id" };
+  // Default to open_id for unknown prefixes.
+  return { receiveId: stripped, receiveIdType: "open_id" };
+}
+
+/** Send a plain text message to a Feishu chat or user. */
 export async function sendFeishuText(params: {
   account: ResolvedFeishuAccount;
   chatId: string;
   text: string;
 }): Promise<void> {
   const client = getFeishuClient(params.account);
+  const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
   await client.im.message.create({
-    params: { receive_id_type: "chat_id" },
+    params: { receive_id_type: receiveIdType },
     data: {
-      receive_id: params.chatId,
+      receive_id: receiveId,
       content: JSON.stringify({ text: params.text }),
       msg_type: "text",
     },

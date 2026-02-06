@@ -60,7 +60,7 @@ echo -e "${GREEN}═════════════════════
 echo ""
 
 # 启动 Gateway（后台运行）
-pnpm openclaw gateway --port 18789 --verbose &
+pnpm openclaw gateway run --port 18789 --force &
 GATEWAY_PID=$!
 
 # 启动 Live Frontend Proxy（后台运行）
