@@ -182,7 +182,8 @@ function updateStatus(elementId, text) {
 // Connect to OpenClaw backend
 async function connectOpenClaw() {
   const url = elements.openclawUrl?.value || "ws://localhost:18790/ws";
-  const httpUrl = url.replace("ws://", "http://").replace("/ws", "");
+  // Convert ws(s):// to http(s):// for the bootstrap REST call.
+  const httpUrl = url.replace(/^wss:\/\//, "https://").replace(/^ws:\/\//, "http://").replace(/\/ws$/, "");
   
   try {
     updateStatus("openclawStatus", "Connecting...");

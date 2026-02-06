@@ -359,6 +359,76 @@ client.conversation.push(`[OpenClaw]: ${result}`);
 
 ---
 
+## 交互界面与部署架构
+
+### 界面总览
+
+系统目前有 **1 个前端界面**，通过 **2 种访问方式** 服务不同设备：
+
+- **桌面版**（开发/调试用）：`http://localhost:8000`，功能完整，包含所有配置项、调试面板、媒体控制
+- **远程版**（手机 Demo 用）：通过 Cloudflare 隧道访问同一个页面，URL 参数自动填充连接地址
+
+两种方式共享同一份前端代码（`frontend/index.html` + `script.js` + 库文件）。
+
+### 部署架构
+
+```
+                    ┌─────────────────────────────────┐
+                    │        Cloudflare 隧道           │
+                    │  (start-remote.sh 一键启动)      │
+                    │                                  │
+                    │  HTTPS :8000  ──→  前端页面      │
+                    │  WSS   :8080  ──→  Gemini 代理   │
+                    │  WSS   :18790 ──→  OpenClaw      │
+                    └──────────┬──────────────────────┘
+                               │
+          ┌────────────────────┼────────────────────┐
+          │                    │                    │
+     手机浏览器           Mac 浏览器           其他设备
+     (Safari/Chrome)     (localhost:8000)     (通过链接)
+          │                    │                    │
+          └────────────────────┼────────────────────┘
+                               │
+               ┌───────────────┼───────────────┐
+               │         本地 Mac               │
+               │                                │
+               │  server.py        :8000 HTTP   │
+               │                   :8080 WS     │
+               │       │                        │
+               │       ↕ (Gemini Live API)      │
+               │                                │
+               │  OpenClaw Gateway :18789       │
+               │  Realtime Plugin  :18790       │
+               └────────────────────────────────┘
+```
+
+### 多设备并发
+
+每个浏览器连接（不论设备）获得完全独立的会话：
+
+- 独立的 session ID（`realtime:{timestamp}-{random}`）
+- 独立的 Gemini Live API 连接（server.py 为每个客户端创建独立 WebSocket）
+- 独立的 OpenClaw agent session（按需创建，互不共享）
+- 独立的对话历史（`conversation` 数组隔离）
+
+实测验证：Mac 和手机同时对话，各自独立运行，互不干扰。
+
+### 远程访问机制
+
+通过 `start-remote.sh` 一键启动：
+
+1. 检查本地服务（8000/8080/18790）是否在运行
+2. 启动 3 个 Cloudflare Quick Tunnel（`--protocol http2`）
+3. 自动获取 HTTPS URL
+4. 生成带 `?proxy=wss://...&openclaw=wss://...` 参数的一键链接
+5. 前端 `remote-setup.js` 读取参数自动填充输入框
+
+用户打开链接 → 点「一键启动」 → 允许麦克风 → 开始语音对话。
+
+**注意**：Cloudflare Quick Tunnel 无需注册、无需 VPN（中国大陆实测可用）、HTTPS 自动配置。
+
+---
+
 ## 实现状态
 
 | 能力 | 状态 | 备注 |
@@ -372,6 +442,9 @@ client.conversation.push(`[OpenClaw]: ${result}`);
 | Her 亲切称呼用户 | ✅ 已实现 | prompt 已加入 |
 | conversation 记录完整 | ✅ 已实现 | help 请求和结果已记录 |
 | 播报数据准确性约束 | ✅ 已实现 | 事实数据不得篡改 |
+| 远程手机访问 | ✅ 已实现 | Cloudflare 隧道 + 一键链接 + URL 参数自动填充 |
+| 多设备并发 | ✅ 已验证 | Mac + 手机同时对话，session 完全隔离 |
+| wss:// 协议支持 | ✅ 已修复 | script.js 修复 wss→https 转换 |
 
 ---
 
@@ -381,7 +454,9 @@ client.conversation.push(`[OpenClaw]: ${result}`);
 |--------|------|------|
 | P0 | 去掉 Supervisor | ✅ 完成 |
 | P0 | 改进 Her prompt | ✅ 完成 — 快慢分工、亲切称呼、播报准确性约束 |
+| P0 | 远程手机访问 | ✅ 完成 — Cloudflare 隧道 + start-remote.sh 一键启动 |
 | P1 | conversation 完整化 | ✅ 完成 — help 请求和结果已记录 |
+| P1 | 手机专属极简界面 | 待开始 — 独立 mobile.html，1-2 个按钮，傻瓜式使用 |
 | P2 | 改进 OpenClaw prompt | 待开始 — 增加上下文审视要求、输出格式约束 |
 | P2 | RESPONSE_REJECTED 韧性 | 待开始 — 被拒后自动重试或降级 |
 | P3 | 长任务进度通知 | 待开始 — 超时未返回时 Her 主动安抚用户 |
