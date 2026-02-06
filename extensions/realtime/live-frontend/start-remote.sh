@@ -35,6 +35,13 @@ check_port 18790 "OpenClaw Realtime 插件"
 
 echo "本地服务检查通过 ✓"
 echo ""
+# Kill any leftover cloudflared processes from previous runs
+if pgrep -q cloudflared 2>/dev/null; then
+  echo "清理残留 cloudflared 进程..."
+  pkill -9 cloudflared 2>/dev/null
+  sleep 1
+fi
+
 echo "正在启动 Cloudflare 隧道..."
 echo ""
 
@@ -42,8 +49,9 @@ echo ""
 cleanup() {
   echo ""
   echo "正在关闭隧道..."
-  kill $PID_FRONTEND $PID_PROXY $PID_OPENCLAW 2>/dev/null
+  kill -9 $PID_FRONTEND $PID_PROXY $PID_OPENCLAW 2>/dev/null
   wait $PID_FRONTEND $PID_PROXY $PID_OPENCLAW 2>/dev/null
+  rm -f "$TMP_FRONTEND" "$TMP_PROXY" "$TMP_OPENCLAW" 2>/dev/null
   echo "隧道已关闭。"
 }
 trap cleanup EXIT INT TERM
@@ -93,23 +101,28 @@ if [ -z "$URL_FRONTEND" ] || [ -z "$URL_PROXY" ] || [ -z "$URL_OPENCLAW" ]; then
   exit 1
 fi
 
-# Build the one-click URL with query params
+# Build one-click URLs with query params
 WSS_PROXY=$(echo "$URL_PROXY" | sed 's|^https://|wss://|')
 WSS_OPENCLAW=$(echo "$URL_OPENCLAW" | sed 's|^https://|wss://|')
-FULL_URL="${URL_FRONTEND}?proxy=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${WSS_PROXY}'))")&openclaw=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${WSS_OPENCLAW}/ws'))")"
+QUERY="proxy=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${WSS_PROXY}'))")&openclaw=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${WSS_OPENCLAW}/ws'))")"
+MOBILE_URL="${URL_FRONTEND}/mobile.html?${QUERY}"
+DESKTOP_URL="${URL_FRONTEND}?${QUERY}"
 
 echo ""
 echo "╔══════════════════════════════════════════════════════════╗"
 echo "║   隧道已就绪！                                          ║"
 echo "╠══════════════════════════════════════════════════════════╣"
 echo "║                                                          ║"
-echo "║  手机打开以下链接，点「一键启动」即可语音对话：           ║"
+echo "║  手机版（极简界面，推荐）：                               ║"
 echo "║                                                          ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
-echo "$FULL_URL"
+echo "$MOBILE_URL"
 echo ""
 echo "-----------------------------------------------------------"
+echo "桌面版（完整调试界面）："
+echo "$DESKTOP_URL"
+echo ""
 echo "隧道详情："
 echo "  前端页面:     $URL_FRONTEND"
 echo "  Gemini 代理:  $URL_PROXY"

@@ -489,6 +489,9 @@ frontend/
 | 远程手机访问 | ✅ 已实现 | Cloudflare 隧道 + 一键链接 + URL 参数自动填充 |
 | 多设备并发 | ✅ 已验证 | Mac + 手机同时对话，session 完全隔离 |
 | wss:// 协议支持 | ✅ 已修复 | script.js 修复 wss→https 转换 |
+| 手机专属极简界面 | ✅ 已实现 | mobile.html + mobile-script.js，暖白 Apple 风格 |
+| 一键启动脚本 | ✅ 已实现 | start-mobile.sh 根目录快捷入口，自动清理残留进程 |
+| Audio observability (手机) | ✅ 已实现 | 每轮一行滚动累积，与桌面版格式一致 |
 
 ---
 
@@ -500,7 +503,11 @@ frontend/
 | P0 | 改进 Her prompt | ✅ 完成 — 快慢分工、亲切称呼、播报准确性约束 |
 | P0 | 远程手机访问 | ✅ 完成 — Cloudflare 隧道 + start-remote.sh 一键启动 |
 | P1 | conversation 完整化 | ✅ 完成 — help 请求和结果已记录 |
-| P1 | 手机专属极简界面 | 设计完成 — mobile.html + mobile-script.js，待实现 |
+| P1 | 手机专属极简界面 | ✅ 完成 — mobile.html + mobile-script.js，暖白 Apple 风格 |
+| P1 | start-mobile.sh 根目录快捷入口 | ✅ 完成 — 自动清理残留进程 + Ctrl+C 秒退 |
+| P1 | Her prompt 快思考边界优化 | 待开始 — 当前时间等 Gemini 自身能力不应转交 OpenClaw |
+| P1 | OpenClaw prompt 注入当前时间 | 待开始 — 避免 Claude 幻觉编造时间 |
 | P2 | 改进 OpenClaw prompt | 待开始 — 增加上下文审视要求、输出格式约束 |
 | P2 | RESPONSE_REJECTED 韧性 | 待开始 — 被拒后自动重试或降级 |
+| P2 | 手机端语音提醒 | 待设计 — Her 通过 OpenClaw 设置定时提醒，到点推送通知到手机 |
 | P3 | 长任务进度通知 | 待开始 — 超时未返回时 Her 主动安抚用户 |
