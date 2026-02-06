@@ -34,9 +34,8 @@ const state = {
 // Backend inject control line (internal). This line is used to force Gemini to
 // continue generation after we inject backend context as role=model.
 //
-// IMPORTANT:
-// - This text MUST be treated as internal-only by the model (see system prompt rules).
-// - Never display it to end users; never read it aloud.
+// Control line to trigger Gemini to speak after receiving async result.
+// IMPORTANT: This must be treated as internal-only by the model (see system prompt rules).
 const BACKEND_INJECT_CONTROL =
   "以上信息来自 backend ai，请你根据实际情况回复用户信息！";
 
@@ -212,14 +211,10 @@ async function connectOpenClaw() {
     openclawConnection.onHelpResult = (callId, reply) => {
       console.log(`🦞 Help result for ${callId}:`, reply);
       debugLog("OPENCLAW→LIVE", "HELP_RESULT", { callId: callId, reply: reply.slice(0, 50) + "..." });
-      // IMPORTANT:
-      // - We already sent an immediate "processing ACK" tool_response when the toolCall arrived,
-      //   to unblock Gemini and let her speak immediately.
-      // - The final result must NOT be sent as a second tool_response (undefined behavior).
-      // - Instead, enqueue the final result and deliver it in a safe window (B: weak-trigger).
+      // Two-stage protocol: we already sent an immediate "processing ACK" tool_response.
+      // Now deliver the final result as role=model in a safe window.
+      // Gemini will naturally respond when user speaks next.
       addMessage(`[OpenClaw] ${reply}`, "system");
-      // Queue raw backend result. We will inject it as role=model, then send a
-      // role=user control line to force Gemini to speak (without using any tags).
       state.pendingInjects.push(reply);
       tryDeliverInjects();
     };

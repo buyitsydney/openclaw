@@ -96,7 +96,7 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Her (快思考)                                │
 │                                                                 │
-│  收到 tool_response → 用自己的话播报给用户                       │
+│  收到 tool_response → 按播报规则播报给用户                       │
 └─────────────────────────────────────────────────────────────────┘
                             │
                        语音输出
@@ -249,8 +249,10 @@ Her: "明天多云，15度左右。对了，你刚说要喝点，身体能行吗
 
 **核心原则：宁可多问 OpenClaw，不要瞎猜！**
 
-## 工具调用后
-收到 tool_response 后，用你自己的话对用户播报结论，简洁、口语化。
+## 播报 OpenClaw 结果的规则（严格遵守）
+1) 事实数据不得篡改：数字、温度、价格、日期、时间、百分比、人名、地名等必须原样使用
+2) 语气可以口语化：去掉 markdown 格式、emoji，转为自然语音
+3) 可以精简：太长的内容挑重点播报，但数据部分必须准确
 
 ## 用户画像摘要
 {liveMemoryCapsule}
@@ -328,17 +330,20 @@ client.sendTextMessage(controlLine, { role: "user" }); // 控制句（触发 Gem
 
 ### 新设计
 
-**去掉控制句**：
+**保留控制句**（触发 Gemini 立刻播报）：
 ```javascript
-// inject-delivery.js 改为只发 role=model
-client.sendTextMessage(reply, { role: "model" });
-// 不发 controlLine
+// inject-delivery.js
+client.sendTextMessage(reply, { role: "model" });       // 结果内容
+client.sendTextMessage(controlLine, { role: "user" }); // 触发播报
 ```
 
-**去掉 Supervisor 整个路径**：
+> 控制句是**必须的**，否则 Gemini 不会主动播报异步结果。
+> RESPONSE_REJECTED 问题通过 prompt 设计处理（让 Gemini 理解这是系统控制信号）。
+
+**去掉 Supervisor 整个路径**（已完成）：
 - 删除 `server.ts` 中 `runSupervisorTurn` 相关代码
 - 删除 `enqueueSupervisorTurn` 调用
-- 删除 `turnAssembler` 相关代码（如果只用于 Supervisor）
+- 删除 `turnAssembler` 相关代码
 
 ### conversation 记录完整化
 
@@ -360,21 +365,23 @@ client.conversation.push(`[OpenClaw]: ${result}`);
 |------|------|------|
 | Her 调用 openclaw_help | ✅ 已实现 | |
 | 两段式 ACK | ✅ 已实现 | 立即返回 processing |
-| 结果异步投递 | ✅ 已实现 | 安全窗口投递 |
-| Supervisor 监督 | ❌ 建议去掉 | 简化架构 |
-| 控制句触发 | ❌ 建议去掉 | 减少 RESPONSE_REJECTED |
+| 结果异步投递 | ✅ 已实现 | 安全窗口投递 + 控制句触发 |
+| Supervisor 监督 | ✅ 已去掉 | 简化架构 |
+| 控制句触发 | ✅ 保留 | 必须有，否则 Gemini 不会主动播报 |
 | liveMemoryCapsule | ✅ 已实现 | 用户画像摘要 |
-| Her 亲切称呼用户 | ⚠️ 需改进 prompt | |
-| conversation 记录完整 | ⚠️ 需改进 | 加入 tool 调用记录 |
+| Her 亲切称呼用户 | ✅ 已实现 | prompt 已加入 |
+| conversation 记录完整 | ✅ 已实现 | help 请求和结果已记录 |
+| 播报数据准确性约束 | ✅ 已实现 | 事实数据不得篡改 |
 
 ---
 
 ## 下一步 TODO
 
-| 优先级 | 任务 | 描述 |
+| 优先级 | 任务 | 状态 |
 |--------|------|------|
-| P0 | 去掉 Supervisor | 删除监督者相关代码 |
-| P0 | 去掉控制句 | 修改 inject-delivery.js |
-| P1 | 改进 Her prompt | 强调亲切称呼、快慢思考分工 |
-| P1 | conversation 完整化 | 记录 tool 调用和结果 |
-| P2 | 改进 OpenClaw prompt | 增加上下文审视要求 |
+| P0 | 去掉 Supervisor | ✅ 完成 |
+| P0 | 改进 Her prompt | ✅ 完成 — 快慢分工、亲切称呼、播报准确性约束 |
+| P1 | conversation 完整化 | ✅ 完成 — help 请求和结果已记录 |
+| P2 | 改进 OpenClaw prompt | 待开始 — 增加上下文审视要求、输出格式约束 |
+| P2 | RESPONSE_REJECTED 韧性 | 待开始 — 被拒后自动重试或降级 |
+| P3 | 长任务进度通知 | 待开始 — 超时未返回时 Her 主动安抚用户 |
