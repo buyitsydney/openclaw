@@ -297,6 +297,45 @@ Client 实例按 appId 缓存，避免重复创建和 token 获取。
 
 ---
 
+## 多通道 Session 与消息路由分析
+
+### Session 共享机制
+
+当前配置 `dmScope = "main"`（默认），所有 DM 通道共享同一个 session key `agent:main:main`。这意味着飞书、Telegram、Webchat 发来的消息共享同一个对话历史和记忆。
+
+OpenClaw 支持 4 种 `dmScope` 模式：
+
+- `main`（当前）：所有通道共享一个对话。AI 跨通道记住所有内容
+- `per-peer`：按用户隔离，同一用户跨通道仍共享
+- `per-channel-peer`：按通道+用户隔离，飞书和 Telegram 各自独立
+- `per-account-channel-peer`：最细粒度，按账号+通道+用户隔离
+
+### 消息可见性（非对称设计）
+
+Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("agent", ...)` 无条件接收 gateway 上所有 agent 活动。外部通道是独立的消息管道，不订阅 webchat 广播。
+
+| 行为 | 结果 |
+|------|------|
+| 飞书发消息、收到回复 | 飞书能看到，**Webchat 也能看到**（广播机制） |
+| Telegram 发消息、收到回复 | Telegram 能看到，**Webchat 也能看到** |
+| Webchat 发消息、收到回复 | 只有 Webchat 能看到，飞书/Telegram **看不到** |
+
+### 并发行为
+
+当 agent 正在处理某个通道的消息时，其他通道的消息被排入 followup 队列。队列 drain 时通过 `routeReply()` 尝试将回复路由回原始通道。如果路由失败，回复会 fallback 到当前活跃的 dispatcher（通常是 webchat）。
+
+实际影响：同时在 Webchat 和飞书聊天时，后到的消息可能被排队，回复可能出现在非预期的通道。
+
+### 结论：保持默认配置
+
+对于个人单用户场景，`dmScope = "main"` 是最佳选择：
+
+- 跨通道共享记忆（飞书聊的内容，Webchat 里也知道）
+- 只要避免同时在多个通道聊天，不会遇到并发冲突
+- 如果未来需要同时多通道独立聊天，可改为 `per-channel-peer`，代价是失去跨通道记忆
+
+---
+
 ## 后续增强方向
 
 当前 MVP 实现覆盖了核心聊天功能，以下为可选增强：
