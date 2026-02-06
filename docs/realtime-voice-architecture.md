@@ -363,12 +363,55 @@ client.conversation.push(`[OpenClaw]: ${result}`);
 
 ### 界面总览
 
-系统目前有 **1 个前端界面**，通过 **2 种访问方式** 服务不同设备：
+系统有 **2 个前端界面**，共享同一套后端服务和 JS 库：
 
-- **桌面版**（开发/调试用）：`http://localhost:8000`，功能完整，包含所有配置项、调试面板、媒体控制
-- **远程版**（手机 Demo 用）：通过 Cloudflare 隧道访问同一个页面，URL 参数自动填充连接地址
+- **桌面版** `index.html`（开发/调试用）：`http://localhost:8000`，功能完整，包含所有配置项、调试面板、媒体控制。适合开发者在 Mac 上使用。
+- **手机版** `mobile.html`（Demo/体验用）：`http://localhost:8000/mobile.html`，极简界面，一个大按钮启动，底部工具栏收纳全部功能。适合非技术用户、手机端、演示场景。
 
-两种方式共享同一份前端代码（`frontend/index.html` + `script.js` + 库文件）。
+两个界面**完全独立**（各自的 HTML + 各自的 script），但共享底层 JS 库：
+
+```
+frontend/
+  index.html         ← 桌面版入口（不改）
+  script.js          ← 桌面版逻辑（不改）
+  mobile.html        ← 手机版入口（新增）
+  mobile-script.js   ← 手机版逻辑（新增）
+  remote-setup.js    ← URL 参数自动填充（共享）
+  geminilive.js      ← Gemini Live API 客户端（共享，不改）
+  mediaUtils.js      ← 音频/视频/屏幕共享（共享，不改）
+  tools.js           ← OpenClaw 工具（共享，不改）
+  inject-delivery.js ← 异步结果投递（共享，不改）
+  audio-processors/  ← AudioWorklet（共享，不改）
+```
+
+### 手机版界面设计
+
+```
+┌─────────────────────────────┐
+│                             │
+│    (转录区 - 可滚动)         │  ← 60%：用户/Her/系统消息
+│    USER: 你好                │
+│    HER: 天哥你好！           │
+│    SYSTEM: [Asking OpenClaw] │
+│                             │
+├─────────────────────────────┤
+│                             │
+│      ◉  大圆按钮            │  ← 25%：启动/停止开关
+│     (脉冲/声波动画)          │     连接后自动开启麦克风
+│                             │
+│   "CarHer 车载 AI 助手"     │
+│                             │
+├─────────────────────────────┤
+│  🎤  📹  🖥️  🔊──  🐛    │  ← 15%：底部工具栏
+│  音频 视频 屏幕 音量 调试    │     调试面板一键展开
+└─────────────────────────────┘
+```
+
+关键设计决策：
+- **Audio observability 默认开启**，调试面板一键切换，方便定位音频断续问题
+- **视频和屏幕共享保留**在底部工具栏，不影响主界面简洁
+- 配置项（Project ID、Model、System Instructions 等）使用合理默认值，不在 UI 暴露
+- 连接后自动启动麦克风，减少操作步骤
 
 ### 部署架构
 
@@ -377,7 +420,7 @@ client.conversation.push(`[OpenClaw]: ${result}`);
                     │        Cloudflare 隧道           │
                     │  (start-remote.sh 一键启动)      │
                     │                                  │
-                    │  HTTPS :8000  ──→  前端页面      │
+                    │  HTTPS :8000  ──→  静态文件      │
                     │  WSS   :8080  ──→  Gemini 代理   │
                     │  WSS   :18790 ──→  OpenClaw      │
                     └──────────┬──────────────────────┘
@@ -385,7 +428,7 @@ client.conversation.push(`[OpenClaw]: ${result}`);
           ┌────────────────────┼────────────────────┐
           │                    │                    │
      手机浏览器           Mac 浏览器           其他设备
-     (Safari/Chrome)     (localhost:8000)     (通过链接)
+     /mobile.html        /index.html          (通过链接)
           │                    │                    │
           └────────────────────┼────────────────────┘
                                │
@@ -393,6 +436,7 @@ client.conversation.push(`[OpenClaw]: ${result}`);
                │         本地 Mac               │
                │                                │
                │  server.py        :8000 HTTP   │
+               │    (静态文件: frontend/*)       │
                │                   :8080 WS     │
                │       │                        │
                │       ↕ (Gemini Live API)      │
@@ -456,7 +500,7 @@ client.conversation.push(`[OpenClaw]: ${result}`);
 | P0 | 改进 Her prompt | ✅ 完成 — 快慢分工、亲切称呼、播报准确性约束 |
 | P0 | 远程手机访问 | ✅ 完成 — Cloudflare 隧道 + start-remote.sh 一键启动 |
 | P1 | conversation 完整化 | ✅ 完成 — help 请求和结果已记录 |
-| P1 | 手机专属极简界面 | 待开始 — 独立 mobile.html，1-2 个按钮，傻瓜式使用 |
+| P1 | 手机专属极简界面 | 设计完成 — mobile.html + mobile-script.js，待实现 |
 | P2 | 改进 OpenClaw prompt | 待开始 — 增加上下文审视要求、输出格式约束 |
 | P2 | RESPONSE_REJECTED 韧性 | 待开始 — 被拒后自动重试或降级 |
 | P3 | 长任务进度通知 | 待开始 — 超时未返回时 Her 主动安抚用户 |
