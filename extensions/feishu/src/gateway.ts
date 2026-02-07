@@ -36,12 +36,53 @@ function trackMessageId(messageId: string): boolean {
   return true;
 }
 
+/** Flatten a post body ({ title?, content: [[{tag,text}, ...]] }) into plain text. */
+// oxlint-disable-next-line typescript/no-explicit-any
+function flattenPostBody(body: any): string | null {
+  if (!body || !Array.isArray(body.content)) return null;
+  const lines: string[] = [];
+  for (const paragraph of body.content) {
+    if (!Array.isArray(paragraph)) continue;
+    let line = "";
+    for (const el of paragraph) {
+      if (el.tag === "text" || el.tag === "a") line += el.text ?? "";
+      else if (el.tag === "at") line += el.user_id ? `@_user_${el.user_id}` : "";
+      else if (el.tag === "img") line += "[image]";
+      else if (el.tag === "media") line += "[media]";
+      else if (el.tag === "emotion") line += el.emoji_type ? `[${el.emoji_type}]` : "";
+    }
+    lines.push(line);
+  }
+  const title = typeof body.title === "string" && body.title ? `${body.title}\n` : "";
+  return `${title}${lines.join("\n")}`.trim() || null;
+}
+
+/** Extract plain text from a Feishu "post" (rich-text) message.
+ *  Received format: { title?, content: [[...]] }  (flat, no locale wrapper)
+ *  Send format:     { zh_cn: { title?, content: [[...]] } }  (locale-wrapped)
+ *  We handle both so the parser is robust. */
+function extractPostText(parsed: Record<string, unknown>): string | null {
+  // Received messages use the flat format (title + content at top level).
+  if (Array.isArray(parsed.content)) {
+    return flattenPostBody(parsed);
+  }
+  // Fallback: locale-wrapped format (zh_cn / en_us / first key).
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const locales = parsed as Record<string, any>;
+  const locale = locales.zh_cn ?? locales.en_us ?? Object.values(locales)[0];
+  return flattenPostBody(locale);
+}
+
 /** Extract plain text from Feishu message content JSON. */
 function extractTextContent(content: string, msgType: string): string | null {
   try {
     const parsed = JSON.parse(content);
     if (msgType === "text") {
       return (parsed.text as string) ?? null;
+    }
+    // Rich-text (post) messages: flatten nested paragraphs into plain text.
+    if (msgType === "post") {
+      return extractPostText(parsed);
     }
     if (msgType === "image") return "[image]";
     if (msgType === "file") return "[file]";
@@ -131,7 +172,11 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   if (messageId && !trackMessageId(messageId)) return;
 
   const rawText = extractTextContent(content, msgType);
-  if (!rawText) return;
+  if (!rawText) {
+    // Debug: log unrecognized message types so we can add support.
+    log?.info(`[${account.accountId}] skipped msg: msgType=${msgType} content=${content.slice(0, 200)}`);
+    return;
+  }
 
   // Strip @mentions (Feishu uses @_user_N patterns in text).
   const cleanText = rawText.replace(/@_user_\d+/g, "").trim();

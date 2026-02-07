@@ -2,7 +2,7 @@
 
 通过飞书（Lark）机器人与 OpenClaw 对话，让用户在飞书客户端内获得 AI 助手体验。
 
-**状态：已实现并验证通过 (2026-02-06)**
+**状态：已实现并验证通过 (2026-02-07)**
 
 ## 核心结论
 
@@ -10,7 +10,7 @@
 - **对现有 Her（realtime 插件）代码：零修改** -- 已验证
 - **全部新增代码限制在 `extensions/feishu/` 目录内** -- 已验证
 - **风险评估：极低** -- 已通过端到端测试确认
-- **实际新增代码：~705 行**（包含 cron 直投修复）
+- **实际新增代码：~784 行**（包含 cron 直投修复 + 富文本解析修复）
 
 ---
 
@@ -292,12 +292,12 @@ outbound: {
 | `openclaw.plugin.json` | 9 | 插件清单 |
 | `package.json` | 39 | 依赖 + 通道元数据 |
 | `index.ts` | 17 | 入口注册 |
-| `src/channel.ts` | 219 | ChannelPlugin 主体 + sendMedia 适配 |
-| `src/runtime.ts` | 15 | Runtime 单例 |
-| `src/gateway.ts` | 228 | WSClient + pipeline 集成 + 回复投递 |
-| `src/outbound.ts` | 72 | Lark SDK 消息发送 + 智能 ID 类型识别 |
-| `src/accounts.ts` | 110 | 账户 / 凭证解析 |
-| **总计** | **~705** | 全部在 `extensions/feishu/` 内 |
+| `src/channel.ts` | 218 | ChannelPlugin 主体 + sendMedia 适配 |
+| `src/runtime.ts` | 14 | Runtime 单例 |
+| `src/gateway.ts` | 299 | WSClient + pipeline 集成 + 富文本解析 + 回复投递 |
+| `src/outbound.ts` | 71 | Lark SDK 消息发送 + 智能 ID 类型识别 |
+| `src/accounts.ts` | 117 | 账户 / 凭证解析 |
+| **总计** | **~784** | 全部在 `extensions/feishu/` 内 |
 
 ---
 
@@ -374,6 +374,27 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 
 **验证**：修复后 cron 定时任务成功投递到飞书（`lastStatus: "ok"`）
 
+### 飞书富文本（post）消息解析修复 (2026-02-07)
+
+**问题**：用户在飞书中发送包含序号列表的消息（如 `1. xxx`）时，AI 完全收不到消息，被静默丢弃。
+
+**根因**：
+1. 飞书客户端会自动将包含序号/列表的文本从 `text` 类型转换为 `post`（富文本）类型
+2. `extractTextContent` 只处理了 `text`/`image`/`file`/`audio`/`sticker`，未处理 `post` 类型
+3. 初版修复错误地按**发送格式**（`{ zh_cn: { title, content } }` 带 locale 包裹）解析，但飞书**接收到的** `post` 消息结构是扁平的 `{ title, content: [[...]] }`，没有 locale 包裹
+
+**教训**：发送和接收使用不同的 JSON 结构是外部 API 的常见陷阱。必须查阅官方文档确认接收格式，不能凭记忆或发送格式推断。
+
+**修复**：
+1. 新增 `flattenPostBody()` 函数解析 `{ title?, content: [[{tag,text}, ...]] }` 结构
+2. `extractPostText()` 优先检查扁平格式（接收场景），兜底支持 locale 包裹格式
+3. 支持 `text`、`a`（链接）、`at`（@提及）、`img`（图片）、`media`（视频）、`emotion`（表情）标签
+4. 新增 debug 日志：未识别的消息类型会打印 `skipped msg: msgType=xxx` 便于后续排查
+
+**验证**：修复后带序号的列表消息成功被 AI 接收并回复
+
+**官方文档参考**：https://feishu.apifox.cn/doc-1945309（接收消息内容 - 富文本 post 结构）
+
 ---
 
 ## 后续增强方向
@@ -394,7 +415,7 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 
 飞书通道本质上是在 OpenClaw 的通道体系中新增一个标准通道插件。它与 Her（realtime 语音通道）完全平行，与 Telegram/Slack/Discord 完全同构。
 
-- 实际新增代码 ~705 行，全部在 `extensions/feishu/` 内
+- 实际新增代码 ~784 行，全部在 `extensions/feishu/` 内
 - 不修改 OpenClaw 核心代码的任何一行
 - 不修改 Her（realtime 插件）的任何一行
 - 不修改任何已有扩展的任何一行
