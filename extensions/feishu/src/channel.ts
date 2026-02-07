@@ -15,7 +15,7 @@ import {
   resolveFeishuAccount,
   type ResolvedFeishuAccount,
 } from "./accounts.js";
-import { sendFeishuText } from "./outbound.js";
+import { sendFeishuText, uploadFeishuImage, sendFeishuImage } from "./outbound.js";
 import { startFeishuGateway } from "./gateway.js";
 import { getFeishuRuntime } from "./runtime.js";
 
@@ -153,17 +153,52 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
       };
     },
   },
+  messaging: {
+    normalizeTarget: (raw: string) => raw.replace(/^(feishu|lark|fs):/i, "").trim(),
+    targetResolver: {
+      looksLikeId: (raw: string) => {
+        const trimmed = raw.replace(/^(feishu|lark|fs):/i, "").trim();
+        // Feishu IDs: oc_ (chat), ou_ (open_id), on_ (union_id)
+        return /^(oc_|ou_|on_)/.test(trimmed);
+      },
+      hint: "<chat_id (oc_...) | open_id (ou_...) | union_id (on_...)>",
+    },
+  },
   outbound: {
     deliveryMode: "gateway",
     textChunkLimit: 4000,
+    resolveTarget: ({ to }) => {
+      const trimmed = (to ?? "").replace(/^(feishu|lark|fs):/i, "").trim();
+      if (!trimmed) {
+        return { ok: false as const, error: new Error("Feishu target is required") };
+      }
+      // Accept oc_ (chat), ou_ (open_id), on_ (union_id) prefixes.
+      if (/^(oc_|ou_|on_)/.test(trimmed)) {
+        return { ok: true as const, to: trimmed };
+      }
+      return { ok: false as const, error: new Error(`Invalid Feishu target "${trimmed}". Use chat_id (oc_...), open_id (ou_...), or union_id (on_...).`) };
+    },
     sendText: async ({ to, text, accountId, cfg }) => {
       const account = resolveFeishuAccount({ cfg, accountId });
       await sendFeishuText({ account, chatId: to, text });
       return { channel: "feishu" };
     },
-    // Media delivery: send caption text (media files not yet supported by the Feishu plugin).
-    sendMedia: async ({ to, text, accountId, cfg }) => {
+    sendMedia: async ({ to, text, mediaUrl, accountId, cfg }) => {
       const account = resolveFeishuAccount({ cfg, accountId });
+      // Upload and send image if a media URL is provided.
+      if (mediaUrl) {
+        try {
+          const { loadWebMedia } = await import("openclaw/plugin-sdk");
+          const media = await loadWebMedia(mediaUrl);
+          if (media?.buffer) {
+            const imageKey = await uploadFeishuImage({ account, buffer: media.buffer });
+            await sendFeishuImage({ account, chatId: to, imageKey });
+          }
+        } catch {
+          // Fallback: send URL as text if upload fails.
+          await sendFeishuText({ account, chatId: to, text: `[image] ${mediaUrl}` });
+        }
+      }
       if (text) {
         await sendFeishuText({ account, chatId: to, text });
       }

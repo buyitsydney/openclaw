@@ -10,7 +10,7 @@
 - **对现有 Her（realtime 插件）代码：零修改** -- 已验证
 - **全部新增代码限制在 `extensions/feishu/` 目录内** -- 已验证
 - **风险评估：极低** -- 已通过端到端测试确认
-- **实际新增代码：~784 行**（包含 cron 直投修复 + 富文本解析修复）
+- **实际新增代码：~908 行**（包含 cron 直投修复 + 富文本解析修复 + 图片收发 + 目标解析）
 
 ---
 
@@ -100,7 +100,7 @@ extensions/feishu/
     channel.ts               # ChannelPlugin<ResolvedFeishuAccount> 实现
     runtime.ts               # PluginRuntime 单例存取
     gateway.ts               # WSClient 长连接 + 消息监听 + auto-reply pipeline 集成
-    outbound.ts              # Lark.Client 消息发送（text / reply）
+    outbound.ts              # Lark.Client 消息发送（text / reply / image upload+send）
     accounts.ts              # 多账户解析 + 凭证解析（config / env）
 ```
 
@@ -214,23 +214,55 @@ export async function sendFeishuText(params: {
 
 Client 实例按 appId 缓存，避免重复创建和 token 获取。
 
+#### 图片上传与发送（2026-02-07 新增）
+
+`uploadFeishuImage` 使用原始 HTTP API（而非 SDK 封装）上传图片，`sendFeishuImage` 发送图片消息：
+
+```typescript
+// 使用原始 fetch 而非 SDK，因为 SDK 的 image_file 参数名与实际 API 的 image 不匹配
+export async function uploadFeishuImage(params: {
+  account: ResolvedFeishuAccount;
+  buffer: Buffer;
+}): Promise<string> {
+  // 通过 SDK tokenManager 获取 tenant_access_token
+  // 使用 FormData 上传：image_type="message", image=<blob>
+  // 返回 image_key
+}
+
+export async function sendFeishuImage(params: {
+  account: ResolvedFeishuAccount;
+  chatId: string;
+  imageKey: string;
+  caption?: string;
+}): Promise<void> {
+  // 发送 msg_type="image" 消息
+  // 如果有 caption，作为后续文本消息发送
+}
+```
+
 ### 3.1 Outbound 适配器（channel.ts outbound）
 
-插件同时实现 `sendText` 和 `sendMedia`，确保 cron 定时任务的直投路径 (`deliverOutboundPayloads`) 能正常工作：
+插件同时实现 `sendText`、`sendMedia` 和 `resolveTarget`，确保 cron 直投和 `message send` 工具都能正常工作：
 
 ```typescript
 outbound: {
   deliveryMode: "gateway",
+  resolveTarget: ({ to }) => {
+    // 支持 feishu:/lark:/fs: 前缀，接受 oc_/ou_/on_ ID 格式
+  },
   sendText: async ({ to, text, accountId, cfg }) => { ... },
-  sendMedia: async ({ to, text, accountId, cfg }) => {
-    // 媒体文件暂不支持，仅投递 caption 文本
+  sendMedia: async ({ to, text, mediaUrl, accountId, cfg }) => {
+    // 下载媒体 -> uploadFeishuImage -> sendFeishuImage
+    // 失败时 fallback 为文本发送 URL
     if (text) await sendFeishuText({ account, chatId: to, text });
     return { channel: "feishu" };
   },
 }
 ```
 
-**背景**：OpenClaw 的 cron 定时任务使用 `deliverOutboundPayloads` 直投路径（不经 gateway WebSocket），该路径要求通道同时实现 `sendText` + `sendMedia` 才视为已配置。
+同时实现了 `messaging.targetResolver`，使 AI 的 `message send` 工具能正确识别飞书 ID（`oc_`/`ou_`/`on_` 前缀）。
+
+**背景**：OpenClaw 的 cron 定时任务使用 `deliverOutboundPayloads` 直投路径（不经 gateway WebSocket），该路径要求通道同时实现 `sendText` + `sendMedia` 才视为已配置。AI 的 `message send` 工具需要 `resolveTarget` 和 `targetResolver` 来解析目标地址。
 
 ### 4. 配置存储
 
@@ -260,6 +292,7 @@ outbound: {
 在飞书开放平台配置以下权限：
 - `im:message` -- 接收消息事件（读取用户发给机器人的单聊消息）
 - `im:message:send_as_bot` -- 以应用身份发消息
+- `im:resource` 或 `im:resource:upload` -- 上传图片资源（发送图片消息所需）
 
 事件订阅：
 - `im.message.receive_v1` -- 接收消息事件，使用长连接模式
@@ -292,12 +325,12 @@ outbound: {
 | `openclaw.plugin.json` | 9 | 插件清单 |
 | `package.json` | 39 | 依赖 + 通道元数据 |
 | `index.ts` | 17 | 入口注册 |
-| `src/channel.ts` | 218 | ChannelPlugin 主体 + sendMedia 适配 |
+| `src/channel.ts` | 253 | ChannelPlugin 主体 + sendMedia 图片上传 + 目标解析 |
 | `src/runtime.ts` | 14 | Runtime 单例 |
-| `src/gateway.ts` | 299 | WSClient + pipeline 集成 + 富文本解析 + 回复投递 |
-| `src/outbound.ts` | 71 | Lark SDK 消息发送 + 智能 ID 类型识别 |
+| `src/gateway.ts` | 328 | WSClient + pipeline 集成 + 富文本解析 + 回复投递 + 图片下载转发 |
+| `src/outbound.ts` | 131 | Lark SDK 消息发送 + 智能 ID 类型识别 + 图片上传/发送 |
 | `src/accounts.ts` | 117 | 账户 / 凭证解析 |
-| **总计** | **~784** | 全部在 `extensions/feishu/` 内 |
+| **总计** | **~908** | 全部在 `extensions/feishu/` 内 |
 
 ---
 
@@ -395,6 +428,28 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 
 **官方文档参考**：https://feishu.apifox.cn/doc-1945309（接收消息内容 - 富文本 post 结构）
 
+### 图片收发 + 目标解析 (2026-02-07)
+
+**新增功能**：
+
+1. **图片上传与发送**：AI 现在可以通过飞书发送图片（如摄像头截图、生成的图片等）
+2. **飞书目标解析器**：AI 的 `message send` 工具现在能正确识别飞书地址（`oc_`/`ou_`/`on_` 前缀）
+
+**实现细节**：
+
+- `outbound.ts`：新增 `uploadFeishuImage()`（原始 HTTP API 上传图片到飞书，返回 `image_key`）和 `sendFeishuImage()`（通过 `image_key` 发送图片消息，支持可选 caption）
+- `gateway.ts`：`deliverFeishuReply()` 新增媒体处理逻辑 -- 下载媒体 URL → 判断是否为图片 → 上传到飞书 → 发送图片消息；非图片或失败时回退为文本
+- `channel.ts`：
+  - `sendMedia` 从纯文本回退升级为真正的图片上传发送
+  - 新增 `messaging.targetResolver` 和 `outbound.resolveTarget`，支持 `feishu:`/`lark:`/`fs:` 前缀 + `oc_`/`ou_`/`on_` ID 格式
+
+**踩坑记录**：
+
+- Lark SDK 的 `client.im.image.create` 类型定义的参数名是 `image_file`，但飞书实际 API 要求的字段名是 `image`。SDK 类型与 API 不一致导致上传失败（`code: 234001, Invalid request param`）。最终绕过 SDK，使用原始 `fetch` + `FormData` 解决
+- 需要额外的 `im:resource` 或 `im:resource:upload` 权限才能上传图片
+
+**验证**：AI 成功通过飞书发送小米摄像头实时截图
+
 ---
 
 ## 后续增强方向
@@ -402,7 +457,7 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 当前 MVP 实现覆盖了核心聊天 + 定时任务功能，以下为可选增强：
 
 1. **富文本回复**：Markdown -> 飞书 Post 格式转换，支持加粗/链接/代码块
-2. **图片/文件收发**：通过 `im:resource` 权限处理媒体附件（当前 `sendMedia` 仅投递文本）
+2. ~~**图片/文件收发**~~：✅ 已实现（2026-02-07）-- 通过 `im:resource` 权限上传图片，支持 gateway 回复和 `message send` 主动发送
 3. **交互卡片**：使用飞书 Interactive Card 展示结构化回复
 4. **群聊支持**：@mention 检测、群权限策略、群级别配置
 5. **Onboarding CLI**：`openclaw setup` 交互式引导配置飞书凭证
@@ -415,7 +470,7 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 
 飞书通道本质上是在 OpenClaw 的通道体系中新增一个标准通道插件。它与 Her（realtime 语音通道）完全平行，与 Telegram/Slack/Discord 完全同构。
 
-- 实际新增代码 ~784 行，全部在 `extensions/feishu/` 内
+- 实际新增代码 ~908 行，全部在 `extensions/feishu/` 内
 - 不修改 OpenClaw 核心代码的任何一行
 - 不修改 Her（realtime 插件）的任何一行
 - 不修改任何已有扩展的任何一行

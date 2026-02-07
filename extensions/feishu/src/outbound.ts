@@ -69,3 +69,63 @@ export async function sendFeishuReply(params: {
     },
   });
 }
+
+/** Upload an image buffer to Feishu and return the image_key.
+ *  Uses raw HTTP API because the SDK's `image_file` param name
+ *  doesn't match the actual API field name `image`. */
+export async function uploadFeishuImage(params: {
+  account: ResolvedFeishuAccount;
+  buffer: Buffer;
+}): Promise<string> {
+  const client = getFeishuClient(params.account);
+  // Obtain tenant access token via the SDK's token manager.
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const token = await (client as any).tokenManager.getTenantAccessToken({});
+  if (!token) throw new Error("Feishu: failed to obtain tenant access token");
+
+  const blob = new Blob([params.buffer]);
+  const form = new FormData();
+  form.append("image_type", "message");
+  form.append("image", blob, "image.jpg");
+
+  const res = await fetch("https://open.feishu.cn/open-apis/im/v1/images", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  const json = await res.json();
+  if (json.code !== 0 || !json.data?.image_key) {
+    throw new Error(`Feishu image upload failed: code=${json.code} msg=${json.msg}`);
+  }
+  return json.data.image_key;
+}
+
+/** Send an image message to a Feishu chat or user. */
+export async function sendFeishuImage(params: {
+  account: ResolvedFeishuAccount;
+  chatId: string;
+  imageKey: string;
+  caption?: string;
+}): Promise<void> {
+  const client = getFeishuClient(params.account);
+  const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
+  await client.im.message.create({
+    params: { receive_id_type: receiveIdType },
+    data: {
+      receive_id: receiveId,
+      content: JSON.stringify({ image_key: params.imageKey }),
+      msg_type: "image",
+    },
+  });
+  // Send caption as a follow-up text message if provided.
+  if (params.caption) {
+    await client.im.message.create({
+      params: { receive_id_type: receiveIdType },
+      data: {
+        receive_id: receiveId,
+        content: JSON.stringify({ text: params.caption }),
+        msg_type: "text",
+      },
+    });
+  }
+}

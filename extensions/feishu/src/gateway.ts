@@ -8,7 +8,7 @@
 import * as Lark from "@larksuiteoapi/node-sdk";
 import type { ChannelAccountSnapshot, ChannelLogSink, OpenClawConfig, RuntimeEnv } from "openclaw/plugin-sdk";
 import type { ResolvedFeishuAccount } from "./accounts.js";
-import { getFeishuClient, sendFeishuText } from "./outbound.js";
+import { getFeishuClient, sendFeishuText, uploadFeishuImage, sendFeishuImage } from "./outbound.js";
 import { getFeishuRuntime } from "./runtime.js";
 
 export type FeishuGatewayOptions = {
@@ -282,6 +282,35 @@ async function deliverFeishuReply(params: {
   core: ReturnType<typeof getFeishuRuntime>;
 }): Promise<void> {
   const { payload, account, chatId, log, setStatus, config, core } = params;
+
+  // Handle media (images) if present.
+  const mediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
+  for (const url of mediaUrls) {
+    try {
+      const media = await core.channel.media.fetchRemoteMedia({ url });
+      if (!media?.buffer) {
+        log?.error(`Feishu media fetch returned empty for ${url}`);
+        continue;
+      }
+      // Feishu image upload supports JPEG, PNG, WEBP, GIF, TIFF, BMP, ICO.
+      const isImage = !media.contentType || media.contentType.startsWith("image/");
+      if (isImage) {
+        const imageKey = await uploadFeishuImage({ account, buffer: media.buffer });
+        await sendFeishuImage({ account, chatId, imageKey });
+        setStatus({ lastOutboundAt: Date.now() });
+      } else {
+        // Non-image media: send URL as text fallback.
+        await sendFeishuText({ account, chatId, text: `[media] ${url}` });
+        setStatus({ lastOutboundAt: Date.now() });
+      }
+    } catch (err) {
+      log?.error(`Feishu media send failed for ${url}: ${String(err)}`);
+      // Fallback: send URL as text.
+      try {
+        await sendFeishuText({ account, chatId, text: `[media] ${url}` });
+      } catch { /* ignore fallback error */ }
+    }
+  }
 
   if (payload.text) {
     const chunkLimit = 4000;
