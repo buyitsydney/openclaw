@@ -110,6 +110,10 @@ DESKTOP_URL="${URL_FRONTEND}?${QUERY}"
 
 CHECK_URL="${URL_FRONTEND}/car-check.html"
 
+# Auto-open local pages in Mac browser for debugging
+open "http://localhost:8000/mobile.html"
+open "http://localhost:8000/"
+
 echo ""
 echo "╔══════════════════════════════════════════════════════════╗"
 echo "║   隧道已就绪！                                          ║"
@@ -135,11 +139,6 @@ echo "  前端页面:     $URL_FRONTEND"
 echo "  Gemini 代理:  $URL_PROXY"
 echo "  OpenClaw:     $URL_OPENCLAW"
 echo "-----------------------------------------------------------"
-echo ""
-echo "厂商验证流程："
-echo "  1. 打开「环境检测页面」确认设备兼容性"
-echo "  2. 打开「手机/车机版」点击调试按钮查看环境检测结果"
-echo "  3. 点击「开始」测试全流程语音对话"
 echo ""
 echo "按 Ctrl+C 关闭隧道"
 echo ""

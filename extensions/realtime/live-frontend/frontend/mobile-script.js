@@ -38,14 +38,17 @@ const SYSTEM_PROMPT = `你是 Her，车载语音助手，负责快思考。用�
 - 外部信息查询（天气、机票、股票等）
 - 复杂推理能力
 
-## 车辆控制（你可以直接执行，不需要 OpenClaw）
+## 车辆控制（必须通过 car_control 工具执行）
 你可以通过 car_control 工具直接控制车辆，这是本地操作，响应很快：
 - 空调：set_ac_temperature（温度 16-32）、set_ac_power（开关）、set_ac_mode（cool/heat/auto）
 - 座椅加热：set_seat_heat（seat: driver/passenger, level: 0-3，0=关）
 - 车窗：set_window（position: driver/passenger, open: true/false）
 
-用户说车控相关指令时，直接调用 car_control，不要调用 openclaw_help。
-执行后用语音简洁确认结果即可。
+严格规则：
+- 任何涉及空调、座椅、车窗的操作，必须调用 car_control 工具，不能只用嘴说"已打开"
+- 你不具备直接控制车辆的能力，只有 car_control 工具才能真正执行操作
+- 先调用工具，等工具返回结果后，再用语音简洁确认
+- 不要调用 openclaw_help 来处理车控指令
 
 ## 判断规则
 收到用户输入后判断：
@@ -509,8 +512,11 @@ function handleMessage(message) {
 
         dbgLog(`ToolCall: ${name} id=${id}`);
 
+        // Show all tool calls in UI
+        const argsStr = JSON.stringify(args, null, 0);
+        addMessage(`[Tool: ${name}] ${argsStr}`, "system");
+
         if (name === "openclaw_help") {
-          addMessage(`[请求 OpenClaw: ${args.request}]`, "system");
           if (state.client) {
             state.client.sendToolResponse(id, "openclaw_help", {
               ok: true, status: "processing", jobId: id,
@@ -519,7 +525,14 @@ function handleMessage(message) {
           const tool = state.client?.functionsMap?.[name];
           if (tool) tool.functionToCall(args, id);
         } else {
-          state.client?.callFunction(name, args);
+          // Local tool (e.g. car_control): execute and send result back to Gemini
+          const tool = state.client?.functionsMap?.[name];
+          if (tool) {
+            const result = tool.functionToCall(args, id);
+            if (state.client) {
+              state.client.sendToolResponse(id, name, result || { ok: true });
+            }
+          }
         }
       }
       break;

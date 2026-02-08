@@ -333,7 +333,18 @@ class CarBridge(private val context: Context) {
 
 ### Step 2：前端加车控 Tool（半天）— 已完成 ✅
 
-**已实现。** 改动 4 处，可在手机上用模拟模式测试。
+**已实现并验证通过。** 改动内容：
+- `car-control.js`：CarControlTool 类 + 非车载环境模拟响应
+- `mobile.html`：引入 car-control.js
+- `mobile-script.js`：注册 tool + 更新 SYSTEM_PROMPT + tool call 统一 UI 显示 + tool response 回传修复
+- `car-check.html`：独立环境检测页面
+- `start-remote.sh`：自动打开本地调试页面 + 输出环境检测 URL
+
+验证结果（Mac 本地 + 手机远程）：
+- Gemini 正确识别车控指令并调用 `car_control` tool（UI 显示 `[Tool: car_control] {...}`）
+- 模拟响应正确返回并回传给 Gemini（`sendToolResponse`）
+- Gemini 收到 tool response 后语音播报确认结果
+- 快思考/慢思考分流正确：车控走 `car_control`，查询走 `openclaw_help`
 
 #### 2a. 新建 `car-control.js`
 
