@@ -4,15 +4,15 @@
 
 Car Her 是一个车载 AI 语音助手。用户通过车载麦克风说话，AI 实时理解语义并执行操作（如控制空调），然后通过车载扬声器语音回复。
 
-AI 助手的界面是一个 **Web 页面**（HTML + JS），由我方托管在固定 URL 上，运行在 Android WebView 中。AI 推理在云端完成，车端只需要：
+AI 助手的界面是一个 **Web 页面**（HTML + JS），由我方托管在云端，运行在 Android WebView 中。AI 推理在云端完成，车端只需要：
 
-1. 一个 Android App，内嵌 WebView 加载我方提供的固定 URL
+1. 一个 Android App，内嵌 WebView 加载我方提供的 URL
 2. 通过 JS Bridge 暴露车辆控制接口给 WebView
 
 ```
 ┌──────────────── 域控设备 ────────────────┐
 │                                           │
-│   WebView (加载我方固定 URL)              │
+│   WebView (加载我方提供的 URL)             │
 │     │                                     │
 │     │  AI 判断需要控制空调                 │
 │     │  → JS 调用 Android.carControl(...)  │
@@ -31,7 +31,7 @@ AI 助手的界面是一个 **Web 页面**（HTML + JS），由我方托管在�
    云端 AI 服务（我方托管）
 ```
 
-**关键设计**：前端页面由我方通过固定 URL 托管，厂商 App 只需加载该 URL。我方更新前端代码后，厂商 App 下次启动自动获取最新版本，无需重编译 App。
+**关键设计**：前端页面由我方托管在云端，厂商 App 只需加载我方提供的 URL。我方更新前端代码后，厂商 App 下次启动自动获取最新版本，无需重编译 App。URL 由我方单独提供，联调期间如有变更会提前通知。
 
 ---
 
@@ -45,44 +45,32 @@ AI 助手的界面是一个 **Web 页面**（HTML + JS），由我方托管在�
 |------|---------|------|
 | Android OS | 7.0 (API 24) | 10+ |
 | WebView / Chromium | 66+ | 80+ |
-| 网络 | 4G / WiFi（需访问境外服务） | — |
+| 网络 | 4G / WiFi | — |
 | 麦克风 | 系统可识别的音频输入设备 | — |
 | 扬声器 | 系统可识别的音频输出设备 | — |
 
+> **网络说明**：域控设备只需访问我方 Cloudflare 域名（国内正常可达，无需翻墙）。AI 云端服务由我方负责，厂商无需关心。
+
 ### 2.2 验证步骤
 
-**第一步：浏览器全链路验证**
-
-在域控设备的 Chrome 浏览器中直接打开以下地址：
+在域控设备的 Chrome 浏览器中打开我方提供的 URL（格式示例）：
 
 ```
-https://carher.carher.net/car-check.html
+https://<我方提供的域名>/mobile.html?proxy=wss://<代理地址>&openclaw=wss://<服务地址>/ws
 ```
 
-这是我方提供的环境检测页面，会自动检测：
-- Android 版本
-- Chromium 内核版本
-- WebSocket / getUserMedia / AudioContext / AudioWorklet 支持情况
-- 麦克风采集测试
+> 具体 URL 由我方单独提供，请以实际收到的链接为准。
 
-**全部显示绿色 = 硬件环境满足要求**。JS Bridge 项显示灰色是正常的（浏览器中无此接口，壳 App 中才有）。
+打开后：
+1. 点击右上角调试按钮，查看「环境检测」部分 — **全部绿色 = 硬件满足要求**（JS Bridge 显示灰色是正常的，壳 App 中才有）
+2. 点击"开始"按钮，授权麦克风，直接语音对话测试
 
-也可以手动查看 WebView 版本：设置 → 应用 → Android System WebView（或 Chrome）→ 版本号。
-
-**第二步：浏览器直接测试语音对话**
-
-环境检测通过后，在域控 Chrome 浏览器中打开：
-
-```
-https://carher.carher.net/mobile.html?proxy=wss%3A%2F%2Fproxy.carher.net&openclaw=wss%3A%2F%2Fapi.carher.net%2Fws
-```
-
-点击"开始"按钮，授权麦克风后，直接对话测试。如果语音对话正常工作，说明网络、音频、WebSocket 全链路通过。
+一个页面完成环境检测 + 全链路验证。
 
 **验证结论**：
-- 两步全部通过 → 可以开始开发壳 App
+- 环境检测全绿 + 语音对话正常 → 可以开始开发壳 App
 - 环境检测有红色项 → 硬件不满足要求，需升级 WebView 或系统版本
-- 环境检测通过但语音对话失败 → 可能是网络问题（需能访问境外服务），联系我方排查
+- 环境检测通过但语音对话失败 → 联系我方排查（网络/后端问题由我方负责）
 
 ---
 
@@ -92,7 +80,7 @@ https://carher.carher.net/mobile.html?proxy=wss%3A%2F%2Fproxy.carher.net&opencla
 
 ### 任务 1：WebView 壳 App
 
-创建一个 Android App，核心只有一个 Activity，用 WebView 全屏加载我方提供的固定 URL。
+创建一个 Android App，核心只有一个 Activity，用 WebView 全屏加载我方提供的 URL。
 
 **要求：**
 - WebView 基于 Chromium 66+（建议 80+，用于支持 AudioWorklet 和现代 JS 语法）
@@ -107,10 +95,8 @@ https://carher.carher.net/mobile.html?proxy=wss%3A%2F%2Fproxy.carher.net&opencla
 class CarHerActivity : Activity() {
     private lateinit var webView: WebView
 
-    // 我方提供的固定 URL（不会变化，我方更新前端代码后自动生效）
-    private val CAR_HER_URL = "https://carher.carher.net/mobile.html" +
-        "?proxy=wss%3A%2F%2Fproxy.carher.net" +
-        "&openclaw=wss%3A%2F%2Fapi.carher.net%2Fws"
+    // 我方提供的 URL（我方更新前端代码后自动生效，如 URL 变更会提前通知）
+    private val CAR_HER_URL = "<我方单独提供的完整 URL>"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -138,7 +124,7 @@ class CarHerActivity : Activity() {
             addJavascriptInterface(CarBridge(this@CarHerActivity), "Android")
         }
 
-        // 加载我方固定 URL
+        // 加载我方提供的 URL
         webView.loadUrl(CAR_HER_URL)
 
         setContentView(webView)
@@ -289,8 +275,8 @@ Android.carControl(action, paramsJson)  →  返回 resultJson
 
 ```
 Step 1：前置验证（第二章）
-  在域控 Chrome 浏览器打开环境检测 + 语音对话页面
-  → 确认硬件环境满足要求，语音全链路通过
+  在域控 Chrome 浏览器打开我方提供的 URL
+  → 调试面板确认环境全绿 + 语音对话正常
 
 Step 2：壳 App 基础验证
   厂商完成 WebView 壳 App（CarBridge 先返回模拟数据）
@@ -343,16 +329,14 @@ Step 4：演示
 
 | 项目 | 说明 |
 |------|------|
-| 前端页面 | 由我方通过固定 URL 托管，厂商 App 加载该 URL 即可 |
-| 环境检测页面 | `https://carher.carher.net/car-check.html` |
-| 语音对话页面 | `https://carher.carher.net/mobile.html?proxy=...&openclaw=...`（完整 URL 见第二章） |
+| 前端页面 | 由我方托管在云端，厂商 App 加载我方提供的 URL 即可 |
+| 入口 URL | 由我方单独提供，联调期间如有变更会提前通知 |
 | 云端 AI 服务 | 我方部署和维护，厂商无需关心 |
 
 **重要说明：**
-- 前端页面 URL 是固定的，不会变化
 - 我方更新前端代码后，厂商 App 下次启动自动加载最新版本，无需重编译
-- 我方重启后端服务对厂商 App 零影响（URL 不变）
 - 厂商只需关注壳 App + CarBridge 实现，不需要了解前端 JS 细节
+- URL 如有变更，我方会提前通知；正式上线后会提供长期稳定的固定地址
 
 ## 八、联系方式
 

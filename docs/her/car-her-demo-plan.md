@@ -444,7 +444,9 @@ state.client.addFunction(carTool);
 
 **start-remote.sh 更新：**
 - 默认使用命名隧道（`cloudflared tunnel run carher`），URL 固定
-- 加 `--random` 回退到随机隧道模式（自用测试，厂商无法访问）
+- 加 `--random` 回退到随机隧道模式（临时 URL，关闭即失效）
+- 修复：随机隧道加 `--config /dev/null` 避免读取命名隧道配置导致 530 错误
+- 两种模式可同时运行（精准清理同类型残留进程，互不干扰）
 - 自动打开本地调试页面
 
 **前端自动版本管理：**
@@ -456,9 +458,10 @@ state.client.addFunction(carTool);
 
 **厂商文档（`car-her-vendor-guide.md`）：**
 - 环境验证移到开发前（前置工作）
-- 前端交付改为远程 URL 加载（厂商 App 硬编码固定 URL）
+- 前端交付改为远程 URL 加载
+- URL 不再硬编码在文档中，改为"由我方单独提供"（联调期间先发随机 URL，保留主动权）
 - 我方更新前端代码 → 厂商 App 下次打开自动生效
-- 删除错误的"1秒超时"要求
+- 删除错误的"1秒超时"要求和"境外服务"网络要求
 
 ---
 

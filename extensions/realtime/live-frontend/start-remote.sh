@@ -44,13 +44,6 @@ check_port 18790 "OpenClaw Realtime 插件"
 echo "本地服务检查通过 ✓"
 echo ""
 
-# Kill any leftover cloudflared processes from previous runs
-if pgrep -q cloudflared 2>/dev/null; then
-  echo "清理残留 cloudflared 进程..."
-  pkill -9 cloudflared 2>/dev/null
-  sleep 1
-fi
-
 # Auto-open local pages in Mac browser for debugging
 open "http://localhost:8000/mobile.html" 2>/dev/null || true
 open "http://localhost:8000/" 2>/dev/null || true
@@ -59,6 +52,12 @@ open "http://localhost:8000/" 2>/dev/null || true
 # 命名隧道模式（默认）— URL 固定，重启不变
 # ============================================================
 if [ "$MODE" = "named" ]; then
+  # 只清理同类型（命名隧道）的残留进程，不影响正在运行的随机隧道
+  if pgrep -f "cloudflared tunnel run" &>/dev/null; then
+    echo "清理残留命名隧道进程..."
+    pkill -9 -f "cloudflared tunnel run" 2>/dev/null
+    sleep 1
+  fi
   # 检查命名隧道配置
   if [ ! -f "$HOME/.cloudflared/config.yml" ]; then
     echo "错误: 未找到命名隧道配置 (~/.cloudflared/config.yml)"
@@ -113,6 +112,13 @@ fi
 # ============================================================
 # 随机隧道模式 (--random) — 每次重启 URL 变化
 # ============================================================
+# 只清理同类型（随机隧道）的残留进程，不影响正在运行的命名隧道
+if pgrep -f "cloudflared tunnel --url" &>/dev/null; then
+  echo "清理残留随机隧道进程..."
+  pkill -9 -f "cloudflared tunnel --url" 2>/dev/null
+  sleep 1
+fi
+
 echo "正在启动随机隧道..."
 echo ""
 
@@ -133,13 +139,13 @@ TMP_PROXY=$(mktemp)
 TMP_OPENCLAW=$(mktemp)
 
 # Start 3 tunnels in background
-cloudflared tunnel --url http://localhost:8000 --protocol http2 2>"$TMP_FRONTEND" &
+cloudflared tunnel --url http://localhost:8000 --protocol http2 --config /dev/null 2>"$TMP_FRONTEND" &
 PID_FRONTEND=$!
 
-cloudflared tunnel --url http://localhost:8080 --protocol http2 2>"$TMP_PROXY" &
+cloudflared tunnel --url http://localhost:8080 --protocol http2 --config /dev/null 2>"$TMP_PROXY" &
 PID_PROXY=$!
 
-cloudflared tunnel --url http://localhost:18790 --protocol http2 2>"$TMP_OPENCLAW" &
+cloudflared tunnel --url http://localhost:18790 --protocol http2 --config /dev/null 2>"$TMP_OPENCLAW" &
 PID_OPENCLAW=$!
 
 # Wait for all 3 URLs to appear (with timeout)
