@@ -37,7 +37,15 @@ const SYSTEM_PROMPT = `你是 Her，车载语音助手，负责快思考。用�
 - 可靠的长期记忆检索
 - 外部信息查询（天气、机票、股票等）
 - 复杂推理能力
-- 任何外部操作能力
+
+## 车辆控制（你可以直接执行，不需要 OpenClaw）
+你可以通过 car_control 工具直接控制车辆，这是本地操作，响应很快：
+- 空调：set_ac_temperature（温度 16-32）、set_ac_power（开关）、set_ac_mode（cool/heat/auto）
+- 座椅加热：set_seat_heat（seat: driver/passenger, level: 0-3，0=关）
+- 车窗：set_window（position: driver/passenger, open: true/false）
+
+用户说车控相关指令时，直接调用 car_control，不要调用 openclaw_help。
+执行后用语音简洁确认结果即可。
 
 ## 判断规则
 收到用户输入后判断：
@@ -338,9 +346,13 @@ async function connectGemini() {
   };
   state.client.activityHandling = "ACTIVITY_HANDLING_UNSPECIFIED";
 
-  // Register OpenClaw help tool
+  // Register OpenClaw help tool (slow thinking — external queries, memory, etc.)
   const openclawTool = new OpenClawHelpTool(openclawConnection);
   state.client.addFunction(openclawTool);
+
+  // Register car control tool (local — AC, seat heat, windows via JS Bridge)
+  const carTool = new CarControlTool();
+  state.client.addFunction(carTool);
 
   state.client.onReceiveResponse = handleMessage;
   state.client.onErrorMessage = (msg) => {
@@ -663,6 +675,81 @@ function initEvents() {
 }
 
 // ---------------------------------------------------------------------------
+// Environment checks (populates debug overlay "环境检测" section)
+// ---------------------------------------------------------------------------
+function runEnvChecks() {
+  const container = document.getElementById("envChecks");
+  if (!container) return;
+
+  const ua = navigator.userAgent;
+  const chromeMatch = ua.match(/Chrome\/(\d+)/);
+  const chromeVer = chromeMatch ? parseInt(chromeMatch[1]) : null;
+  const androidMatch = ua.match(/Android\s+([\d.]+)/);
+  const androidVer = androidMatch ? androidMatch[1] : null;
+
+  const checks = [
+    {
+      name: "系统",
+      ok: true,
+      label: androidVer ? `Android ${androidVer}` : (ua.includes("iPhone") ? "iOS" : "非Android"),
+    },
+    {
+      name: "内核",
+      ok: chromeVer ? chromeVer >= 66 : null,
+      label: chromeVer ? `Chromium ${chromeVer}` : "未知",
+    },
+    {
+      name: "WebSocket",
+      ok: typeof WebSocket !== "undefined",
+    },
+    {
+      name: "getUserMedia",
+      ok: !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
+    },
+    {
+      name: "AudioContext",
+      ok: typeof (window.AudioContext || window.webkitAudioContext) !== "undefined",
+    },
+    {
+      name: "AudioWorklet",
+      ok: (() => {
+        try {
+          const ctx = new AudioContext();
+          const has = "audioWorklet" in ctx;
+          ctx.close();
+          return has;
+        } catch { return false; }
+      })(),
+    },
+    {
+      name: "JS Bridge（车控）",
+      ok: typeof Android !== "undefined" ? true : null, // null = 非必需，不算失败
+      label: typeof Android !== "undefined" ? "可用" : "未检测到（浏览器正常，壳App内可用）",
+    },
+  ];
+
+  container.innerHTML = "";
+  for (const c of checks) {
+    const statusClass = c.ok === true ? "ok" : c.ok === false ? "err" : "";
+    const label = c.label || (c.ok ? "支持" : "不支持");
+    const row = document.createElement("div");
+    row.className = "status-row";
+    row.innerHTML = `<span class="status-label">${c.name}</span><span class="status-value ${statusClass}">${label}</span>`;
+    container.appendChild(row);
+  }
+
+  const allPassed = checks.every(c => c.ok !== false);
+  const summary = document.createElement("div");
+  summary.className = "status-row";
+  summary.style.marginTop = "4px";
+  summary.style.fontWeight = "600";
+  summary.innerHTML = allPassed
+    ? '<span class="status-label">结论</span><span class="status-value ok">全部通过</span>'
+    : '<span class="status-label">结论</span><span class="status-value err">有不支持项</span>';
+  container.appendChild(summary);
+}
+
+// ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 window.addEventListener("DOMContentLoaded", () => {
@@ -670,6 +757,7 @@ window.addEventListener("DOMContentLoaded", () => {
   applyUrlParams();
   initJitterBuffer();
   initEvents();
+  runEnvChecks();
   dbgLog("Mobile UI initialized");
   dbgLog(`Proxy: ${CONFIG.proxyUrl}`);
   dbgLog(`OpenClaw: ${CONFIG.openclawUrl}`);

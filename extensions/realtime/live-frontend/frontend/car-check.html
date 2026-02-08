@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Car Her 环境检测</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #faf9f6;
+      color: #1c1c1e;
+      padding: 20px;
+      max-width: 600px;
+      margin: 0 auto;
+    }
+    h1 { font-size: 22px; margin-bottom: 8px; }
+    .subtitle { color: #8e8e93; font-size: 14px; margin-bottom: 24px; }
+    .section { margin-bottom: 20px; }
+    .section h2 { font-size: 16px; color: #007aff; margin-bottom: 12px; }
+    .check-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 12px;
+      background: #fff;
+      border-radius: 8px;
+      margin-bottom: 6px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .check-name { font-size: 14px; }
+    .check-name small { display: block; color: #8e8e93; font-size: 11px; margin-top: 2px; }
+    .status { font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 12px; }
+    .status.pass { background: #d4edda; color: #155724; }
+    .status.fail { background: #f8d7da; color: #721c24; }
+    .status.warn { background: #fff3cd; color: #856404; }
+    .status.info { background: #e8e8ed; color: #1c1c1e; }
+    .summary {
+      margin-top: 24px;
+      padding: 16px;
+      border-radius: 12px;
+      font-size: 16px;
+      font-weight: 600;
+      text-align: center;
+    }
+    .summary.all-pass { background: #d4edda; color: #155724; }
+    .summary.has-fail { background: #f8d7da; color: #721c24; }
+    .info-box {
+      margin-top: 16px;
+      padding: 12px;
+      background: #fff;
+      border-radius: 8px;
+      font-size: 12px;
+      color: #8e8e93;
+      line-height: 1.6;
+      word-break: break-all;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .info-box strong { color: #1c1c1e; }
+    #micTest {
+      display: block;
+      margin: 16px auto;
+      padding: 10px 24px;
+      font-size: 14px;
+      background: #007aff;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    #micTest:disabled { background: #8e8e93; }
+    #micResult { text-align: center; margin-top: 8px; font-size: 13px; color: #8e8e93; }
+  </style>
+</head>
+<body>
+  <h1>Car Her 环境检测</h1>
+  <p class="subtitle">检测当前设备是否满足 Car Her 运行要求</p>
+
+  <div class="section" id="envSection">
+    <h2>环境信息</h2>
+  </div>
+
+  <div class="section" id="apiSection">
+    <h2>Web API 支持</h2>
+  </div>
+
+  <div class="section">
+    <h2>麦克风实测</h2>
+    <button id="micTest">点击测试麦克风</button>
+    <div id="micResult"></div>
+  </div>
+
+  <div id="summaryBox"></div>
+
+  <div class="info-box" id="uaBox"></div>
+
+  <script>
+    const results = [];
+
+    function addRow(section, name, detail, status, label) {
+      results.push({ name, status });
+      const row = document.createElement("div");
+      row.className = "check-row";
+      row.innerHTML = `
+        <div class="check-name">${name}${detail ? `<small>${detail}</small>` : ""}</div>
+        <span class="status ${status}">${label}</span>
+      `;
+      document.getElementById(section).appendChild(row);
+    }
+
+    // --- Environment info ---
+    const ua = navigator.userAgent;
+
+    // Extract Chromium/Chrome version from UA
+    const chromeMatch = ua.match(/Chrome\/(\d+)/);
+    const chromeVer = chromeMatch ? parseInt(chromeMatch[1]) : null;
+
+    // Extract Android version from UA
+    const androidMatch = ua.match(/Android\s+([\d.]+)/);
+    const androidVer = androidMatch ? androidMatch[1] : null;
+
+    addRow("envSection", "Android 版本",
+      androidVer || "未检测到（可能不是 Android 设备）",
+      androidVer ? (parseFloat(androidVer) >= 7 ? "pass" : "fail") : "warn",
+      androidVer || "N/A"
+    );
+
+    addRow("envSection", "Chromium 内核版本",
+      chromeVer ? `基于 Chromium ${chromeVer}` : "未检测到 Chrome/Chromium UA",
+      chromeVer ? (chromeVer >= 66 ? "pass" : "fail") : "warn",
+      chromeVer ? `${chromeVer}` : "N/A"
+    );
+
+    addRow("envSection", "WebView 版本要求",
+      `最低 66（AudioWorklet），推荐 80+，当前 ${chromeVer || "未知"}`,
+      chromeVer ? (chromeVer >= 80 ? "pass" : chromeVer >= 66 ? "warn" : "fail") : "warn",
+      chromeVer >= 80 ? "优秀" : chromeVer >= 66 ? "可用" : "未知"
+    );
+
+    // --- API checks ---
+    const hasWebSocket = typeof WebSocket !== "undefined";
+    addRow("apiSection", "WebSocket",
+      "连接 Gemini Proxy 和 OpenClaw 必需",
+      hasWebSocket ? "pass" : "fail",
+      hasWebSocket ? "支持" : "不支持"
+    );
+
+    const hasGetUserMedia = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+    addRow("apiSection", "getUserMedia",
+      "麦克风采集必需",
+      hasGetUserMedia ? "pass" : "fail",
+      hasGetUserMedia ? "支持" : "不支持"
+    );
+
+    const hasAudioContext = typeof (window.AudioContext || window.webkitAudioContext) !== "undefined";
+    addRow("apiSection", "AudioContext",
+      "音频播放必需",
+      hasAudioContext ? "pass" : "fail",
+      hasAudioContext ? "支持" : "不支持"
+    );
+
+    const hasAudioWorklet = hasAudioContext && typeof AudioContext !== "undefined" &&
+      "audioWorklet" in (new AudioContext());
+    addRow("apiSection", "AudioWorklet",
+      "音频采集和播放核心组件（最低 Chromium 66）",
+      hasAudioWorklet ? "pass" : "fail",
+      hasAudioWorklet ? "支持" : "不支持"
+    );
+
+    const hasES2020 = (() => {
+      try { eval("const x = null; const y = x?.a ?? 'ok'; return y;"); return true; }
+      catch { return false; }
+    })();
+    addRow("apiSection", "ES2020+ 语法",
+      "Optional chaining、nullish coalescing 等",
+      hasES2020 ? "pass" : "fail",
+      hasES2020 ? "支持" : "不支持"
+    );
+
+    const hasJSBridge = typeof Android !== "undefined";
+    addRow("apiSection", "JS Bridge（车控，非必需）",
+      hasJSBridge ? "可用，车控功能就绪" : "未检测到（浏览器中正常，WebView 壳 App 中才可用）",
+      hasJSBridge ? "pass" : "info",
+      hasJSBridge ? "可用" : "非车载环境"
+    );
+
+    // --- Summary ---
+    const failCount = results.filter(r => r.status === "fail").length;
+    const summaryBox = document.getElementById("summaryBox");
+    if (failCount === 0) {
+      summaryBox.innerHTML = `<div class="summary all-pass">全部通过 — 可以运行 Car Her</div>`;
+    } else {
+      const failNames = results.filter(r => r.status === "fail").map(r => r.name).join("、");
+      summaryBox.innerHTML = `<div class="summary has-fail">有 ${failCount} 项不通过：${failNames}</div>`;
+    }
+
+    // --- UA box ---
+    document.getElementById("uaBox").innerHTML = `
+      <strong>完整 User-Agent：</strong><br>${ua}
+    `;
+
+    // --- Mic test ---
+    document.getElementById("micTest").addEventListener("click", async function() {
+      const btn = this;
+      const result = document.getElementById("micResult");
+      btn.disabled = true;
+      result.textContent = "请求麦克风权限...";
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            sampleRate: 16000,
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        });
+
+        // Check if we got audio tracks
+        const tracks = stream.getAudioTracks();
+        if (tracks.length > 0) {
+          const settings = tracks[0].getSettings();
+          result.innerHTML = `<span style="color:#155724;font-weight:600">麦克风正常</span><br>` +
+            `设备: ${tracks[0].label || "默认"}<br>` +
+            `采样率: ${settings.sampleRate || "未知"}Hz ` +
+            `声道: ${settings.channelCount || "未知"}`;
+
+          // Test AudioWorklet with this stream
+          try {
+            const ctx = new AudioContext({ sampleRate: 16000 });
+            const source = ctx.createMediaStreamSource(stream);
+            result.innerHTML += `<br><span style="color:#155724">AudioContext 可处理麦克风流</span>`;
+            ctx.close();
+          } catch (e) {
+            result.innerHTML += `<br><span style="color:#721c24">AudioContext 处理失败: ${e.message}</span>`;
+          }
+        }
+
+        // Stop tracks
+        stream.getTracks().forEach(t => t.stop());
+      } catch (e) {
+        result.innerHTML = `<span style="color:#721c24;font-weight:600">麦克风失败</span><br>${e.message}`;
+      }
+
+      btn.disabled = false;
+      btn.textContent = "重新测试";
+    });
+  </script>
+</body>
+</html>
