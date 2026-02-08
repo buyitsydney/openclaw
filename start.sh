@@ -85,11 +85,16 @@ if [ -z "$TOKEN" ]; then
   TOKEN="my-local-token-12345"
 fi
 
-# 自动打开前端页面（带 token）
-echo -e "${GREEN}[5/5] 打开前端页面...${NC}"
-open "http://localhost:18789/?token=${TOKEN}"
-open "http://localhost:8000"
-
+# 打印所有 URL（不弹浏览器）
+echo -e "${GREEN}[5/5] 个人 Her 已就绪${NC}"
+echo ""
+echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
+echo -e "${GREEN}  个人 Her — 本地 URL${NC}"
+echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
+echo -e "  Webchat:    ${GREEN}http://localhost:18789/?token=${TOKEN}${NC}"
+echo -e "  Desktop UI: ${GREEN}http://localhost:8000${NC}"
+echo -e "  Mobile UI:  ${GREEN}http://localhost:8000/mobile.html${NC}"
+echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
 echo -e "${GREEN}✓ Gateway 已启动 (PID: $GATEWAY_PID)${NC}"
 echo -e "${YELLOW}按 Ctrl+C 停止${NC}"

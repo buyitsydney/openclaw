@@ -760,9 +760,11 @@ Frontend                    RealtimePlugin                  OpenClawAgent
 
 **容器化后为什么可以移除**：每个容器有独立文件系统，`find` 只能看到容器内的文件，物理上不存在其他用户的数据。
 
-### 使用方式
+### 使用方式（进程内多 Agent）
 
 `start-mobile.sh` / `start-mobile.sh --random` 启动后自动输出多用户 URL，每个 URL 对应一个独立用户。默认不带 `agentId` 的 URL 是个人 Her（agent=main），与之前行为完全一致。
+
+> 注意：进程内多 Agent 方案通过 prompt 级别隔离，适用于快速测试。生产部署推荐使用下方的容器化方案，提供操作系统级别的物理隔离。
 
 ### 已验证的测试结果（2026-02-08）
 
@@ -774,6 +776,127 @@ Frontend                    RealtimePlugin                  OpenClawAgent
 | user1 | "我喜欢喝什么？" | "没有记录过 test1 喜欢喝什么" | 正确隔离（不知道拿铁） |
 | main（个人） | "我是谁？" | "你是天哥" | 个人 Her 完好 |
 | main（个人） | "我喜欢喝什么？" | "拿铁，也爱喝龙井茶" | 个人 Her 完好 |
+
+---
+
+## 容器化部署（Docker）
+
+### 设计目标
+
+每个厂商用户 = 一个独立 Docker 容器 = 完全隔离的文件系统。不再需要 prompt 级别的防护 hack，容器物理隔离天然保证安全。
+
+### 架构
+
+```
+你的 Mac
+├── start.sh               → 个人 Her (Gateway:18789, Realtime:18790, Frontend:8000/8080)
+├── start-mobile.sh         → 个人 Her 远程隧道（不变）
+│
+├── start-docker.sh         → 构建 Docker 镜像（一次构建，所有用户共享）
+│
+├── start-user.sh --id=1    → Docker 容器 carher-1 (GW:29001, RT:29002, FE:29003, WS:29004)
+├── start-user.sh --id=2    → Docker 容器 carher-2 (GW:29011, RT:29012, FE:29013, WS:29014)
+└── start-user.sh --id=N    → Docker 容器 carher-N (端口按规则分配)
+```
+
+### 端口分配方案
+
+每个用户 N 使用 4 个连续端口，基址 = 29000 + (N-1) * 10：
+
+| 用户 | Gateway | Realtime | Frontend | WS Proxy |
+|------|---------|----------|----------|----------|
+| User 1 | 29001 | 29002 | 29003 | 29004 |
+| User 2 | 29011 | 29012 | 29013 | 29014 |
+| User 3 | 29021 | 29022 | 29023 | 29024 |
+
+个人 Her 的端口（18789/18790/8000/8080）完全不冲突。
+
+### 脚本体系
+
+#### `start.sh` — 个人 Her（修改）
+
+- 移除自动弹浏览器（`open` 命令），改为统一打印所有 URL
+- 其余逻辑不变
+
+#### `start-docker.sh` — 构建镜像（新建）
+
+```bash
+./start-docker.sh              # 构建 carher:local 镜像
+./start-docker.sh --rebuild    # 代码更新后强制重新构建
+```
+
+镜像包含完整的后端编译（`pnpm build`）、前端编译（`pnpm ui:build`）、Python 依赖。构建一次后所有用户容器共享。
+
+#### `start-user.sh` — 用户容器管理（新建，核心）
+
+```bash
+./start-user.sh --id=1 --random    # 启动 user1 容器 + 随机隧道（手机可访问）
+./start-user.sh --id=1             # 启动 user1 容器（仅本地访问）
+./start-user.sh --id=1 --down      # 停止 user1 容器
+./start-user.sh --down             # 停止所有用户容器
+./start-user.sh --id=1 --logs      # 查看 user1 日志
+```
+
+执行流程：
+1. 检查镜像是否存在（不存在则提示先 `start-docker.sh`）
+2. 计算端口分配
+3. 启动 Docker 容器（`docker run`），挂载 Google Cloud 凭证和 OpenClaw 配置
+4. 等待容器健康检查通过
+5. 如果 `--random`：启动 3 条 Cloudflare 随机隧道，打印一键 URL
+6. Ctrl+C 时仅关闭隧道，容器保持运行；`--down` 才停止容器
+
+#### `start-mobile.sh` — 个人远程访问（不变）
+
+### 隔离保证
+
+| 维度 | 保证 |
+|------|------|
+| 文件系统 | 每个容器独立文件系统，无法访问宿主机或其他容器的文件 |
+| 记忆 | 容器内没有宿主的 USER.md / MEMORY.md |
+| 配置 | 使用 `docker/carher-config.json`（Sonnet 模型），与个人配置无关 |
+| 网络 | 各容器端口独立映射，互不冲突 |
+| 数据持久化 | Docker volume `carher-{id}-data` 独立存储 |
+
+**不需要进程内多 Agent 方案的 prompt hack**，因为容器内没有其他用户的文件可泄漏。
+
+### 典型工作流
+
+```bash
+# 1. 构建镜像（首次或代码更新后）
+./start-docker.sh
+
+# 2. 启动个人 Her
+./start.sh
+
+# 3. 在另一个终端，启动厂商 user1 + 远程隧道
+./start-user.sh --id=1 --random
+# → 打印手机可访问的 URL，发给厂商工程师
+
+# 4. 在另一个终端，启动厂商 user2
+./start-user.sh --id=2 --random
+# → 打印另一组 URL，发给另一个工程师
+
+# 5. 停止 user1（Ctrl+C 只关隧道，以下命令关容器）
+./start-user.sh --id=1 --down
+
+# 6. 停止所有厂商容器
+./start-user.sh --down
+```
+
+### 已验证的测试结果 — Docker 容器（2026-02-08）
+
+容器 user1 通过 `start-user.sh --id=1 --random` 启动，使用 Sonnet 模型，通过手机远程隧道访问。
+
+| 轮次 | 问题 | 回答 | 隔离状态 |
+|------|------|------|---------|
+| 第 1 轮 | "你是谁，我是谁？" | "我是 Her...你是谁呢？" | 正确隔离（不认识任何人） |
+| 第 1 轮 | "你知道我是谁吗？" | "抱歉，还不知道你的名字" | 正确隔离 |
+| 第 1 轮 | 自我介绍"林森"，要求后台记住 | Sonnet 写入 MEMORY.md | 正确（用 Sonnet 而非 Opus） |
+| 第 2 轮 | "你知道我是谁吗？" | "你好林森！" | 正确记忆 |
+| 第 2 轮 | "我即将加入 Autolink" | Sonnet 记录到 MEMORY.md | 正确 |
+| 第 3 轮 | "你知道我是谁，我要去哪里？" | "你好林森，请问您需要前往 Autolink 吗？" | 正确（名字+公司都记住） |
+
+容器内数据：USER.md 不存在（全新用户），MEMORY.md 仅有林森+Autolink 两条记录，零个人数据泄漏。个人 Her（天哥、拿铁、小胖子）数据完好无损。
 
 ---
 

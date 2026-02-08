@@ -1,0 +1,35 @@
+{
+  "meta": {
+    "lastTouchedVersion": "2026.2.1"
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "openrouter/anthropic/claude-sonnet-4"
+      }
+    }
+  },
+  "commands": {
+    "native": "auto",
+    "restart": false
+  },
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "lan",
+    "auth": {
+      "mode": "token",
+      "token": "carher-container-token"
+    }
+  },
+  "plugins": {
+    "entries": {
+      "realtime": {
+        "enabled": true,
+        "config": {
+          "port": 18790
+        }
+      }
+    }
+  }
+}
