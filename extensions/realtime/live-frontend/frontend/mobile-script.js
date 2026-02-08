@@ -24,7 +24,7 @@ const SYSTEM_PROMPT = `你是 Her，车载语音助手，负责快思考。用�
 
 ## 你的身份
 - 你是用户的贴心助手，温柔、自然
-- 如果知道用户名字（见下方画像），要亲切称呼（如"天哥"）
+- 如果知道用户名字（见下方画像），要亲切称呼
 - 如果不知道，第一次对话时可以礼貌询问
 
 ## 能力边界（快思考 vs 慢思考）
@@ -170,6 +170,7 @@ function applyUrlParams() {
   const params = new URLSearchParams(window.location.search);
   if (params.get("proxy")) CONFIG.proxyUrl = params.get("proxy");
   if (params.get("openclaw")) CONFIG.openclawUrl = params.get("openclaw");
+  // agentId is read via getAgentIdFromPageUrl() in tools.js
 }
 
 // ---------------------------------------------------------------------------
@@ -278,20 +279,25 @@ function appendAudioObsLine() {
 async function connectOpenClaw() {
   const url = CONFIG.openclawUrl;
   const httpUrl = url.replace(/^wss:\/\//, "https://").replace(/^ws:\/\//, "http://").replace(/\/ws$/, "");
+  const agentId = getAgentIdFromPageUrl();
 
   updateDbgStatus("dbgOcStatus", "连接中...", null);
 
-  // Bootstrap: fetch live memory capsule
-  const resp = await fetch(`${httpUrl}/api/realtime/bootstrap`);
+  // Bootstrap: fetch live memory capsule (pass agentId if present)
+  const bootstrapUrl = agentId
+    ? appendQueryParam(`${httpUrl}/api/realtime/bootstrap`, "agentId", agentId)
+    : `${httpUrl}/api/realtime/bootstrap`;
+  const resp = await fetch(bootstrapUrl);
   if (!resp.ok) throw new Error(`Bootstrap HTTP ${resp.status}`);
   const data = await resp.json();
   state.openclaw.liveMemoryCapsule = data.liveMemoryCapsule || "";
   if (!state.openclaw.liveMemoryCapsule) throw new Error("liveMemoryCapsule 为空");
 
   dbgLog(`Bootstrap OK: capsule ${state.openclaw.liveMemoryCapsule.length} chars`);
+  if (agentId) dbgLog(`Agent ID: ${agentId}`);
 
-  // WebSocket
-  await openclawConnection.connect(url);
+  // WebSocket (pass agentId for multi-agent routing)
+  await openclawConnection.connect(url, agentId);
   state.openclaw.connected = true;
   updateDbgStatus("dbgOcStatus", "已连接", true);
 

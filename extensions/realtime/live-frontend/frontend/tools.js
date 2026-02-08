@@ -1,4 +1,26 @@
 /**
+ * Append a query param to a URL (works for both http(s) and ws(s) URLs).
+ * If the param already exists, it will be replaced.
+ */
+function appendQueryParam(url, key, value) {
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
+}
+
+/**
+ * Read the agentId from the current page URL query params.
+ * Returns null if not present.
+ */
+function getAgentIdFromPageUrl() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("agentId") || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * OpenClaw Help Tool
  * Forwards complex requests to OpenClaw backend for processing
  * This is an async tool - results come back via WebSocket
@@ -54,10 +76,12 @@ class OpenClawConnection {
     this.onTranscript = null; // Callback for transcript updates
   }
 
-  connect(url = "ws://localhost:18790/ws") {
+  connect(url = "ws://localhost:18790/ws", agentId = null) {
     return new Promise((resolve, reject) => {
-      console.log(`🦞 Connecting to OpenClaw: ${url}`);
-      this.ws = new WebSocket(url);
+      // Append agentId as query param if provided
+      const wsUrl = agentId ? appendQueryParam(url, "agentId", agentId) : url;
+      console.log(`🦞 Connecting to OpenClaw: ${wsUrl}`);
+      this.ws = new WebSocket(wsUrl);
       
       this.ws.onopen = () => {
         console.log("✅ OpenClaw connected");

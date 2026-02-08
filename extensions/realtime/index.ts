@@ -13,6 +13,7 @@ import type {
 } from "openclaw/plugin-sdk";
 import { startRealtimeServer, type RealtimeServer } from "./src/server.js";
 import { setupFileWatcher, type FileWatcher } from "./src/file-watcher.js";
+import { loadCoreAgentDeps, type CoreConfig } from "./src/core-bridge.js";
 import { buildBackendModePrompt } from "./src/prompt.js";
 
 export interface RealtimeConfig {
@@ -63,16 +64,23 @@ const realtimePlugin: OpenClawPluginDefinition = {
     try {
       api.logger.info("[realtime] Starting Realtime plugin...");
 
+      // Resolve the default agent ID from config (falls back to "main")
+      const coreDeps = await loadCoreAgentDeps();
+      const defaultAgentId = coreDeps.resolveDefaultAgentId(api.config as CoreConfig);
+      api.logger.info(`[realtime] Default agent ID: ${defaultAgentId}`);
+
       // Start WebSocket server
       server = await startRealtimeServer({
         port,
         api,
+        defaultAgentId,
       });
 
       // Setup file watcher for USER.md and MEMORY.md
       fileWatcher = setupFileWatcher({
         server,
         api,
+        defaultAgentId,
       });
 
       // Register before_agent_start hook for backend mode

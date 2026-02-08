@@ -11,6 +11,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
+import { URL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { loadCoreAgentDeps, type CoreAgentDeps, type CoreConfig } from "./core-bridge.js";
@@ -43,6 +44,7 @@ interface RealtimeClient {
   sessionId: string;
   conversation: string[];
   agentSessionId?: string; // UUID for agent session
+  agentId: string; // Agent ID for multi-agent routing
 }
 
 // Session entry type (matches OpenClaw's session store)
@@ -54,16 +56,33 @@ interface SessionEntry {
 // Cached core dependencies
 let coreDeps: CoreAgentDeps | null = null;
 
-let cachedLiveMemoryCapsule: { text: string; hash: string; updatedAt: number } | null = null;
-let capsuleInFlight: Promise<{ text: string; hash: string }> | null = null;
+// Per-agent capsule cache to prevent memory leakage between agents
+const cachedCapsules = new Map<string, { text: string; hash: string; updatedAt: number }>();
+const capsulesInFlight = new Map<string, Promise<{ text: string; hash: string }>>();
 
 const LIVE_MEMORY_CAPSULE_PROMPT_VERSION = "v3.1";
+
+/** Extract agentId from a URL query string, falling back to the default agent. */
+function resolveAgentIdFromUrl(
+  urlStr: string | undefined,
+  defaultAgentId: string,
+): string {
+  if (!urlStr) return defaultAgentId;
+  try {
+    const parsed = new URL(urlStr, "http://localhost");
+    return parsed.searchParams.get("agentId")?.trim() || defaultAgentId;
+  } catch {
+    return defaultAgentId;
+  }
+}
 
 export async function startRealtimeServer(params: {
   port: number;
   api: OpenClawPluginApi;
+  defaultAgentId?: string;
 }): Promise<RealtimeServer> {
   const { port, api } = params;
+  const defaultAgentId = params.defaultAgentId ?? "main";
   const clients = new Map<string, RealtimeClient>();
 
   // Create HTTP server
@@ -75,9 +94,9 @@ export async function startRealtimeServer(params: {
       return;
     }
 
-    // Bootstrap endpoint
-    if (req.url === "/api/realtime/bootstrap" && req.method === "GET") {
-      handleBootstrap(req, res, api);
+    // Bootstrap endpoint (support query params like ?agentId=xxx)
+    if (req.url?.startsWith("/api/realtime/bootstrap") && req.method === "GET") {
+      handleBootstrap(req, res, api, defaultAgentId);
       return;
     }
 
@@ -89,16 +108,18 @@ export async function startRealtimeServer(params: {
   // Create WebSocket server
   const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
-  wss.on("connection", (ws) => {
+  wss.on("connection", (ws, req) => {
+    const agentId = resolveAgentIdFromUrl(req.url, defaultAgentId);
     const sessionId = `realtime:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const client: RealtimeClient = {
       ws,
       sessionId,
       conversation: [],
+      agentId,
     };
     clients.set(sessionId, client);
 
-    api.logger.info(`[realtime] Client connected: ${sessionId}`);
+    api.logger.info(`[realtime] Client connected: ${sessionId} (agent=${agentId})`);
 
     // Send connected message
     sendToClient(ws, { type: "connected", sessionId });
@@ -262,7 +283,7 @@ async function handleHelpRequest(
     }
 
     const cfg = api.config as CoreConfig;
-    const agentId = "main";
+    const agentId = client.agentId;
 
     // Resolve paths
     const storePath = coreDeps.resolveStorePath(cfg.session?.store, { agentId });
@@ -373,6 +394,7 @@ async function handleBootstrap(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   api: OpenClawPluginApi,
+  defaultAgentId: string,
 ) {
   try {
     // Load core dependencies if not already loaded
@@ -381,7 +403,7 @@ async function handleBootstrap(
     }
 
     const cfg = api.config as CoreConfig;
-    const agentId = "main";
+    const agentId = resolveAgentIdFromUrl(req.url, defaultAgentId);
     const agentDir = coreDeps.resolveAgentDir(cfg, agentId);
     const workspaceDir = coreDeps.resolveAgentWorkspaceDir(cfg, agentId);
 
@@ -410,17 +432,19 @@ async function handleBootstrap(
       .update(memoryMd)
       .digest("hex");
 
-    if (cachedLiveMemoryCapsule && cachedLiveMemoryCapsule.hash === sourceHash) {
+    // Per-agent capsule cache: prevents memory leakage between agents
+    const cached = cachedCapsules.get(agentId);
+    if (cached && cached.hash === sourceHash) {
       res.writeHead(200, {
         "Content-Type": "application/json",
         "Access-Control-Allow-Origin": "*",
       });
-      res.end(JSON.stringify({ liveMemoryCapsule: cachedLiveMemoryCapsule.text }));
+      res.end(JSON.stringify({ liveMemoryCapsule: cached.text }));
       return;
     }
 
-    if (!capsuleInFlight) {
-      capsuleInFlight = (async () => {
+    if (!capsulesInFlight.has(agentId)) {
+      const flight = (async () => {
         const text = await generateLiveMemoryCapsule({
           coreDeps,
           cfg,
@@ -432,16 +456,17 @@ async function handleBootstrap(
         });
         return { text, hash: sourceHash };
       })().finally(() => {
-        capsuleInFlight = null;
+        capsulesInFlight.delete(agentId);
       });
+      capsulesInFlight.set(agentId, flight);
     }
 
-    const capsule = await capsuleInFlight;
-    cachedLiveMemoryCapsule = { ...capsule, updatedAt: Date.now() };
+    const capsule = await capsulesInFlight.get(agentId)!;
+    cachedCapsules.set(agentId, { ...capsule, updatedAt: Date.now() });
 
     const response = {
       // IMPORTANT: only send the capsule, never send full USER.md/MEMORY.md to the browser.
-      liveMemoryCapsule: cachedLiveMemoryCapsule.text,
+      liveMemoryCapsule: capsule.text,
     };
 
     res.writeHead(200, {

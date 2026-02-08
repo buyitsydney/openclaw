@@ -30,23 +30,16 @@ pkill -f "openclaw-gateway" 2>/dev/null && echo -e "${GREEN}  ✓ 已停止旧 G
 pkill -f "openclaw gateway" 2>/dev/null || true
 
 # 等待进程完全退出
-sleep 1
+sleep 0.5
 
-# 检查端口是否被占用
-check_port() {
-  local port=$1
-  if lsof -i :$port >/dev/null 2>&1; then
-    echo -e "${RED}  ⚠ 端口 $port 仍被占用，尝试强制释放...${NC}"
-    lsof -ti :$port | xargs kill -9 2>/dev/null || true
-    sleep 1
-  fi
-}
-
+# 一次 lsof 检查所有端口（macOS 上 lsof 很慢，合并成一次调用）
 echo -e "${YELLOW}[3/5] 检查端口...${NC}"
-check_port 18789
-check_port 18790
-check_port 8000
-check_port 8080
+PIDS_TO_KILL=$(lsof -t -i :18789 -i :18790 -i :8000 -i :8080 2>/dev/null | sort -u || true)
+if [ -n "$PIDS_TO_KILL" ]; then
+  echo -e "${RED}  ⚠ 端口被占用，强制释放: $(echo $PIDS_TO_KILL | tr '\n' ' ')${NC}"
+  echo $PIDS_TO_KILL | xargs kill -9 2>/dev/null || true
+  sleep 0.5
+fi
 echo -e "${GREEN}  ✓ 端口就绪${NC}"
 
 # 启动 Gateway + Live Frontend Proxy

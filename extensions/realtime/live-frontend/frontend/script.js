@@ -200,13 +200,17 @@ async function connectOpenClaw() {
   const url = elements.openclawUrl?.value || "ws://localhost:18790/ws";
   // Convert ws(s):// to http(s):// for the bootstrap REST call.
   const httpUrl = url.replace(/^wss:\/\//, "https://").replace(/^ws:\/\//, "http://").replace(/\/ws$/, "");
+  const agentId = getAgentIdFromPageUrl();
   
   try {
     updateStatus("openclawStatus", "Connecting...");
     
     // MUST fetch bootstrap data (Live memory capsule) before connecting Gemini.
     // This call blocks until the server has generated/loaded the capsule.
-    const bootstrapResp = await fetch(`${httpUrl}/api/realtime/bootstrap`);
+    const bootstrapUrl = agentId
+      ? appendQueryParam(`${httpUrl}/api/realtime/bootstrap`, "agentId", agentId)
+      : `${httpUrl}/api/realtime/bootstrap`;
+    const bootstrapResp = await fetch(bootstrapUrl);
     if (!bootstrapResp.ok) {
       throw new Error(`Bootstrap failed: HTTP ${bootstrapResp.status}`);
     }
@@ -217,10 +221,11 @@ async function connectOpenClaw() {
     }
     console.log("🦞 Bootstrap loaded:", {
       liveMemoryCapsule: state.openclaw.liveMemoryCapsule.slice(0, 120) + "...",
+      agentId: agentId || "(default)",
     });
     
-    // Connect WebSocket
-    await openclawConnection.connect(url);
+    // Connect WebSocket (pass agentId for multi-agent routing)
+    await openclawConnection.connect(url, agentId);
     state.openclaw.connected = true;
     updateStatus("openclawStatus", "Connected ✓");
     

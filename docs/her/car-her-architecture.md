@@ -691,6 +691,92 @@ Gateway 的 `agent` method 是 OpenClaw 的**公开协议**（WebSocket API）�
 
 ---
 
+## 多用户隔离（Multi-Agent）
+
+### 设计目标
+
+支持 N 个用户同时使用同一个 gateway 的 realtime 插件，每个用户独立记忆、独立会话，互不干扰。用于厂商联调时给不同工程师各自一个独立的 Her 实例。
+
+### 实现方案
+
+通过 URL query param `?agentId=xxx` 贯穿 WebSocket、Bootstrap、Help Request 全链路：
+
+```
+用户 A（个人）: mobile.html?proxy=...&openclaw=...
+  → agentId 缺省 = resolveDefaultAgentId(cfg) = "main"
+  → workspace: ~/.openclaw/workspace/
+  → 记忆: 完整个人画像
+
+用户 B（厂商）: mobile.html?proxy=...&openclaw=...&agentId=user1
+  → agentId = "user1"
+  → workspace: ~/.openclaw/workspace-user1/
+  → 记忆: 空（全新用户）
+```
+
+### 数据流
+
+```
+Frontend                    RealtimePlugin                  OpenClawAgent
+   │                              │                              │
+   │ WS connect ?agentId=user1    │                              │
+   ├─────────────────────────────→│ client.agentId = "user1"     │
+   │                              │                              │
+   │ GET /bootstrap?agentId=user1 │                              │
+   ├─────────────────────────────→│ 读取 user1 的 USER.md        │
+   │                              │ 生成 user1 专属 capsule      │
+   │←─────────────────────────────┤                              │
+   │                              │                              │
+   │ help request "查天气"         │                              │
+   ├─────────────────────────────→│ runAgent(agentId="user1")    │
+   │                              ├─────────────────────────────→│
+   │                              │ 使用 user1 的 workspace      │
+   │                              │←─────────────────────────────┤
+   │←─────────────────────────────┤                              │
+```
+
+### 隔离保证
+
+| 维度 | 隔离方式 |
+|------|---------|
+| 工作区 | `resolveAgentWorkspaceDir(cfg, agentId)` → 每个 agent 独立目录 |
+| Session | `resolveStorePath(cfg, { agentId })` → 每个 agent 独立 session store |
+| Memory Capsule | `cachedCapsules` Map，per-agent 缓存，不会串 |
+| 前端 Prompt | SYSTEM_PROMPT 不含用户特定信息，用户画像仅来自 capsule |
+
+### 已修复的泄漏
+
+1. **SYSTEM_PROMPT 硬编码用户名** — 移除了 `mobile-script.js` 和 `index.html` 中示例的具体姓名 `（如"天哥"）`
+2. **Capsule 缓存全局共享** — `server.ts` 中从单一全局变量改为 `Map<agentId, capsule>`，防止 main 的记忆胶囊泄漏给其他用户
+3. **Capsule session 历史污染** — capsule agent 复用持久 session，旧 session 中 agent 通过 `exec`/`find` 发现并读取了 main 用户的 workspace 文件，导致泄漏。修复：`live-memory-capsule-agent.ts` 每次生成 capsule 使用全新 session UUID
+
+### 当前临时 Hack（容器化后可移除）
+
+> 以下是软防护措施，依赖 prompt 指令而非操作系统级隔离。容器化部署后应移除这些 hack，改用文件系统物理隔离。
+
+1. **Capsule prompt 禁止工具使用** — `live-memory-capsule-agent.ts` 的 prompt 中加了 `⚠️ 严禁使用任何工具（exec、read、memory_search 等）`，防止 agent 逃逸 workspace 边界搜索其他用户文件
+2. **Capsule prompt 空材料短路** — 当 USER.md 和 MEMORY.md 都为空时，指示 agent 直接输出"暂无用户信息"，不进行任何搜索
+
+**为什么需要这些 hack**：capsule 生成使用 `runEmbeddedPiAgent`，该 agent 拥有完整工具集（exec、read、write、memory_search），且工具未沙箱化到 workspace 目录。agent 可以通过 `find ~/.openclaw/` 发现并读取其他用户的文件。
+
+**容器化后为什么可以移除**：每个容器有独立文件系统，`find` 只能看到容器内的文件，物理上不存在其他用户的数据。
+
+### 使用方式
+
+`start-mobile.sh` / `start-mobile.sh --random` 启动后自动输出多用户 URL，每个 URL 对应一个独立用户。默认不带 `agentId` 的 URL 是个人 Her（agent=main），与之前行为完全一致。
+
+### 已验证的测试结果（2026-02-08）
+
+| 测试 | 问题 | 回答 | 隔离状态 |
+|------|------|------|---------|
+| user1 首次 | "你是谁，我是谁？" | "还不能确定你的名字" | 正确隔离 |
+| user2 首次 | "你是谁，我是谁？" | "暂时还没有保存你的名字" | 正确隔离 |
+| user1 再次 | "我是谁？" | "你好 test1" | 正确记忆 |
+| user1 | "我喜欢喝什么？" | "没有记录过 test1 喜欢喝什么" | 正确隔离（不知道拿铁） |
+| main（个人） | "我是谁？" | "你是天哥" | 个人 Her 完好 |
+| main（个人） | "我喜欢喝什么？" | "拿铁，也爱喝龙井茶" | 个人 Her 完好 |
+
+---
+
 ## TODO
 
 ### P0（核心重构）

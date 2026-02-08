@@ -20,8 +20,10 @@ export interface FileWatcher {
 export function setupFileWatcher(params: {
   server: RealtimeServer;
   api: OpenClawPluginApi;
+  defaultAgentId?: string;
 }): FileWatcher {
   const { server, api } = params;
+  const defaultAgentId = params.defaultAgentId ?? "main";
 
   // Get workspace directory from config
   const workspaceDir = resolveWorkspaceDir(api);
@@ -56,7 +58,7 @@ export function setupFileWatcher(params: {
       }
 
       const cfg = api.config as CoreConfig;
-      const agentId = "main";
+      const agentId = defaultAgentId;
       const agentDir = coreDeps.resolveAgentDir(cfg, agentId);
 
       // Rebuild capsule from BOTH files to keep it consistent.

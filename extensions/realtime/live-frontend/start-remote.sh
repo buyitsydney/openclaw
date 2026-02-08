@@ -17,6 +17,9 @@ if [ "$1" = "--random" ]; then
   MODE="random"
 fi
 
+# OpenClaw Realtime 插件端口（默认 18790，厂商联调用 OPENCLAW_REALTIME_PORT=19010）
+REALTIME_PORT="${OPENCLAW_REALTIME_PORT:-18790}"
+
 echo ""
 echo "╔══════════════════════════════════════════════════════════╗"
 echo "║   CarHer Remote Access — 手机实时语音 Demo              ║"
@@ -39,7 +42,7 @@ check_port() {
 }
 check_port 8000 "CarHer 前端 (server.py)"
 check_port 8080 "Gemini WS 代理 (server.py)"
-check_port 18790 "OpenClaw Realtime 插件"
+check_port "$REALTIME_PORT" "OpenClaw Realtime 插件 (端口 $REALTIME_PORT)"
 
 echo "本地服务检查通过 ✓"
 echo ""
@@ -47,6 +50,26 @@ echo ""
 # Auto-open local pages in Mac browser for debugging
 open "http://localhost:8000/mobile.html" 2>/dev/null || true
 open "http://localhost:8000/" 2>/dev/null || true
+
+# 多用户 agentId 列表（自动附加到 URL 后面）
+AGENT_IDS=("user1" "user2" "user3")
+
+# 打印多用户 URL（参数: $1=基础 mobile URL）
+print_multi_user_urls() {
+  local base_url="$1"
+  echo ""
+  echo "═══════════════════════════════════════════════════════════"
+  echo "  多用户测试 URL（每个用户独立记忆和会话）："
+  echo "═══════════════════════════════════════════════════════════"
+  for aid in "${AGENT_IDS[@]}"; do
+    echo ""
+    echo "  👤 $aid:"
+    echo "  ${base_url}&agentId=${aid}"
+  done
+  echo ""
+  echo "  💡 默认 URL（不带 agentId）= 你个人的 Her (agent=main)"
+  echo "═══════════════════════════════════════════════════════════"
+}
 
 # ============================================================
 # 命名隧道模式（默认）— URL 固定，重启不变
@@ -101,6 +124,9 @@ if [ "$MODE" = "named" ]; then
   echo "  Gemini 代理:  $URL_PROXY"
   echo "  OpenClaw:     $URL_OPENCLAW"
   echo "-----------------------------------------------------------"
+
+  print_multi_user_urls "$MOBILE_URL"
+
   echo ""
   echo "按 Ctrl+C 关闭隧道"
   echo ""
@@ -145,7 +171,7 @@ PID_FRONTEND=$!
 cloudflared tunnel --url http://localhost:8080 --protocol http2 --config /dev/null 2>"$TMP_PROXY" &
 PID_PROXY=$!
 
-cloudflared tunnel --url http://localhost:18790 --protocol http2 --config /dev/null 2>"$TMP_OPENCLAW" &
+cloudflared tunnel --url http://localhost:$REALTIME_PORT --protocol http2 --config /dev/null 2>"$TMP_OPENCLAW" &
 PID_OPENCLAW=$!
 
 # Wait for all 3 URLs to appear (with timeout)
@@ -211,6 +237,9 @@ echo "  前端页面:     $URL_FRONTEND"
 echo "  Gemini 代理:  $URL_PROXY"
 echo "  OpenClaw:     $URL_OPENCLAW"
 echo "-----------------------------------------------------------"
+
+print_multi_user_urls "$MOBILE_URL"
+
 echo ""
 echo "按 Ctrl+C 关闭隧道"
 echo ""
