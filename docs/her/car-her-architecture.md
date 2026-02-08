@@ -830,20 +830,23 @@ Frontend                    RealtimePlugin                  OpenClawAgent
 #### `start-user.sh` — 用户容器管理（新建，核心）
 
 ```bash
-./start-user.sh --id=1 --random    # 启动 user1 容器 + 随机隧道（手机可访问）
-./start-user.sh --id=1             # 启动 user1 容器（仅本地访问）
-./start-user.sh --id=1 --down      # 停止 user1 容器
-./start-user.sh --down             # 停止所有用户容器
-./start-user.sh --id=1 --logs      # 查看 user1 日志
+./start-user.sh --id=1                  # 启动 user1 容器 + 远程隧道（默认）
+./start-user.sh --id=1 --model=opus     # 启动 user1 容器，指定 Opus 模型
+./start-user.sh --id=1 --local          # 启动 user1 容器（仅本地访问，不建隧道）
+./start-user.sh --id=1 --down           # 停止 user1 容器
+./start-user.sh --down                  # 停止所有用户容器
+./start-user.sh --id=1 --logs           # 查看 user1 日志
 ```
 
 执行流程：
 1. 检查镜像是否存在（不存在则提示先 `start-docker.sh`）
 2. 计算端口分配
-3. 启动 Docker 容器（`docker run`），挂载 Google Cloud 凭证和 OpenClaw 配置
-4. 等待容器健康检查通过
-5. 如果 `--random`：启动 3 条 Cloudflare 随机隧道，打印一键 URL
-6. Ctrl+C 时仅关闭隧道，容器保持运行；`--down` 才停止容器
+3. **清理旧容器**（同 ID 自动 stop + rm，确保 `--model` 等参数生效）
+4. 如有 `--model`，动态生成临时 `openclaw.json`（支持 sonnet/opus/haiku/gemini 等快捷名）
+5. 启动 Docker 容器（`docker run`），挂载 Google Cloud 凭证和 OpenClaw 配置
+6. 等待容器健康检查通过
+7. **默认启动** 3 条 Cloudflare 随机隧道，打印手机一键 URL（`--local` 跳过）
+8. Ctrl+C 时仅关闭隧道，容器保持运行；`--down` 才停止容器
 
 #### `start-mobile.sh` — 个人远程访问（不变）
 
@@ -868,12 +871,12 @@ Frontend                    RealtimePlugin                  OpenClawAgent
 # 2. 启动个人 Her
 ./start.sh
 
-# 3. 在另一个终端，启动厂商 user1 + 远程隧道
-./start-user.sh --id=1 --random
+# 3. 在另一个终端，启动厂商 user1（默认含远程隧道）
+./start-user.sh --id=1
 # → 打印手机可访问的 URL，发给厂商工程师
 
-# 4. 在另一个终端，启动厂商 user2
-./start-user.sh --id=2 --random
+# 4. 启动 user2，指定使用 Opus 模型
+./start-user.sh --id=2 --model=opus
 # → 打印另一组 URL，发给另一个工程师
 
 # 5. 停止 user1（Ctrl+C 只关隧道，以下命令关容器）
@@ -897,6 +900,42 @@ Frontend                    RealtimePlugin                  OpenClawAgent
 | 第 3 轮 | "你知道我是谁，我要去哪里？" | "你好林森，请问您需要前往 Autolink 吗？" | 正确（名字+公司都记住） |
 
 容器内数据：USER.md 不存在（全新用户），MEMORY.md 仅有林森+Autolink 两条记录，零个人数据泄漏。个人 Her（天哥、拿铁、小胖子）数据完好无损。
+
+### 多用户并发实测（2026-02-08）
+
+同时运行 4 个 Docker 容器（carher-1 ~ carher-4）+ 个人 Her，3 位同事通过手机远程隧道实际使用。
+
+| 用户 | 容器 | 姓名 | 使用内容 | 隔离验证 |
+|------|------|------|---------|---------|
+| User 1 | carher-1 | 林森 | 打招呼、自我介绍、确认身份 | MEMORY.md 仅记录林森+Autolink |
+| User 2 | carher-2 (Opus) | Andy | 多轮天气查询（北京）、询问系统架构 | USER.md 记录 Andy/北京/Autolink |
+| User 3 | carher-3 | 曹明 | 身份确认、**车控测试**（座椅加热 → 要求4档 → Her 回复最高3档 → 设为3档） | USER.md 仅记录曹明/Autolink |
+| User 4 | carher-4 | — | 容器已启动，暂无交互 | 空白状态 |
+
+**关键验证结果：**
+- 3 位用户各自的 USER.md / MEMORY.md 完全独立，互不包含对方信息
+- 用户 2 的天气查询能力正常（调用 help request → 后台 agent 查天气 → 返回结果）
+- 用户 3 的车控功能正常（座椅加热、档位选择，含边界校验）
+- per-user `--model` 参数生效（User 2 用 Opus，其余用默认 Sonnet）
+- 个人 Her 数据完好无损，零泄漏
+
+### 已发现的改进点：Agent Workspace 缺少 Car Her 专属知识
+
+容器内 agent workspace（`/data/.openclaw/workspace/`）使用的是通用 OpenClaw 模板：
+
+| 文件 | 内容 | 问题 |
+|------|------|------|
+| AGENTS.md | 通用 agent 行为指南 | 不知道自己是 Car Her |
+| SOUL.md | 通用人格描述 | 无车载助手身份 |
+| USER.md | 空模板（对话中逐步填充） | 正常 |
+| IDENTITY.md | 空模板 | 无 Car Her 品牌定义 |
+| TOOLS.md | 空模板 | 不了解车控能力范围 |
+
+虽然 `docs/her/` 的架构文档物理存在于容器内（`/app/docs/her/`），但 agent 不知道这些文件的存在，不会主动读取。
+
+**影响**：后台 agent（处理 help request 的 Claude）对 Car Her 的设计理念、架构、能力范围一无所知。语音交互能正常工作是因为 realtime 插件的 system prompt 和 tools 在代码层面生效，但后台 agent 缺乏上下文。
+
+**待解决**：为 Docker 容器定制 workspace 初始文件（SOUL.md、AGENTS.md、TOOLS.md），注入 Car Her 专属身份和知识。
 
 ---
 

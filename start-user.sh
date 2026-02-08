@@ -2,11 +2,12 @@
 # CarHer 用户容器管理 — 启动独立容器 + Cloudflare 隧道
 #
 # 用法:
-#   ./start-user.sh --id=1 --random    # 启动 user1 + 随机隧道（手机可访问）
-#   ./start-user.sh --id=1             # 启动 user1（仅本地访问）
-#   ./start-user.sh --id=1 --down      # 停止 user1
-#   ./start-user.sh --down             # 停止所有用户容器
-#   ./start-user.sh --id=1 --logs      # 查看 user1 日志
+#   ./start-user.sh --id=1                    # user1 + 随机隧道（默认 Sonnet）
+#   ./start-user.sh --id=1 --model=opus       # user1 + Opus 4.6
+#   ./start-user.sh --id=1 --local            # user1 仅本地（不开隧道）
+#   ./start-user.sh --id=1 --down             # 停止 user1
+#   ./start-user.sh --down                    # 停止所有用户容器
+#   ./start-user.sh --id=1 --logs             # 查看 user1 日志
 #
 # 每个用户 = 一个独立 Docker 容器 = 完全隔离的文件系统
 # 你的个人 Her（start.sh）不受任何影响
@@ -21,24 +22,54 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+# --- Model shortcuts (短名 → 完整 OpenRouter 路径) ---
+resolve_model() {
+  case "$1" in
+    sonnet|sonnet-4)       echo "openrouter/anthropic/claude-sonnet-4" ;;
+    sonnet-4.5)            echo "openrouter/anthropic/claude-sonnet-4.5" ;;
+    opus|opus-4.6)         echo "openrouter/anthropic/claude-opus-4.6" ;;
+    haiku|haiku-3.5)       echo "openrouter/anthropic/claude-3.5-haiku" ;;
+    gemini-2.5|gemini-pro) echo "openrouter/google/gemini-2.5-pro-preview" ;;
+    gemini-flash)          echo "openrouter/google/gemini-2.0-flash-001" ;;
+    gpt-4o)                echo "openrouter/openai/gpt-4o" ;;
+    gpt-4o-mini)           echo "openrouter/openai/gpt-4o-mini" ;;
+    *)                     echo "$1" ;;  # 完整路径直接使用
+  esac
+}
+
 # --- Parse arguments ---
 USER_ID=""
-MODE=""
+MODE="random"  # 默认开启远程隧道（厂商用户一定是远程访问）
 ACTION="start"
+MODEL_ARG=""
 
 for arg in "$@"; do
   case "$arg" in
     --id=*) USER_ID="${arg#--id=}" ;;
+    --model=*) MODEL_ARG="${arg#--model=}" ;;
     --random) MODE="random" ;;
+    --local) MODE="local" ;;
     --down) ACTION="down" ;;
     --logs) ACTION="logs" ;;
     -h|--help)
-      echo "用法: ./start-user.sh --id=N [--random] [--down] [--logs]"
+      echo "用法: ./start-user.sh --id=N [--model=MODEL] [--local] [--down] [--logs]"
       echo ""
-      echo "  --id=N      用户编号 (1-99)"
-      echo "  --random    启动 Cloudflare 随机隧道（手机远程访问）"
-      echo "  --down      停止容器（不指定 --id 则停止所有）"
-      echo "  --logs      查看容器日志"
+      echo "  --id=N        用户编号 (1-99)"
+      echo "  --model=MODEL 指定 AI 模型（默认: sonnet）"
+      echo "  --local       仅本地访问（不开隧道）"
+      echo "  --down        停止容器（不指定 --id 则停止所有）"
+      echo "  --logs        查看容器日志"
+      echo ""
+      echo "模型快捷名:"
+      echo "  sonnet       → claude-sonnet-4 (默认)"
+      echo "  sonnet-4.5   → claude-sonnet-4.5 (同价，更强)"
+      echo "  opus         → claude-opus-4.6 (最强，贵)"
+      echo "  haiku        → claude-3.5-haiku (最省)"
+      echo "  gemini-2.5   → gemini-2.5-pro-preview"
+      echo "  gemini-flash → gemini-2.0-flash"
+      echo "  gpt-4o       → gpt-4o"
+      echo "  gpt-4o-mini  → gpt-4o-mini"
+      echo "  或直接传完整 OpenRouter 路径"
       exit 0
       ;;
     *) echo "未知参数: $arg (使用 --help 查看帮助)"; exit 1 ;;
@@ -105,8 +136,8 @@ if ! docker image inspect carher:local &>/dev/null; then
 fi
 echo -e "${GREEN}  ✓ Docker 镜像就绪${NC}"
 
-# Check cloudflared (only if tunnel requested)
-if [ "$MODE" = "random" ]; then
+# Check cloudflared (unless --local)
+if [ "$MODE" != "local" ]; then
   if ! command -v cloudflared &>/dev/null; then
     echo -e "${RED}✗ 未安装 cloudflared: brew install cloudflared${NC}"
     exit 1
@@ -142,49 +173,80 @@ fi
 echo -e "${GREEN}  ✓ OpenRouter API key${NC}"
 echo ""
 
-# --- Start or reuse container ---
-if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-  echo -e "${GREEN}  ✓ 容器 ${CONTAINER_NAME} 已在运行${NC}"
+# --- Resolve model and prepare config ---
+if [ -n "$MODEL_ARG" ]; then
+  MODEL_FULL=$(resolve_model "$MODEL_ARG")
 else
-  # Remove stopped container with same name (if any)
-  docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+  MODEL_FULL=""  # 使用 docker/carher-config.json 中的默认值
+fi
 
-  echo -e "${YELLOW}启动容器 ${CONTAINER_NAME}...${NC}"
-  echo -e "  端口映射: GW=${PORT_GW} RT=${PORT_RT} FE=${PORT_FE} WS=${PORT_WS}"
-  docker run -d \
-    --name "$CONTAINER_NAME" \
-    --init \
-    -e HOME=/data \
-    -e OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
-    -e GOOGLE_APPLICATION_CREDENTIALS=/gcloud/application_default_credentials.json \
-    -p "${PORT_GW}:18789" \
-    -p "${PORT_RT}:18790" \
-    -p "${PORT_FE}:8000" \
-    -p "${PORT_WS}:8080" \
-    -v "carher-${USER_ID}-data:/data/.openclaw" \
-    -v "${GCLOUD_ADC}:/gcloud/application_default_credentials.json:ro" \
-    -v "${SCRIPT_DIR}/docker/carher-config.json:/data/.openclaw/openclaw.json:ro" \
-    carher:local
+# Generate per-user config (with custom model if specified)
+CONFIG_FILE="${SCRIPT_DIR}/docker/carher-config.json"
+CUSTOM_CONFIG=""
+if [ -n "$MODEL_FULL" ]; then
+  # 持久化路径（容器运行期间可能重读 config，不能用 mktemp 后删除）
+  CUSTOM_CONFIG="/tmp/carher-config-${USER_ID}.json"
+  python3 -c "
+import json, sys
+with open('${CONFIG_FILE}') as f:
+    cfg = json.load(f)
+cfg['agents']['defaults']['model']['primary'] = '${MODEL_FULL}'
+json.dump(cfg, sys.stdout, indent=2)
+" > "$CUSTOM_CONFIG"
+  CONFIG_MOUNT="$CUSTOM_CONFIG"
+  echo -e "${GREEN}  ✓ 模型: ${MODEL_FULL}${NC}"
+else
+  CONFIG_MOUNT="$CONFIG_FILE"
+  # 读取默认模型名用于显示
+  DEFAULT_MODEL=$(python3 -c "
+import json
+with open('${CONFIG_FILE}') as f:
+    print(json.load(f)['agents']['defaults']['model']['primary'])
+" 2>/dev/null || echo "sonnet")
+  echo -e "${GREEN}  ✓ 模型: ${DEFAULT_MODEL} (默认)${NC}"
+fi
 
-  echo -e "${GREEN}  ✓ 容器已启动${NC}"
+# --- Always clean start: stop old container if exists ---
+if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+  echo -e "${YELLOW}  ⟳ 清理旧容器 ${CONTAINER_NAME}...${NC}"
+  docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1
+fi
 
-  # Wait for health
-  echo -e "${YELLOW}等待容器就绪...${NC}"
-  MAX_WAIT=30
-  WAITED=0
-  while [ $WAITED -lt $MAX_WAIT ]; do
-    if curl -sf "http://localhost:${PORT_FE}/" -o /dev/null 2>/dev/null; then
-      echo -e "${GREEN}  ✓ 容器就绪 (${WAITED}s)${NC}"
-      break
-    fi
-    sleep 1
-    WAITED=$((WAITED + 1))
-  done
-  if [ $WAITED -ge $MAX_WAIT ]; then
-    echo -e "${RED}⚠ 容器启动超时 (${MAX_WAIT}s)${NC}"
-    echo -e "${YELLOW}  查看日志: ./start-user.sh --id=${USER_ID} --logs${NC}"
-    exit 1
+echo -e "${YELLOW}启动容器 ${CONTAINER_NAME}...${NC}"
+echo -e "  端口映射: GW=${PORT_GW} RT=${PORT_RT} FE=${PORT_FE} WS=${PORT_WS}"
+docker run -d \
+  --name "$CONTAINER_NAME" \
+  --init \
+  -e HOME=/data \
+  -e OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/gcloud/application_default_credentials.json \
+  -p "${PORT_GW}:18789" \
+  -p "${PORT_RT}:18790" \
+  -p "${PORT_FE}:8000" \
+  -p "${PORT_WS}:8080" \
+  -v "carher-${USER_ID}-data:/data/.openclaw" \
+  -v "${GCLOUD_ADC}:/gcloud/application_default_credentials.json:ro" \
+  -v "${CONFIG_MOUNT}:/data/.openclaw/openclaw.json:ro" \
+  carher:local
+
+echo -e "${GREEN}  ✓ 容器已启动${NC}"
+
+# Wait for health
+echo -e "${YELLOW}等待容器就绪...${NC}"
+MAX_WAIT=30
+WAITED=0
+while [ $WAITED -lt $MAX_WAIT ]; do
+  if curl -sf "http://localhost:${PORT_FE}/" -o /dev/null 2>/dev/null; then
+    echo -e "${GREEN}  ✓ 容器就绪 (${WAITED}s)${NC}"
+    break
   fi
+  sleep 1
+  WAITED=$((WAITED + 1))
+done
+if [ $WAITED -ge $MAX_WAIT ]; then
+  echo -e "${RED}⚠ 容器启动超时 (${MAX_WAIT}s)${NC}"
+  echo -e "${YELLOW}  查看日志: ./start-user.sh --id=${USER_ID} --logs${NC}"
+  exit 1
 fi
 
 echo ""
@@ -201,11 +263,11 @@ echo -e "  WS Proxy:  ${GREEN}ws://localhost:${PORT_WS}${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
 
-# --- If no tunnel, done ---
-if [ "$MODE" != "random" ]; then
+# --- If --local, done ---
+if [ "$MODE" = "local" ]; then
   echo -e "${GREEN}✓ User ${USER_ID} 已启动（仅本地访问）${NC}"
   echo ""
-  echo -e "  添加 ${YELLOW}--random${NC} 开启远程隧道（手机访问）"
+  echo -e "  去掉 ${YELLOW}--local${NC} 即可开启远程隧道"
   echo -e "  停止: ${YELLOW}./start-user.sh --id=${USER_ID} --down${NC}"
   echo -e "  日志: ${YELLOW}./start-user.sh --id=${USER_ID} --logs${NC}"
   exit 0

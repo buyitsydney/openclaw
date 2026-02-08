@@ -143,7 +143,7 @@ function initDOM() {
 // Jitter buffer: load saved value, apply to AudioPlayer, save on change.
 function initJitterBuffer() {
   const saved = localStorage.getItem("carher.jitterBufferMs");
-  const ms = saved != null ? parseInt(saved, 10) : 0;
+  const ms = saved != null ? parseInt(saved, 10) : 400;
   if (el.jitterSlider) el.jitterSlider.value = ms;
   if (el.jitterLabel) el.jitterLabel.textContent = ms === 0 ? "关闭" : ms + "ms";
 
@@ -160,7 +160,7 @@ function initJitterBuffer() {
 
 function getJitterBufferMs() {
   const saved = localStorage.getItem("carher.jitterBufferMs");
-  return saved != null ? parseInt(saved, 10) : 0;
+  return saved != null ? parseInt(saved, 10) : 400;
 }
 
 // ---------------------------------------------------------------------------
