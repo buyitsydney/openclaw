@@ -7,9 +7,11 @@ handling Google Cloud authentication automatically using default credentials.
 """
 
 import asyncio
+import hashlib
 import json
 import mimetypes
 import os
+import re
 import ssl
 import time
 from pathlib import Path
@@ -639,6 +641,41 @@ async def handle_websocket_client(client_websocket: WebSocketServerProtocol) -> 
             await client_websocket.close(code=1011, reason="Internal error")
 
 
+# ---------------------------------------------------------------------------
+# Frontend versioning — auto-hash of all JS/HTML/CSS files (computed live)
+# ---------------------------------------------------------------------------
+_frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")
+
+
+def _compute_frontend_version() -> str:
+    """Hash all frontend source files to produce a short version string.
+    Computed on every request so file changes are reflected immediately
+    without restarting the server."""
+    h = hashlib.sha256()
+    exts = {".html", ".js", ".css"}
+    for fpath in sorted(Path(_frontend_dir).rglob("*")):
+        if fpath.suffix in exts and fpath.is_file():
+            h.update(fpath.read_bytes())
+    return h.hexdigest()[:8]
+
+
+def _inject_version_into_html(content: bytes, version: str) -> bytes:
+    """Append ?v=<hash> to script/link src in HTML to bust caches."""
+    text = content.decode("utf-8")
+    # Match <script src="xxx.js"> and <link href="xxx.css">
+    text = re.sub(
+        r'(src|href)="([^"]+\.(js|css))"',
+        rf'\1="\2?v={version}"',
+        text,
+    )
+    return text.encode("utf-8")
+
+
+async def serve_version(request):
+    """Return current frontend version hash (computed live from file contents)."""
+    return web.json_response({"version": _compute_frontend_version()})
+
+
 # HTTP server for static files
 async def serve_static_file(request):
     """Serve static files from the frontend directory."""
@@ -670,6 +707,11 @@ async def serve_static_file(request):
     try:
         with open(file_path, "rb") as f:
             content = f.read()
+
+        # For HTML files: inject version query params into script/link tags
+        if content_type and "html" in content_type:
+            content = _inject_version_into_html(content, _compute_frontend_version())
+
         # Deterministic dev behavior: always fetch the latest frontend assets.
         # This avoids stale JS after refresh due to aggressive browser caching.
         headers = {
@@ -685,7 +727,10 @@ async def serve_static_file(request):
 
 async def start_http_server():
     """Start the HTTP server for serving static files."""
+    print(f"📦 Frontend version: {_compute_frontend_version()} (live — auto-updates on file change)")
+
     app = web.Application()
+    app.router.add_get("/version", serve_version)
     app.router.add_get("/", serve_static_file)
     app.router.add_get("/{path:.*}", serve_static_file)
 

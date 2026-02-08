@@ -1,13 +1,21 @@
 #!/bin/bash
 # CarHer Remote Access — 一键启动隧道，手机扫码即用
 #
+# 模式：
+#   默认：命名隧道模式（需先配置 cloudflared tunnel，URL 固定不变）
+#   --random：随机隧道模式（无需配置，但每次重启 URL 变化）
+#
 # 前提：
 #   1. OpenClaw Gateway 已运行（./start.sh in openclaw root）
 #   2. CarHer server.py 已运行（./start.sh in live-frontend/）
 #   3. 已安装 cloudflared（brew install cloudflared）
-#   4. 手机需要能访问 trycloudflare.com（中国大陆需 VPN）
 
 set -e
+
+MODE="named"
+if [ "$1" = "--random" ]; then
+  MODE="random"
+fi
 
 echo ""
 echo "╔══════════════════════════════════════════════════════════╗"
@@ -35,6 +43,7 @@ check_port 18790 "OpenClaw Realtime 插件"
 
 echo "本地服务检查通过 ✓"
 echo ""
+
 # Kill any leftover cloudflared processes from previous runs
 if pgrep -q cloudflared 2>/dev/null; then
   echo "清理残留 cloudflared 进程..."
@@ -42,7 +51,69 @@ if pgrep -q cloudflared 2>/dev/null; then
   sleep 1
 fi
 
-echo "正在启动 Cloudflare 隧道..."
+# Auto-open local pages in Mac browser for debugging
+open "http://localhost:8000/mobile.html" 2>/dev/null || true
+open "http://localhost:8000/" 2>/dev/null || true
+
+# ============================================================
+# 命名隧道模式（默认）— URL 固定，重启不变
+# ============================================================
+if [ "$MODE" = "named" ]; then
+  # 检查命名隧道配置
+  if [ ! -f "$HOME/.cloudflared/config.yml" ]; then
+    echo "错误: 未找到命名隧道配置 (~/.cloudflared/config.yml)"
+    echo "  请先运行: cloudflared tunnel login && cloudflared tunnel create carher"
+    echo "  或使用随机隧道模式: $0 --random"
+    exit 1
+  fi
+
+  # 固定 URL（命名隧道，永不变化）
+  URL_FRONTEND="https://carher.carher.net"
+  URL_PROXY="https://proxy.carher.net"
+  URL_OPENCLAW="https://api.carher.net"
+
+  MOBILE_URL="${URL_FRONTEND}/mobile.html?proxy=wss%3A%2F%2Fproxy.carher.net&openclaw=wss%3A%2F%2Fapi.carher.net%2Fws"
+  DESKTOP_URL="${URL_FRONTEND}?proxy=wss%3A%2F%2Fproxy.carher.net&openclaw=wss%3A%2F%2Fapi.carher.net%2Fws"
+  CHECK_URL="${URL_FRONTEND}/car-check.html"
+
+  echo "正在启动命名隧道 (carher)..."
+  echo ""
+  echo "╔══════════════════════════════════════════════════════════╗"
+  echo "║   隧道已就绪！（命名隧道 — URL 固定不变）               ║"
+  echo "╠══════════════════════════════════════════════════════════╣"
+  echo "║                                                          ║"
+  echo "║  手机/车机版（极简界面，推荐）：                          ║"
+  echo "║                                                          ║"
+  echo "╚══════════════════════════════════════════════════════════╝"
+  echo ""
+  echo "$MOBILE_URL"
+  echo ""
+  echo "-----------------------------------------------------------"
+  echo "桌面版（完整调试界面）："
+  echo "$DESKTOP_URL"
+  echo ""
+  echo "-----------------------------------------------------------"
+  echo "环境检测页面："
+  echo "$CHECK_URL"
+  echo ""
+  echo "-----------------------------------------------------------"
+  echo "隧道详情（固定地址，重启不变）："
+  echo "  前端页面:     $URL_FRONTEND"
+  echo "  Gemini 代理:  $URL_PROXY"
+  echo "  OpenClaw:     $URL_OPENCLAW"
+  echo "-----------------------------------------------------------"
+  echo ""
+  echo "按 Ctrl+C 关闭隧道"
+  echo ""
+
+  # 运行命名隧道（前台，Ctrl+C 停止）
+  exec cloudflared tunnel run carher
+fi
+
+# ============================================================
+# 随机隧道模式 (--random) — 每次重启 URL 变化
+# ============================================================
+echo "正在启动随机隧道..."
 echo ""
 
 # Clean up on exit
@@ -107,16 +178,11 @@ WSS_OPENCLAW=$(echo "$URL_OPENCLAW" | sed 's|^https://|wss://|')
 QUERY="proxy=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${WSS_PROXY}'))")&openclaw=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${WSS_OPENCLAW}/ws'))")"
 MOBILE_URL="${URL_FRONTEND}/mobile.html?${QUERY}"
 DESKTOP_URL="${URL_FRONTEND}?${QUERY}"
-
 CHECK_URL="${URL_FRONTEND}/car-check.html"
-
-# Auto-open local pages in Mac browser for debugging
-open "http://localhost:8000/mobile.html"
-open "http://localhost:8000/"
 
 echo ""
 echo "╔══════════════════════════════════════════════════════════╗"
-echo "║   隧道已就绪！                                          ║"
+echo "║   隧道已就绪！（随机隧道 — 重启后 URL 变化）            ║"
 echo "╠══════════════════════════════════════════════════════════╣"
 echo "║                                                          ║"
 echo "║  手机/车机版（极简界面，推荐）：                          ║"
@@ -130,11 +196,11 @@ echo "桌面版（完整调试界面）："
 echo "$DESKTOP_URL"
 echo ""
 echo "-----------------------------------------------------------"
-echo "环境检测页面（验证设备兼容性，无需后端服务）："
+echo "环境检测页面："
 echo "$CHECK_URL"
 echo ""
 echo "-----------------------------------------------------------"
-echo "隧道详情："
+echo "隧道详情（随机地址，重启后变化）："
 echo "  前端页面:     $URL_FRONTEND"
 echo "  Gemini 代理:  $URL_PROXY"
 echo "  OpenClaw:     $URL_OPENCLAW"

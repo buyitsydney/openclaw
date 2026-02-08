@@ -430,6 +430,38 @@ state.client.addFunction(carTool);
 
 ---
 
+### Step 2.5：部署基础设施 + 厂商文档（半天）— 已完成 ✅
+
+**已实现并验证通过。** 改动内容：
+
+**Cloudflare 命名隧道（固定 URL，重启不变）：**
+- 购买域名 `carher.net`，Cloudflare 直接托管
+- 创建命名隧道 `carher`，配置三个子域名：
+  - `carher.carher.net` → 前端页面（localhost:8000）
+  - `proxy.carher.net` → Gemini Proxy（localhost:8080）
+  - `api.carher.net` → OpenClaw Realtime（localhost:18790）
+- 配置文件：`~/.cloudflared/config.yml`
+
+**start-remote.sh 更新：**
+- 默认使用命名隧道（`cloudflared tunnel run carher`），URL 固定
+- 加 `--random` 回退到随机隧道模式（自用测试，厂商无法访问）
+- 自动打开本地调试页面
+
+**前端自动版本管理：**
+- server.py 实时计算所有前端文件的内容 hash 作为版本号
+- HTML 中的 script 标签自动注入 `?v=<hash>`（cache busting）
+- `/version` 端点返回当前版本 hash
+- debug overlay 显示版本号
+- 改任何前端文件，刷新页面即可看到新版本，无需重启 server
+
+**厂商文档（`car-her-vendor-guide.md`）：**
+- 环境验证移到开发前（前置工作）
+- 前端交付改为远程 URL 加载（厂商 App 硬编码固定 URL）
+- 我方更新前端代码 → 厂商 App 下次打开自动生效
+- 删除错误的"1秒超时"要求
+
+---
+
 ### Step 3：厂商对接真实车控 SDK（半天~1天）
 
 **厂商将 `CarBridge.kt` 空壳换成真实调用：**

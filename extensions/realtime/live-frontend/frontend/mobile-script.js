@@ -763,6 +763,23 @@ function runEnvChecks() {
 }
 
 // ---------------------------------------------------------------------------
+// Version display — fetch /version and show in debug overlay
+// ---------------------------------------------------------------------------
+async function loadVersion() {
+  const el = document.getElementById("dbgVersion");
+  if (!el) return;
+  try {
+    const resp = await fetch("/version");
+    const data = await resp.json();
+    el.textContent = data.version || "unknown";
+    el.classList.add("ok");
+  } catch {
+    el.textContent = "获取失败";
+    el.classList.add("err");
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 window.addEventListener("DOMContentLoaded", () => {
@@ -771,6 +788,7 @@ window.addEventListener("DOMContentLoaded", () => {
   initJitterBuffer();
   initEvents();
   runEnvChecks();
+  loadVersion();
   dbgLog("Mobile UI initialized");
   dbgLog(`Proxy: ${CONFIG.proxyUrl}`);
   dbgLog(`OpenClaw: ${CONFIG.openclawUrl}`);
