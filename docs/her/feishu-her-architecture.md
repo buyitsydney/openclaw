@@ -2,7 +2,7 @@
 
 通过飞书（Lark）机器人与 OpenClaw 对话，让用户在飞书客户端内获得 AI 助手体验。
 
-**状态：已实现并验证通过 (2026-02-07)**
+**状态：已实现并验证通过 (2026-02-08)**
 
 ## 核心结论
 
@@ -10,7 +10,7 @@
 - **对现有 Her（realtime 插件）代码：零修改** -- 已验证
 - **全部新增代码限制在 `extensions/feishu/` 目录内** -- 已验证
 - **风险评估：极低** -- 已通过端到端测试确认
-- **实际新增代码：~908 行**（包含 cron 直投修复 + 富文本解析修复 + 图片收发 + 目标解析）
+- **实际新增代码：~1000 行**（包含 cron 直投修复 + 富文本解析修复 + 图片收发 + 图片接收（vision）+ 目标解析）
 
 ---
 
@@ -292,7 +292,7 @@ outbound: {
 在飞书开放平台配置以下权限：
 - `im:message` -- 接收消息事件（读取用户发给机器人的单聊消息）
 - `im:message:send_as_bot` -- 以应用身份发消息
-- `im:resource` 或 `im:resource:upload` -- 上传图片资源（发送图片消息所需）
+- `im:resource` -- 获取与上传图片或文件资源（图片收发所需）
 
 事件订阅：
 - `im.message.receive_v1` -- 接收消息事件，使用长连接模式
@@ -327,10 +327,10 @@ outbound: {
 | `index.ts` | 17 | 入口注册 |
 | `src/channel.ts` | 253 | ChannelPlugin 主体 + sendMedia 图片上传 + 目标解析 |
 | `src/runtime.ts` | 14 | Runtime 单例 |
-| `src/gateway.ts` | 328 | WSClient + pipeline 集成 + 富文本解析 + 回复投递 + 图片下载转发 |
-| `src/outbound.ts` | 131 | Lark SDK 消息发送 + 智能 ID 类型识别 + 图片上传/发送 |
+| `src/gateway.ts` | 390 | WSClient + pipeline 集成 + 富文本解析 + 回复投递 + 图片下载/接收（vision） |
+| `src/outbound.ts` | 161 | Lark SDK 消息发送 + 智能 ID 类型识别 + 图片上传/发送/下载 |
 | `src/accounts.ts` | 117 | 账户 / 凭证解析 |
-| **总计** | **~908** | 全部在 `extensions/feishu/` 内 |
+| **总计** | **~1000** | 全部在 `extensions/feishu/` 内 |
 
 ---
 
@@ -450,6 +450,35 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 
 **验证**：AI 成功通过飞书发送小米摄像头实时截图
 
+### 图片接收与 Vision 识别 (2026-02-08)
+
+**问题**：用户在飞书中发送图片时，AI 报告"只收到了 `[image]` 的占位符，实际图片没有传过来"，无法识别图片内容。
+
+**根因**：
+
+飞书发送"图片+文字"消息时，自动组装为 `post`（富文本）类型，图片以 `{tag: "img", image_key: "xxx"}` 嵌入。旧代码的 `flattenPostBody` 将 `img` 标签转为文本 `"[image]"` 占位符，未下载实际图片。单独发送图片时 `msgType="image"`，也仅返回 `"[image]"` 文本。两种场景下 AI 都只看到纯文字，无法进行 vision 处理。
+
+**修复**：
+
+1. `outbound.ts` 新增 `downloadFeishuImage()` -- 使用飞书 SDK 的 `client.im.messageResource.get()` API，通过 `message_id` + `image_key` 下载消息中的图片，返回 `Buffer` + `contentType`
+2. `gateway.ts` 重构消息提取流程：
+   - `extractTextContent()` / `flattenPostBody()` 新增 `imageKeys` 参数，解析时收集所有 `image_key`
+   - `post` 富文本中的 `img` 标签和独立 `image` 消息的 `image_key` 统一收集
+   - `handleInboundMessage()` 遍历收集到的 `imageKeys`，调用 `downloadFeishuImage` 下载、`saveMediaBuffer` 保存
+   - 在 `ctxPayload` 中设置 `MediaPath`/`MediaType`/`MediaPaths`/`MediaTypes`
+3. OpenClaw 下游的 `buildInboundMediaNote` + `applyMediaUnderstanding` 自动将图片传给 AI 的 vision 模型
+
+**权限**：需要 `im:resource` 权限（获取与上传图片或文件资源）
+
+**验证**：用户发送截图后，AI 成功识别图片内容（OpenRouter 账单截图，正确读出金额等信息）。日志链路完整：
+
+```
+[feishu] downloading image: key=img_v3_02un_... msg=om_x100b574b16d534acc...
+[feishu] image saved: /Users/.../.openclaw/media/inbound/c8e7df25-....png
+[feishu] inbound: chat=oc_... from=ou_... type=p2p +image
+[agent/embedded] embedded run start: ... messageChannel=feishu
+```
+
 ---
 
 ## 后续增强方向
@@ -457,7 +486,7 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 当前 MVP 实现覆盖了核心聊天 + 定时任务功能，以下为可选增强：
 
 1. **富文本回复**：Markdown -> 飞书 Post 格式转换，支持加粗/链接/代码块
-2. ~~**图片/文件收发**~~：✅ 已实现（2026-02-07）-- 通过 `im:resource` 权限上传图片，支持 gateway 回复和 `message send` 主动发送
+2. ~~**图片/文件收发**~~：✅ 已实现（2026-02-07 发送，2026-02-08 接收+vision）-- 双向图片支持：AI 可发送图片，也能识别用户发来的图片
 3. **交互卡片**：使用飞书 Interactive Card 展示结构化回复
 4. **群聊支持**：@mention 检测、群权限策略、群级别配置
 5. **Onboarding CLI**：`openclaw setup` 交互式引导配置飞书凭证
@@ -470,7 +499,7 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 
 飞书通道本质上是在 OpenClaw 的通道体系中新增一个标准通道插件。它与 Her（realtime 语音通道）完全平行，与 Telegram/Slack/Discord 完全同构。
 
-- 实际新增代码 ~908 行，全部在 `extensions/feishu/` 内
+- 实际新增代码 ~1000 行，全部在 `extensions/feishu/` 内
 - 不修改 OpenClaw 核心代码的任何一行
 - 不修改 Her（realtime 插件）的任何一行
 - 不修改任何已有扩展的任何一行

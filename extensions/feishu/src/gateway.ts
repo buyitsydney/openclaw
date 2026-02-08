@@ -8,7 +8,13 @@
 import * as Lark from "@larksuiteoapi/node-sdk";
 import type { ChannelAccountSnapshot, ChannelLogSink, OpenClawConfig, RuntimeEnv } from "openclaw/plugin-sdk";
 import type { ResolvedFeishuAccount } from "./accounts.js";
-import { getFeishuClient, sendFeishuText, uploadFeishuImage, sendFeishuImage } from "./outbound.js";
+import {
+  getFeishuClient,
+  sendFeishuText,
+  uploadFeishuImage,
+  sendFeishuImage,
+  downloadFeishuImage,
+} from "./outbound.js";
 import { getFeishuRuntime } from "./runtime.js";
 
 export type FeishuGatewayOptions = {
@@ -36,9 +42,10 @@ function trackMessageId(messageId: string): boolean {
   return true;
 }
 
-/** Flatten a post body ({ title?, content: [[{tag,text}, ...]] }) into plain text. */
+/** Flatten a post body ({ title?, content: [[{tag,text}, ...]] }) into plain text.
+ *  Also collects any embedded image_key values for downstream download. */
 // oxlint-disable-next-line typescript/no-explicit-any
-function flattenPostBody(body: any): string | null {
+function flattenPostBody(body: any, imageKeys?: string[]): string | null {
   if (!body || !Array.isArray(body.content)) return null;
   const lines: string[] = [];
   for (const paragraph of body.content) {
@@ -47,8 +54,11 @@ function flattenPostBody(body: any): string | null {
     for (const el of paragraph) {
       if (el.tag === "text" || el.tag === "a") line += el.text ?? "";
       else if (el.tag === "at") line += el.user_id ? `@_user_${el.user_id}` : "";
-      else if (el.tag === "img") line += "[image]";
-      else if (el.tag === "media") line += "[media]";
+      else if (el.tag === "img") {
+        // Collect image keys for download; replace with placeholder in text.
+        if (el.image_key && imageKeys) imageKeys.push(el.image_key);
+        line += "<media:image>";
+      } else if (el.tag === "media") line += "[media]";
       else if (el.tag === "emotion") line += el.emoji_type ? `[${el.emoji_type}]` : "";
     }
     lines.push(line);
@@ -60,31 +70,42 @@ function flattenPostBody(body: any): string | null {
 /** Extract plain text from a Feishu "post" (rich-text) message.
  *  Received format: { title?, content: [[...]] }  (flat, no locale wrapper)
  *  Send format:     { zh_cn: { title?, content: [[...]] } }  (locale-wrapped)
- *  We handle both so the parser is robust. */
-function extractPostText(parsed: Record<string, unknown>): string | null {
+ *  We handle both so the parser is robust.
+ *  imageKeys: collects any embedded image_key values for downstream download. */
+function extractPostText(parsed: Record<string, unknown>, imageKeys?: string[]): string | null {
   // Received messages use the flat format (title + content at top level).
   if (Array.isArray(parsed.content)) {
-    return flattenPostBody(parsed);
+    return flattenPostBody(parsed, imageKeys);
   }
   // Fallback: locale-wrapped format (zh_cn / en_us / first key).
   // oxlint-disable-next-line typescript/no-explicit-any
   const locales = parsed as Record<string, any>;
   const locale = locales.zh_cn ?? locales.en_us ?? Object.values(locales)[0];
-  return flattenPostBody(locale);
+  return flattenPostBody(locale, imageKeys);
 }
 
-/** Extract plain text from Feishu message content JSON. */
-function extractTextContent(content: string, msgType: string): string | null {
+/** Extract plain text from Feishu message content JSON.
+ *  imageKeys: collects image_key values from post messages and standalone image messages. */
+function extractTextContent(
+  content: string,
+  msgType: string,
+  imageKeys?: string[],
+): string | null {
   try {
     const parsed = JSON.parse(content);
     if (msgType === "text") {
       return (parsed.text as string) ?? null;
     }
     // Rich-text (post) messages: flatten nested paragraphs into plain text.
+    // Embedded img tags have their image_key collected for download.
     if (msgType === "post") {
-      return extractPostText(parsed);
+      return extractPostText(parsed, imageKeys);
     }
-    if (msgType === "image") return "[image]";
+    // Standalone image messages: collect image_key for download.
+    if (msgType === "image") {
+      if (parsed.image_key && imageKeys) imageKeys.push(parsed.image_key);
+      return null; // Handled in handleInboundMessage.
+    }
     if (msgType === "file") return "[file]";
     if (msgType === "audio") return "[audio]";
     if (msgType === "sticker") return "[sticker]";
@@ -171,20 +192,56 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // Deduplicate.
   if (messageId && !trackMessageId(messageId)) return;
 
-  const rawText = extractTextContent(content, msgType);
-  if (!rawText) {
+  // ── Extract text and collect embedded image keys ──
+  const imageKeys: string[] = [];
+  const rawText = extractTextContent(content, msgType, imageKeys);
+
+  // ── Download images (standalone image msgs + images embedded in post) ──
+  let mediaPath: string | undefined;
+  let mediaType: string | undefined;
+  const mediaPaths: string[] = [];
+  const mediaTypes: string[] = [];
+  if (imageKeys.length > 0 && messageId) {
+    for (const imageKey of imageKeys) {
+      try {
+        log?.info(`[${account.accountId}] downloading image: key=${imageKey} msg=${messageId}`);
+        const imgData = await downloadFeishuImage({ account, messageId, imageKey });
+        if (imgData) {
+          const saved = await core.channel.media.saveMediaBuffer(
+            imgData.buffer,
+            imgData.contentType,
+            "inbound",
+          );
+          mediaPaths.push(saved.path);
+          mediaTypes.push(saved.contentType ?? imgData.contentType ?? "image/jpeg");
+          log?.info(`[${account.accountId}] image saved: ${saved.path}`);
+        }
+      } catch (err) {
+        log?.error(`[${account.accountId}] image download failed (key=${imageKey}): ${String(err)}`);
+      }
+    }
+    // Primary media fields use the first image.
+    if (mediaPaths.length > 0) {
+      mediaPath = mediaPaths[0];
+      mediaType = mediaTypes[0];
+    }
+  }
+
+  // For image-only messages, use a placeholder if no text was extracted.
+  const textFromMessage = rawText ?? (mediaPath ? "<media:image>" : null);
+  if (!textFromMessage) {
     // Debug: log unrecognized message types so we can add support.
     log?.info(`[${account.accountId}] skipped msg: msgType=${msgType} content=${content.slice(0, 200)}`);
     return;
   }
 
   // Strip @mentions (Feishu uses @_user_N patterns in text).
-  const cleanText = rawText.replace(/@_user_\d+/g, "").trim();
+  const cleanText = textFromMessage.replace(/@_user_\d+/g, "").trim();
   if (!cleanText) return;
 
   const isGroup = chatType === "group";
 
-  log?.info(`[${account.accountId}] inbound: chat=${chatId} from=${senderId} type=${chatType}`);
+  log?.info(`[${account.accountId}] inbound: chat=${chatId} from=${senderId} type=${chatType}${mediaPath ? " +image" : ""}`);
   setStatus({ lastInboundAt: Date.now() });
 
   // DM access control: for now use "open" policy (private bot, only you can see it).
@@ -234,6 +291,11 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     ReplyToId: messageId,
     OriginatingChannel: "feishu",
     OriginatingTo: `feishu:${chatId}`,
+    // Attach image media for vision processing if downloaded.
+    MediaPath: mediaPath,
+    MediaType: mediaType,
+    MediaPaths: mediaPaths.length > 0 ? mediaPaths : undefined,
+    MediaTypes: mediaTypes.length > 0 ? mediaTypes : undefined,
   });
 
   // Record session metadata (fire-and-forget).

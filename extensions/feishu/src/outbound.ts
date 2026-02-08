@@ -100,6 +100,36 @@ export async function uploadFeishuImage(params: {
   return json.data.image_key;
 }
 
+/** Download an image from a Feishu message using the message resource API.
+ *  Requires `im:message` or `im:resource` permission.
+ *  Returns the raw image buffer, or null if download fails. */
+export async function downloadFeishuImage(params: {
+  account: ResolvedFeishuAccount;
+  messageId: string;
+  imageKey: string;
+}): Promise<{ buffer: Buffer; contentType?: string } | null> {
+  const client = getFeishuClient(params.account);
+  const resp = await client.im.messageResource.get({
+    params: { type: "image" },
+    path: { message_id: params.messageId, file_key: params.imageKey },
+  });
+  if (!resp) return null;
+  const stream = resp.getReadableStream();
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  if (chunks.length === 0) return null;
+  const buffer = Buffer.concat(chunks);
+  // Try to extract content-type from response headers.
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const headers = resp.headers as any;
+  const contentType =
+    (typeof headers?.get === "function" ? headers.get("content-type") : headers?.["content-type"]) ??
+    "image/jpeg";
+  return { buffer, contentType: typeof contentType === "string" ? contentType : "image/jpeg" };
+}
+
 /** Send an image message to a Feishu chat or user. */
 export async function sendFeishuImage(params: {
   account: ResolvedFeishuAccount;
