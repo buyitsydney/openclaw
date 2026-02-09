@@ -88,8 +88,7 @@
     "mode": "local",
     "bind": "lan",
     "auth": { "mode": "token", "token": "该员工的随机token" },
-    "controlUi": { "dangerouslyDisableDeviceAuth": true },
-    "webchatUrl": "http://server:29001?token=该员工的随机token"
+    "controlUi": { "dangerouslyDisableDeviceAuth": true }
   },
   "agents": {
     "defaults": {
@@ -124,7 +123,7 @@
 > **注意事项**：
 > - `nativeSkills: "auto"` 必须配置，否则 AI 只能看到少数无依赖的 skill
 > - `controlUi.dangerouslyDisableDeviceAuth: true` 跳过设备配对，允许 token 直接访问 Webchat
-> - `webchatUrl` 由 `start-user.sh` 自动生成（含 host + port + token），飞书插件在用户首次消息时发送欢迎链接
+> - `WEBCHAT_URL` 环境变量由 `start-user.sh` 自动注入容器（含 host + port + token），飞书插件在用户首次消息时发送欢迎链接
 
 ### Docker 部署
 
@@ -411,9 +410,9 @@ carher-N: 端口公式: 29000 + (N-1)*10 + 1
 
 > **注意**：Webchat 需要 token 认证。`start-user.sh` 会自动生成带 token 的完整 URL（`gateway.webchatUrl`），并通过飞书欢迎消息推送给用户。
 
-**需要的配置**（已加入 `docker/carher-config.json`）：
-- `gateway.controlUi.dangerouslyDisableDeviceAuth: true` — 跳过设备配对，token 认证即可
-- `gateway.webchatUrl` — 由 `start-user.sh` 自动注入，飞书插件在首次对话时发送给用户
+**需要的配置**：
+- `gateway.controlUi.dangerouslyDisableDeviceAuth: true`（已加入 `docker/carher-config.json`）— 跳过设备配对，token 认证即可
+- `WEBCHAT_URL` 环境变量 — 由 `start-user.sh` 自动计算并通过 `docker run -e` 注入，飞书插件在首次对话时发送给用户
 
 > Mac 上的 Webchat 只连接本地 Her（port 18789），看不到任何 Docker 容器的对话——这是隔离正确的表现。
 
