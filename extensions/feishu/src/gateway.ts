@@ -251,11 +251,10 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // Full pairing/allowlist support can be added later.
 
   // Send welcome message with webchat link on first contact from this user.
-  // webchatUrl is injected by start-user.sh into gateway config.
+  // WEBCHAT_URL env var is injected by start-user.sh via docker run -e.
   if (!welcomedPeers.has(senderId)) {
     welcomedPeers.add(senderId);
-    // oxlint-disable-next-line typescript/no-explicit-any
-    const webchatUrl = (config.gateway as any)?.webchatUrl as string | undefined;
+    const webchatUrl = process.env.WEBCHAT_URL;
     if (webchatUrl) {
       const welcomeText =
         `你好！我是你的 AI 助手 🤖\n\n` +

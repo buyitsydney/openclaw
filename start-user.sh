@@ -293,7 +293,7 @@ fi
 CONFIG_FILE="${SCRIPT_DIR}/docker/carher-config.json"
 CUSTOM_CONFIG="/tmp/carher-config-${USER_ID}.json"
 
-# Always generate a per-user config (may inject feishu credentials + webchat URL)
+# Always generate a per-user config (may inject feishu credentials)
 python3 -c "
 import json, sys
 
@@ -304,13 +304,6 @@ with open('${CONFIG_FILE}') as f:
 model = '${MODEL_FULL}'
 if model:
     cfg['agents']['defaults']['model']['primary'] = model
-
-# Webchat URL: http://{host}:{gateway_port}?token={token}
-host = '${HOST_ARG}'
-port = ${PORT_GW}
-token = cfg.get('gateway', {}).get('auth', {}).get('token', '')
-if token:
-    cfg.setdefault('gateway', {})['webchatUrl'] = f'http://{host}:{port}?token={token}'
 
 # Feishu credentials from users.csv
 feishu_id = '${CSV_FEISHU_ID}'
@@ -346,6 +339,17 @@ else
   echo -e "  · 飞书: 未配置"
 fi
 
+# --- Compute webchat URL from token + port (before docker run) ---
+AUTH_TOKEN=$(python3 -c "
+import json
+with open('${CUSTOM_CONFIG}') as f:
+    print(json.load(f).get('gateway', {}).get('auth', {}).get('token', ''))
+" 2>/dev/null || true)
+WEBCHAT_URL=""
+if [ -n "$AUTH_TOKEN" ]; then
+  WEBCHAT_URL="http://${HOST_ARG}:${PORT_GW}?token=${AUTH_TOKEN}"
+fi
+
 # --- Always clean start: stop old container if exists ---
 if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
   echo -e "${YELLOW}  ⟳ 清理旧容器 ${CONTAINER_NAME}...${NC}"
@@ -360,6 +364,7 @@ docker run -d \
   -e HOME=/data \
   -e OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
   -e GOOGLE_APPLICATION_CREDENTIALS=/gcloud/application_default_credentials.json \
+  ${WEBCHAT_URL:+-e WEBCHAT_URL="$WEBCHAT_URL"} \
   -p "${PORT_GW}:18789" \
   -p "${PORT_RT}:18790" \
   -p "${PORT_FE}:8000" \
@@ -393,13 +398,6 @@ fi
 sync_workspace "$CONTAINER_NAME"
 
 echo ""
-
-# --- Read generated webchatUrl from config ---
-WEBCHAT_URL=$(python3 -c "
-import json
-with open('${CUSTOM_CONFIG}') as f:
-    print(json.load(f).get('gateway', {}).get('webchatUrl', ''))
-" 2>/dev/null || true)
 
 # --- Print local URLs ---
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
