@@ -46,6 +46,11 @@ RUN chmod +x /entrypoint.sh
 
 ENV NODE_ENV=production
 
+# Embed build hash for auto-rebuild detection by start-user.sh
+# Format: "<git-sha>" or "<git-sha>-dirty-<diff-hash>"
+ARG BUILD_HASH=unknown
+LABEL carher.build.hash=$BUILD_HASH
+
 # Ports: Gateway(18789), Realtime(18790), Frontend(8000), WS Proxy(8080)
 EXPOSE 18789 18790 8000 8080
 

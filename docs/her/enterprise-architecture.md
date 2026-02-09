@@ -7,7 +7,7 @@
 
 **最终方案：200 Bot + 200 Docker（每人一个独立 OpenClaw 容器）**
 
-**验证状态 (2026-02-09)：飞书并发测试通过、数据隔离已确认、Webchat 隔离已确认**
+**验证状态 (2026-02-09)：飞书并发测试通过、数据隔离已确认、Webchat 隔离已确认、自动镜像重建已实现**
 
 ---
 
@@ -123,7 +123,7 @@
 > **注意事项**：
 > - `nativeSkills: "auto"` 必须配置，否则 AI 只能看到少数无依赖的 skill
 > - `controlUi.dangerouslyDisableDeviceAuth: true` 跳过设备配对，允许 token 直接访问 Webchat
-> - `WEBCHAT_URL` 环境变量由 `start-user.sh` 自动注入容器（含 host + port + token），飞书插件在用户首次消息时发送欢迎链接
+> - 飞书插件在用户发送 `/new` 时自动发送 Webchat URL（从 gateway 配置自动计算，Docker 模式下可通过 `WEBCHAT_URL` 环境变量覆盖）
 
 ### Docker 部署
 
@@ -261,10 +261,13 @@ docker-compose up -d --no-deps emp-001  # 回滚单个容器
 ```bash
 ./start-user.sh --id=1               # 模型和飞书凭证从 CSV 自动读取
 ./start-user.sh --id=1 --model=opus  # CLI --model 覆盖 CSV 设置
+./start-user.sh --id=1 --local       # 仅本地访问（不开隧道）
 ./start-user.sh --id=1 --down        # 停止容器
 ./start-user.sh --list               # 列出所有用户和容器状态
 ./start-user.sh --id=1 --sync-workspace  # 同步 docker/workspace/ 到容器
 ```
+
+> **自动镜像重建**：`start-user.sh` 启动时自动检测代码是否变更（比对 git SHA + 未提交 diff hash），如有变更则自动重建 Docker 镜像。无需手动运行 `start-docker.sh`。可通过 `--no-rebuild` 跳过检查。
 
 > **Workspace 模板**：`docker/workspace/` 下的文件会在容器启动时自动同步到 `/data/.openclaw/workspace/`。TOOLS.md 模板默认为空（企业员工不需要个人设备配置）。
 
@@ -396,6 +399,8 @@ docker volume rm carher-1-feishu-test
 | Webchat 隔离 | PASS | 每容器独立 webchat，Mac webchat 看不到 Docker 容器的对话 |
 | nativeSkills 加载 | PASS | 配置 `nativeSkills: "auto"` 后，4 个无依赖 skill 正常注入 AI prompt |
 | 镜像重建后 skill 更新 | PASS | 重建镜像后新增 skill（twitter-monitor）立即可用 |
+| /new 欢迎消息 + Webchat URL | PASS | 飞书用户发送 /new 时自动收到 Webchat 链接，本地和 Docker 均可用 |
+| 自动镜像重建检测 | PASS | start-user.sh 自动比对 git SHA + dirty diff hash，代码变更时自动重建 |
 
 ### Webchat 端口分配（每容器独立）
 
@@ -408,11 +413,11 @@ carher-3: http://localhost:29021?token=carher-container-token  (Gateway/Webchat)
 carher-N: 端口公式: 29000 + (N-1)*10 + 1
 ```
 
-> **注意**：Webchat 需要 token 认证。`start-user.sh` 会自动生成带 token 的完整 URL（`gateway.webchatUrl`），并通过飞书欢迎消息推送给用户。
+> **注意**：Webchat 需要 token 认证。飞书插件在用户发送 `/new` 时自动发送带 token 的 Webchat URL。
 
 **需要的配置**：
 - `gateway.controlUi.dangerouslyDisableDeviceAuth: true`（已加入 `docker/carher-config.json`）— 跳过设备配对，token 认证即可
-- `WEBCHAT_URL` 环境变量 — 由 `start-user.sh` 自动计算并通过 `docker run -e` 注入，飞书插件在首次对话时发送给用户
+- Webchat URL 由飞书插件自动从 gateway 配置计算（port + token），Docker 模式下可通过 `WEBCHAT_URL` 环境变量覆盖（端口映射不同时需要）
 
 > Mac 上的 Webchat 只连接本地 Her（port 18789），看不到任何 Docker 容器的对话——这是隔离正确的表现。
 

@@ -30,8 +30,23 @@ export type FeishuGatewayOptions = {
 const recentMessageIds = new Set<string>();
 const MAX_RECENT = 500;
 
-// Track open_ids that have received a welcome message (resets on container restart).
-const welcomedPeers = new Set<string>();
+/**
+ * Resolve the Webchat URL for welcome messages.
+ * Priority: WEBCHAT_URL env var > auto-compute from gateway config.
+ * Docker containers get the env var via start-user.sh (external port mapping).
+ * Local instances auto-compute from config (localhost + gateway port + token).
+ */
+function resolveWebchatUrl(config: OpenClawConfig): string | undefined {
+  // Docker / explicit override takes priority
+  const envUrl = process.env.WEBCHAT_URL;
+  if (envUrl) return envUrl;
+
+  // Auto-compute from gateway config
+  const port = config.gateway?.port ?? 18789;
+  const token = config.gateway?.auth?.token;
+  const base = `http://localhost:${port}`;
+  return token ? `${base}?token=${token}` : base;
+}
 
 function trackMessageId(messageId: string): boolean {
   if (recentMessageIds.has(messageId)) {
@@ -250,11 +265,10 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // DM access control: for now use "open" policy (private bot, only you can see it).
   // Full pairing/allowlist support can be added later.
 
-  // Send welcome message with webchat link on first contact from this user.
-  // WEBCHAT_URL env var is injected by start-user.sh via docker run -e.
-  if (!welcomedPeers.has(senderId)) {
-    welcomedPeers.add(senderId);
-    const webchatUrl = process.env.WEBCHAT_URL;
+  // Send webchat URL reminder on /new (new session).
+  // URL resolution: WEBCHAT_URL env var (Docker) > auto-compute from gateway config (local).
+  if (cleanText === "/new") {
+    const webchatUrl = resolveWebchatUrl(config);
     if (webchatUrl) {
       const welcomeText =
         `你好！我是你的 AI 助手 🤖\n\n` +

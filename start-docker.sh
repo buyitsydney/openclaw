@@ -40,10 +40,21 @@ if [ "${1:-}" = "--rebuild" ]; then
 fi
 
 # Build image (includes pnpm build + ui:build + Python deps)
+# Compute build hash: git SHA + optional dirty-diff hash for auto-rebuild detection
+GIT_SHA=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+SOURCE_DIRS="src/ extensions/ skills/ package.json pnpm-lock.yaml Dockerfile.carher scripts/carher-entrypoint.sh ui/"
+DIFF_OUTPUT=$(git diff HEAD -- $SOURCE_DIRS 2>/dev/null || true)
+if [ -n "$DIFF_OUTPUT" ]; then
+  DIRTY_HASH=$(printf '%s' "$DIFF_OUTPUT" | shasum -a 256 | cut -d' ' -f1)
+  BUILD_HASH="${GIT_SHA}-dirty-${DIRTY_HASH:0:16}"
+else
+  BUILD_HASH="$GIT_SHA"
+fi
 echo ""
 echo -e "${YELLOW}构建 carher:local 镜像（含前后端编译）...${NC}"
+echo -e "  Build hash: ${BUILD_HASH:0:24}"
 echo ""
-docker build -f Dockerfile.carher -t carher:local $BUILD_ARGS .
+docker build -f Dockerfile.carher --build-arg BUILD_HASH="$BUILD_HASH" -t carher:local $BUILD_ARGS .
 echo ""
 echo -e "${GREEN}✓ 镜像构建完成${NC}"
 echo ""

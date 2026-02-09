@@ -43,6 +43,7 @@ MODE="random"  # 默认开启远程隧道（厂商用户一定是远程访问）
 ACTION="start"
 MODEL_ARG=""
 HOST_ARG="localhost"  # Webchat URL base host（默认 localhost，企业部署用内网 IP）
+NO_REBUILD=""  # 跳过自动重建检查
 
 for arg in "$@"; do
   case "$arg" in
@@ -55,6 +56,7 @@ for arg in "$@"; do
     --logs) ACTION="logs" ;;
     --list) ACTION="list" ;;
     --sync-workspace) ACTION="sync-workspace" ;;
+    --no-rebuild) NO_REBUILD="yes" ;;
     -h|--help)
       echo "用法: ./start-user.sh --id=N [--model=MODEL] [--host=IP] [--local] [--down] [--logs]"
       echo ""
@@ -66,6 +68,7 @@ for arg in "$@"; do
       echo "  --logs        查看容器日志"
       echo "  --list        列出所有注册用户和容器状态"
       echo "  --sync-workspace  同步 docker/workspace/ 模板到容器"
+      echo "  --no-rebuild  跳过自动镜像重建检查"
       echo ""
       echo "用户注册表: docker/users.csv（IT 维护，含飞书凭证等）"
       echo ""
@@ -205,13 +208,41 @@ echo ""
 echo -e "${YELLOW}🚗 CarHer User ${USER_ID} — 启动${NC}"
 echo ""
 
-# Check Docker image
-if ! docker image inspect carher:local &>/dev/null; then
-  echo -e "${RED}✗ 镜像 carher:local 不存在${NC}"
-  echo -e "${YELLOW}  请先构建: ./start-docker.sh${NC}"
-  exit 1
+# --- Auto-rebuild: compare build hash (git SHA + dirty diff hash) with image label ---
+CURRENT_SHA=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+SOURCE_DIRS="src/ extensions/ skills/ package.json pnpm-lock.yaml Dockerfile.carher scripts/carher-entrypoint.sh ui/"
+DIFF_OUTPUT=$(git diff HEAD -- $SOURCE_DIRS 2>/dev/null || true)
+if [ -n "$DIFF_OUTPUT" ]; then
+  DIRTY_HASH=$(printf '%s' "$DIFF_OUTPUT" | shasum -a 256 | cut -d' ' -f1)
+  CURRENT_BUILD_HASH="${CURRENT_SHA}-dirty-${DIRTY_HASH:0:16}"
+else
+  CURRENT_BUILD_HASH="$CURRENT_SHA"
 fi
-echo -e "${GREEN}  ✓ Docker 镜像就绪${NC}"
+
+IMAGE_BUILD_HASH=$(docker inspect carher:local --format '{{index .Config.Labels "carher.build.hash"}}' 2>/dev/null || echo "none")
+
+NEED_REBUILD=""
+if ! docker image inspect carher:local &>/dev/null; then
+  NEED_REBUILD="镜像不存在"
+elif [ "$IMAGE_BUILD_HASH" = "none" ] || [ "$IMAGE_BUILD_HASH" = "unknown" ] || [ "$IMAGE_BUILD_HASH" = "" ]; then
+  NEED_REBUILD="镜像无版本标记（旧版构建）"
+elif [ "$CURRENT_BUILD_HASH" != "$IMAGE_BUILD_HASH" ]; then
+  NEED_REBUILD="源码已变更 (镜像: ${IMAGE_BUILD_HASH:0:16}, 当前: ${CURRENT_BUILD_HASH:0:16})"
+fi
+
+if [ -n "$NEED_REBUILD" ]; then
+  if [ -n "$NO_REBUILD" ]; then
+    echo -e "${YELLOW}  ⚠ 镜像需要重建 (${NEED_REBUILD})，但 --no-rebuild 已跳过${NC}"
+  else
+    echo -e "${YELLOW}  ⟳ 自动重建镜像: ${NEED_REBUILD}${NC}"
+    echo ""
+    docker build -f Dockerfile.carher --build-arg BUILD_HASH="$CURRENT_BUILD_HASH" -t carher:local .
+    echo ""
+    echo -e "${GREEN}  ✓ 镜像自动重建完成${NC}"
+  fi
+else
+  echo -e "${GREEN}  ✓ Docker 镜像已是最新 (${CURRENT_BUILD_HASH:0:16})${NC}"
+fi
 
 # Check cloudflared (unless --local)
 if [ "$MODE" != "local" ]; then
