@@ -136,6 +136,8 @@ function initDOM() {
     "volume", "volLabel", "volumePopup", "debugOverlay",
     "dbgOcStatus", "dbgGeminiStatus", "dbgMicStatus", "dbgAudioObs", "dbgLog",
     "jitterSlider", "jitterLabel",
+    "micDeviceSelect", "speakerDeviceSelect", "speakerRow",
+    "refreshDevicesBtn", "deviceHint",
   ];
   ids.forEach((id) => { el[id] = document.getElementById(id); });
 }
@@ -161,6 +163,92 @@ function initJitterBuffer() {
 function getJitterBufferMs() {
   const saved = localStorage.getItem("carher.jitterBufferMs");
   return saved != null ? parseInt(saved, 10) : 400;
+}
+
+// ---------------------------------------------------------------------------
+// Audio device selection: enumerate mic/speaker, persist to localStorage
+// ---------------------------------------------------------------------------
+async function populateAudioDevices() {
+  if (!navigator.mediaDevices?.enumerateDevices) return;
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+
+    // Mic dropdown
+    if (el.micDeviceSelect) {
+      const savedMic = localStorage.getItem("carher.micDeviceId") || "";
+      el.micDeviceSelect.innerHTML = '<option value="">系统默认</option>';
+      devices
+        .filter((d) => d.kind === "audioinput")
+        .forEach((d) => {
+          const opt = document.createElement("option");
+          opt.value = d.deviceId;
+          opt.textContent = d.label || `Mic ${d.deviceId.slice(0, 8)}`;
+          if (d.deviceId === savedMic) opt.selected = true;
+          el.micDeviceSelect.appendChild(opt);
+        });
+      el.micDeviceSelect.addEventListener("change", () => {
+        localStorage.setItem("carher.micDeviceId", el.micDeviceSelect.value);
+        dbgLog(`Mic device → ${el.micDeviceSelect.value ? el.micDeviceSelect.selectedOptions[0].textContent : "默认"}`);
+      });
+    }
+
+    // Speaker dropdown (only if setSinkId is available)
+    const sinkIdSupported = typeof AudioContext !== "undefined" &&
+      typeof AudioContext.prototype.setSinkId === "function";
+    if (!sinkIdSupported && el.speakerRow) {
+      el.speakerRow.style.display = "none"; // hide if unsupported
+    }
+    if (sinkIdSupported && el.speakerDeviceSelect) {
+      const savedSpeaker = localStorage.getItem("carher.speakerDeviceId") || "";
+      el.speakerDeviceSelect.innerHTML = '<option value="">系统默认</option>';
+      devices
+        .filter((d) => d.kind === "audiooutput")
+        .forEach((d) => {
+          const opt = document.createElement("option");
+          opt.value = d.deviceId;
+          opt.textContent = d.label || `Speaker ${d.deviceId.slice(0, 8)}`;
+          if (d.deviceId === savedSpeaker) opt.selected = true;
+          el.speakerDeviceSelect.appendChild(opt);
+        });
+      el.speakerDeviceSelect.addEventListener("change", () => {
+        localStorage.setItem("carher.speakerDeviceId", el.speakerDeviceSelect.value);
+        dbgLog(`Speaker device → ${el.speakerDeviceSelect.value ? el.speakerDeviceSelect.selectedOptions[0].textContent : "默认"}`);
+      });
+    }
+  } catch (err) {
+    console.warn("Failed to enumerate audio devices:", err);
+  }
+}
+
+function getSavedMicDeviceId() {
+  return localStorage.getItem("carher.micDeviceId") || null;
+}
+
+function getSavedSpeakerDeviceId() {
+  return localStorage.getItem("carher.speakerDeviceId") || null;
+}
+
+// Request mic permission, then refresh device list so real labels are visible.
+async function refreshDeviceList() {
+  const btn = el.refreshDevicesBtn;
+  const hint = el.deviceHint;
+  if (btn) btn.disabled = true;
+  if (hint) hint.textContent = "正在获取权限…";
+  try {
+    // Request mic permission (needed for enumerateDevices to return real labels)
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // Immediately stop — we only needed the permission grant
+    stream.getTracks().forEach((t) => t.stop());
+    await populateAudioDevices();
+    if (hint) hint.textContent = "设备列表已刷新";
+    dbgLog("Audio devices refreshed (permission granted)");
+  } catch (err) {
+    console.warn("refreshDeviceList failed:", err);
+    if (hint) hint.textContent = "授权失败，请允许麦克风权限";
+    dbgLog(`Device refresh failed: ${err.message}`);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -390,22 +478,27 @@ async function connectGemini() {
     state.client.connect();
   });
 
-  // Init audio player with saved jitter buffer setting
+  // Init audio player with saved jitter buffer + output device
   state.audio.player = new AudioPlayer();
   state.audio.player.setJitterBufferMs(getJitterBufferMs());
   await state.audio.player.init();
-  dbgLog(`AudioPlayer ready (jitter: ${state.audio.player.jitterBufferMs}ms)`);
+  const speakerId = getSavedSpeakerDeviceId();
+  if (speakerId) await state.audio.player.setOutputDevice(speakerId);
+  dbgLog(`AudioPlayer ready (jitter: ${state.audio.player.jitterBufferMs}ms${speakerId ? `, speaker: ${speakerId.slice(0, 8)}…` : ""})`);
 }
 
-// Auto-start microphone after connection
+// Auto-start microphone after connection, using saved device if set
 async function autoStartMic() {
   if (!state.client) return;
+  const micId = getSavedMicDeviceId();
   state.audio.streamer = new AudioStreamer(state.client);
-  await state.audio.streamer.start();
+  await state.audio.streamer.start(micId);
   state.audio.isStreaming = true;
   el.micBtn.classList.add("active");
   updateDbgStatus("dbgMicStatus", "开启", true);
-  dbgLog("Microphone auto-started");
+  dbgLog(`Microphone auto-started${micId ? ` (device: ${micId.slice(0, 8)}…)` : " (default)"}`);
+  // After mic grant, device labels become visible — refresh dropdown lists
+  populateAudioDevices();
 }
 
 // ---------------------------------------------------------------------------
@@ -597,8 +690,9 @@ function tryDeliverInjects() {
 async function toggleMic() {
   if (!state.client) return;
   if (!state.audio.isStreaming) {
+    const micId = getSavedMicDeviceId();
     if (!state.audio.streamer) state.audio.streamer = new AudioStreamer(state.client);
-    await state.audio.streamer.start();
+    await state.audio.streamer.start(micId);
     state.audio.isStreaming = true;
     el.micBtn.classList.add("active");
     updateDbgStatus("dbgMicStatus", "开启", true);
@@ -795,8 +889,19 @@ window.addEventListener("DOMContentLoaded", () => {
   initEvents();
   runEnvChecks();
   loadVersion();
+  // Populate audio device lists (needs prior getUserMedia grant to see labels).
+  // On first visit labels may be blank; after granting mic access they refresh.
+  populateAudioDevices();
+  // Bind "refresh devices" button — requests mic permission then re-enumerates.
+  if (el.refreshDevicesBtn) {
+    el.refreshDevicesBtn.addEventListener("click", refreshDeviceList);
+  }
   dbgLog("Mobile UI initialized");
   dbgLog(`Proxy: ${CONFIG.proxyUrl}`);
   dbgLog(`OpenClaw: ${CONFIG.openclawUrl}`);
   dbgLog(`Jitter buffer: ${getJitterBufferMs()}ms`);
+  const micId = getSavedMicDeviceId();
+  if (micId) dbgLog(`Saved mic: ${micId.slice(0, 8)}…`);
+  const spkId = getSavedSpeakerDeviceId();
+  if (spkId) dbgLog(`Saved speaker: ${spkId.slice(0, 8)}…`);
 });

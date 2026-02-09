@@ -3,463 +3,507 @@
 ## 背景
 
 基于 Car Her 的成功验证，将 AI 助手从个人使用扩展到企业全员（200+ 人）。
-每位员工通过飞书获得专属 AI 助手，拥有独立的对话历史和记忆，完全隔离。
+每位员工通过飞书获得专属 AI 助手，拥有独立的对话历史、工作空间和长期记忆，完全隔离。
 
-**状态：架构设计 + 核心验证通过 (2026-02-09)**
+**最终方案：200 Bot + 200 Docker（每人一个独立 OpenClaw 容器）**
 
----
-
-## 已验证的实验结果 (2026-02-09)
-
-在个人 Her 上进行了完整的 per-peer 隔离验证实验，所有测试 100% 可复原（已恢复）。
-
-### 实验 1：per-peer 通道隔离
-
-**操作**：将个人 Her 的 `session.dmScope` 从 `main`（默认）改为 `per-peer`，重启 Gateway。
-
-**结果**：隔离生效。日志证据：
-
-```
-飞书消息 → lane=session:agent:main:dm:oc_b3ae51bb264ead025c85913cdee5946a  (sessionId=11efefba)
-Telegram → lane=session:agent:main:dm:6825898084                          (sessionId=e30ea6e6)
-```
-
-飞书和 Telegram 被路由到不同的 session，AI 在两个通道中互相不知道对方的对话内容。
-
-### 实验 2：identityLinks 跨通道关联
-
-**操作**：在 per-peer 基础上添加 `identityLinks`，将飞书 ID 和 Telegram ID 映射为同一个身份 `tianbu`。
-
-```json
-"session": {
-  "dmScope": "per-peer",
-  "identityLinks": {
-    "tianbu": ["feishu:oc_b3ae51bb264ead025c85913cdee5946a", "telegram:6825898084"]
-  }
-}
-```
-
-**结果**：路由合并成功。日志证据：
-
-```
-飞书消息   → lane=session:agent:main:dm:tianbu
-Telegram  → lane=session:agent:main:dm:tianbu
-```
-
-两个通道成功合并到同一个 session。但由于 `tianbu` 是新建的 session（不同于原来的 `agent:main:main`），对话历史为空。这是预期行为——企业场景下每个员工都是新用户，从零开始建立记忆。
-
-### 实验 3：Car Her 语音 session 天然独立
-
-**操作**：在 per-peer 模式下通过语音前端连接。
-
-**结果**：语音使用独立的 session key 前缀 `realtime:xxx`，与飞书/Telegram 的 DM session 天然隔离。
-
-```
-语音 → realtime:1770606288850-olq6ng (agent=main)
-```
-
-即使在 `dmScope = "main"` 的默认配置下，语音也是独立 session。语音的用户识别来自 workspace 文件（USER.md/MEMORY.md），不依赖 session 路由。
-
-### 实验 4：Webchat 不支持 per-peer
-
-**发现**：Webchat（Control UI）没有用户身份标识机制。所有连接的 `SenderId` 固定为 `"webchat"`，`sessionKey` 由客户端指定（通常为 `agent:main:main`）。200 个浏览器标签页连接同一个 gateway，全部共享同一个 session。
-
-### 实验总结
-
-| 通道 | 有用户身份标识 | per-peer 隔离 | 200 人同时用 | 企业可用性 |
-|------|-------------|-------------|------------|-----------|
-| 飞书 | 有（open_id，自动） | 生效 | 200 个独立 session | Phase 1 可用 |
-| Telegram | 有（user_id，自动） | 生效 | 200 个独立 session | Phase 1 可用 |
-| Webchat | 无（固定 "webchat"） | 不生效 | 共享同一个 session | 需改造（Phase 2） |
-| 语音 (realtime) | 无用户认证 | 天然独立（realtime:xxx） | 每连接独立，但不知道"谁" | 需改造（Phase 2） |
-
-### 实验 5：dmScope 热加载行为
-
-**发现**：`session.dmScope` 的变更**不能**通过热加载生效。
-
-具体表现：删除 config 中的 `session` 部分后，gateway 日志显示 `config change applied (dynamic reads: ... session)`，但实际消息路由**未改变**——仍然走 `agent:main:dm:tianbu` 而非回到 `agent:main:main`。必须完全重启 gateway 才能使 `dmScope` 变更生效。
-
-```
-03:18:03 config change applied (session)  ← 热加载声称成功
-03:21:06 lane=session:agent:main:dm:tianbu  ← 但路由未变！仍然走 per-peer
-03:30:39 lane=session:agent:main:dm:tianbu  ← 重启前一直如此
-```
-
-**结论**：
-- `session.identityLinks`：支持热加载（路由映射可动态更新）
-- `session.dmScope`：**不支持热加载**，必须重启 gateway
-
-### 关键结论
-
-1. **per-peer 对飞书和 Telegram 开箱即用**，零代码改造
-2. **identityLinks 可以关联同一人的多通道身份**，实现跨通道共享记忆
-3. **Webchat 和语音需要额外的用户认证层**才能支持多用户
-4. **企业 Phase 1 应以飞书为唯一入口**，覆盖 90% 日常需求
-5. **个人 Her 保持 `dmScope = "main"` 不变**，企业部署是独立的 OpenClaw 实例
-6. **`dmScope` 变更需要重启 gateway**，不能热加载；`identityLinks` 可以热加载
+**验证状态 (2026-02-09)：飞书并发测试通过、数据隔离已确认、Webchat 隔离已确认**
 
 ---
 
-## 核心架构：共享 Bot + 多用户路由
+## 方案探索与最终选择
 
-### 设计原则
+### 探索过的方案
+
+| 方案 | 结论 | 放弃原因 |
+|------|------|---------|
+| per-peer 模式 | 不可用 | 仅隔离对话历史，不隔离记忆文件（MEMORY.md 共享），隐私不可接受 |
+| 单 Gateway + Multi-Agent + Sandbox | 有重大风险 | 单点故障（200 人全断）、升级必须停机、已知稳定性 bug（GitHub #1997）、非 OpenClaw 设计目标 |
+| 4 Bot + 4 Docker（Multi-Agent 分片） | 可行但复杂 | 每容器 50 人仍需 Multi-Agent + Sandbox，配置复杂度高 |
+| 1 Bot + 路由代理 | 不推荐 | 路由代理本身是新的单点故障 |
+
+### 最终方案：200 Bot + 200 Docker
 
 ```
-1 个飞书 Bot → 200+ 员工共用
-1 套 OpenClaw 服务 → 按 open_id 自动路由
-每个员工 → 独立的 session + 对话历史
-零人工干预 → 员工发消息即自动创建 session
+飞书 Bot-001 (张三) → Docker 容器 001 (标准单用户 OpenClaw)
+飞书 Bot-002 (李四) → Docker 容器 002 (标准单用户 OpenClaw)
+...
+飞书 Bot-200 (王五) → Docker 容器 200 (标准单用户 OpenClaw)
 ```
 
-### 架构图
+**选择理由：**
+
+1. **完全符合 OpenClaw 设计哲学**：OpenClaw 的核心是"1 用户 = 1 实例"。每个容器用默认配置，不需要 Multi-Agent、binding、sandbox 等高级功能。
+2. **阿里云验证**：阿里云 OpenClaw 托管服务的底层就是"每用户独立实例"。
+3. **最强隔离**：Docker OS 级隔离，独立文件系统、进程空间、网络命名空间。
+4. **零单点故障**：1 容器崩只影响 1 人，其他 199 人无感。
+5. **滚动升级无影响**：逐个容器重启，每次只影响 1 人 2-3 秒。
+6. **每容器配置极简**：标准单用户 OpenClaw + 飞书插件，和个人 Her 的配置几乎相同。
+7. **不引入额外复杂度**：不需要 Sandbox（Docker 本身就是隔离）、不需要 Multi-Agent Routing、不需要 binding。
+8. **已验证可行**：现有 `start-user.sh` 已在运行多个 Docker 容器，架构相同。
+
+**唯一代价**：IT 手动创建 200 个飞书 Bot（~50 小时，5 人 IT 团队 2 个工作日）。飞书没有 API 创建 Bot，这是不可避免的。
+
+---
+
+## 架构详情
+
+### 整体架构图
 
 ```
 公司全员（200+ 人）
   │
-  │ 每人 DM 同一个飞书 Bot
+  │ 每人 DM 自己的专属飞书 Bot
   ↓
 飞书开放平台
   │
-  │ WebSocket 长连接（1 条）
-  │ 每条消息携带发送者 open_id
+  │ 200 条独立 WebSocket 长连接
   ↓
-┌─────────────────────────────────────────┐
-│            云服务器（1-2 台）              │
-│                                         │
-│  OpenClaw Gateway                       │
-│    │                                    │
-│    ├── 飞书插件 ← 收消息，提取 open_id   │
-│    │                                    │
-│    ├── Agent Router                     │
-│    │   dmScope = "per-peer"             │
-│    │                                    │
-│    │   open_id=ou_aaa → session A       │
-│    │   open_id=ou_bbb → session B       │
-│    │   open_id=ou_ccc → session C       │
-│    │   ...自动创建，无需预配置...          │
-│    │                                    │
-│    ├── LLM API 调用                     │
-│    │   OpenRouter (Claude/GPT/...)      │
-│    │                                    │
-│    └── 语音代理（可选）                   │
-│        Gemini Live via Python proxy     │
-│                                         │
-│  存储                                    │
-│    /data/.openclaw/sessions/            │
-│    ├── agent:main:dm:ou_aaa (员工A)     │
-│    ├── agent:main:dm:ou_bbb (员工B)     │
-│    └── ...                              │
-└─────────────────────────────────────────┘
+云服务器集群
+├── Docker 容器 001 (张三)
+│   ├── OpenClaw Gateway (标准单用户配置)
+│   ├── 飞书插件 ← Bot-001 的 WebSocket 长连接
+│   ├── workspace/
+│   │   ├── MEMORY.md (张三的专属记忆)
+│   │   ├── USER.md   (张三的专属画像)
+│   │   └── SOUL.md   (张三的专属人格)
+│   └── sessions/ (张三的对话历史)
+│
+├── Docker 容器 002 (李四)
+│   ├── OpenClaw Gateway (标准单用户配置)
+│   ├── 飞书插件 ← Bot-002 的 WebSocket 长连接
+│   └── ... (完全独立的文件系统)
+│
+└── ... 200 个容器，完全物理隔离
 ```
 
-### 为什么不需要 200 个飞书 Bot
+### 每容器配置
 
-飞书 Bot 是消息入口，不是隔离单元。隔离发生在 OpenClaw 内部：
-
-| 方案 | 飞书 Bot 数量 | 管理复杂度 | 隔离效果 |
-|------|-------------|-----------|---------|
-| 每人一个 Bot | 200+ | 极高（每个需审批、发布、维护） | 最强 |
-| 每部门一个 Bot | 5-10 | 中等 | 部门间物理隔离 |
-| **全公司一个 Bot** | **1** | **最低** | **per-peer 逻辑隔离（已验证可靠）** |
-
-一个 Bot 即可为全公司服务。员工感受到的"专属"来自 AI 独立记住每个人，而非 Bot 本身不同。
-
----
-
-## open_id 自动路由机制
-
-### 什么是 open_id
-
-`open_id` 是飞书为每个用户自动分配的唯一标识（格式：`ou_xxxxxxxxxxxxxxxx`）。
-
-- **谁分配**：飞书平台，自动生成
-- **何时获取**：用户第一次发消息时，飞书在事件中携带
-- **是否需要预收集**：不需要，完全自动
-
-### 路由流程
-
-```
-员工 A 发消息 "你好"
-  ↓
-飞书事件：{ from: "ou_aaa", text: "你好" }
-  ↓
-OpenClaw 飞书插件提取 from = "ou_aaa"
-  ↓
-session key = "agent:main:dm:ou_aaa"  (dmScope = "per-peer")
-  ↓
-AI 在 session A 中处理，回复
-
-===
-
-员工 B 发消息 "帮我查下天气"
-  ↓
-飞书事件：{ from: "ou_bbb", text: "帮我查下天气" }
-  ↓
-session key = "agent:main:dm:ou_bbb"
-  ↓
-AI 在 session B 中处理，回复（不知道员工 A 的任何信息）
-```
-
-### 员工生命周期管理
-
-| 事件 | IT 操作 | 部署者操作 | OpenClaw 自动行为 |
-|------|--------|-----------|-----------------|
-| 新员工入职 | 开通飞书账号 | 无 | 首次发消息时自动创建 session |
-| 员工日常使用 | 无 | 无 | 按 open_id 路由到对应 session |
-| 员工离职 | 注销飞书账号 | 无 | 账号注销后无法发消息，session 自然停用 |
-| 清理离职数据 | 无 | 可选：删除对应 session 文件 | - |
-
-**零日常运维**：IT 只需做好飞书账号的正常管理，OpenClaw 侧完全自动。
-
----
-
-## 数据安全设计
-
-### 隔离层级
-
-```
-第 1 层：飞书平台
-  └── Bot 可用范围 = 仅本公司员工（外部人员不可见）
-
-第 2 层：OpenClaw 路由
-  └── dmScope = "per-peer"
-  └── 每个 open_id 独立 session，物理上不可能交叉
-
-第 3 层：存储
-  └── 每个 session 独立文件/目录
-  └── 对话历史按 session key 分别存储
-```
-
-### 安全矩阵
-
-| 操作 | 员工本人 | 其他员工 | 服务器管理员 | IT（飞书管理员） |
-|------|---------|---------|------------|---------------|
-| 与自己的 AI 对话 | 可以 | 不可以 | 不可以 | 不可以 |
-| 查看自己的对话历史 | 通过飞书 | 不可以 | 可以（服务器文件） | 不可以 |
-| 查看他人的对话历史 | 不可以 | 不可以 | 可以（服务器文件） | 不可以 |
-| AI 记住他人的信息 | 不会（session 隔离） | 不会 | - | - |
-| 停止/重启服务 | 不可以 | 不可以 | 可以 | 不可以 |
-
-### 注意事项
-
-- **服务器管理员**（部署者）技术上可以读取服务器上的 session 文件。这是所有服务端系统的通用情况（如同 IT 可以读取邮件服务器）。如果需要更强的保护，可以加密 session 文件或使用独立的容器部署。
-- **飞书管理员**可以在飞书开放平台查看消息统计（如消息量），但无法查看具体对话内容。
-- **不同员工的 AI 不会"串"**：因为 session key 包含 open_id，而 open_id 由飞书全局唯一分配，无法伪造或交叉。
-
----
-
-## 配置清单
-
-### OpenClaw 服务端配置
+每个容器的配置极简，就是标准的**单用户 OpenClaw + 飞书插件**：
 
 ```json
 {
-  "session": {
-    "dmScope": "per-peer"
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "lan",
+    "auth": { "mode": "token", "token": "该员工的随机token" },
+    "controlUi": { "dangerouslyDisableDeviceAuth": true },
+    "webchatUrl": "http://server:29001?token=该员工的随机token"
   },
-  "channels": {
-    "feishu": {
-      "enabled": true,
-      "appId": "cli_xxxxxxxxxxxxxxxxxx",
-      "appSecret": "xxxxxxxxxxxxxxxxxxxxxxxx"
+  "agents": {
+    "defaults": {
+      "model": { "primary": "openrouter/anthropic/claude-sonnet-4" }
     }
   },
-  "dm": {
-    "policy": "open"
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": false
+  },
+  "dm": { "policy": "open" },
+  "channels": {
+    "feishu": { "enabled": true }
   },
   "plugins": {
     "entries": {
-      "feishu": { "enabled": true }
+      "feishu": {
+        "enabled": true,
+        "config": {
+          "appId": "cli_该员工Bot的AppID",
+          "appSecret": "该员工Bot的AppSecret"
+        }
+      }
     }
   }
 }
 ```
 
-关键配置说明：
+**关键：没有 `agents.list`、没有 `bindings`、没有 `sandbox`。** 就是默认的单用户 OpenClaw 配置加上飞书插件凭证。与个人 Her 的配置结构相同。
 
-| 配置项 | 值 | 含义 |
-|--------|-----|------|
-| `session.dmScope` | `"per-peer"` | 每个飞书用户独立 session |
-| `channels.feishu.appId` | IT 提供的 App ID | 飞书 Bot 凭证 |
-| `channels.feishu.appSecret` | IT 提供的 App Secret | 飞书 Bot 凭证 |
-| `dm.policy` | `"open"` | 允许所有飞书组织内用户使用 |
+> **注意事项**：
+> - `nativeSkills: "auto"` 必须配置，否则 AI 只能看到少数无依赖的 skill
+> - `controlUi.dangerouslyDisableDeviceAuth: true` 跳过设备配对，允许 token 直接访问 Webchat
+> - `webchatUrl` 由 `start-user.sh` 自动生成（含 host + port + token），飞书插件在用户首次消息时发送欢迎链接
 
-### 飞书开放平台配置
+### Docker 部署
 
-由 IT 部门完成，详见 [IT 操作清单](/her/feishu-it-guide)。
+#### docker-compose.yml 模板
+
+```yaml
+# 每个员工一个 service，共用同一个镜像
+services:
+  emp-001:
+    image: carher:local
+    container_name: enterprise-001
+    init: true
+    restart: always
+    environment:
+      HOME: /data
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+    ports:
+      - "39001:18789"    # Gateway
+    volumes:
+      - enterprise-001-data:/data/.openclaw
+      - ./config/emp-001.json:/data/.openclaw/openclaw.json:ro
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+    command: ["node", "/app/dist/index.js", "gateway", "run", "--port", "18789", "--force", "--bind", "lan"]
+
+  emp-002:
+    image: carher:local
+    container_name: enterprise-002
+    init: true
+    restart: always
+    environment:
+      HOME: /data
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+    ports:
+      - "39002:18789"
+    volumes:
+      - enterprise-002-data:/data/.openclaw
+      - ./config/emp-002.json:/data/.openclaw/openclaw.json:ro
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+    command: ["node", "/app/dist/index.js", "gateway", "run", "--port", "18789", "--force", "--bind", "lan"]
+
+  # ... 由管理脚本自动生成 200 个 service
+
+volumes:
+  enterprise-001-data:
+  enterprise-002-data:
+  # ... 200 个 named volume
+```
+
+> 注意：Phase 1 只启动文字 Gateway，不启动 Python 语音代理。因此用 `command` 覆盖默认的 `carher-entrypoint.sh`（后者会同时启动语音代理）。
+
+#### 目录结构
+
+```
+enterprise-deploy/
+├── docker-compose.yml          ← 200 个 service 定义（脚本生成）
+├── config/
+│   ├── emp-001.json            ← 张三的配置（含 Bot-001 凭证）
+│   ├── emp-002.json            ← 李四的配置（含 Bot-002 凭证）
+│   └── ...
+└── scripts/
+    ├── generate-compose.sh     ← 生成 docker-compose.yml
+    ├── add-employee.sh         ← 入职：创建配置 + 启动容器
+    └── remove-employee.sh      ← 离职：停止容器 + 归档数据
+```
+
+### 升级/回滚工作流
+
+```bash
+# === 拉取上游更新（不影响线上） ===
+cd /path/to/CarHer
+git pull origin main
+
+# === 重新构建镜像（不影响线上，旧容器继续运行） ===
+docker build -f Dockerfile.carher -t carher:v2026.2.10 .
+docker tag carher:v2026.2.10 carher:local
+
+# === 滚动重启（每次只影响 1 人 2-3 秒） ===
+for i in $(seq 1 200); do
+  id=$(printf "emp-%03d" $i)
+  docker-compose up -d --no-deps "$id"
+  sleep 10  # 等启动完成
+  echo "$id 已升级"
+done
+
+# === 回滚（秒级，切换镜像 tag） ===
+docker tag carher:v旧版本 carher:local
+docker-compose up -d --no-deps emp-001  # 回滚单个容器
+```
 
 ---
 
-## 各通道企业能力分析（已验证）
+## IT 操作流程
 
-### 通道就绪度
+### 创建飞书 Bot（一次性，每员工 1 个）
 
-| 通道 | 用户身份 | 多用户隔离 | 企业就绪 | 所需改造 |
-|------|---------|-----------|---------|---------|
-| 飞书 | open_id（自动） | per-peer 自动生效 | Phase 1 可用 | 无 |
-| Telegram | user_id（自动） | per-peer 自动生效 | Phase 1 可用 | 无 |
-| Webchat | 无（固定 "webchat"） | 不支持 | Phase 2 | 需加用户登录/认证 |
-| 语音 (realtime) | 无用户认证 | 连接级隔离，但不识别用户 | Phase 2 | 需加用户认证层 |
+详见 [IT 操作清单](feishu-it-guide.md)。每个 Bot 约 15 分钟创建。
 
-### 飞书（Phase 1 首选）
+核心步骤（三阶段流程，IT 和部署者配合）：
+1. **阶段 A（IT）**：创建自建应用 → 添加"机器人"能力 → 添加权限（`im:message` + `im:message:send_as_bot` + `im:resource`）→ 记录 App ID + App Secret → 交给部署者
+2. **阶段 B（部署者）**：在 `docker/users.csv` 登记凭证 → 运行 `start-user.sh` 启动容器 → 确认日志 `Feishu WSClient connected` → 通知 IT
+3. **阶段 C（IT）**：事件订阅选"长连接" → 保存 → 添加 `im.message.receive_v1` → 发布应用
 
-- 公司全员已有飞书账号，天然的用户身份
-- `per-peer` + `open_id` = 自动多用户隔离
-- WebSocket 长连接模式，无需公网 IP
-- 零额外开发
+> 为什么分三阶段？飞书的"长连接"模式要求 SDK 已在线才能保存配置。必须先启动服务（阶段 B），IT 才能完成事件订阅（阶段 C）。
 
-### Webchat（Phase 2 改造）
+### 员工生命周期
 
-当前 Webchat 是管理员控制台，所有连接共享 session。企业多用户使用需要：
-- 添加用户登录机制（如 SSO / OAuth）
-- 登录后分配用户专属的 session key
-- 需要前后端开发
+| 事件 | IT 操作 | 部署者操作 | 对其他员工影响 |
+|------|--------|-----------|-------------|
+| 新员工入职 | 开通飞书账号 + **创建 1 个飞书 Bot**（15 分钟） | 生成配置 + 启动 1 个容器 | **零影响** |
+| 员工日常使用 | 无 | 无 | - |
+| 员工离职 | 注销飞书账号 + 删除 Bot | 停止并删除该容器 | **零影响** |
+| 清理离职数据 | 无 | 可选：删除容器数据卷 | - |
 
-### 语音（Phase 2 扩展）
+### 用户管理（已实现）
 
-- 语音需要 Google Cloud 凭证（Service Account）
-- 每个语音会话消耗独立的 Gemini Live session
-- 语音 session 天然独立（`realtime:xxx` 前缀），不与文字 session 交叉
-- 200 人同时语音需要 3-5 台服务器做代理池
-- 需要加用户认证以识别"谁在说话"
-- 建议先部署飞书文字，语音作为后续扩展
+用户凭证集中管理在 `docker/users.csv`（IT 维护，已加入 .gitignore 不入库）：
 
-### 跨通道共享记忆（identityLinks）
-
-如果同一员工需要在多个通道（如飞书 + Telegram）使用 AI 且共享记忆：
-
-```json
-{
-  "session": {
-    "dmScope": "per-peer",
-    "identityLinks": {
-      "张三": ["feishu:ou_aaa", "telegram:111111"],
-      "李四": ["feishu:ou_bbb", "telegram:222222"]
-    }
-  }
-}
+```csv
+# id, 姓名, 模型, feishu_app_id, feishu_app_secret, 备注
+1,张三,sonnet,cli_aaa111,secret111,测试用户
+2,厂商A,opus,,,厂商演示（无飞书）
+3,王五,sonnet,cli_bbb222,secret222,
 ```
 
-- 不同人之间：完全隔离（张三看不到李四的内容）
-- 同一人跨通道：完全共享（张三在飞书说的，Telegram 也记得）
-- 如果全员只用飞书，不需要 identityLinks（每人只有一个 ID，天然隔离）
+启动和管理命令：
+
+```bash
+./start-user.sh --id=1               # 模型和飞书凭证从 CSV 自动读取
+./start-user.sh --id=1 --model=opus  # CLI --model 覆盖 CSV 设置
+./start-user.sh --id=1 --down        # 停止容器
+./start-user.sh --list               # 列出所有用户和容器状态
+./start-user.sh --id=1 --sync-workspace  # 同步 docker/workspace/ 到容器
+```
+
+> **Workspace 模板**：`docker/workspace/` 下的文件会在容器启动时自动同步到 `/data/.openclaw/workspace/`。TOOLS.md 模板默认为空（企业员工不需要个人设备配置）。
+
+---
+
+## 各通道能力
+
+| 通道 | 企业就绪 | 说明 |
+|------|---------|------|
+| 飞书 | **Phase 1 可用** | 每人专属 Bot + 独立容器，天然隔离。已验证 |
+| Telegram | Phase 1 可用 | 同飞书，每容器可额外配 Telegram Bot |
+| Webchat | **Phase 1 可用** | 每容器有独立 Webchat（各自端口），天然隔离。已验证 |
+| 语音 (realtime) | Phase 2 | 需加用户认证 + Google Cloud 凭证 |
 
 ---
 
 ## 费用估算（200 人规模）
 
-### LLM API 费用（主要成本）
+### LLM API 费用（主要成本，占 60-80%）
 
 | 项目 | 假设 | 月费用 |
 |------|------|--------|
 | 飞书文字（Claude Sonnet via OpenRouter） | 每人 50 条/天，$0.005/条 | ~$1,500 |
 | 语音（Gemini Live, 20% 活跃） | 40 人 x 30 分/天，$0.04/分 | ~$1,440 |
-| 语音（Gemini Live, 50% 活跃） | 100 人 x 30 分/天，$0.04/分 | ~$3,600 |
 
 ### 服务器费用
 
 | 配置 | 规格 | 月费用 |
 |------|------|--------|
-| 仅飞书文字 | 1 台 4核 16G | ~$150-300 |
-| 飞书 + 少量语音 | 2 台 8核 32G | ~$400-800 |
-| 飞书 + 大量语音 | 3-5 台 8核 32G | ~$1,000-2,500 |
+| 仅飞书文字 | 1 台 16核 64G 或 4 台 4核 16G | ~$200-500 |
+| 飞书 + 语音 | 多台分布式 | ~$500-2,500 |
 
-### 其他费用
-
-| 项目 | 费用 |
-|------|------|
-| 飞书开放平台 | 免费 |
-| 域名 | ~$10/年 |
-| SSL 证书 | 免费（Let's Encrypt） |
+> 每容器约 200MB RAM，200 容器约 40GB。降低成本：选更便宜的模型（Haiku/Flash）或设每日用量上限。
 
 ### 总计
 
 | 方案 | 月费用 |
 |------|--------|
-| 仅飞书文字（基础） | ~$1,700-2,000 |
-| 飞书 + 语音（20% 活跃） | ~$3,000-4,500 |
-| 飞书 + 语音（50% 活跃） | ~$5,000-7,000 |
-
-> **注意**：LLM API 费用占总成本的 60-80%。降低成本的最有效方法是选择更便宜的模型（如 Gemini Flash、Claude Haiku）或设置每人每日用量上限。
+| 仅飞书文字 | ~$1,700-2,000 |
+| 飞书 + 语音 | ~$3,000-7,000 |
 
 ---
 
-## 分阶段落地路径
+## 测试验证方案
 
-### Phase 0：当前状态（已完成）
+### 零影响保证
 
-- 个人 Mac 运行
-- Docker 容器隔离厂商用户
+测试利用现有 carher-1 或 carher-3 容器（非厂商，可自由操作），**不影响**：
+- 个人 Her（start.sh，端口 18789）
+- carher-2（厂商用户，不动）
+- carher-4（保持不动）
+- 源代码（不做任何修改）
+
+### 测试步骤
+
+**Step 1**：创建 1 个测试飞书 Bot（模拟 IT 操作）
+- 在 https://open.feishu.cn/app 创建新的自建应用
+- 添加机器人能力 + 事件订阅
+- 记录 App ID + App Secret
+
+**Step 2**：创建测试配置文件
+```bash
+cat > /tmp/enterprise-feishu-test.json << 'EOF'
+{
+  "gateway": { "port": 18789, "mode": "local", "bind": "lan",
+    "auth": { "mode": "token", "token": "enterprise-test-token" }
+  },
+  "agents": { "defaults": { "model": { "primary": "openrouter/anthropic/claude-sonnet-4" } } },
+  "dm": { "policy": "open" },
+  "channels": { "feishu": { "enabled": true } },
+  "plugins": { "entries": { "feishu": { "enabled": true,
+    "config": { "appId": "测试Bot的AppID", "appSecret": "测试Bot的AppSecret" }
+  } } }
+}
+EOF
+```
+
+**Step 3**：停止 carher-1 并用飞书配置重启
+```bash
+# 停止 carher-1（非厂商，安全）
+./start-user.sh --id=1 --down
+
+# 用飞书测试配置启动（复用 carher-1 的端口）
+docker run -d \
+  --name carher-1 \
+  --init \
+  -e HOME=/data \
+  -e OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
+  -p 29001:18789 \
+  -v carher-1-feishu-test:/data/.openclaw \
+  -v /tmp/enterprise-feishu-test.json:/data/.openclaw/openclaw.json:ro \
+  carher:local \
+  node /app/dist/index.js gateway run --port 18789 --force --bind lan
+```
+
+**Step 4**：验证
+- 在飞书中搜索并添加测试 Bot
+- 发送"你好"
+- 确认 AI 正常回复
+- 查看日志：`docker logs carher-1`
+
+**Step 5**：确认其他环境无影响
+- 从飞书给**个人 Her Bot**发消息 → 正常回复
+- `docker ps` 确认 carher-2/4/user1 正常运行
+
+**Step 6**：恢复
+```bash
+# 停止测试容器
+docker stop carher-1 && docker rm carher-1
+
+# 清理测试数据卷
+docker volume rm carher-1-feishu-test
+
+# 恢复原始 carher-1
+./start-user.sh --id=1 --random
+```
+
+### 已完成的验证（2026-02-09）
+
+以下测试全部通过，方案 C 的核心技术路径已确认可行：
+
+| 验证项 | 结果 | 详情 |
+|--------|------|------|
+| 飞书 Bot 在 Docker 容器正常工作 | PASS | carher-1 连接飞书 WSClient，收发消息无错误 |
+| 数据卷隔离 | PASS | 每容器独立 Docker named volume，互不可见 |
+| 端口隔离 | PASS | 每容器映射到不同主机端口，无冲突 |
+| 飞书路由隔离 | PASS | 不同 Bot、不同 chat ID、消息各走各的通道 |
+| 并发测试 | PASS | 本地 Her 和 carher-1 同时收消息（间隔 7 秒），各自独立处理，0 错误 |
+| Webchat 隔离 | PASS | 每容器独立 webchat，Mac webchat 看不到 Docker 容器的对话 |
+| nativeSkills 加载 | PASS | 配置 `nativeSkills: "auto"` 后，4 个无依赖 skill 正常注入 AI prompt |
+| 镜像重建后 skill 更新 | PASS | 重建镜像后新增 skill（twitter-monitor）立即可用 |
+
+### Webchat 端口分配（每容器独立）
+
+Webchat（OpenClaw Control UI）与 Gateway 共用同一端口（容器内 18789）。每个容器的 Webchat URL：
+
+```
+carher-1: http://localhost:29001?token=carher-container-token  (Gateway/Webchat)
+carher-2: http://localhost:29011?token=carher-container-token  (Gateway/Webchat)
+carher-3: http://localhost:29021?token=carher-container-token  (Gateway/Webchat)
+carher-N: 端口公式: 29000 + (N-1)*10 + 1
+```
+
+> **注意**：Webchat 需要 token 认证。`start-user.sh` 会自动生成带 token 的完整 URL（`gateway.webchatUrl`），并通过飞书欢迎消息推送给用户。
+
+**需要的配置**（已加入 `docker/carher-config.json`）：
+- `gateway.controlUi.dangerouslyDisableDeviceAuth: true` — 跳过设备配对，token 认证即可
+- `gateway.webchatUrl` — 由 `start-user.sh` 自动注入，飞书插件在首次对话时发送给用户
+
+> Mac 上的 Webchat 只连接本地 Her（port 18789），看不到任何 Docker 容器的对话——这是隔离正确的表现。
+
+### 端口完整映射
+
+| 端口偏移 | 用途 | 容器内端口 | carher-1 主机端口 |
+|----------|------|-----------|------------------|
+| +1 | Gateway / Webchat | 18789 | 29001 |
+| +2 | Realtime WebSocket | 18790 | 29002 |
+| +3 | CarHer 语音前端 | 8000 | 29003 |
+| +4 | WS Proxy | 8080 | 29004 |
+
+---
+
+## 部署代码来源
+
+### CarHer Fork vs 官方 npm
+
+飞书插件（`extensions/feishu/`）和实时语音插件（`extensions/realtime/`）是自主开发的代码，**不在官方 OpenClaw npm 包中**。
+
+```
+git remote -v
+  origin   https://github.com/openclaw/openclaw       ← 官方仓库
+  carher   https://github.com/buyitsydney/CarHer.git   ← 自有 fork
+
+git log --oneline origin/main -- extensions/feishu/    → 空（官方没有）
+git log --oneline origin/main -- extensions/realtime/  → 空（官方没有）
+```
+
+自有代码清单（相比 origin/main 新增 67 个文件，+15,785 行）：
+
+| 类别 | 文件 | 说明 |
+|------|------|------|
+| 飞书插件 | `extensions/feishu/` | 飞书 WebSocket 长连接通道 |
+| 语音插件 | `extensions/realtime/` | Gemini Live 语音 + Python 代理 + 前端 |
+| 部署脚本 | `start.sh`, `start-docker.sh`, `start-user.sh` | 启动和容器管理 |
+| Docker | `Dockerfile.carher`, `scripts/carher-entrypoint.sh` | 容器化 |
+| 文档 | `docs/her/` | 架构、指南、成本分析 |
+
+### 部署方式
+
+**企业部署使用 Docker 镜像**。在云服务器上：
+
+```bash
+git clone https://github.com/buyitsydney/CarHer.git
+cd CarHer
+docker build -f Dockerfile.carher -t carher:local .
+# 然后用 docker-compose 启动 200 个容器
+```
+
+### 与上游保持同步
+
+CarHer fork 定期从 origin/main 拉取更新。自有代码全部在独立目录中，与上游代码**零冲突**，可安全 `git pull origin main`。
+
+---
+
+## 分阶段落地
+
+### Phase 0：当前状态（已完成并验证）
+
+- 个人 Mac 运行 Her（start.sh）
+- Docker 容器隔离厂商用户（start-user.sh）
 - 支持 < 10 人
+- 飞书 Bot 在 Docker 容器中已验证可用
+- 并发消息处理已验证通过
+- 数据/端口/飞书路由/Webchat 隔离已全部确认
 
-### Phase 1：企业文字助手（建议首先实施）
+### Phase 1：企业飞书文字助手
 
-- 目标：全员通过飞书使用 AI 助手
-- 工作量：1-2 天
+- 目标：全员通过飞书使用 AI 助手，每人独立容器
+- 工作量：IT 创建 Bot ~6 工作日 + 技术部署 2-3 天
 - 步骤：
-  1. IT 创建 1 个飞书 Bot（15 分钟，参考 IT 操作清单）
-  2. 部署 OpenClaw 到 1 台云服务器
-  3. 配置 `dmScope = "per-peer"` + 飞书凭证
-  4. 测试验证
-  5. 通知全员搜索 Bot 开始使用
+  1. IT 创建 200 个飞书 Bot（可分 2 周完成，每个 15 分钟）
+  2. 采购云服务器（16核 64G 或多台小机器）
+  3. 从 CarHer 仓库构建 Docker 镜像
+  4. 编写管理脚本，生成 200 份配置 + docker-compose.yml
+  5. `docker-compose up -d` 启动全部容器
+  6. IT 通知每位员工添加自己的专属 Bot
 
 ### Phase 2：多通道 + 语音
 
-- 目标：Webchat 多用户支持、语音能力、跨通道记忆
-- 工作量：2-4 周
-- 步骤：
-  1. Webchat 添加用户登录机制（SSO/OAuth）
-  2. 语音前端添加用户认证
-  3. 配置 Google Cloud Service Account
-  4. 部署语音代理服务
-  5. 配置 identityLinks 关联多通道身份（如需）
-  6. 优化 per-user MEMORY 隔离
+- 目标：语音能力
+- 步骤：在每个容器中额外启动 Python Gemini Live 代理，添加用户认证
 
 ### Phase 3：生产化
 
-- 目标：高可用、监控、自动化
-- 工作量：1-2 月
-- 步骤：
-  1. 迁移到 Kubernetes 集群
-  2. 添加监控和告警
-  3. 自动扩缩容
-  4. Web 管理面板
-  5. 用量统计和计费
-
----
-
-## 与现有方案的关系
-
-### 个人 Her vs 企业部署
-
-个人 Her 和企业部署是**完全独立的 OpenClaw 实例**，互不影响：
-
-```
-你的 Mac（不变）
-├── 个人 Her (start.sh)
-│   └── dmScope = "main"（跨通道共享记忆，飞书/Telegram/Webchat/语音统一）
-│
-└── Docker 容器 (start-user.sh)
-    └── 各自独立的 OpenClaw 实例（厂商演示用）
-
-云服务器（新建）
-└── 企业 OpenClaw
-    └── dmScope = "per-peer"（员工间自动隔离）
-    └── 1 个共享飞书 Bot → 200+ 独立 session
-```
-
-### Docker 方案 vs 企业方案
-
-| 维度 | Docker 容器方案 | 企业共享 Bot 方案 |
-|------|---------------|-----------------|
-| 适用场景 | 厂商演示、VIP 用户 | 公司全员 |
-| 隔离方式 | 容器级物理隔离 | session 级逻辑隔离 |
-| 每用户成本 | 高（独立进程+端口） | 低（共享进程） |
-| 飞书 Bot | 每容器一个（需单独创建） | 全公司共享一个 |
-| 适合规模 | < 10 人 | 200+ 人 |
-| 运维复杂度 | 中（管理多容器） | 低（一个服务） |
-
-两种方案可以并行运行，互不冲突。
+- 管理脚本 CLI 化（自动化入职/离职）
+- 监控和告警
+- 自动备份
+- 多台服务器分布式部署
 
 ---
 
@@ -467,12 +511,13 @@ AI 在 session B 中处理，回复（不知道员工 A 的任何信息）
 
 | 维度 | 方案 |
 |------|------|
-| 飞书 Bot | 1 个共享 Bot，IT 创建（一次性） |
-| 用户隔离 | dmScope = "per-peer"，按 open_id 自动路由（已验证） |
-| 通道就绪 | 飞书/Telegram 开箱即用；Webchat/语音需 Phase 2 改造 |
-| 跨通道记忆 | identityLinks 可关联同一人的多通道身份（已验证） |
-| 服务器 | 1-2 台云 VM（Phase 1），K8s 集群（Phase 3） |
-| 日常运维 | IT 管飞书账号，部署者管服务器，无需管路由 |
-| 安全保障 | 飞书可用范围 + session 隔离 + 存储分离 |
-| 个人 Her | 保持 dmScope = "main" 不变，与企业部署完全独立 |
+| 架构 | **200 Bot + 200 Docker**：每人 1 个飞书 Bot + 1 个 Docker 容器 |
+| 每容器配置 | **标准单用户 OpenClaw**（默认配置 + 飞书插件凭证），无 Multi-Agent/binding/sandbox |
+| 隔离 | **Docker OS 级**：独立文件系统、进程空间、网络 |
+| 单点故障 | **无**：1 容器崩只影响 1 人 |
+| 升级 | **滚动升级**：逐容器重启，每次只影响 1 人 2-3 秒 |
+| 代码修改 | **零**（纯配置 + Docker），与上游零冲突 |
+| 飞书 Bot | IT 手动创建（无 API，~50 小时一次性工作） |
+| 设计一致性 | **完全符合 OpenClaw "1 用户 = 1 实例"**，与阿里云方案一致 |
 | 月费用 | ~$2,000-7,000（取决于模型和语音使用量） |
+| 与个人 Her | 完全独立，互不影响 |

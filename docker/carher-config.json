@@ -11,6 +11,7 @@
   },
   "commands": {
     "native": "auto",
+    "nativeSkills": "auto",
     "restart": false
   },
   "gateway": {
@@ -20,6 +21,9 @@
     "auth": {
       "mode": "token",
       "token": "carher-container-token"
+    },
+    "controlUi": {
+      "dangerouslyDisableDeviceAuth": true
     }
   },
   "plugins": {

@@ -77,3 +77,8 @@ logs/
 
 # Python bytecode (local)
 __pycache__/
+
+# Per-user credentials (contains secrets)
+docker/users.csv
+# Workspace templates may contain personal tokens
+docker/workspace/

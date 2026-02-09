@@ -43,14 +43,18 @@
 
 ### 配置流程（已验证）
 
+> **注意：步骤顺序很重要！** 飞书的"长连接"事件订阅要求 SDK 客户端已在线才能保存，所以必须先启动 Gateway，再回飞书后台配置事件。
+
 1. 在飞书开放平台（open.feishu.cn）创建一个自建应用，启用机器人能力
 2. 获取 `app_id` + `app_secret`
-3. 添加权限：`im:message` + `im:message:send_as_bot`
-4. 事件订阅：添加 `im.message.receive_v1`，选择"长连接"模式
-5. 发布应用版本
-6. 在 OpenClaw config 中配置 `channels.feishu.appId` + `channels.feishu.appSecret`
-7. 启动 Gateway，飞书机器人自动上线
+3. 添加权限：`im:message` + `im:message:send_as_bot` + `im:resource`
+4. 在 OpenClaw config 中配置 `channels.feishu.appId` + `channels.feishu.appSecret`
+5. **先启动 Gateway**（飞书 WSClient 自动连接，日志显示 `Feishu WSClient connected`）
+6. **回到飞书后台**：事件订阅 → 选"使用长连接接收事件" → 保存 → 添加 `im.message.receive_v1`
+7. 创建版本 → 设置可用范围 → 发布
 8. 在飞书里找到机器人，开始聊天
+
+详细步骤见 [飞书 IT 操作清单](feishu-it-guide.md)。
 
 ---
 
@@ -505,34 +509,49 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 
 ### 前置准备
 
-每个用户的飞书 Bot 需要单独创建：
+每个用户的飞书 Bot 需要单独创建（详见 [IT 操作清单](feishu-it-guide.md)）：
+
+**阶段 A（IT 独立完成）：**
 1. 在飞书开放平台创建新的自建应用
-2. 启用机器人能力 + 添加权限（im:message, im:message:send_as_bot, im:resource）
-3. 事件订阅 im.message.receive_v1，选"长连接"模式
-4. 发布应用版本
-5. 在"应用发布"中设置"可用范围"为仅目标用户
+2. 启用机器人能力
+3. 获取 appId + appSecret，交给部署者
+4. 添加权限：`im:message` + `im:message:send_as_bot` + `im:resource`
 
-### 启动方式
+**阶段 B（部署者启动服务）：**
+5. 部署者在 `docker/users.csv` 中登记用户 + 飞书凭证
+6. 运行 `./start-user.sh --id=N` 启动容器，确认日志 `Feishu WSClient connected`
 
-`start-user.sh` 需要支持传入飞书凭证（待实现）：
+**阶段 C（IT 回来配置事件）：**
+7. 事件订阅：选"使用长连接接收事件" → 保存 → 添加 `im.message.receive_v1`
+8. 设置"可用范围"为仅目标用户 → 创建版本 → 发布
 
-```bash
-./start-user.sh --id=boss --model=opus \
-  --feishu-app-id=cli_xxx --feishu-app-secret=xxx
+### 启动方式（已实现）
+
+用户凭证集中管理在 `docker/users.csv`（IT 维护，含飞书凭证，已加入 .gitignore）：
+
+```csv
+# id, 姓名, 模型, feishu_app_id, feishu_app_secret, 备注
+1,张三,sonnet,cli_aaa111,secret111,测试用户
+2,厂商A,opus,,,厂商演示（无飞书）
 ```
 
-容器 config 中自动注入：
+启动命令只需指定用户 ID，凭证自动从 CSV 读取：
+
+```bash
+./start-user.sh --id=1               # 模型和飞书凭证从 CSV 读取
+./start-user.sh --id=1 --model=opus  # CLI --model 覆盖 CSV 设置
+./start-user.sh --list               # 列出所有用户和容器状态
+```
+
+脚本自动生成容器 config，注入飞书配置：
 
 ```json
 {
   "channels": {
     "feishu": {
-      "appId": "cli_xxx",
-      "appSecret": "xxx",
-      "dm": {
-        "policy": "allowlist",
-        "allowFrom": ["ou_目标用户的open_id"]
-      }
+      "enabled": true,
+      "appId": "cli_aaa111",
+      "appSecret": "secret111"
     }
   },
   "plugins": {
@@ -577,12 +596,15 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 
 ### TODO
 
-- [ ] **P0**: `start-user.sh` 支持 `--feishu-app-id` / `--feishu-app-secret` 参数
-- [ ] **P0**: 动态生成容器 config 时注入飞书通道配置 + feishu plugin enabled
-- [ ] **P0**: 支持 `--feishu-allow=ou_xxx` 参数设置 allowlist
+- [x] **P0**: `start-user.sh` 从 `docker/users.csv` 读取飞书凭证并自动注入 — 已实现（2026-02-09）
+- [x] **P0**: 动态生成容器 config 时注入飞书通道配置 + feishu plugin enabled — 已实现
+- [x] **P0**: `Dockerfile.carher` 安装飞书插件依赖 `@larksuiteoapi/node-sdk` — 已修复
+- [x] **P0**: `nativeSkills: "auto"` 已加入 `carher-config.json` — 已修复（2026-02-09）
+- [x] **P0**: 飞书 Bot 在 Docker 容器中端到端验证 — 已通过（2026-02-09）
+- [x] **P0**: 并发消息测试（本地 Her + Docker carher-1 同时收发） — 已通过（2026-02-09）
 - [x] **P1**: 检查当前个人飞书 Bot 的组织类型和可用范围 — 已确认为飞书个人版，仅 Bob 一人，安全
+- [ ] **P1**: 支持 `--feishu-allow=ou_xxx` 参数设置 allowlist
 - [ ] **P1**: 为老板部署时，建议老板自建飞书个人版组织 + 独立 Bot（彻底组织级隔离）
-- [ ] **P2**: 考虑方案 C（共享 Bot + 路由网关），减少需要注册的 Bot 数量
 - [ ] **P2**: 在 getting-started.md 中补充飞书 Bot 创建的详细截图指南
 
 ### 风险清单
@@ -590,7 +612,7 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 | 风险 | 级别 | 缓解措施 |
 |------|------|---------|
 | 个人 Bot 在公司组织被同事发现 | 高（如果是公司组织） | 确认组织类型；加 allowlist |
-| 需要为每个用户创建独立 Bot | 中（运营成本） | 提前批量创建；长期考虑方案 C |
+| 需要为每个用户创建独立 Bot | 中（运营成本） | 提前批量创建；方案 C（200 Bot + 200 Docker）已确定 |
 | 容器管理员可读取用户数据 | 中（信任问题） | 明确告知使用者；生产环境应部署到独立服务器 |
 | 飞书 open_id 获取不便 | 低 | 可通过 Bot 首次收到消息时自动记录 |
 | 多个 Bot 管理复杂 | 低 | 用表格记录 Bot-容器-用户映射关系 |

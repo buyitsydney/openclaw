@@ -42,23 +42,32 @@ USER_ID=""
 MODE="random"  # 默认开启远程隧道（厂商用户一定是远程访问）
 ACTION="start"
 MODEL_ARG=""
+HOST_ARG="localhost"  # Webchat URL base host（默认 localhost，企业部署用内网 IP）
 
 for arg in "$@"; do
   case "$arg" in
     --id=*) USER_ID="${arg#--id=}" ;;
     --model=*) MODEL_ARG="${arg#--model=}" ;;
+    --host=*) HOST_ARG="${arg#--host=}" ;;
     --random) MODE="random" ;;
     --local) MODE="local" ;;
     --down) ACTION="down" ;;
     --logs) ACTION="logs" ;;
+    --list) ACTION="list" ;;
+    --sync-workspace) ACTION="sync-workspace" ;;
     -h|--help)
-      echo "用法: ./start-user.sh --id=N [--model=MODEL] [--local] [--down] [--logs]"
+      echo "用法: ./start-user.sh --id=N [--model=MODEL] [--host=IP] [--local] [--down] [--logs]"
       echo ""
       echo "  --id=N        用户编号 (1-99)"
-      echo "  --model=MODEL 指定 AI 模型（默认: sonnet）"
+      echo "  --model=MODEL 指定 AI 模型（覆盖 users.csv 中的设置）"
+      echo "  --host=IP     Webchat 访问地址（默认 localhost，企业部署用内网 IP）"
       echo "  --local       仅本地访问（不开隧道）"
       echo "  --down        停止容器（不指定 --id 则停止所有）"
       echo "  --logs        查看容器日志"
+      echo "  --list        列出所有注册用户和容器状态"
+      echo "  --sync-workspace  同步 docker/workspace/ 模板到容器"
+      echo ""
+      echo "用户注册表: docker/users.csv（IT 维护，含飞书凭证等）"
       echo ""
       echo "模型快捷名:"
       echo "  sonnet       → claude-sonnet-4 (默认)"
@@ -75,6 +84,44 @@ for arg in "$@"; do
     *) echo "未知参数: $arg (使用 --help 查看帮助)"; exit 1 ;;
   esac
 done
+
+# --- Users registry (docker/users.csv) ---
+USERS_CSV="${SCRIPT_DIR}/docker/users.csv"
+
+# List all registered users and their container status
+if [ "$ACTION" = "list" ]; then
+  if [ ! -f "$USERS_CSV" ]; then
+    echo -e "${RED}✗ 用户注册表不存在: docker/users.csv${NC}"
+    exit 1
+  fi
+  echo ""
+  echo -e "${CYAN}ID  姓名          模型      飞书Bot           容器状态    备注${NC}"
+  echo -e "${CYAN}──  ────          ────      ───────           ────────    ────${NC}"
+  while IFS=',' read -r uid uname umodel ufeishu_id ufeishu_secret unote; do
+    # Skip comments and empty lines
+    [[ "$uid" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "$uid" ]] && continue
+    uid=$(echo "$uid" | xargs)
+    uname=$(echo "$uname" | xargs)
+    umodel=$(echo "$umodel" | xargs)
+    ufeishu_id=$(echo "$ufeishu_id" | xargs)
+    unote=$(echo "$unote" | xargs)
+    # Check container status
+    CNAME="carher-${uid}"
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CNAME}$"; then
+      STATUS="${GREEN}运行中${NC}"
+    elif docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${CNAME}$"; then
+      STATUS="${YELLOW}已停止${NC}"
+    else
+      STATUS="未创建"
+    fi
+    FEISHU_DISPLAY="${ufeishu_id:-—}"
+    printf "%-3s %-12s  %-8s  %-18s  " "$uid" "$uname" "${umodel:-sonnet}" "$FEISHU_DISPLAY"
+    echo -e "$STATUS    $unote"
+  done < "$USERS_CSV"
+  echo ""
+  exit 0
+fi
 
 # --- Stop all containers ---
 if [ "$ACTION" = "down" ] && [ -z "$USER_ID" ]; then
@@ -114,6 +161,36 @@ PORT_WS=$((BASE + 4))    # Frontend WS Proxy
 # --- Logs ---
 if [ "$ACTION" = "logs" ]; then
   exec docker logs -f "$CONTAINER_NAME" 2>&1
+fi
+
+# --- Sync workspace templates into running container ---
+sync_workspace() {
+  local cname="$1"
+  local ws_dir="${SCRIPT_DIR}/docker/workspace"
+  if [ ! -d "$ws_dir" ]; then
+    echo -e "${YELLOW}  · docker/workspace/ 不存在，跳过 workspace 同步${NC}"
+    return
+  fi
+  local count=0
+  for f in "$ws_dir"/*.md; do
+    [ -f "$f" ] || continue
+    local fname=$(basename "$f")
+    docker cp "$f" "${cname}:/data/.openclaw/workspace/${fname}"
+    count=$((count + 1))
+  done
+  if [ $count -gt 0 ]; then
+    echo -e "${GREEN}  ✓ workspace 模板已同步 (${count} 个文件)${NC}"
+  fi
+}
+
+if [ "$ACTION" = "sync-workspace" ]; then
+  if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+    echo -e "${RED}✗ 容器 ${CONTAINER_NAME} 未运行${NC}"
+    exit 1
+  fi
+  echo -e "${YELLOW}同步 workspace 到 ${CONTAINER_NAME}...${NC}"
+  sync_workspace "$CONTAINER_NAME"
+  exit 0
 fi
 
 # --- Stop single container ---
@@ -173,37 +250,100 @@ fi
 echo -e "${GREEN}  ✓ OpenRouter API key${NC}"
 echo ""
 
-# --- Resolve model and prepare config ---
+# --- Read user info from registry (docker/users.csv) ---
+CSV_NAME=""
+CSV_MODEL=""
+CSV_FEISHU_ID=""
+CSV_FEISHU_SECRET=""
+CSV_NOTE=""
+
+if [ -f "$USERS_CSV" ]; then
+  while IFS=',' read -r uid uname umodel ufeishu_id ufeishu_secret unote; do
+    [[ "$uid" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "$uid" ]] && continue
+    uid=$(echo "$uid" | xargs)
+    if [ "$uid" = "$USER_ID" ]; then
+      CSV_NAME=$(echo "$uname" | xargs)
+      CSV_MODEL=$(echo "$umodel" | xargs)
+      CSV_FEISHU_ID=$(echo "$ufeishu_id" | xargs)
+      CSV_FEISHU_SECRET=$(echo "$ufeishu_secret" | xargs)
+      CSV_NOTE=$(echo "$unote" | xargs)
+      break
+    fi
+  done < "$USERS_CSV"
+  if [ -n "$CSV_NAME" ]; then
+    echo -e "${GREEN}  ✓ 用户: ${CSV_NAME} (id=${USER_ID})${NC}"
+  else
+    echo -e "${YELLOW}  ⚠ 用户 ${USER_ID} 未在 docker/users.csv 中注册，使用默认配置${NC}"
+  fi
+else
+  echo -e "${YELLOW}  ⚠ docker/users.csv 不存在，使用默认配置${NC}"
+fi
+
+# --- Resolve model: CLI arg > CSV > base config default ---
 if [ -n "$MODEL_ARG" ]; then
   MODEL_FULL=$(resolve_model "$MODEL_ARG")
+elif [ -n "$CSV_MODEL" ]; then
+  MODEL_FULL=$(resolve_model "$CSV_MODEL")
 else
   MODEL_FULL=""  # 使用 docker/carher-config.json 中的默认值
 fi
 
-# Generate per-user config (with custom model if specified)
+# --- Generate per-user config (model + feishu from CSV) ---
 CONFIG_FILE="${SCRIPT_DIR}/docker/carher-config.json"
-CUSTOM_CONFIG=""
-if [ -n "$MODEL_FULL" ]; then
-  # 持久化路径（容器运行期间可能重读 config，不能用 mktemp 后删除）
-  CUSTOM_CONFIG="/tmp/carher-config-${USER_ID}.json"
-  python3 -c "
+CUSTOM_CONFIG="/tmp/carher-config-${USER_ID}.json"
+
+# Always generate a per-user config (may inject feishu credentials + webchat URL)
+python3 -c "
 import json, sys
+
 with open('${CONFIG_FILE}') as f:
     cfg = json.load(f)
-cfg['agents']['defaults']['model']['primary'] = '${MODEL_FULL}'
+
+# Model override
+model = '${MODEL_FULL}'
+if model:
+    cfg['agents']['defaults']['model']['primary'] = model
+
+# Webchat URL: http://{host}:{gateway_port}?token={token}
+host = '${HOST_ARG}'
+port = ${PORT_GW}
+token = cfg.get('gateway', {}).get('auth', {}).get('token', '')
+if token:
+    cfg.setdefault('gateway', {})['webchatUrl'] = f'http://{host}:{port}?token={token}'
+
+# Feishu credentials from users.csv
+feishu_id = '${CSV_FEISHU_ID}'
+feishu_secret = '${CSV_FEISHU_SECRET}'
+if feishu_id and feishu_secret:
+    # Enable feishu channel
+    cfg.setdefault('channels', {})['feishu'] = {
+        'enabled': True,
+        'appId': feishu_id,
+        'appSecret': feishu_secret,
+    }
+    # Enable feishu plugin
+    cfg.setdefault('plugins', {}).setdefault('entries', {})['feishu'] = {
+        'enabled': True
+    }
+
 json.dump(cfg, sys.stdout, indent=2)
 " > "$CUSTOM_CONFIG"
-  CONFIG_MOUNT="$CUSTOM_CONFIG"
-  echo -e "${GREEN}  ✓ 模型: ${MODEL_FULL}${NC}"
-else
-  CONFIG_MOUNT="$CONFIG_FILE"
-  # 读取默认模型名用于显示
-  DEFAULT_MODEL=$(python3 -c "
+
+CONFIG_MOUNT="$CUSTOM_CONFIG"
+
+# Display config summary
+DISPLAY_MODEL=$(python3 -c "
 import json
-with open('${CONFIG_FILE}') as f:
+with open('${CUSTOM_CONFIG}') as f:
     print(json.load(f)['agents']['defaults']['model']['primary'])
 " 2>/dev/null || echo "sonnet")
-  echo -e "${GREEN}  ✓ 模型: ${DEFAULT_MODEL} (默认)${NC}"
+echo -e "${GREEN}  ✓ 模型: ${DISPLAY_MODEL}${NC}"
+
+if [ -n "$CSV_FEISHU_ID" ] && [ -n "$CSV_FEISHU_SECRET" ]; then
+  echo -e "${GREEN}  ✓ 飞书: ${CSV_FEISHU_ID}${NC}"
+else
+  echo -e "  · 飞书: 未配置"
 fi
 
 # --- Always clean start: stop old container if exists ---
@@ -249,12 +389,25 @@ if [ $WAITED -ge $MAX_WAIT ]; then
   exit 1
 fi
 
+# Auto-sync workspace templates on startup
+sync_workspace "$CONTAINER_NAME"
+
 echo ""
+
+# --- Read generated webchatUrl from config ---
+WEBCHAT_URL=$(python3 -c "
+import json
+with open('${CUSTOM_CONFIG}') as f:
+    print(json.load(f).get('gateway', {}).get('webchatUrl', ''))
+" 2>/dev/null || true)
 
 # --- Print local URLs ---
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${GREEN}  User ${USER_ID} — 本地 URL${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
+if [ -n "$WEBCHAT_URL" ]; then
+  echo -e "  Webchat:   ${GREEN}${WEBCHAT_URL}${NC}"
+fi
 echo -e "  Mobile UI: ${GREEN}http://localhost:${PORT_FE}/mobile.html${NC}"
 echo -e "  Desktop:   ${GREEN}http://localhost:${PORT_FE}${NC}"
 echo -e "  Gateway:   ${GREEN}http://localhost:${PORT_GW}${NC}"

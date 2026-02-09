@@ -24,6 +24,11 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY ui/package.json ./ui/package.json
 COPY patches ./patches
 COPY scripts ./scripts
+
+# Copy all extension package.json files so pnpm resolves workspace deps
+COPY extensions/feishu/package.json ./extensions/feishu/package.json
+COPY extensions/realtime/package.json ./extensions/realtime/package.json
+
 RUN pnpm install --frozen-lockfile
 
 # Copy source and build

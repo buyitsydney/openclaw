@@ -30,6 +30,9 @@ export type FeishuGatewayOptions = {
 const recentMessageIds = new Set<string>();
 const MAX_RECENT = 500;
 
+// Track open_ids that have received a welcome message (resets on container restart).
+const welcomedPeers = new Set<string>();
+
 function trackMessageId(messageId: string): boolean {
   if (recentMessageIds.has(messageId)) {
     return false;
@@ -246,6 +249,26 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
   // DM access control: for now use "open" policy (private bot, only you can see it).
   // Full pairing/allowlist support can be added later.
+
+  // Send welcome message with webchat link on first contact from this user.
+  // webchatUrl is injected by start-user.sh into gateway config.
+  if (!welcomedPeers.has(senderId)) {
+    welcomedPeers.add(senderId);
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const webchatUrl = (config.gateway as any)?.webchatUrl as string | undefined;
+    if (webchatUrl) {
+      const welcomeText =
+        `你好！我是你的 AI 助手 🤖\n\n` +
+        `除了飞书对话，你还可以通过网页版和我聊天：\n${webchatUrl}\n\n` +
+        `网页版支持代码高亮、文件上传等更丰富的功能。`;
+      try {
+        await sendFeishuText({ account, chatId, text: welcomeText });
+        log?.info(`[${account.accountId}] welcome sent to ${senderId}`);
+      } catch (err) {
+        log?.error(`[${account.accountId}] welcome send failed: ${String(err)}`);
+      }
+    }
+  }
 
   // Resolve agent route for this message.
   const route = core.channel.routing.resolveAgentRoute({

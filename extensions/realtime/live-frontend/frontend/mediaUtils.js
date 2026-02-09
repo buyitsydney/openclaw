@@ -686,6 +686,26 @@ class AudioPlayer {
   }
 
   /**
+   * Set audio output device. Requires Chrome 110+ (setSinkId on AudioContext).
+   * No-op if the browser doesn't support it.
+   * @param {string} deviceId - output device ID from enumerateDevices()
+   */
+  async setOutputDevice(deviceId) {
+    if (!deviceId) return;
+    if (!this.audioContext) return;
+    if (typeof this.audioContext.setSinkId !== "function") {
+      console.warn("setSinkId not supported — output device selection unavailable");
+      return;
+    }
+    try {
+      await this.audioContext.setSinkId(deviceId);
+      console.log(`🔊 Audio output device set: ${deviceId.slice(0, 8)}…`);
+    } catch (err) {
+      console.error("Failed to set audio output device:", err);
+    }
+  }
+
+  /**
    * Set volume (0.0 to 1.0)
    */
   setVolume(volume) {
