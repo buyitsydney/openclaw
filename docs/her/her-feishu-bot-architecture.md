@@ -1,0 +1,560 @@
+# 飞书通道架构设计
+
+通过飞书（Lark）机器人与 OpenClaw 对话，让用户在飞书客户端内获得 AI 助手体验。
+
+**状态：已实现并验证通过 (2026-02-09)**
+
+## 核心结论
+
+- **对现有 OpenClaw 核心代码：零修改** -- 已验证
+- **对现有 Her（realtime 插件）代码：零修改** -- 已验证
+- **全部新增代码限制在 `extensions/feishu/` 目录内** -- 已验证
+- **风险评估：极低** -- 已通过端到端测试确认
+- **实际新增代码：~1000 行**（包含 cron 直投修复 + 富文本解析修复 + 图片收发 + 图片接收（vision）+ 目标解析 + 命令授权修复）
+
+---
+
+## 为什么飞书可行
+
+飞书（Lark）是字节跳动的企业协作平台，其开放能力与 Telegram/Slack/Discord 处于同一级别：
+
+- 官方 Bot API，完全开放，鼓励开发者接入
+- 支持私聊（1 对 1 与机器人直接对话）和群聊
+- 官方 Node.js/TypeScript SDK：`@larksuiteoapi/node-sdk`（活跃维护，每周更新）
+- 支持 WebSocket 长连接（无需公网 IP / 备案域名）和 Webhook 两种模式
+- 个人可免费创建飞书组织 + 在开放平台创建自建应用
+- 零封号风险（官方 API，飞书鼓励这么做）
+
+---
+
+## 用户体验
+
+### 最终效果（已验证）
+
+用户在飞书客户端里，找到 AI 机器人，打开私聊窗口，直接发消息。体验与跟同事聊天完全一致：
+
+```
+用户（飞书私聊）: hi
+机器人（飞书私聊）: 嗨天哥！你从飞书发消息过来了 🎉 飞书通道已经接通了！
+
+用户（飞书私聊）: 你怎么知道我在用飞书呢？
+机器人（飞书私聊）: 因为消息头里写着呢！[Feishu ou_4e2a42036050d192b367829818e700d5 ...]
+```
+
+### 配置流程（已验证）
+
+> **注意：步骤顺序很重要！** 飞书的"长连接"事件订阅要求 SDK 客户端已在线才能保存，所以必须先启动 Gateway，再回飞书后台配置事件。
+
+1. 在飞书开放平台（open.feishu.cn）创建一个自建应用，启用机器人能力
+2. 获取 `app_id` + `app_secret`
+3. 添加权限：`im:message` + `im:message:send_as_bot` + `im:resource`
+4. 在 OpenClaw config 中配置 `channels.feishu.appId` + `channels.feishu.appSecret`
+5. **先启动 Gateway**（飞书 WSClient 自动连接，日志显示 `Feishu WSClient connected`）
+6. **回到飞书后台**：事件订阅 → 选"使用长连接接收事件" → 保存 → 添加 `im.message.receive_v1`
+7. 创建版本 → 设置可用范围 → 发布
+8. 在飞书里找到机器人，开始聊天
+
+详细步骤见 [企业部署文档](her-feishu-bot-enterprise-deploy.md)。
+
+---
+
+## 架构设计
+
+### 在 OpenClaw 通道体系中的位置
+
+```
+                        OpenClaw Gateway
+  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
+  │ Telegram │ │  Slack   │ │ Discord  │ │ WhatsApp │
+  │(已有插件) │ │(已有插件) │ │(已有插件) │ │(已有插件) │
+  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘
+       │            │            │            │
+       └────────────┴────────────┴────────────┘
+                         │
+                   统一 Agent 管道
+               (auto-reply pipeline)
+                         │
+       ┌─────────────────┼─────────────────┐
+       │                 │                 │
+  ┌────┴─────┐    ┌──────┴──────┐   ┌─────┴──────┐
+  │  Feishu  │    │   Matrix    │   │    Line    │
+  │  (新增)  │    │ (已有插件)  │   │ (已有插件) │
+  └──────────┘    └─────────────┘   └────────────┘
+
+  ┌──────────────────────────────────────────────────┐
+  │      Her (realtime 插件) - 不受任何影响            │
+  │      完全独立的实时语音通道                         │
+  └──────────────────────────────────────────────────┘
+```
+
+**关键点：飞书插件与 Her 完全平行，互不影响。**
+
+Her 是实时语音通道（Gemini Live + WebSocket），走的是快慢思考架构。
+飞书是文字聊天通道，走的是标准 auto-reply pipeline（与 Telegram/Slack 相同）。
+两者在 OpenClaw 内部是完全独立的通道，共享同一个 Agent 大脑和 Memory。
+
+### 飞书插件实际文件结构
+
+```
+extensions/feishu/
+  openclaw.plugin.json        # 插件清单
+  package.json                # 依赖：@larksuiteoapi/node-sdk
+  index.ts                    # 入口：register() -> api.registerChannel()
+  src/
+    channel.ts               # ChannelPlugin<ResolvedFeishuAccount> 实现
+    runtime.ts               # PluginRuntime 单例存取
+    gateway.ts               # WSClient 长连接 + 消息监听 + auto-reply pipeline 集成
+    outbound.ts              # Lark.Client 消息发送（text / reply / image upload+send）
+    accounts.ts              # 多账户解析 + 凭证解析（config / env）
+```
+
+### 数据流（已验证）
+
+```
+飞书用户
+  │
+  │ 发送消息（飞书客户端 -> 飞书服务器）
+  ↓
+飞书服务器
+  │
+  │ 事件推送（WebSocket 长连接）
+  ↓
+extensions/feishu/gateway.ts
+  │
+  │ EventDispatcher 接收 im.message.receive_v1 事件
+  │ -> 提取文本 / 过滤 bot 消息 / 去重
+  │ -> 构建 inbound context (finalizeInboundContext)
+  ↓
+OpenClaw auto-reply pipeline（核心代码，未修改）
+  │
+  │ dispatchReplyWithBufferedBlockDispatcher
+  │ -> Agent 处理 -> 生成回复
+  ↓
+extensions/feishu/outbound.ts
+  │
+  │ Lark.Client.im.message.create()
+  ↓
+飞书服务器
+  │
+  │ 推送回复给用户
+  ↓
+飞书用户（收到回复）
+```
+
+---
+
+## 实现细节
+
+### 1. 插件注册（index.ts）
+
+遵循 OpenClaw 标准插件模式：
+
+```typescript
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
+import { feishuPlugin } from "./src/channel.js";
+import { setFeishuRuntime } from "./src/runtime.js";
+
+const plugin = {
+  id: "feishu",
+  name: "Feishu",
+  description: "Feishu (Lark) channel plugin",
+  configSchema: emptyPluginConfigSchema(),
+  register(api: OpenClawPluginApi) {
+    setFeishuRuntime(api.runtime);
+    api.registerChannel({ plugin: feishuPlugin });
+  },
+};
+
+export default plugin;
+```
+
+### 2. Gateway 适配器（gateway.ts）
+
+使用 WebSocket 长连接模式（推荐，无需公网 IP）：
+
+```typescript
+const eventDispatcher = new Lark.EventDispatcher({}).register({
+  "im.message.receive_v1": async (data) => {
+    // 提取消息内容、过滤 bot、去重
+    // 构建 ctxPayload -> finalizeInboundContext()
+    // 调用 dispatchReplyWithBufferedBlockDispatcher() 进入 auto-reply pipeline
+  },
+});
+
+const wsClient = new Lark.WSClient({ appId, appSecret, loggerLevel: Lark.LoggerLevel.info });
+await wsClient.start({ eventDispatcher });
+```
+
+核心 pipeline 集成方式（与 Google Chat 扩展相同）：
+- `core.channel.routing.resolveAgentRoute()` -- 解析 agent 路由
+- `core.channel.reply.finalizeInboundContext()` -- 构建标准 inbound context
+- `core.channel.reply.dispatchReplyWithBufferedBlockDispatcher()` -- 进入 auto-reply pipeline
+- `deliverFeishuReply()` -- 通过 Lark SDK 发送回复
+
+### 3. 消息发送（outbound.ts）
+
+`sendFeishuText` 通过 `resolveReceiveId()` 智能识别飞书 ID 类型：
+
+```typescript
+// 根据 ID 前缀自动推断 receive_id_type：
+//   oc_ -> chat_id（群聊）, ou_ -> open_id（用户）, on_ -> union_id
+// 同时自动 strip routeReply 可能添加的 "feishu:" 前缀
+function resolveReceiveId(raw: string): { receiveId, receiveIdType }
+
+export async function sendFeishuText(params: {
+  account: ResolvedFeishuAccount;
+  chatId: string;
+  text: string;
+}): Promise<void> {
+  const client = getFeishuClient(params.account);
+  const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
+  await client.im.message.create({
+    params: { receive_id_type: receiveIdType },
+    data: { receive_id: receiveId, content: JSON.stringify({ text }), msg_type: "text" },
+  });
+}
+```
+
+Client 实例按 appId 缓存，避免重复创建和 token 获取。
+
+#### 图片上传与发送（2026-02-07 新增）
+
+`uploadFeishuImage` 使用原始 HTTP API（而非 SDK 封装）上传图片，`sendFeishuImage` 发送图片消息：
+
+```typescript
+// 使用原始 fetch 而非 SDK，因为 SDK 的 image_file 参数名与实际 API 的 image 不匹配
+export async function uploadFeishuImage(params: {
+  account: ResolvedFeishuAccount;
+  buffer: Buffer;
+}): Promise<string> {
+  // 通过 SDK tokenManager 获取 tenant_access_token
+  // 使用 FormData 上传：image_type="message", image=<blob>
+  // 返回 image_key
+}
+
+export async function sendFeishuImage(params: {
+  account: ResolvedFeishuAccount;
+  chatId: string;
+  imageKey: string;
+  caption?: string;
+}): Promise<void> {
+  // 发送 msg_type="image" 消息
+  // 如果有 caption，作为后续文本消息发送
+}
+```
+
+### 3.1 Outbound 适配器（channel.ts outbound）
+
+插件同时实现 `sendText`、`sendMedia` 和 `resolveTarget`，确保 cron 直投和 `message send` 工具都能正常工作：
+
+```typescript
+outbound: {
+  deliveryMode: "gateway",
+  resolveTarget: ({ to }) => {
+    // 支持 feishu:/lark:/fs: 前缀，接受 oc_/ou_/on_ ID 格式
+  },
+  sendText: async ({ to, text, accountId, cfg }) => { ... },
+  sendMedia: async ({ to, text, mediaUrl, accountId, cfg }) => {
+    // 下载媒体 -> uploadFeishuImage -> sendFeishuImage
+    // 失败时 fallback 为文本发送 URL
+    if (text) await sendFeishuText({ account, chatId: to, text });
+    return { channel: "feishu" };
+  },
+}
+```
+
+同时实现了 `messaging.targetResolver`，使 AI 的 `message send` 工具能正确识别飞书 ID（`oc_`/`ou_`/`on_` 前缀）。
+
+**背景**：OpenClaw 的 cron 定时任务使用 `deliverOutboundPayloads` 直投路径（不经 gateway WebSocket），该路径要求通道同时实现 `sendText` + `sendMedia` 才视为已配置。AI 的 `message send` 工具需要 `resolveTarget` 和 `targetResolver` 来解析目标地址。
+
+### 4. 配置存储
+
+配置存储在 OpenClaw 标准 config 中，路径 `channels.feishu.*`：
+
+```json
+{
+  "channels": {
+    "feishu": {
+      "enabled": true,
+      "appId": "cli_xxxxxxxxxx",
+      "appSecret": "xxxxxxxxxx"
+    }
+  },
+  "plugins": {
+    "entries": {
+      "feishu": { "enabled": true }
+    }
+  }
+}
+```
+
+也支持环境变量：`FEISHU_APP_ID` + `FEISHU_APP_SECRET`。
+
+### 5. 权限需求
+
+在飞书开放平台配置以下权限：
+- `im:message` -- 接收消息事件（读取用户发给机器人的单聊消息）
+- `im:message:send_as_bot` -- 以应用身份发消息
+- `im:resource` -- 获取与上传图片或文件资源（图片收发所需）
+
+事件订阅：
+- `im.message.receive_v1` -- 接收消息事件，使用长连接模式
+
+---
+
+## 对现有代码的影响分析
+
+### 对 OpenClaw 核心代码：零修改（已验证）
+
+- `src/channels/` -- 不修改。飞书通过 `api.registerChannel()` 动态注册
+- `src/auto-reply/` -- 不修改。飞书走标准 auto-reply pipeline
+- `src/config/` -- 不修改。插件配置由扩展自管理
+- `src/cli/` -- 不修改。onboarding 通过 `ChannelPlugin.setup` 注入
+- `src/infra/` -- 不修改。outbound 通过 `ChannelPlugin.outbound` 注入
+- `src/plugin-sdk/` -- 不修改。使用现有 SDK 类型
+- `src/routing/` -- 不修改。路由自动识别已注册的通道
+- `package.json` -- 不修改。飞书 SDK 仅在 `extensions/feishu/package.json` 中
+
+### 对 Her（realtime 插件）：零修改（已验证）
+
+- `extensions/realtime/src/server.ts` -- 不修改。Her 的 WebSocket 服务独立运行
+- `extensions/realtime/live-frontend/` -- 不修改。Her 前端完全不受影响
+- `extensions/realtime/src/prompt.ts` -- 不修改。Her 的 system prompt 不变
+
+### 实际代码量
+
+| 文件 | 行数 | 说明 |
+|------|------|------|
+| `openclaw.plugin.json` | 9 | 插件清单 |
+| `package.json` | 39 | 依赖 + 通道元数据 |
+| `index.ts` | 17 | 入口注册 |
+| `src/channel.ts` | 253 | ChannelPlugin 主体 + sendMedia 图片上传 + 目标解析 |
+| `src/runtime.ts` | 14 | Runtime 单例 |
+| `src/gateway.ts` | 390 | WSClient + pipeline 集成 + 富文本解析 + 回复投递 + 图片下载/接收（vision） |
+| `src/outbound.ts` | 161 | Lark SDK 消息发送 + 智能 ID 类型识别 + 图片上传/发送/下载 |
+| `src/accounts.ts` | 117 | 账户 / 凭证解析 |
+| **总计** | **~1000** | 全部在 `extensions/feishu/` 内 |
+
+---
+
+## 风险评估
+
+### 技术风险：极低（已通过端到端测试验证）
+
+- **破坏现有功能**：无。纯新增目录，不修改任何已有文件
+- **飞书 API 稳定性**：极低风险。官方 API + 官方 SDK，字节跳动长期维护
+- **封号 / 违规**：无。官方开放平台，鼓励开发者接入
+- **SDK 维护状态**：良好。`@larksuiteoapi/node-sdk` 活跃更新
+- **认证门槛**：极低。个人免费创建飞书组织 + 自建应用，无需企业资质
+- **网络要求**：极低。WebSocket 模式无需公网 IP / 域名备案
+
+### 与微信的对比
+
+- **微信**：无官方 Bot API（个人号）；所有方案已死或高风险；封号率极高；需要企业资质 + 备案域名
+- **飞书**：官方 API 完整开放；长期稳定；零封号风险；个人免费；WebSocket 无网络要求
+
+---
+
+## 多通道 Session 与消息路由分析
+
+### Session 共享机制
+
+当前配置 `dmScope = "main"`（默认），所有 DM 通道共享同一个 session key `agent:main:main`。这意味着飞书、Telegram、Webchat 发来的消息共享同一个对话历史和记忆。
+
+OpenClaw 支持 4 种 `dmScope` 模式：
+
+- `main`（当前）：所有通道共享一个对话。AI 跨通道记住所有内容
+- `per-peer`：按用户隔离，同一用户跨通道仍共享
+- `per-channel-peer`：按通道+用户隔离，飞书和 Telegram 各自独立
+- `per-account-channel-peer`：最细粒度，按账号+通道+用户隔离
+
+### 消息可见性（非对称设计）
+
+Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("agent", ...)` 无条件接收 gateway 上所有 agent 活动。外部通道是独立的消息管道，不订阅 webchat 广播。
+
+| 行为 | 结果 |
+|------|------|
+| 飞书发消息、收到回复 | 飞书能看到，**Webchat 也能看到**（广播机制） |
+| Telegram 发消息、收到回复 | Telegram 能看到，**Webchat 也能看到** |
+| Webchat 发消息、收到回复 | 只有 Webchat 能看到，飞书/Telegram **看不到** |
+
+### 并发行为
+
+当 agent 正在处理某个通道的消息时，其他通道的消息被排入 followup 队列。队列 drain 时通过 `routeReply()` 尝试将回复路由回原始通道。如果路由失败，回复会 fallback 到当前活跃的 dispatcher（通常是 webchat）。
+
+实际影响：同时在 Webchat 和飞书聊天时，后到的消息可能被排队，回复可能出现在非预期的通道。
+
+### 结论：保持默认配置
+
+对于个人单用户场景，`dmScope = "main"` 是最佳选择：
+
+- 跨通道共享记忆（飞书聊的内容，Webchat 里也知道）
+- 只要避免同时在多个通道聊天，不会遇到并发冲突
+- 如果未来需要同时多通道独立聊天，可改为 `per-channel-peer`，代价是失去跨通道记忆
+
+---
+
+## 已修复的问题
+
+### Cron 定时任务投递修复 (2026-02-06)
+
+**问题**：通过 cron 工具设置的飞书定时提醒无法投递，报 `Outbound not configured for channel: feishu`。
+
+**根因**：
+1. `deliverOutboundPayloads`（cron 直投路径）要求通道同时实现 `sendText` + `sendMedia`，飞书插件缺少 `sendMedia`
+2. `sendFeishuText` 硬编码 `receive_id_type: "chat_id"`，但 cron payload 使用的是 `open_id`（`ou_` 前缀）
+
+**修复**：
+1. 在 `channel.ts` 添加 `sendMedia` 方法（文本投递，媒体暂不支持）
+2. 在 `outbound.ts` 新增 `resolveReceiveId()` 函数，根据 ID 前缀自动识别类型
+
+**验证**：修复后 cron 定时任务成功投递到飞书（`lastStatus: "ok"`）
+
+### 飞书富文本（post）消息解析修复 (2026-02-07)
+
+**问题**：用户在飞书中发送包含序号列表的消息（如 `1. xxx`）时，AI 完全收不到消息，被静默丢弃。
+
+**根因**：
+1. 飞书客户端会自动将包含序号/列表的文本从 `text` 类型转换为 `post`（富文本）类型
+2. `extractTextContent` 只处理了 `text`/`image`/`file`/`audio`/`sticker`，未处理 `post` 类型
+3. 初版修复错误地按**发送格式**（`{ zh_cn: { title, content } }` 带 locale 包裹）解析，但飞书**接收到的** `post` 消息结构是扁平的 `{ title, content: [[...]] }`，没有 locale 包裹
+
+**教训**：发送和接收使用不同的 JSON 结构是外部 API 的常见陷阱。必须查阅官方文档确认接收格式，不能凭记忆或发送格式推断。
+
+**修复**：
+1. 新增 `flattenPostBody()` 函数解析 `{ title?, content: [[{tag,text}, ...]] }` 结构
+2. `extractPostText()` 优先检查扁平格式（接收场景），兜底支持 locale 包裹格式
+3. 支持 `text`、`a`（链接）、`at`（@提及）、`img`（图片）、`media`（视频）、`emotion`（表情）标签
+4. 新增 debug 日志：未识别的消息类型会打印 `skipped msg: msgType=xxx` 便于后续排查
+
+**验证**：修复后带序号的列表消息成功被 AI 接收并回复
+
+**官方文档参考**：https://feishu.apifox.cn/doc-1945309（接收消息内容 - 富文本 post 结构）
+
+### 图片收发 + 目标解析 (2026-02-07)
+
+**新增功能**：
+
+1. **图片上传与发送**：AI 现在可以通过飞书发送图片（如摄像头截图、生成的图片等）
+2. **飞书目标解析器**：AI 的 `message send` 工具现在能正确识别飞书地址（`oc_`/`ou_`/`on_` 前缀）
+
+**实现细节**：
+
+- `outbound.ts`：新增 `uploadFeishuImage()`（原始 HTTP API 上传图片到飞书，返回 `image_key`）和 `sendFeishuImage()`（通过 `image_key` 发送图片消息，支持可选 caption）
+- `gateway.ts`：`deliverFeishuReply()` 新增媒体处理逻辑 -- 下载媒体 URL → 判断是否为图片 → 上传到飞书 → 发送图片消息；非图片或失败时回退为文本
+- `channel.ts`：
+  - `sendMedia` 从纯文本回退升级为真正的图片上传发送
+  - 新增 `messaging.targetResolver` 和 `outbound.resolveTarget`，支持 `feishu:`/`lark:`/`fs:` 前缀 + `oc_`/`ou_`/`on_` ID 格式
+
+**踩坑记录**：
+
+- Lark SDK 的 `client.im.image.create` 类型定义的参数名是 `image_file`，但飞书实际 API 要求的字段名是 `image`。SDK 类型与 API 不一致导致上传失败（`code: 234001, Invalid request param`）。最终绕过 SDK，使用原始 `fetch` + `FormData` 解决
+- 需要额外的 `im:resource` 或 `im:resource:upload` 权限才能上传图片
+
+**验证**：AI 成功通过飞书发送小米摄像头实时截图
+
+### 图片接收与 Vision 识别 (2026-02-08)
+
+**问题**：用户在飞书中发送图片时，AI 报告"只收到了 `[image]` 的占位符，实际图片没有传过来"，无法识别图片内容。
+
+**根因**：
+
+飞书发送"图片+文字"消息时，自动组装为 `post`（富文本）类型，图片以 `{tag: "img", image_key: "xxx"}` 嵌入。旧代码的 `flattenPostBody` 将 `img` 标签转为文本 `"[image]"` 占位符，未下载实际图片。单独发送图片时 `msgType="image"`，也仅返回 `"[image]"` 文本。两种场景下 AI 都只看到纯文字，无法进行 vision 处理。
+
+**修复**：
+
+1. `outbound.ts` 新增 `downloadFeishuImage()` -- 使用飞书 SDK 的 `client.im.messageResource.get()` API，通过 `message_id` + `image_key` 下载消息中的图片，返回 `Buffer` + `contentType`
+2. `gateway.ts` 重构消息提取流程：
+   - `extractTextContent()` / `flattenPostBody()` 新增 `imageKeys` 参数，解析时收集所有 `image_key`
+   - `post` 富文本中的 `img` 标签和独立 `image` 消息的 `image_key` 统一收集
+   - `handleInboundMessage()` 遍历收集到的 `imageKeys`，调用 `downloadFeishuImage` 下载、`saveMediaBuffer` 保存
+   - 在 `ctxPayload` 中设置 `MediaPath`/`MediaType`/`MediaPaths`/`MediaTypes`
+3. OpenClaw 下游的 `buildInboundMediaNote` + `applyMediaUnderstanding` 自动将图片传给 AI 的 vision 模型
+
+**权限**：需要 `im:resource` 权限（获取与上传图片或文件资源）
+
+**验证**：用户发送截图后，AI 成功识别图片内容（OpenRouter 账单截图，正确读出金额等信息）。日志链路完整：
+
+```
+[feishu] downloading image: key=img_v3_02un_... msg=om_x100b574b16d534acc...
+[feishu] image saved: /Users/.../.openclaw/media/inbound/c8e7df25-....png
+[feishu] inbound: chat=oc_... from=ou_... type=p2p +image
+[agent/embedded] embedded run start: ... messageChannel=feishu
+```
+
+---
+
+## 多用户飞书部署（Docker 容器 + 独立 Bot）
+
+> **完整的企业部署方案（200 Bot + 200 Docker）、IT 操作流程、用户管理、费用估算**，详见：
+> - [Her 飞书 Bot 企业部署](her-feishu-bot-enterprise-deploy.md) — 方案全貌 + IT 操作清单
+>
+> 以下仅保留本文档特有的隐私分析和开发记录。
+
+### 隐私与安全分析
+
+#### 当前个人飞书 Bot 的安全状态
+
+| 配置项 | 当前值 | 风险 | 建议 |
+|--------|--------|------|------|
+| dm.policy | open（默认） | 如果在公司组织，同事可搜到 Bot 并进入你的 main session | 个人组织无风险；公司组织应设 allowlist |
+| dmScope | main（默认） | 所有飞书用户共享同一个 session 和记忆 | 个人组织无风险；多人场景需改 per-peer |
+| 可用范围 | 取决于开放平台设置 | "全部员工"意味着全公司可见 | 限制为仅自己 |
+
+**已确认（2026-02-09）**：Bot 创建在**飞书个人版**组织，成员仅 Bob（所有者），无其他人。当前配置安全，不需要加 allowlist。
+
+#### Docker 容器飞书 Bot 的安全保证
+
+| 维度 | 保证 | 残留风险 |
+|------|------|---------|
+| 数据隔离 | 容器内独立文件系统，记忆互不可见 | 容器运行在你的 Mac 上，你有 root 权限可 docker exec 读取 |
+| 飞书消息隔离 | 每个容器一个独立 Bot，消息管道完全分离 | 你作为 Bot 创建者可在开放平台查审计日志 |
+| 访问控制 | dm.policy=allowlist 限制只有目标用户能使用 | 需要提前获取目标用户的飞书 open_id |
+| 凭证安全 | 每个 Bot 的 appId/appSecret 只在对应容器内 | Bot 凭证由你保管和分发 |
+| Google Cloud | 所有容器共享你的 gcloud 凭证 | 语音用量计在你的账户上 |
+
+#### 各角色能做什么
+
+| 操作 | 你（管理员） | 老板（使用者） | 其他人 |
+|------|------------|--------------|--------|
+| 跟老板的 Bot 对话 | 被 allowlist 拒绝 | 正常使用 | 被 allowlist 拒绝 |
+| 读老板的对话记忆 | 技术上能（docker exec） | 自然产生 | 不能 |
+| 读你的对话记忆 | 自然产生 | 不能 | 不能 |
+| 停止/重启容器 | 能 | 不能 | 不能 |
+| 查看 Bot 审计日志 | 能（开放平台） | 不能 | 不能 |
+
+### 开发 TODO
+
+> 企业部署相关的验证记录已迁移至 [her-feishu-bot-enterprise-deploy.md](her-feishu-bot-enterprise-deploy.md#已完成的验证2026-02-09)。
+
+- [ ] **P1**: 支持 `--feishu-allow=ou_xxx` 参数设置 allowlist
+- [ ] **P2**: 在 getting-started.md 中补充飞书 Bot 创建的详细截图指南
+
+---
+
+## 后续增强方向
+
+当前 MVP 实现覆盖了核心聊天 + 定时任务功能，以下为可选增强：
+
+1. **富文本回复**：Markdown -> 飞书 Post 格式转换，支持加粗/链接/代码块
+2. ~~**图片/文件收发**~~：已实现（2026-02-07 发送，2026-02-08 接收+vision）-- 双向图片支持：AI 可发送图片，也能识别用户发来的图片
+3. **交互卡片**：使用飞书 Interactive Card 展示结构化回复
+4. **群聊支持**：@mention 检测、群权限策略、群级别配置
+5. **Onboarding CLI**：`openclaw setup` 交互式引导配置飞书凭证
+6. **状态探测**：`openclaw channels status` 显示飞书连接状态
+7. **Typing 指示器**：发送"正在输入..."临时消息
+8. **企业多用户部署**：见 [her-feishu-bot-enterprise-deploy.md](her-feishu-bot-enterprise-deploy.md)（200 Bot + 200 Docker 方案，已验证）
+
+---
+
+## 总结
+
+飞书通道本质上是在 OpenClaw 的通道体系中新增一个标准通道插件。它与 Her（realtime 语音通道）完全平行，与 Telegram/Slack/Discord 完全同构。
+
+- 实际新增代码 ~1000 行，全部在 `extensions/feishu/` 内
+- 不修改 OpenClaw 核心代码的任何一行
+- 不修改 Her（realtime 插件）的任何一行
+- 不修改任何已有扩展的任何一行
+- 风险极低：官方 API + 独立插件 + 活跃维护的 SDK
+- 端到端聊天已验证通过

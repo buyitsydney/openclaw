@@ -207,6 +207,12 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // Skip bot messages.
   if (senderType === "bot") return;
 
+  // Debug: log raw inbound for diagnosis (create_time helps detect replayed messages).
+  const createTime: string = message.create_time ?? "";
+  log?.info(
+    `[${account.accountId}] raw inbound: msgId=${messageId} createTime=${createTime} msgType=${msgType} from=${senderId} content=${content.slice(0, 120)}`,
+  );
+
   // Deduplicate.
   if (messageId && !trackMessageId(messageId)) return;
 
