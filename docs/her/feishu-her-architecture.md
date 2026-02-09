@@ -532,16 +532,6 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 - [ ] **P1**: 支持 `--feishu-allow=ou_xxx` 参数设置 allowlist
 - [ ] **P2**: 在 getting-started.md 中补充飞书 Bot 创建的详细截图指南
 
-### 命令授权修复 (2026-02-09)
-
-**问题**：用户在飞书中发送 `/new` 或 `/reset` 命令时，session 没有被重置，命令被静默忽略。
-
-**根因**：飞书的 `ctxPayload` 缺少 `CommandAuthorized: true` 字段。OpenClaw 的 session reset 逻辑在 `initSessionState` 中检查 `resetAuthorized`，该值依赖 `ctx.CommandAuthorized`。缺少该字段导致 `commandAuthorized = undefined`（falsy），进而 `resetAuthorized = false`，所有 reset trigger（`/new`, `/reset`）在匹配循环中被直接跳过。
-
-**修复**：在 `gateway.ts` 的 `ctxPayload` 中添加 `CommandAuthorized: true`（飞书是个人私有机器人，所有发送者均为授权用户）。
-
-**验证**：修复后发送 `/new`，session 从旧 ID（`2995ae26...`，totalTokens 185,640）成功重置为新 ID（`d9d1698a...`，totalTokens 17,713），context window 清空。
-
 ---
 
 ## 后续增强方向
