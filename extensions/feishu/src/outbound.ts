@@ -36,7 +36,209 @@ function resolveReceiveId(raw: string): {
   return { receiveId: stripped, receiveIdType: "open_id" };
 }
 
-/** Send a plain text message to a Feishu chat or user. */
+// ── Markdown -> Feishu Post conversion ──────────────────────────────────
+
+/** A single element in a Feishu Post paragraph. */
+type PostElement = {
+  tag: string;
+  text?: string;
+  style?: string[];
+  href?: string;
+  language?: string;
+};
+
+/** Convert a Markdown string to Feishu Post content structure.
+ *  Returns `{ zh_cn: { content: PostElement[][] } }` suitable for msg_type "post".
+ *  Handles: bold, italic, inline code, code blocks, links, lists, headings, hr. */
+export function markdownToPost(md: string): { zh_cn: { content: PostElement[][] } } {
+  const lines = md.split("\n");
+  const paragraphs: PostElement[][] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Fenced code block: ```lang ... ```
+    if (line.trimStart().startsWith("```")) {
+      const langMatch = line.trimStart().match(/^```(\w*)/);
+      const language = langMatch?.[1] || "";
+      const codeLines: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i].trimStart().startsWith("```")) {
+        codeLines.push(lines[i]);
+        i++;
+      }
+      // Skip closing ```
+      if (i < lines.length) i++;
+      paragraphs.push([
+        { tag: "code_block", language: language || "plain", text: codeLines.join("\n") },
+      ]);
+      continue;
+    }
+
+    // Blank line -> skip (paragraph separator).
+    if (line.trim() === "") {
+      i++;
+      continue;
+    }
+
+    // Horizontal rule: --- or *** or ___
+    if (/^(\s*[-*_]\s*){3,}$/.test(line)) {
+      paragraphs.push([{ tag: "hr" }]);
+      i++;
+      continue;
+    }
+
+    // Heading: # Title -> bold text.
+    const headingMatch = line.match(/^(#{1,6})\s+(.*)/);
+    if (headingMatch) {
+      const headingText = headingMatch[2];
+      paragraphs.push(...parseInlineElements(headingText, true));
+      i++;
+      continue;
+    }
+
+    // Unordered list: - item or * item
+    const ulMatch = line.match(/^(\s*)[-*+]\s+(.*)/);
+    if (ulMatch) {
+      const indent = Math.floor(ulMatch[1].length / 2);
+      const prefix = "  ".repeat(indent) + "• ";
+      paragraphs.push(...parseInlineElements(prefix + ulMatch[2]));
+      i++;
+      continue;
+    }
+
+    // Ordered list: 1. item
+    const olMatch = line.match(/^(\s*)(\d+)\.\s+(.*)/);
+    if (olMatch) {
+      const indent = Math.floor(olMatch[1].length / 2);
+      const prefix = "  ".repeat(indent) + olMatch[2] + ". ";
+      paragraphs.push(...parseInlineElements(prefix + olMatch[3]));
+      i++;
+      continue;
+    }
+
+    // Regular text line.
+    paragraphs.push(...parseInlineElements(line));
+    i++;
+  }
+
+  return { zh_cn: { content: paragraphs } };
+}
+
+/** Parse a single line of Markdown text into Feishu Post inline elements.
+ *  Supports: **bold**, *italic*, `inline code`, [text](url).
+ *  If `forceBold` is true, the whole line is rendered bold (for headings). */
+function parseInlineElements(text: string, forceBold = false): PostElement[][] {
+  const elements: PostElement[] = [];
+
+  // Regex to match inline Markdown tokens in order of precedence.
+  // Bold+italic (***), bold (**), italic (*/_), inline code (`), link [text](url).
+  const inlineRegex =
+    /(\*\*\*(.+?)\*\*\*|\*\*(.+?)\*\*|\*(.+?)\*|_(.+?)_|`(.+?)`|\[([^\]]+)\]\(([^)]+)\))/g;
+
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = inlineRegex.exec(text)) !== null) {
+    // Text before this match.
+    if (match.index > lastIndex) {
+      const before = text.slice(lastIndex, match.index);
+      if (before) {
+        elements.push(
+          forceBold ? { tag: "text", text: before, style: ["bold"] } : { tag: "text", text: before },
+        );
+      }
+    }
+
+    if (match[2]) {
+      // ***bold+italic***
+      elements.push({ tag: "text", text: match[2], style: ["bold", "italic"] });
+    } else if (match[3]) {
+      // **bold**
+      elements.push({ tag: "text", text: match[3], style: ["bold"] });
+    } else if (match[4]) {
+      // *italic*
+      elements.push({ tag: "text", text: match[4], style: ["italic"] });
+    } else if (match[5]) {
+      // _italic_
+      elements.push({ tag: "text", text: match[5], style: ["italic"] });
+    } else if (match[6]) {
+      // `inline code` — use bold as visual distinction (Feishu has no inline code style).
+      elements.push({ tag: "text", text: "`" + match[6] + "`", style: ["bold"] });
+    } else if (match[7] && match[8]) {
+      // [text](url)
+      elements.push({ tag: "a", text: match[7], href: match[8] });
+    }
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Remaining text after last match.
+  if (lastIndex < text.length) {
+    const remaining = text.slice(lastIndex);
+    if (remaining) {
+      elements.push(
+        forceBold
+          ? { tag: "text", text: remaining, style: ["bold"] }
+          : { tag: "text", text: remaining },
+      );
+    }
+  }
+
+  // If no matches at all, return the whole text as a single element.
+  if (elements.length === 0) {
+    elements.push(
+      forceBold ? { tag: "text", text, style: ["bold"] } : { tag: "text", text },
+    );
+  }
+
+  return [elements];
+}
+
+/** Detect whether text contains Markdown formatting worth converting. */
+function hasMarkdown(text: string): boolean {
+  // Check for common Markdown patterns.
+  return /(\*\*.+?\*\*|\*[^*]+?\*|`.+?`|```|\[.+?\]\(.+?\)|^#{1,6}\s|^[-*+]\s|^\d+\.\s|^---)/m.test(
+    text,
+  );
+}
+
+/** Send a rich-text Post message to a Feishu chat or user.
+ *  Converts Markdown to Feishu Post format for nice rendering.
+ *  Falls back to plain text if the text has no Markdown formatting. */
+export async function sendFeishuRichText(params: {
+  account: ResolvedFeishuAccount;
+  chatId: string;
+  text: string;
+}): Promise<void> {
+  const client = getFeishuClient(params.account);
+  const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
+
+  if (hasMarkdown(params.text)) {
+    const postContent = markdownToPost(params.text);
+    await client.im.message.create({
+      params: { receive_id_type: receiveIdType },
+      data: {
+        receive_id: receiveId,
+        content: JSON.stringify(postContent),
+        msg_type: "post",
+      },
+    });
+  } else {
+    // No Markdown -> send as plain text (simpler, no unnecessary post wrapper).
+    await client.im.message.create({
+      params: { receive_id_type: receiveIdType },
+      data: {
+        receive_id: receiveId,
+        content: JSON.stringify({ text: params.text }),
+        msg_type: "text",
+      },
+    });
+  }
+}
+
+/** Send a plain text message to a Feishu chat or user (no Markdown conversion). */
 export async function sendFeishuText(params: {
   account: ResolvedFeishuAccount;
   chatId: string;

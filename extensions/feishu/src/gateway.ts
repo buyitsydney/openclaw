@@ -11,6 +11,7 @@ import type { ResolvedFeishuAccount } from "./accounts.js";
 import {
   getFeishuClient,
   sendFeishuText,
+  sendFeishuRichText,
   uploadFeishuImage,
   sendFeishuImage,
   downloadFeishuImage,
@@ -281,7 +282,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         `除了飞书对话，你还可以通过网页版和我聊天：\n${webchatUrl}\n\n` +
         `网页版支持代码高亮、文件上传等更丰富的功能。`;
       try {
-        await sendFeishuText({ account, chatId, text: welcomeText });
+        await sendFeishuRichText({ account, chatId, text: welcomeText });
         log?.info(`[${account.accountId}] welcome sent to ${senderId}`);
       } catch (err) {
         log?.error(`[${account.accountId}] welcome send failed: ${String(err)}`);
@@ -424,7 +425,8 @@ async function deliverFeishuReply(params: {
     const chunks = core.channel.text.chunkMarkdownTextWithMode(payload.text, chunkLimit, chunkMode);
     for (const chunk of chunks) {
       try {
-        await sendFeishuText({ account, chatId, text: chunk });
+        // Use rich-text Post format to render Markdown (bold, code, links, etc.).
+        await sendFeishuRichText({ account, chatId, text: chunk });
         setStatus({ lastOutboundAt: Date.now() });
       } catch (err) {
         log?.error(`Feishu send failed: ${String(err)}`);

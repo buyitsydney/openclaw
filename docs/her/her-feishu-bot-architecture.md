@@ -531,13 +531,43 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 - [ ] **P1**: 支持 `--feishu-allow=ou_xxx` 参数设置 allowlist
 - [ ] **P2**: 在 getting-started.md 中补充飞书 Bot 创建的详细截图指南
 
+### 富文本回复 (2026-02-09)
+
+**问题**：AI 回复中的 Markdown 格式（`**粗体**`、代码块等）在飞书中原样显示为纯文本符号。
+
+**修复**：新增 `markdownToPost()` 转换函数 + `sendFeishuRichText()` 发送函数。检测文本是否包含 Markdown，有则转为飞书 Post 富文本消息（`msg_type: "post"`），无则保持纯文本（`msg_type: "text"`）。
+
+**修改文件**：
+- `outbound.ts` — 新增 `markdownToPost`、`parseInlineElements`、`hasMarkdown`、`sendFeishuRichText`（~140 行）
+- `channel.ts` — `outbound.sendText` 和 `sendMedia` caption 改用 `sendFeishuRichText`
+- `gateway.ts` — welcome 消息和 AI 回复 chunks 改用 `sendFeishuRichText`
+
+**飞书 Post 富文本支持矩阵**（实测 2026-02-09）：
+
+| 格式 | 支持 | 渲染效果 |
+|------|------|---------|
+| **粗体** `**text**` | 完美 | bold style |
+| *斜体* `*text*` | 完美 | italic style |
+| ***粗斜体*** `***text***` | 完美 | bold+italic style |
+| 无序列表 `- item` | 完美 | bullet 前缀，支持嵌套 |
+| 有序列表 `1. item` | 完美 | 数字前缀，支持嵌套 |
+| 行内代码 `` `code` `` | 完美 | bold+反引号 |
+| 代码块 ` ```lang ``` ` | 很棒 | code_block 标签，语法高亮+行号 |
+| 链接 `[text](url)` | 完美 | a 标签，可点击 |
+| 分隔线 `---` | 完美 | hr 标签 |
+| Emoji | 完美 | 原生渲染 |
+| ~~删除线~~ `~~text~~` | 不支持 | 原样显示 |
+| 引用块 `> text` | 不支持 | 原样显示 |
+| 表格 | 不支持 | 原样显示 |
+| 标题层级 `## ###` | 降级 | 统一渲染为粗体（无大小区分） |
+
 ---
 
 ## 后续增强方向
 
-当前 MVP 实现覆盖了核心聊天 + 定时任务功能，以下为可选增强：
+当前 MVP 实现覆盖了核心聊天 + 定时任务 + 富文本功能，以下为可选增强：
 
-1. **富文本回复**：Markdown -> 飞书 Post 格式转换，支持加粗/链接/代码块
+1. ~~**富文本回复**~~：已实现（2026-02-09）-- Markdown -> 飞书 Post 格式转换，见下方"富文本支持矩阵"
 2. ~~**图片/文件收发**~~：已实现（2026-02-07 发送，2026-02-08 接收+vision）-- 双向图片支持：AI 可发送图片，也能识别用户发来的图片
 3. **交互卡片**：使用飞书 Interactive Card 展示结构化回复
 4. **群聊支持**：@mention 检测、群权限策略、群级别配置

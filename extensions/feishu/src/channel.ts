@@ -15,7 +15,7 @@ import {
   resolveFeishuAccount,
   type ResolvedFeishuAccount,
 } from "./accounts.js";
-import { sendFeishuText, uploadFeishuImage, sendFeishuImage } from "./outbound.js";
+import { sendFeishuText, sendFeishuRichText, uploadFeishuImage, sendFeishuImage } from "./outbound.js";
 import { startFeishuGateway } from "./gateway.js";
 import { getFeishuRuntime } from "./runtime.js";
 
@@ -180,7 +180,8 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
     },
     sendText: async ({ to, text, accountId, cfg }) => {
       const account = resolveFeishuAccount({ cfg, accountId });
-      await sendFeishuText({ account, chatId: to, text });
+      // Use rich-text Post format to render Markdown properly in Feishu.
+      await sendFeishuRichText({ account, chatId: to, text });
       return { channel: "feishu" };
     },
     sendMedia: async ({ to, text, mediaUrl, accountId, cfg }) => {
@@ -200,7 +201,7 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
         }
       }
       if (text) {
-        await sendFeishuText({ account, chatId: to, text });
+        await sendFeishuRichText({ account, chatId: to, text });
       }
       return { channel: "feishu" };
     },
