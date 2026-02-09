@@ -2,7 +2,7 @@
 
 通过飞书（Lark）机器人与 OpenClaw 对话，让用户在飞书客户端内获得 AI 助手体验。
 
-**状态：已实现并验证通过 (2026-02-08)**
+**状态：已实现并验证通过 (2026-02-09)**
 
 ## 核心结论
 
@@ -10,7 +10,7 @@
 - **对现有 Her（realtime 插件）代码：零修改** -- 已验证
 - **全部新增代码限制在 `extensions/feishu/` 目录内** -- 已验证
 - **风险评估：极低** -- 已通过端到端测试确认
-- **实际新增代码：~1000 行**（包含 cron 直投修复 + 富文本解析修复 + 图片收发 + 图片接收（vision）+ 目标解析）
+- **实际新增代码：~1000 行**（包含 cron 直投修复 + 富文本解析修复 + 图片收发 + 图片接收（vision）+ 目标解析 + 命令授权修复）
 
 ---
 
@@ -481,17 +481,144 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 
 ---
 
+## 多用户飞书部署（Docker 容器 + 独立 Bot）
+
+### 需求
+
+让其他人（如老板、同事）通过飞书使用独立的 Her 实例，每个人有自己的记忆和对话历史，完全隔离。
+
+### 架构方案
+
+每个用户 = 一个 Docker 容器 + 一个独立的飞书 Bot：
+
+```
+你的 Mac
+├── 个人 Her (start.sh) ← 飞书 Bot A（你的 appId/appSecret）
+│   └── 你的 MEMORY.md / USER.md
+│
+├── carher-boss (Docker) ← 飞书 Bot B（独立 appId/appSecret）
+│   └── 老板的 MEMORY.md / USER.md（容器内隔离）
+│
+└── carher-vendor1 (Docker) ← 飞书 Bot C（独立 appId/appSecret）
+    └── 厂商的 MEMORY.md / USER.md（容器内隔离）
+```
+
+### 前置准备
+
+每个用户的飞书 Bot 需要单独创建：
+1. 在飞书开放平台创建新的自建应用
+2. 启用机器人能力 + 添加权限（im:message, im:message:send_as_bot, im:resource）
+3. 事件订阅 im.message.receive_v1，选"长连接"模式
+4. 发布应用版本
+5. 在"应用发布"中设置"可用范围"为仅目标用户
+
+### 启动方式
+
+`start-user.sh` 需要支持传入飞书凭证（待实现）：
+
+```bash
+./start-user.sh --id=boss --model=opus \
+  --feishu-app-id=cli_xxx --feishu-app-secret=xxx
+```
+
+容器 config 中自动注入：
+
+```json
+{
+  "channels": {
+    "feishu": {
+      "appId": "cli_xxx",
+      "appSecret": "xxx",
+      "dm": {
+        "policy": "allowlist",
+        "allowFrom": ["ou_目标用户的open_id"]
+      }
+    }
+  },
+  "plugins": {
+    "entries": {
+      "feishu": { "enabled": true }
+    }
+  }
+}
+```
+
+### 隐私与安全分析
+
+#### 当前个人飞书 Bot 的安全状态
+
+| 配置项 | 当前值 | 风险 | 建议 |
+|--------|--------|------|------|
+| dm.policy | open（默认） | 如果在公司组织，同事可搜到 Bot 并进入你的 main session | 个人组织无风险；公司组织应设 allowlist |
+| dmScope | main（默认） | 所有飞书用户共享同一个 session 和记忆 | 个人组织无风险；多人场景需改 per-peer |
+| 可用范围 | 取决于开放平台设置 | "全部员工"意味着全公司可见 | 限制为仅自己 |
+
+**已确认（2026-02-09）**：Bot 创建在**飞书个人版**组织，成员仅 Bob（所有者），无其他人。当前配置安全，不需要加 allowlist。
+
+#### Docker 容器飞书 Bot 的安全保证
+
+| 维度 | 保证 | 残留风险 |
+|------|------|---------|
+| 数据隔离 | 容器内独立文件系统，记忆互不可见 | 容器运行在你的 Mac 上，你有 root 权限可 docker exec 读取 |
+| 飞书消息隔离 | 每个容器一个独立 Bot，消息管道完全分离 | 你作为 Bot 创建者可在开放平台查审计日志 |
+| 访问控制 | dm.policy=allowlist 限制只有目标用户能使用 | 需要提前获取目标用户的飞书 open_id |
+| 凭证安全 | 每个 Bot 的 appId/appSecret 只在对应容器内 | Bot 凭证由你保管和分发 |
+| Google Cloud | 所有容器共享你的 gcloud 凭证 | 语音用量计在你的账户上 |
+
+#### 各角色能做什么
+
+| 操作 | 你（管理员） | 老板（使用者） | 其他人 |
+|------|------------|--------------|--------|
+| 跟老板的 Bot 对话 | 被 allowlist 拒绝 | 正常使用 | 被 allowlist 拒绝 |
+| 读老板的对话记忆 | 技术上能（docker exec） | 自然产生 | 不能 |
+| 读你的对话记忆 | 自然产生 | 不能 | 不能 |
+| 停止/重启容器 | 能 | 不能 | 不能 |
+| 查看 Bot 审计日志 | 能（开放平台） | 不能 | 不能 |
+
+### TODO
+
+- [ ] **P0**: `start-user.sh` 支持 `--feishu-app-id` / `--feishu-app-secret` 参数
+- [ ] **P0**: 动态生成容器 config 时注入飞书通道配置 + feishu plugin enabled
+- [ ] **P0**: 支持 `--feishu-allow=ou_xxx` 参数设置 allowlist
+- [x] **P1**: 检查当前个人飞书 Bot 的组织类型和可用范围 — 已确认为飞书个人版，仅 Bob 一人，安全
+- [ ] **P1**: 为老板部署时，建议老板自建飞书个人版组织 + 独立 Bot（彻底组织级隔离）
+- [ ] **P2**: 考虑方案 C（共享 Bot + 路由网关），减少需要注册的 Bot 数量
+- [ ] **P2**: 在 getting-started.md 中补充飞书 Bot 创建的详细截图指南
+
+### 风险清单
+
+| 风险 | 级别 | 缓解措施 |
+|------|------|---------|
+| 个人 Bot 在公司组织被同事发现 | 高（如果是公司组织） | 确认组织类型；加 allowlist |
+| 需要为每个用户创建独立 Bot | 中（运营成本） | 提前批量创建；长期考虑方案 C |
+| 容器管理员可读取用户数据 | 中（信任问题） | 明确告知使用者；生产环境应部署到独立服务器 |
+| 飞书 open_id 获取不便 | 低 | 可通过 Bot 首次收到消息时自动记录 |
+| 多个 Bot 管理复杂 | 低 | 用表格记录 Bot-容器-用户映射关系 |
+
+### 命令授权修复 (2026-02-09)
+
+**问题**：用户在飞书中发送 `/new` 或 `/reset` 命令时，session 没有被重置，命令被静默忽略。
+
+**根因**：飞书的 `ctxPayload` 缺少 `CommandAuthorized: true` 字段。OpenClaw 的 session reset 逻辑在 `initSessionState` 中检查 `resetAuthorized`，该值依赖 `ctx.CommandAuthorized`。缺少该字段导致 `commandAuthorized = undefined`（falsy），进而 `resetAuthorized = false`，所有 reset trigger（`/new`, `/reset`）在匹配循环中被直接跳过。
+
+**修复**：在 `gateway.ts` 的 `ctxPayload` 中添加 `CommandAuthorized: true`（飞书是个人私有机器人，所有发送者均为授权用户）。
+
+**验证**：修复后发送 `/new`，session 从旧 ID（`2995ae26...`，totalTokens 185,640）成功重置为新 ID（`d9d1698a...`，totalTokens 17,713），context window 清空。
+
+---
+
 ## 后续增强方向
 
 当前 MVP 实现覆盖了核心聊天 + 定时任务功能，以下为可选增强：
 
 1. **富文本回复**：Markdown -> 飞书 Post 格式转换，支持加粗/链接/代码块
-2. ~~**图片/文件收发**~~：✅ 已实现（2026-02-07 发送，2026-02-08 接收+vision）-- 双向图片支持：AI 可发送图片，也能识别用户发来的图片
+2. ~~**图片/文件收发**~~：已实现（2026-02-07 发送，2026-02-08 接收+vision）-- 双向图片支持：AI 可发送图片，也能识别用户发来的图片
 3. **交互卡片**：使用飞书 Interactive Card 展示结构化回复
 4. **群聊支持**：@mention 检测、群权限策略、群级别配置
 5. **Onboarding CLI**：`openclaw setup` 交互式引导配置飞书凭证
 6. **状态探测**：`openclaw channels status` 显示飞书连接状态
 7. **Typing 指示器**：发送"正在输入..."临时消息
+8. **多用户飞书部署**：见上方"多用户飞书部署"章节
 
 ---
 

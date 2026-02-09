@@ -291,6 +291,8 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     ReplyToId: messageId,
     OriginatingChannel: "feishu",
     OriginatingTo: `feishu:${chatId}`,
+    // Private bot: all senders are authorized to use commands (/new, /reset, etc.).
+    CommandAuthorized: true,
     // Attach image media for vision processing if downloaded.
     MediaPath: mediaPath,
     MediaType: mediaType,
