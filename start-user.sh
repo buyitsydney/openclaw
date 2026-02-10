@@ -98,9 +98,9 @@ if [ "$ACTION" = "list" ]; then
     exit 1
   fi
   echo ""
-  echo -e "${CYAN}ID  姓名          模型      飞书Bot           容器状态    备注${NC}"
-  echo -e "${CYAN}──  ────          ────      ───────           ────────    ────${NC}"
-  while IFS=',' read -r uid uname umodel ufeishu_id ufeishu_secret unote; do
+  echo -e "${CYAN}ID  姓名          模型      飞书Bot           主人OpenID                              容器状态    备注${NC}"
+  echo -e "${CYAN}──  ────          ────      ───────           ──────────                              ────────    ────${NC}"
+  while IFS=',' read -r uid uname umodel ufeishu_id ufeishu_secret ufeishu_owner unote; do
     # Skip comments and empty lines
     [[ "$uid" =~ ^[[:space:]]*# ]] && continue
     [[ -z "$uid" ]] && continue
@@ -108,6 +108,7 @@ if [ "$ACTION" = "list" ]; then
     uname=$(echo "$uname" | xargs)
     umodel=$(echo "$umodel" | xargs)
     ufeishu_id=$(echo "$ufeishu_id" | xargs)
+    ufeishu_owner=$(echo "$ufeishu_owner" | xargs)
     unote=$(echo "$unote" | xargs)
     # Check container status
     CNAME="carher-${uid}"
@@ -119,7 +120,8 @@ if [ "$ACTION" = "list" ]; then
       STATUS="未创建"
     fi
     FEISHU_DISPLAY="${ufeishu_id:-—}"
-    printf "%-3s %-12s  %-8s  %-18s  " "$uid" "$uname" "${umodel:-sonnet}" "$FEISHU_DISPLAY"
+    OWNER_DISPLAY="${ufeishu_owner:-—}"
+    printf "%-3s %-12s  %-8s  %-18s  %-38s  " "$uid" "$uname" "${umodel:-sonnet}" "$FEISHU_DISPLAY" "$OWNER_DISPLAY"
     echo -e "$STATUS    $unote"
   done < "$USERS_CSV"
   echo ""
@@ -286,10 +288,11 @@ CSV_NAME=""
 CSV_MODEL=""
 CSV_FEISHU_ID=""
 CSV_FEISHU_SECRET=""
+CSV_FEISHU_OWNER=""
 CSV_NOTE=""
 
 if [ -f "$USERS_CSV" ]; then
-  while IFS=',' read -r uid uname umodel ufeishu_id ufeishu_secret unote; do
+  while IFS=',' read -r uid uname umodel ufeishu_id ufeishu_secret ufeishu_owner unote; do
     [[ "$uid" =~ ^[[:space:]]*# ]] && continue
     [[ -z "$uid" ]] && continue
     uid=$(echo "$uid" | xargs)
@@ -298,6 +301,7 @@ if [ -f "$USERS_CSV" ]; then
       CSV_MODEL=$(echo "$umodel" | xargs)
       CSV_FEISHU_ID=$(echo "$ufeishu_id" | xargs)
       CSV_FEISHU_SECRET=$(echo "$ufeishu_secret" | xargs)
+      CSV_FEISHU_OWNER=$(echo "$ufeishu_owner" | xargs)
       CSV_NOTE=$(echo "$unote" | xargs)
       break
     fi
@@ -339,13 +343,23 @@ if model:
 # Feishu credentials from users.csv
 feishu_id = '${CSV_FEISHU_ID}'
 feishu_secret = '${CSV_FEISHU_SECRET}'
+feishu_owner = '${CSV_FEISHU_OWNER}'
 if feishu_id and feishu_secret:
-    # Enable feishu channel
-    cfg.setdefault('channels', {})['feishu'] = {
+    # Build feishu channel config
+    feishu_cfg = {
         'enabled': True,
         'appId': feishu_id,
         'appSecret': feishu_secret,
     }
+    # Owner identification (dm allowlist + group owner)
+    if feishu_owner:
+        feishu_cfg['dm'] = {'allowFrom': [feishu_owner]}
+    # Group chat: archive + owner-only reply (enabled by default when owner is set)
+    feishu_cfg['groups'] = {
+        'enabled': True,
+        'archive': True,
+    }
+    cfg.setdefault('channels', {})['feishu'] = feishu_cfg
     # Enable feishu plugin
     cfg.setdefault('plugins', {}).setdefault('entries', {})['feishu'] = {
         'enabled': True

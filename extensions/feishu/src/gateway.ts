@@ -251,17 +251,24 @@ function archiveGroupMessage(params: {
 type FeishuMention = { key: string; id: string; name?: string };
 
 /** Parse the mentions array from the Feishu event body.
- *  Returns structured mention entries. */
+ *  SDK returns mentions[].id as an object { open_id, union_id, user_id },
+ *  not a plain string. We extract the open_id for comparison. */
 // oxlint-disable-next-line typescript/no-explicit-any
 function parseMentions(message: any): FeishuMention[] {
   const raw = message?.mentions;
   if (!Array.isArray(raw)) return [];
   return raw
-    .filter((m: { key?: string; id?: string }) => m.key && m.id)
-    .map((m: { key: string; id: string; name?: string }) => ({
-      key: m.key,
-      id: m.id,
-      name: m.name,
+    // oxlint-disable-next-line typescript/no-explicit-any
+    .filter((m: any) => m.key && m.id)
+    // oxlint-disable-next-line typescript/no-explicit-any
+    .map((m: any) => ({
+      key: m.key as string,
+      // SDK gives id as { open_id, union_id, user_id } object — extract open_id.
+      id:
+        typeof m.id === "object" && m.id?.open_id
+          ? (m.id.open_id as string)
+          : String(m.id ?? ""),
+      name: m.name as string | undefined,
     }));
 }
 
@@ -408,10 +415,14 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     let botOpenId: string | null = null;
     try {
       botOpenId = await getBotOpenId(account);
-    } catch {
-      // Unable to determine bot identity — skip mention detection.
+    } catch (err) {
+      log?.error(`[${account.accountId}] getBotOpenId failed: ${String(err)}`);
     }
     const wasMentioned = botOpenId ? mentions.some((m) => m.id === botOpenId) : false;
+
+    log?.info(
+      `[${account.accountId}] group mention check: botOpenId=${botOpenId} mentions=${JSON.stringify(mentions.map((m) => ({ key: m.key, id: m.id })))} wasMentioned=${wasMentioned}`,
+    );
 
     if (!wasMentioned) {
       // Not @mentioned — just archive (already done above), don't reply.
@@ -569,10 +580,17 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
   const stopCardStream = async () => {
     if (!cardStream?.started) return;
-    // Flush any pending partial update, then close streaming mode.
-    await cardStream.flush();
-    await cardStream.finalize(cardStreamFinalText);
+    // 1. Stop accepting new updates and cancel any scheduled timer.
+    //    This prevents stray delayed flushes from firing after finalize.
     cardStream.stop();
+    // 2. Push the full accumulated text as one final card update.
+    //    onPartialReply may miss the tail of the last paragraph because deliver()
+    //    can fire after the last partial — ensure the card shows the complete text.
+    if (cardStreamFinalText) {
+      await cardStream.sendFinal(cardStreamFinalText);
+    }
+    // 3. Close streaming mode so "[生成中...]" clears.
+    await cardStream.finalize(cardStreamFinalText);
   };
 
   // Dispatch through the auto-reply pipeline and deliver response.

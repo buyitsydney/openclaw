@@ -721,6 +721,8 @@ AI 的一次回复可能包含多个 assistant message（中间穿插 tool call�
 | 多段落时后一段覆盖前一段，中间内容丢失 | `onPartialReply` 的 text 是段落内累积（每个 assistant message 开始时 deltaBuffer reset），直接写入卡片会覆盖前面段落 | `updateCardStream` 内检测段落边界（新 text 不以上一次 text 为前缀 → 新段落），将前一段冻结到 `cardStreamPrefix`，写入 `prefix + 当前段落` |
 | 最后所有段落又从头到尾 stream 一遍 | `deliver` 在整个 turn 结束后才批量调用（不是每段之间），每次都调 `cardStream.update()` + `flush()`，重复写入已经流式展示过的内容 | `deliver` 不再调用 `cardStream.update()`，只累积 `cardStreamFinalText` 给 finalize 用 |
 | 聊天列表预览卡在"正在回复中..."不消失 | 创建卡片时设置了自定义 `summary.content: "正在回复中..."`，这是独立持久化字段，关闭 streaming_mode 不会自动清除 | 创建卡片时**不设** `summary.content`。飞书默认的"[生成中...]"由 `streaming_mode` 控制，关闭后平台自动移除，自动回落到卡片内容的摘要 |
+| 回复末尾内容截断（最后几个 token 丢失） | `onPartialReply` 可能未收到最后一小段文本（AI 最后的 token 直接通过 `deliver` 发出），而 `deliver` 只累积不更新 card | `stopCardStream` 中 `stop()` 后用 `sendFinal(cardStreamFinalText)` 直接推送完整文本，绕过 throttle/inFlight 机制 |
+| "[生成中...]"偶发不消失（竞争条件） | `flush()` 在 `inFlight=true` 时 schedule 延迟 flush 然后立即 return，导致 `finalize(streaming_mode=false)` 先于延迟的 content update 到达飞书，飞书收到更高 sequence 的 content update 后可能重新激活 streaming 状态 | `stopCardStream` 先调 `stop()`（取消 timer + 阻止新 update），再用 `sendFinal` 直接 await 推送完整文本（无竞争），最后 `finalize`。保证 sequence 顺序：`sendFinal(N)` → `finalize(N+1)` |
 
 **修复后的变量协作**：
 
@@ -743,7 +745,9 @@ deliver(payload, kind=final):
   // 不调用 cardStream.update()！onPartialReply 已经展示过了
 
 stopCardStream():
-  flush() → finalize(cardStreamFinalText) → card.settings(streaming_mode=false)
+  stop()                                    // 1. 取消 timer + 阻止新 update（防止 stray flush）
+  sendFinal(cardStreamFinalText)            // 2. 直接推完整文本（绕过 throttle/inFlight）
+  finalize(cardStreamFinalText)             // 3. card.settings(streaming_mode=false)
   → 飞书自动移除"[生成中...]"标记，回落到卡片内容的自动摘要
 ```
 
@@ -953,7 +957,8 @@ IT 创建 Bot 时在权限管理中额外开通：
 
 - per-group 独立 agent/session 路由（已有 `peer.kind: "group"` 基础，后续可扩展）
 - 群聊话题（thread）支持（飞书有 `thread_id`，暂不用）
-- CardKit 流式卡片在群聊中的表现（应自动工作，待验证）
+- ~~CardKit 流式卡片在群聊中的表现~~：已验证可用（2026-02-10）
+- 归档 bot 自己的群聊回复（当前只归档用户消息，bot 回复不经过 inbound 事件）
 - 自动按天/按大小切分归档文件（MVP 先单文件）
 
 ---

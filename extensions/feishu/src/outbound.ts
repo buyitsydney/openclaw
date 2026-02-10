@@ -25,7 +25,8 @@ export function getFeishuClient(account: ResolvedFeishuAccount): Lark.Client {
   return client;
 }
 
-/** Fetch the bot's own open_id via GET /bot/v3/info (cached per appId).
+/** Fetch the bot's own open_id via GET /bot/v3/info/ (cached per appId).
+ *  Uses direct HTTP because the SDK doesn't expose bot.v3 in its typed API.
  *  Needed for @mention detection in group chats. */
 export async function getBotOpenId(account: ResolvedFeishuAccount): Promise<string | null> {
   const cached = botOpenIdCache.get(account.appId);
@@ -33,10 +34,17 @@ export async function getBotOpenId(account: ResolvedFeishuAccount): Promise<stri
   try {
     const client = getFeishuClient(account);
     // oxlint-disable-next-line typescript/no-explicit-any
-    const resp = (await (client as any).bot.v3.botInfo.get({})) as {
-      data?: { bot?: { open_id?: string } };
+    const token = await (client as any).tokenManager.getTenantAccessToken({});
+    if (!token) return null;
+
+    const res = await fetch("https://open.feishu.cn/open-apis/bot/v3/info/", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const json = (await res.json()) as {
+      ok?: boolean;
+      bot?: { open_id?: string };
     };
-    const openId = resp?.data?.bot?.open_id;
+    const openId = json?.bot?.open_id;
     if (openId) {
       botOpenIdCache.set(account.appId, openId);
       return openId;
@@ -437,6 +445,9 @@ export type FeishuCardStream = {
   flush: () => Promise<void>;
   /** Stop the stream (no more updates will be sent). */
   stop: () => void;
+  /** Send final complete text directly, bypassing throttle/inFlight guards.
+   *  Call after stop() to ensure the card displays the full content. */
+  sendFinal: (text: string) => Promise<void>;
   /** Close streaming mode and update chat-list preview summary.
    *  Pass the final text so summary.content is set to a snippet.
    *  Call before stop(). */
@@ -510,11 +521,11 @@ export async function createFeishuCardStream(params: {
     cardId = createResp?.data?.card_id;
     if (!cardId) {
       params.warn?.("Feishu card stream: card.create returned no card_id");
-      return { update: () => {}, flush: async () => {}, stop: () => {}, finalize: async (_t: string) => {}, started: false };
+      return { update: () => {}, flush: async () => {}, stop: () => {}, sendFinal: async () => {}, finalize: async (_t: string) => {}, started: false };
     }
   } catch (err) {
     params.warn?.(`Feishu card stream: card.create failed: ${String(err)}`);
-    return { update: () => {}, flush: async () => {}, stop: () => {}, finalize: async (_t: string) => {}, started: false };
+    return { update: () => {}, flush: async () => {}, stop: () => {}, sendFinal: async () => {}, finalize: async (_t: string) => {}, started: false };
   }
 
   // ── Step 2: Send the card as a message ──
@@ -530,11 +541,11 @@ export async function createFeishuCardStream(params: {
     messageId = sendResp?.data?.message_id;
     if (!messageId) {
       params.warn?.("Feishu card stream: message.create returned no message_id");
-      return { update: () => {}, flush: async () => {}, stop: () => {}, finalize: async (_t: string) => {}, started: false };
+      return { update: () => {}, flush: async () => {}, stop: () => {}, sendFinal: async () => {}, finalize: async (_t: string) => {}, started: false };
     }
   } catch (err) {
     params.warn?.(`Feishu card stream: message.create failed: ${String(err)}`);
-    return { update: () => {}, flush: async () => {}, stop: () => {}, finalize: async (_t: string) => {}, started: false };
+    return { update: () => {}, flush: async () => {}, stop: () => {}, sendFinal: async () => {}, finalize: async (_t: string) => {}, started: false };
   }
 
   params.log?.(
@@ -615,6 +626,22 @@ export async function createFeishuCardStream(params: {
     }
   };
 
+  // Send final complete text directly, bypassing throttle/inFlight guards.
+  // Called after stop() to push the full content before finalize closes streaming.
+  const sendFinal = async (text: string) => {
+    if (!cardId) return;
+    const trimmed = text.trimEnd();
+    if (!trimmed) return;
+    try {
+      await client.cardkit.v1.cardElement.content({
+        path: { card_id: cardId, element_id: STREAM_ELEMENT_ID },
+        data: { content: trimmed, sequence: sequence++ },
+      });
+    } catch (err) {
+      params.warn?.(`Feishu card stream sendFinal failed: ${String(err)}`);
+    }
+  };
+
   // Close streaming mode. No custom summary was set on creation, so Feishu's
   // default "[生成中...]" clears automatically when streaming_mode is turned off.
   // Ref: https://open.feishu.cn/document/cardkit-v1/streaming-updates-openapi-overview
@@ -636,5 +663,5 @@ export async function createFeishuCardStream(params: {
     }
   };
 
-  return { update, flush, stop, finalize, started: true, messageId };
+  return { update, flush, stop, sendFinal, finalize, started: true, messageId };
 }
