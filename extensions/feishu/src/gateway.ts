@@ -12,9 +12,11 @@ import {
   getFeishuClient,
   sendFeishuText,
   sendFeishuRichText,
+  createFeishuCardStream,
   uploadFeishuImage,
   sendFeishuImage,
   downloadFeishuImage,
+  type FeishuCardStream,
 } from "./outbound.js";
 import { getFeishuRuntime } from "./runtime.js";
 
@@ -357,12 +359,104 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       log?.error(`feishu: failed updating session meta: ${String(err)}`);
     });
 
+  // ── Card stream for typing / typewriter effect ──
+  // Skip for commands (/new, /reset etc.) which have their own response flow.
+  const isCommand = cleanText.startsWith("/");
+  let cardStream: FeishuCardStream | undefined;
+
+  // onReplyStart: create the card stream when the AI actually starts processing
+  // (after session lane queuing — never fires for queued messages).
+  const startCardStream = async () => {
+    if (isCommand || cardStream) return;
+    try {
+      cardStream = await createFeishuCardStream({
+        account,
+        chatId,
+        log: (msg) => log?.info(`[${account.accountId}] ${msg}`),
+        warn: (msg) => log?.error(`[${account.accountId}] ${msg}`),
+      });
+      if (cardStream.started) {
+        log?.info(`[${account.accountId}] card stream started`);
+      }
+    } catch (err) {
+      log?.error(`[${account.accountId}] card stream create failed: ${String(err)}`);
+    }
+  };
+
+  // Track completed paragraphs across assistant messages.
+  // onPartialReply text is per-paragraph (deltaBuffer resets each assistant message).
+  // We detect paragraph boundaries by checking if the new text is a continuation of
+  // the previous text — if not, a new assistant message started and we freeze the
+  // previous paragraph into the prefix.
+  let cardStreamPrefix = "";
+  let cardStreamLastPartial = "";
+  let cardStreamFinalText = "";
+
+  const updateCardStream = (text?: string) => {
+    if (!text || !cardStream?.started) return;
+    // Detect paragraph boundary: if text doesn't start with the previous partial,
+    // it means deltaBuffer was reset (new assistant message). Freeze the previous
+    // paragraph into the prefix.
+    if (cardStreamLastPartial && !text.startsWith(cardStreamLastPartial)) {
+      cardStreamPrefix = cardStreamPrefix
+        ? cardStreamPrefix + "\n\n" + cardStreamLastPartial
+        : cardStreamLastPartial;
+    }
+    cardStreamLastPartial = text;
+    // Combine finished paragraphs with the current in-progress paragraph.
+    const full = cardStreamPrefix ? cardStreamPrefix + "\n\n" + text : text;
+    cardStream.update(full);
+  };
+
+  const stopCardStream = async () => {
+    if (!cardStream?.started) return;
+    // Flush any pending partial update, then close streaming mode.
+    await cardStream.flush();
+    await cardStream.finalize(cardStreamFinalText);
+    cardStream.stop();
+  };
+
   // Dispatch through the auto-reply pipeline and deliver response.
+  // Strategy: onPartialReply drives the card typewriter (streaming display).
+  // deliver only accumulates text for finalize — it does NOT update the card,
+  // because onPartialReply already streamed the same content.
   await core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
     ctx: ctxPayload,
     cfg: config,
     dispatcherOptions: {
-      deliver: async (payload) => {
+      deliver: async (payload, info) => {
+        log?.info(
+          `[${account.accountId}] deliver: kind=${info.kind} hasText=${!!payload.text} textLen=${payload.text?.length ?? 0} hasMedia=${!!(payload.mediaUrls?.length || payload.mediaUrl)}`,
+        );
+
+        const hasMedia = !!(payload.mediaUrls?.length || payload.mediaUrl);
+
+        if (cardStream?.started && payload.text) {
+          // deliver is called after the entire turn ends (all paragraphs at once).
+          // onPartialReply + paragraph boundary detection already displayed everything.
+          // Just accumulate text for finalize (summary). Do NOT update the card.
+          cardStreamFinalText = cardStreamFinalText
+            ? cardStreamFinalText + "\n\n" + payload.text
+            : payload.text;
+          log?.info(`[${account.accountId}] deliver: text accumulated for finalize (${cardStreamFinalText.length} chars total)`);
+          setStatus({ lastOutboundAt: Date.now() });
+
+          // Media attachments still need separate delivery.
+          if (hasMedia) {
+            await deliverFeishuReply({
+              payload: { mediaUrls: payload.mediaUrls, mediaUrl: payload.mediaUrl },
+              account,
+              chatId,
+              log,
+              setStatus,
+              config,
+              core,
+            });
+          }
+          return;
+        }
+
+        // Card stream not active or no text — deliver normally.
         await deliverFeishuReply({
           payload,
           account,
@@ -376,8 +470,21 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       onError: (err, info) => {
         log?.error(`[${account.accountId}] Feishu ${info.kind} reply failed: ${String(err)}`);
       },
+      onReplyStart: startCardStream,
+    },
+    replyOptions: {
+      // Disable block streaming when card stream is active (non-command messages).
+      // onPartialReply exclusively drives the card typewriter effect.
+      disableBlockStreaming: !isCommand,
+      onPartialReply: !isCommand
+        ? (payload) => updateCardStream(payload.text)
+        : undefined,
     },
   });
+  // Ensure card stream is stopped after dispatch completes.
+  if (cardStream?.started) {
+    await stopCardStream();
+  }
 }
 
 // ── Reply delivery ──────────────────────────────────────────────────────

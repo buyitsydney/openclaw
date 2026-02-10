@@ -661,7 +661,7 @@ handleEventData():
 
 **教训**：飞书没有 Telegram 的 `sendChatAction("typing")` 原生 API。用真实消息模拟 typing 不可行——"已编辑"标记、多 placeholder、消耗竞争等问题无法解决。
 
-### v2 方案：CardKit 流式卡片 + 打字机效果（实现中）
+### v2 方案：CardKit 流式卡片 + 打字机效果（已实现，2026-02-10）
 
 **核心发现**：飞书 `cardkit.v1` API 提供**官方的"打字机"效果**——`cardElement.content()` 方法的官方描述是"以传入的文本内容覆盖已有卡片组件内容，卡片将自动识别其中的增量变更内容，并以'打字机'效果输出"。
 
@@ -673,15 +673,103 @@ handleEventData():
 | 飞书 SDK | `cardkit.v1.card.create()` + `cardkit.v1.cardElement.content()` | SDK 1.58.0 已支持，类型定义完整 |
 | 飞书 SDK | `im.message.create({ msg_type: "interactive" })` 发送卡片消息 | 已支持 |
 
-**数据流**：
+**数据流（多段落场景）**：
+
+AI 的一次回复可能包含多个 assistant message（中间穿插 tool call）。例如用户问"看一下 NV 的最新 twitter"，AI 可能输出：
+
+- 段落 1："好的，帮你看看 NVIDIA 的最新推文。需要用浏览器抓取。" → 调用 browser tool
+- 段落 2："浏览器不可用，尝试用 web_fetch..." → 调用 web_fetch tool
+- 段落 3："成功拿到了数据。整理一下 NVIDIA 最近的推文：..."
+
+每个段落是一个独立的 assistant message，每个 message 开始时 `deltaBuffer` 被 reset，因此 `onPartialReply` 的 `text` 是**段落内累积**，不包含前面段落的文本。
 
 ```
-AI 逐 token 输出
-  -> onPartialReply 回调（每个 token）
-    -> createFeishuCardStream.update(累积文本)
-      -> throttle 300ms
-        -> cardElement.content(card_id, element_id, 累积文本, sequence++)
-          -> 飞书客户端自动以打字机动画渲染增量
+─── assistant message #1 ───
+  onPartialReply(text="好的，帮你看看...") → cardStream.update("好的，帮你看看...")
+  卡片显示: "好的，帮你看看 NVIDIA 的最新推文。需要用浏览器抓取。" ✅
+
+─── tool call (browser) → tool result ───
+
+─── assistant message #2 ───
+  deltaBuffer reset!
+  onPartialReply(text="浏览器不可用...") → 如果直接 update，会覆盖第一段！
+
+  正确做法：维护跨段落累积变量 cardStreamAccumulatedText
+    cardStreamAccumulatedText = "好的，帮你看看...\n\n" + "浏览器不可用..."
+    → cardStream.update(cardStreamAccumulatedText)
+  卡片显示: 第一段 + 第二段 ✅
+
+─── tool call (web_fetch) → tool result ───
+
+─── assistant message #3 ───
+  deltaBuffer reset!
+  cardStreamAccumulatedText = 前两段 + "\n\n" + "成功拿到了数据..."
+  → cardStream.update(cardStreamAccumulatedText)
+  卡片显示: 第一段 + 第二段 + 第三段 ✅
+
+─── dispatch 完成 ───
+  deliver(kind=final) x3 → 只更新 cardStreamFinalText 给 finalize 用
+  注意：deliver 不再调用 cardStream.update()，因为 onPartialReply 已完成流式展示
+  → finalize(cardStreamFinalText): card.settings(streaming_mode=false)
+  → 飞书自动移除"[生成中...]"标记，回落到卡片内容的自动摘要
+```
+
+**已发现的 bug 及修复（2026-02-10）**：
+
+| Bug | 根因 | 修复 |
+|-----|------|------|
+| 多段落时后一段覆盖前一段，中间内容丢失 | `onPartialReply` 的 text 是段落内累积（每个 assistant message 开始时 deltaBuffer reset），直接写入卡片会覆盖前面段落 | `updateCardStream` 内检测段落边界（新 text 不以上一次 text 为前缀 → 新段落），将前一段冻结到 `cardStreamPrefix`，写入 `prefix + 当前段落` |
+| 最后所有段落又从头到尾 stream 一遍 | `deliver` 在整个 turn 结束后才批量调用（不是每段之间），每次都调 `cardStream.update()` + `flush()`，重复写入已经流式展示过的内容 | `deliver` 不再调用 `cardStream.update()`，只累积 `cardStreamFinalText` 给 finalize 用 |
+| 聊天列表预览卡在"正在回复中..."不消失 | 创建卡片时设置了自定义 `summary.content: "正在回复中..."`，这是独立持久化字段，关闭 streaming_mode 不会自动清除 | 创建卡片时**不设** `summary.content`。飞书默认的"[生成中...]"由 `streaming_mode` 控制，关闭后平台自动移除，自动回落到卡片内容的摘要 |
+
+**修复后的变量协作**：
+
+```
+gateway.ts 中的关键变量：
+  cardStreamPrefix = ""       // 已完成段落的累积文本
+  cardStreamLastPartial = ""  // 上一次 onPartialReply 的 text（用于检测段落边界）
+  cardStreamFinalText = ""    // deliver 累积的完整文本（给 finalize 用）
+
+updateCardStream(text):  // 由 onPartialReply 调用
+  // 段落边界检测：如果 text 不以 lastPartial 为前缀，说明新 assistant message 开始了
+  if (lastPartial && !text.startsWith(lastPartial)):
+    cardStreamPrefix += "\n\n" + lastPartial   // 冻结上一段到 prefix
+  cardStreamLastPartial = text
+  cardStream.update(prefix + "\n\n" + text)    // 写入完整内容
+
+deliver(payload, kind=final):
+  // turn 结束后批量调用（不是每段之间），只累积文本给 finalize 用
+  cardStreamFinalText += "\n\n" + payload.text
+  // 不调用 cardStream.update()！onPartialReply 已经展示过了
+
+stopCardStream():
+  flush() → finalize(cardStreamFinalText) → card.settings(streaming_mode=false)
+  → 飞书自动移除"[生成中...]"标记，回落到卡片内容的自动摘要
+```
+
+**关键：必须设置 `disableBlockStreaming: true`**
+
+对齐 Telegram 模式。如果不设置，agent 配置 `blockStreamingDefault: "on"` 时，`onBlockReply` 和 `onPartialReply` 会同时驱动 card stream，导致文本重复/闪烁。设置后：
+- `onBlockReply` 不会被调用（block pipeline 不创建）
+- `onPartialReply` 正常调用，独占驱动打字机
+- `deliver` 只收到 `kind="final"` payload
+
+代码：`replyOptions: { disableBlockStreaming: !isCommand }`（Telegram 同理：`disableBlockStreaming: Boolean(draftStream)`）
+
+**关键：不设自定义 `summary.content`，只用 `streaming_mode` 控制聊天列表预览**
+
+飞书官方文档（https://open.feishu.cn/document/cardkit-v1/streaming-updates-openapi-overview）FAQ：
+
+- **`streaming_mode` 控制"[生成中...]"标记**：开启时聊天列表预览显示"[生成中...]"，关闭后自动消失，飞书回落到卡片内容的自动摘要。
+- **`summary.content` 是独立持久化字段**：如果设了自定义 summary（如"正在回复中..."），关闭 streaming_mode **不会清除**它。必须手动更新，且飞书客户端可能缓存旧值。
+
+正确做法：创建卡片时**不设 `summary.content`**，finalize 只关 `streaming_mode`：
+
+```
+cardkit.v1.card.settings({
+  path: { card_id },
+  data: { settings: JSON.stringify({ config: { streaming_mode: false } }), sequence }
+})
 ```
 
 **与 Telegram 的对比**：
@@ -692,15 +780,12 @@ AI 逐 token 输出
 | 流式文本 | `sendMessageDraft()`（OpenClaw 自实现的 hack，私聊+topics 限定） | `cardkit.cardElement.content()`（官方 API，原生打字机动画） |
 | 效果 | draft 消息逐步更新（非官方） | 卡片内容逐字出现（官方打字机效果） |
 | 最终样式 | 普通文本气泡 | 卡片样式（有边框） |
+| 流式结束 | draftStream.stop() | card.settings(streaming_mode=false) |
+| 禁用 block streaming | `disableBlockStreaming: Boolean(draftStream)` | `disableBlockStreaming: !isCommand` |
 
 **接入 TypingController**：走 OpenClaw 内置的 `ReplyDispatcherWithTypingOptions.onReplyStart` 回调。typing 由 `TypingSignaler.signalRunStart()` 触发——在 `runReplyAgent` 内部（已进入 session lane 之后）才触发，不会为排队中的消息发 typing。解决了 v1 的"多 placeholder"问题。
 
-**实现 TODO**：
-
-- [ ] `outbound.ts`：新增 `createFeishuCardStream()`（创建卡片 -> 发卡片消息 -> 返回 stream 对象）、`update()` 方法（throttle + `cardElement.content`）、`stop()` 方法
-- [ ] `gateway.ts`：接入 `onPartialReply`（字级流式）和 `onReplyStart`（typing 回调），创建 `FeishuCardStream` 实例
-- [ ] 确认需要哪些新权限（cardkit 相关）
-- [ ] 本地测试：普通消息流式、`/new`、图片、连续消息、tool call
+**额外权限**：需要 `cardkit:card:write`（创建与更新卡片实例）
 
 ---
 
@@ -710,7 +795,7 @@ AI 逐 token 输出
 
 1. ~~**富文本回复**~~：已实现（2026-02-09）-- Markdown -> 飞书 Post 格式转换，见上方"富文本支持矩阵"
 2. ~~**图片/文件收发**~~：已实现（2026-02-07 发送，2026-02-08 接收+vision）-- 双向图片支持
-3. **Typing / 流式回复**：CardKit 流式卡片方案，实现中（见上方"v2 方案"）
+3. ~~**Typing / 流式回复**~~：已实现（2026-02-10）-- CardKit 流式卡片 + 打字机效果，见上方"v2 方案"
 4. **群聊支持**：@mention 检测、群权限策略、群级别配置
 5. **Onboarding CLI**：`openclaw setup` 交互式引导配置飞书凭证
 6. **状态探测**：`openclaw channels status` 显示飞书连接状态

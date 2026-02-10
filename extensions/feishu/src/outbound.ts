@@ -361,3 +361,218 @@ export async function sendFeishuImage(params: {
     });
   }
 }
+
+// ── CardKit Streaming (typing / typewriter effect) ───────────────────────
+
+const DEFAULT_STREAM_THROTTLE_MS = 300;
+/** Stable element ID used inside every streaming card. */
+const STREAM_ELEMENT_ID = "stream_content";
+
+export type FeishuCardStream = {
+  /** Push new accumulated text; throttled internally. */
+  update: (text: string) => void;
+  /** Flush any pending update immediately. */
+  flush: () => Promise<void>;
+  /** Stop the stream (no more updates will be sent). */
+  stop: () => void;
+  /** Close streaming mode and update chat-list preview summary.
+   *  Pass the final text so summary.content is set to a snippet.
+   *  Call before stop(). */
+  finalize: (finalText: string) => Promise<void>;
+  /** Whether the stream was successfully started (card created + message sent). */
+  started: boolean;
+  /** The message_id of the card message (for potential deletion later). */
+  messageId?: string;
+};
+
+/**
+ * Create a Feishu card, send it as a message, and return a stream object
+ * that updates the card content with a typewriter effect.
+ *
+ * Flow:
+ *  1. cardkit.card.create() → get card_id
+ *  2. im.message.create(msg_type="interactive") → get message_id
+ *  3. Caller calls stream.update(text) repeatedly
+ *  4. Internally throttled calls to cardkit.cardElement.content() with sequence++
+ *     → Feishu renders incremental text with native typewriter animation
+ */
+export async function createFeishuCardStream(params: {
+  account: ResolvedFeishuAccount;
+  chatId: string;
+  throttleMs?: number;
+  log?: (msg: string) => void;
+  warn?: (msg: string) => void;
+}): Promise<FeishuCardStream> {
+  const throttleMs = Math.max(50, params.throttleMs ?? DEFAULT_STREAM_THROTTLE_MS);
+  const client = getFeishuClient(params.account);
+  const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
+
+  let cardId: string | undefined;
+  let messageId: string | undefined;
+  let sequence = 1;
+  let lastSentText = "";
+  let lastSentAt = 0;
+  let pendingText = "";
+  let inFlight = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let stopped = false;
+
+  // ── Step 1: Create card instance with a single markdown element ──
+  const cardData = {
+    schema: "2.0",
+    body: {
+      elements: [
+        {
+          tag: "markdown",
+          content: "...",
+          element_id: STREAM_ELEMENT_ID,
+        },
+      ],
+    },
+    // Enable streaming mode. Do NOT set custom summary.content — Feishu's
+    // default "[生成中...]" is controlled by streaming_mode and clears
+    // automatically when streaming_mode is set to false via card.settings().
+    // A custom summary.content persists independently and causes stale previews.
+    config: {
+      streaming_mode: true,
+    },
+  };
+
+  try {
+    const createResp = await client.cardkit.v1.card.create({
+      data: {
+        type: "card_json",
+        data: JSON.stringify(cardData),
+      },
+    });
+    cardId = createResp?.data?.card_id;
+    if (!cardId) {
+      params.warn?.("Feishu card stream: card.create returned no card_id");
+      return { update: () => {}, flush: async () => {}, stop: () => {}, finalize: async (_t: string) => {}, started: false };
+    }
+  } catch (err) {
+    params.warn?.(`Feishu card stream: card.create failed: ${String(err)}`);
+    return { update: () => {}, flush: async () => {}, stop: () => {}, finalize: async (_t: string) => {}, started: false };
+  }
+
+  // ── Step 2: Send the card as a message ──
+  try {
+    const sendResp = await client.im.message.create({
+      params: { receive_id_type: receiveIdType },
+      data: {
+        receive_id: receiveId,
+        content: JSON.stringify({ type: "card", data: { card_id: cardId } }),
+        msg_type: "interactive",
+      },
+    });
+    messageId = sendResp?.data?.message_id;
+    if (!messageId) {
+      params.warn?.("Feishu card stream: message.create returned no message_id");
+      return { update: () => {}, flush: async () => {}, stop: () => {}, finalize: async (_t: string) => {}, started: false };
+    }
+  } catch (err) {
+    params.warn?.(`Feishu card stream: message.create failed: ${String(err)}`);
+    return { update: () => {}, flush: async () => {}, stop: () => {}, finalize: async (_t: string) => {}, started: false };
+  }
+
+  params.log?.(
+    `Feishu card stream ready (cardId=${cardId}, messageId=${messageId}, throttleMs=${throttleMs})`,
+  );
+
+  // ── Step 3: Stream updates via cardElement.content() ──
+  const sendUpdate = async (text: string) => {
+    if (stopped || !cardId) return;
+    const trimmed = text.trimEnd();
+    if (!trimmed || trimmed === lastSentText) return;
+    lastSentText = trimmed;
+    lastSentAt = Date.now();
+    try {
+      await client.cardkit.v1.cardElement.content({
+        path: { card_id: cardId, element_id: STREAM_ELEMENT_ID },
+        data: { content: trimmed, sequence: sequence++ },
+      });
+    } catch (err) {
+      stopped = true;
+      params.warn?.(`Feishu card stream update failed: ${String(err)}`);
+    }
+  };
+
+  const flush = async () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+    if (inFlight) {
+      schedule();
+      return;
+    }
+    const text = pendingText;
+    if (!text.trim()) {
+      pendingText = "";
+      return;
+    }
+    pendingText = "";
+    inFlight = true;
+    try {
+      await sendUpdate(text);
+    } finally {
+      inFlight = false;
+    }
+    if (pendingText) schedule();
+  };
+
+  const schedule = () => {
+    if (timer) return;
+    const delay = Math.max(0, throttleMs - (Date.now() - lastSentAt));
+    timer = setTimeout(() => {
+      timer = undefined;
+      void flush();
+    }, delay);
+  };
+
+  const update = (text: string) => {
+    if (stopped) return;
+    pendingText = text;
+    if (inFlight) {
+      schedule();
+      return;
+    }
+    if (!timer && Date.now() - lastSentAt >= throttleMs) {
+      void flush();
+      return;
+    }
+    schedule();
+  };
+
+  const stop = () => {
+    stopped = true;
+    pendingText = "";
+    if (timer) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+  };
+
+  // Close streaming mode. No custom summary was set on creation, so Feishu's
+  // default "[生成中...]" clears automatically when streaming_mode is turned off.
+  // Ref: https://open.feishu.cn/document/cardkit-v1/streaming-updates-openapi-overview
+  const finalize = async (_finalText: string) => {
+    if (!cardId) return;
+    try {
+      await client.cardkit.v1.card.settings({
+        path: { card_id: cardId },
+        data: {
+          settings: JSON.stringify({
+            config: { streaming_mode: false },
+          }),
+          sequence: sequence++,
+        },
+      });
+      params.log?.("card stream finalize: streaming_mode closed");
+    } catch (err) {
+      params.warn?.(`card stream finalize failed: ${String(err)}`);
+    }
+  };
+
+  return { update, flush, stop, finalize, started: true, messageId };
+}
