@@ -796,10 +796,165 @@ cardkit.v1.card.settings({
 1. ~~**富文本回复**~~：已实现（2026-02-09）-- Markdown -> 飞书 Post 格式转换，见上方"富文本支持矩阵"
 2. ~~**图片/文件收发**~~：已实现（2026-02-07 发送，2026-02-08 接收+vision）-- 双向图片支持
 3. ~~**Typing / 流式回复**~~：已实现（2026-02-10）-- CardKit 流式卡片 + 打字机效果，见上方"v2 方案"
-4. **群聊支持**：@mention 检测、群权限策略、群级别配置
+4. **群聊支持**：见下方「群聊支持设计」章节（已设计，待实现）
 5. **Onboarding CLI**：`openclaw setup` 交互式引导配置飞书凭证
 6. **状态探测**：`openclaw channels status` 显示飞书连接状态
 7. **企业多用户部署**：见 [her-feishu-bot-enterprise-deploy.md](her-feishu-bot-enterprise-deploy.md)（200 Bot + 200 Docker 方案，已验证）
+
+---
+
+## 群聊支持设计
+
+### 核心原则
+
+Her 是专属私人秘书，**绝对不可以对外和主人以外的任何人沟通**。群聊支持的目标不是让 Her 参与群聊讨论，而是：
+
+1. **归档**：Her 静默监听群消息，归档到本地，主人随时可在私聊中让 Her 总结/查询群聊内容
+2. **主人指令**：主人在群里 @Her 时可以回复（仅限主人）
+3. **安全隔离**：非主人 @Her 完全沉默，不做任何回复
+
+### 消息处理流程
+
+```
+群聊消息到达（需 im:message.group_msg 权限，收所有消息）
+  │
+  ├─ 所有消息 → 无条件归档到 JSONL（含 sender 名字、文本、时间戳）
+  │
+  ├─ 主人 @Her → 归档 + 在群里引用回复（quote-reply）
+  ├─ 非主人 @Her → 归档 + 完全沉默（绝不回复）
+  └─ 任何人未 @Her → 归档 + 沉默
+
+主人在私聊中问 "帮我看看产品群今天聊了什么"
+  │
+  Her → 通过 skill/tool 读取归档文件 → 总结返回给主人
+```
+
+### 主人身份识别
+
+通过配置指定主人的飞书 open_id：
+
+- 优先使用 `groups.ownerIds: ["ou_xxx"]`
+- 如果未配置，fallback 到 `dm.allowFrom`（单聊白名单，通常就是主人）
+- 大部分用户只需配 `dm.allowFrom` 即可，群聊自动复用
+
+### 归档存储
+
+#### 存储位置
+
+```
+~/.openclaw/feishu-groups/
+├── index.json                    # 群索引
+│   {
+│     "oc_abc123": { "name": "产品讨论群", "lastMessage": "2026-02-06T15:30:00Z" },
+│     "oc_def456": { "name": "技术架构群", "lastMessage": "2026-02-06T14:20:00Z" }
+│   }
+├── oc_abc123/
+│   └── messages.jsonl            # 每行一条 JSON
+└── oc_def456/
+    └── messages.jsonl
+```
+
+#### JSONL 消息格式
+
+```json
+{"ts":1707235200,"sender":"张三","senderId":"ou_xxx","text":"明天开会记得带材料","msgId":"om_xxx"}
+{"ts":1707235260,"sender":"李四","senderId":"ou_yyy","text":"收到，我准备一下PPT","msgId":"om_yyy"}
+```
+
+#### Docker 容器持久化
+
+归档目录在 `~/.openclaw/feishu-groups/` 下，位于 Docker named volume 内：
+
+```
+-v "carher-${USER_ID}-data:/data/.openclaw"
+```
+
+- Named volume 由 Docker 管理，**容器删除重建（docker rm + docker run）不影响数据**
+- 镜像重新 build（docker build）不影响数据
+- 只有 `docker volume rm` 才会删除
+- 200 人企业部署：每人独立 named volume，互不干扰
+
+#### 数据量估算
+
+- 每条消息约 200 bytes
+- 每群每天 200 条 = 40KB/天
+- 每人 5 个群 = 200KB/天 ≈ 6MB/月
+- 200 人每月总量 ≈ 1.2GB（named volume 完全承受）
+
+### 群名获取
+
+首次遇到新 chatId 时，调用飞书 API `GET /im/v1/chats/{chat_id}` 获取群名，写入 `index.json`。后续消息只更新 `lastMessage` 时间戳。
+
+### Her 读取群聊的方式
+
+通过 agent skill 提示 Her 归档文件的位置和格式：
+
+> 你可以读取飞书群聊记录。群索引在 `~/.openclaw/feishu-groups/index.json`，
+> 消息记录在 `~/.openclaw/feishu-groups/<chatId>/messages.jsonl`
+> （每行一条 JSON，含 ts/sender/text 字段）。
+> 用户提到群名时，先查索引找到 chatId，再读对应的消息文件。
+
+主人在私聊中的典型用法：
+- "帮我看看产品群今天聊了什么"
+- "技术群里有人提到数据库迁移的事吗"
+- "总结一下今天所有群的重要消息"
+
+### @Bot 检测机制
+
+飞书事件体 `data.message.mentions` 数组包含被 @ 的用户/bot 信息：
+
+```json
+"mentions": [
+  { "key": "@_user_1", "id": "ou_botOpenId", "id_type": "open_id", "name": "Her" }
+]
+```
+
+Bot 的 `open_id` 通过 `GET /bot/v3/info` 获取（首次调用后内存缓存）。检测逻辑：
+
+1. 解析 `mentions` 数组，检查是否有条目的 `id` 匹配 bot 的 `open_id`
+2. 如果匹配（wasMentioned=true），再检查 sender 是否为主人（ownerIds / allowFrom）
+3. 只有主人 + @Bot 同时满足才触发回复
+
+### 引用回复（Quote-Reply）
+
+群聊中 Her 回复主人时使用飞书的引用回复（`im.message.reply`），让对话上下文清晰：
+
+- 已有 `sendFeishuReply` 函数，调用 `client.im.message.reply({ path: { message_id } })`
+- 效果：飞书 UI 显示引用回复样式，其他群成员能看到 Her 在回复哪条消息
+- 需要增强 `sendFeishuReply` 支持 Post 格式（当前仅支持纯文本）
+
+### 配置项
+
+```yaml
+channels:
+  feishu:
+    appId: "cli_xxx"
+    appSecret: "xxx"
+    dm:
+      allowFrom: ["ou_主人的openid"]   # 单聊白名单 = 主人身份
+    groups:
+      enabled: true                     # 启用群聊支持（默认 false）
+      archive: true                     # 归档群消息（默认 true）
+      # ownerIds: ["ou_xxx"]            # 可选：显式指定群聊主人 ID（默认复用 dm.allowFrom）
+```
+
+### 飞书权限要求
+
+群聊归档需要 `im:message.group_msg` 权限（获取群组中所有消息），而非仅 `im:message.group_at_msg`（只收 @bot 的消息），因为归档需要看到所有人的消息。
+
+IT 创建 Bot 时在权限管理中额外开通：
+
+| 权限 | 用途 |
+|------|------|
+| `im:message.group_msg` | 接收群聊所有消息（归档用） |
+| `im:chat:readonly` | 获取群信息（群名，用于 index.json） |
+
+### 不在首期范围
+
+- per-group 独立 agent/session 路由（已有 `peer.kind: "group"` 基础，后续可扩展）
+- 群聊话题（thread）支持（飞书有 `thread_id`，暂不用）
+- CardKit 流式卡片在群聊中的表现（应自动工作，待验证）
+- 自动按天/按大小切分归档文件（MVP 先单文件）
 
 ---
 
