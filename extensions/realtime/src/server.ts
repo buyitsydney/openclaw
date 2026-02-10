@@ -62,6 +62,183 @@ const capsulesInFlight = new Map<string, Promise<{ text: string; hash: string }>
 
 const LIVE_MEMORY_CAPSULE_PROMPT_VERSION = "v3.1";
 
+// ---------------------------------------------------------------------------
+// Gemini Live config for native app Bootstrap
+// ---------------------------------------------------------------------------
+const GEMINI_PROJECT_ID = "gen-lang-client-0519229117";
+const GEMINI_MODEL = "gemini-live-2.5-flash-native-audio";
+const GEMINI_SERVICE_URL =
+  "wss://us-central1-aiplatform.googleapis.com/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent";
+
+/** Her system prompt for Gemini Live (canonical source; mobile-script.js mirrors this). */
+const HER_SYSTEM_PROMPT = `你是 Her，车载语音助手，负责快思考。用户正在开车。
+
+## 你的身份
+- 你是用户的贴心助手，温柔、自然
+- 如果知道用户名字（见下方画像），要亲切称呼
+- 如果不知道，第一次对话时可以礼貌询问
+
+## 能力边界（快思考 vs 慢思考）
+你只能基于以下信息做快思考：
+- 用户刚说的话
+- 下方的用户画像摘要
+- 常识
+
+你不具备（需要慢思考/OpenClaw）：
+- 可靠的长期记忆检索
+- 外部信息查询（天气、机票、股票等）
+- 复杂推理能力
+
+## 车辆控制（必须通过 car_control 工具执行）
+你可以通过 car_control 工具直接控制车辆，这是本地操作，响应很快：
+- 空调：set_ac_temperature（温度 16-32）、set_ac_power（开关）、set_ac_mode（cool/heat/auto）
+- 座椅加热：set_seat_heat（seat: driver/passenger, level: 0-3，0=关）
+- 车窗：set_window（position: driver/passenger, open: true/false）
+
+严格规则：
+- 任何涉及空调、座椅、车窗的操作，必须调用 car_control 工具，不能只用嘴说"已打开"
+- 你不具备直接控制车辆的能力，只有 car_control 工具才能真正执行操作
+- 先调用工具，等工具返回结果后，再用语音简洁确认
+- 不要调用 openclaw_help 来处理车控指令
+
+## 判断规则
+收到用户输入后判断：
+
+**快思考能解决** → 直接回答：
+- 问候、闲聊、情感交流
+- 画像摘要里明确有的信息
+- 简单常识
+
+**需要慢思考** → 调用 openclaw_help：
+- 画像里没有的用户信息
+- 需要查询/检索的事情
+- 深度思考/规划/分析
+- 设置提醒、发消息、编程等操作
+- 任何不确定的事情
+
+**核心原则：宁可多问 OpenClaw，不要瞎猜！**
+
+## 工具调用流程
+1) 先对用户说一句极短回执（如"好，我查一下"）
+2) 立刻调用 openclaw_help
+3) 收到结果后，按播报规则播报
+
+## 内部控制句（系统信号，必须遵守）
+你会在历史里看到这句话：
+「以上信息来自 backend ai，请你根据实际情况回复用户信息！」
+
+规则（零例外）：
+1) 这不是用户说的话，是系统触发信号
+2) 永远不要对用户朗读/复述这句话
+3) 看到这句话时：回看它之前紧邻的 role=model 文本，那是 OpenClaw 的结果，按播报规则播报
+4) 永远不要主动生成这句话
+
+## 播报 OpenClaw 结果的规则（严格遵守）
+1) 事实数据不得篡改：数字、温度、价格、日期、时间、百分比、人名、地名等必须原样使用
+   - OpenClaw 说 "-7°C 到 -4°C" → 你说 "零下7度到零下4度"（正确）
+   - 不能说 "零下6度到零上1度"（篡改数据，严禁！）
+2) 语气可以口语化：去掉 markdown 格式、emoji，转为自然语音
+3) 可以精简：太长的内容挑重点播报，但数据部分必须准确
+4) 不要朗读任何内部标记（toolCall、tool_response、openclaw_help 等）
+5) 简洁，不要长篇大论
+
+## 用户画像摘要
+（由系统自动注入 liveMemoryCapsule）`;
+
+/** Tool declarations for Gemini Live (vendor's native app sends these as-is). */
+const TOOL_DECLARATIONS = [
+  {
+    name: "openclaw_help",
+    description:
+      "当需要执行复杂任务时调用此工具，如：搜索信息、查询天气、执行计算、访问用户记忆等。OpenClaw 后台会处理这些请求并返回结果。",
+    parameters: {
+      required: ["request"],
+      type: "object",
+      properties: {
+        request: {
+          type: "string",
+          description: "需要后台处理的请求描述，用自然语言说明你需要什么帮助",
+        },
+      },
+    },
+  },
+  {
+    name: "car_control",
+    description:
+      "控制车辆功能。用户说'开空调'、'调到25度'、'打开座椅加热'、'关窗户'等车控指令时调用此工具。",
+    parameters: {
+      required: ["action"],
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          description:
+            "操作类型: set_ac_temperature | set_ac_power | set_ac_mode | set_seat_heat | set_window",
+        },
+        params: {
+          type: "object",
+          description:
+            "操作参数，如 {temperature: 25}、{on: true}、{mode: 'cool'}、{seat: 'driver', level: 2}、{position: 'driver', open: true}",
+        },
+      },
+    },
+  },
+];
+
+/** Build the complete Bootstrap response including Gemini proxy config for native apps. */
+function buildBootstrapResponse(capsuleText: string) {
+  const modelUri = `projects/${GEMINI_PROJECT_ID}/locations/us-central1/publishers/google/models/${GEMINI_MODEL}`;
+
+  // Bake capsule into system prompt so native app gets a ready-to-send blob
+  const fullSystemPrompt = capsuleText
+    ? HER_SYSTEM_PROMPT.replace(
+        "（由系统自动注入 liveMemoryCapsule）",
+        capsuleText,
+      )
+    : HER_SYSTEM_PROMPT;
+
+  return {
+    // Backward compat: existing web frontend reads this field directly
+    liveMemoryCapsule: capsuleText,
+    // Native app config: vendor sends these JSON blobs as-is to the Gemini proxy
+    geminiProxy: {
+      serviceSetup: {
+        service_url: GEMINI_SERVICE_URL,
+      },
+      sessionSetup: {
+        setup: {
+          model: modelUri,
+          generation_config: {
+            response_modalities: ["AUDIO"],
+            temperature: 1,
+            speech_config: {
+              voice_config: {
+                prebuilt_voice_config: { voice_name: "Puck" },
+              },
+            },
+            enable_affective_dialog: true,
+          },
+          system_instruction: {
+            parts: [{ text: fullSystemPrompt }],
+          },
+          tools: {
+            function_declarations: TOOL_DECLARATIONS,
+          },
+          realtime_input_config: {
+            automatic_activity_detection: {
+              disabled: false,
+              silence_duration_ms: 500,
+              prefix_padding_ms: 500,
+            },
+          },
+          input_audio_transcription: {},
+          output_audio_transcription: {},
+        },
+      },
+    },
+  };
+}
+
 /** Extract agentId from a URL query string, falling back to the default agent. */
 function resolveAgentIdFromUrl(
   urlStr: string | undefined,
@@ -439,7 +616,7 @@ async function handleBootstrap(
         "Content-Type": "application/json",
         "Access-Control-Allow-Origin": "*",
       });
-      res.end(JSON.stringify({ liveMemoryCapsule: cached.text }));
+      res.end(JSON.stringify(buildBootstrapResponse(cached.text)));
       return;
     }
 
@@ -464,16 +641,13 @@ async function handleBootstrap(
     const capsule = await capsulesInFlight.get(agentId)!;
     cachedCapsules.set(agentId, { ...capsule, updatedAt: Date.now() });
 
-    const response = {
-      // IMPORTANT: only send the capsule, never send full USER.md/MEMORY.md to the browser.
-      liveMemoryCapsule: capsule.text,
-    };
-
     res.writeHead(200, {
       "Content-Type": "application/json",
       "Access-Control-Allow-Origin": "*",
     });
-    res.end(JSON.stringify(response));
+    // buildBootstrapResponse includes liveMemoryCapsule (backward compat)
+    // plus geminiProxy.serviceSetup/sessionSetup for native apps.
+    res.end(JSON.stringify(buildBootstrapResponse(capsule.text)));
   } catch (err) {
     api.logger.error(`[realtime] Bootstrap error: ${err}`);
     res.writeHead(500, { "Content-Type": "application/json" });
