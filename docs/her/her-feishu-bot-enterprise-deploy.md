@@ -11,6 +11,62 @@
 
 ---
 
+## 部署前置条件
+
+> **在创建任何飞书 Bot 之前，以下所有条件必须全部就绪。**
+
+### 硬件采购
+
+| 项目 | 最低配置（200 人文字） | 推荐配置（200 人文字 + 语音） |
+|------|----------------------|---------------------------|
+| 服务器 | 1 台：16 核 CPU、64GB RAM、500GB SSD | 2-4 台：各 8 核 CPU、32GB RAM、500GB SSD |
+| 网络 | 公网出口（容器需访问飞书 API + OpenRouter API） | 同左 |
+| 操作系统 | Ubuntu 22.04+ / Debian 12+ | 同左 |
+
+> 每容器约 200MB RAM，200 容器合计约 40GB。CPU 负载极低（AI 推理在云端），16 核足够。
+
+### 软件环境（服务器上安装）
+
+| 软件 | 安装命令 | 用途 |
+|------|---------|------|
+| Docker | `curl -fsSL https://get.docker.com \| sh` | 容器运行环境 |
+| Git | `apt install git` | 拉取部署代码 |
+| Python 3 | `apt install python3` | 配置生成脚本依赖 |
+| cloudflared | `curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \| tee /usr/share/keyrings/cloudflare.gpg && apt install cloudflared` | 远程隧道（可选，仅远程访问时需要） |
+
+### 账号与密钥（P0，必须提前申请）
+
+| # | 项目 | 获取方式 | 说明 |
+|---|------|---------|------|
+| 1 | **OpenRouter API Key** | 注册 [openrouter.ai](https://openrouter.ai) → Keys → Create Key | **最核心依赖，没有它 AI 完全不能工作。** 一个 key 可供所有 200 容器共用。充值建议：先充 $50 测试，正式运行按 ~$1,500/月预算 |
+| 2 | **Google Cloud 凭证** | 注册 Google Cloud → 启用 Vertex AI API → `gcloud auth application-default login` | 语音功能（Gemini Live）依赖。即使暂时只用文字，脚本也需要此凭证文件存在（`~/.config/gcloud/application_default_credentials.json`） |
+| 3 | **飞书管理员账号** | 企业飞书管理后台 → 确认有「创建自建应用」权限 | 后续创建 200 个 Bot 需要此权限 |
+
+### 代码部署
+
+```bash
+# 1. 克隆仓库
+git clone https://github.com/your-org/carher.git
+cd carher
+
+# 2. 设置 OpenRouter API Key（写入 shell 配置，所有终端生效）
+echo 'export OPENROUTER_API_KEY=sk-or-v1-你的key' >> ~/.bashrc
+source ~/.bashrc
+
+# 3. 设置 Google Cloud 凭证（按提示在浏览器登录）
+gcloud auth application-default login
+
+# 4. 首次构建 Docker 镜像（约 5-10 分钟，后续自动检测变更）
+./start-user.sh --id=1 --local
+# 脚本会自动构建镜像，看到 "✓ 容器已启动" 即成功
+# 首次启动后 Ctrl+C 停止，进入下一步创建飞书 Bot
+./start-user.sh --id=1 --down
+```
+
+> **检查清单**：运行 `./start-user.sh --id=1 --local`，如果看到 `✓ Docker 镜像已是最新` + `✓ OpenRouter API key` + `✓ Google Cloud 凭证` + `✓ 容器已启动`，说明环境 100% 就绪。
+
+---
+
 ## 方案选择
 
 | 方案 | 结论 | 放弃原因 |
@@ -245,7 +301,11 @@ docker-compose up -d --no-deps emp-001
 
 #### 阶段 B：部署者启动服务（IT 等待）
 
-部署者在 `docker/users.csv` 添加凭证，运行 `./start-user.sh --id=N`，确认日志出现 `Feishu WSClient connected` 后通知 IT。
+部署者收到 App ID + App Secret 后：
+
+1. 编辑 `docker/users.csv`，新增一行：`N,董事长,sonnet,cli_xxx,secret_xxx,,董事长专属Bot`
+2. 运行 `./start-user.sh --id=N --local`
+3. 确认日志出现 `Feishu WSClient connected` 后通知 IT 继续
 
 #### 阶段 C：IT 配置事件订阅 + 发布（约 5 分钟）
 
@@ -270,7 +330,11 @@ docker-compose up -d --no-deps emp-001
 
 **步骤 9：记录用户 open_id（用于单聊白名单和群聊主人识别）**
 
-员工第一次给 Bot 发消息后，部署者从容器日志中找到 `from=ou_xxx`，将这个 `ou_xxx` 填入 `docker/users.csv` 的 `feishu_owner_open_id` 列，然后重启容器（`./start-user.sh --id=N`）使白名单生效。
+员工第一次给 Bot 发消息后：
+
+1. 部署者查看日志：`./start-user.sh --id=N --logs`，搜索 `from=ou_`，记录完整的 `ou_xxx` 值
+2. 编辑 `docker/users.csv`，将 `ou_xxx` 填入该用户行的 `feishu_owner_open_id` 列
+3. 重启容器：`./start-user.sh --id=N --local`，白名单即刻生效
 
 #### 飞书 Bot 常见问题
 
@@ -335,7 +399,7 @@ docker-compose up -d --no-deps emp-001
 | 飞书 | **可用** | 每人专属 Bot + 独立容器，已验证 |
 | Webchat | **可用** | 每容器独立 Webchat（各自端口），已验证 |
 | Telegram | 可用 | 同飞书，每容器可额外配 Telegram Bot |
-| 语音 (realtime) | 待开发 | 需加用户认证 + Google Cloud 凭证 |
+| 语音 (realtime) | 待开发 | 需加用户认证；Google Cloud 凭证已在前置条件中配置 |
 
 ---
 
