@@ -60,7 +60,7 @@ for arg in "$@"; do
     -h|--help)
       echo "用法: ./start-user.sh --id=N [--model=MODEL] [--host=IP] [--local] [--down] [--logs]"
       echo ""
-      echo "  --id=N        用户编号 (1-99)"
+      echo "  --id=N        用户编号 (1-999)"
       echo "  --model=MODEL 指定 AI 模型（覆盖 users.csv 中的设置）"
       echo "  --host=IP     Webchat 访问地址（默认 localhost，企业部署用内网 IP）"
       echo "  --local       仅本地访问（不开隧道）"
@@ -149,8 +149,8 @@ if [ -z "$USER_ID" ]; then
   exit 1
 fi
 
-if ! [[ "$USER_ID" =~ ^[0-9]+$ ]] || [ "$USER_ID" -lt 1 ] || [ "$USER_ID" -gt 99 ]; then
-  echo -e "${RED}✗ 用户 ID 必须是 1-99 的数字${NC}"
+if ! [[ "$USER_ID" =~ ^[0-9]+$ ]] || [ "$USER_ID" -lt 1 ] || [ "$USER_ID" -gt 999 ]; then
+  echo -e "${RED}✗ 用户 ID 必须是 1-999 的数字${NC}"
   exit 1
 fi
 

@@ -74,7 +74,7 @@
     "port": 18789,
     "mode": "local",
     "bind": "lan",
-    "auth": { "mode": "token", "token": "该员工的随机token" },
+    "auth": { "mode": "token", "token": "carher-container-token" },
     "controlUi": { "dangerouslyDisableDeviceAuth": true }
   },
   "agents": {
@@ -87,25 +87,32 @@
     "nativeSkills": "auto",
     "restart": false
   },
-  "dm": { "policy": "open" },
   "channels": {
-    "feishu": { "enabled": true }
+    "feishu": {
+      "enabled": true,
+      "appId": "cli_该员工Bot的AppID",
+      "appSecret": "该员工Bot的AppSecret",
+      "dm": {
+        "allowFrom": ["ou_该员工的open_id"]
+      },
+      "groups": {
+        "enabled": true,
+        "archive": true
+      }
+    }
   },
   "plugins": {
     "entries": {
-      "feishu": {
-        "enabled": true,
-        "config": {
-          "appId": "cli_该员工Bot的AppID",
-          "appSecret": "该员工Bot的AppSecret"
-        }
-      }
+      "feishu": { "enabled": true }
     }
   }
 }
 ```
 
 > **注意事项**：
+> - 上述配置由 `start-user.sh` 从 `docker/users.csv` 自动生成，IT 无需手动编写
+> - `dm.allowFrom` 限制只有主人能与 bot 单聊（其他人发消息会被忽略）
+> - `groups.enabled` + `groups.archive` 默认启用群聊归档，主人可在私聊让 bot 总结群聊内容
 > - `nativeSkills: "auto"` 必须配置，否则 AI 只能看到少数无依赖的 skill
 > - `controlUi.dangerouslyDisableDeviceAuth: true` 跳过设备配对，允许 token 直接访问 Webchat
 > - 飞书插件在用户发送 `/new` 时自动发送 Webchat URL（从 gateway 配置自动计算，Docker 模式下可通过 `WEBCHAT_URL` 环境变量覆盖）
@@ -135,9 +142,9 @@ services:
         limits:
           memory: 512M
           cpus: '0.5'
-    command: ["node", "/app/dist/index.js", "gateway", "run", "--port", "18789", "--force", "--bind", "lan"]
+    # 无需指定 command，Dockerfile 默认 CMD=["/entrypoint.sh"]
 
-  # ... 由管理脚本自动生成 200 个 service
+  # ... 由 start-user.sh 自动管理，无需手写 docker-compose
 
 volumes:
   enterprise-001-data:
@@ -288,7 +295,7 @@ docker-compose up -d --no-deps emp-001
 
 | 字段 | 说明 |
 |------|------|
-| `id` | 用户编号（1-99） |
+| `id` | 用户编号（1-999） |
 | `姓名` | 显示名 |
 | `模型` | AI 模型（留空用默认 sonnet） |
 | `feishu_app_id` | 飞书 Bot 的 App ID（留空不启用飞书） |

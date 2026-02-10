@@ -47,7 +47,7 @@
 
 1. 在飞书开放平台（open.feishu.cn）创建一个自建应用，启用机器人能力
 2. 获取 `app_id` + `app_secret`
-3. 添加权限：`im:message` + `im:message:send_as_bot` + `im:resource`
+3. 添加权限：`im:message` + `im:message:send_as_bot` + `im:resource` + `im:message.group_msg` + `im:chat:readonly`
 4. 在 OpenClaw config 中配置 `channels.feishu.appId` + `channels.feishu.appSecret`
 5. **先启动 Gateway**（飞书 WSClient 自动连接，日志显示 `Feishu WSClient connected`）
 6. **回到飞书后台**：事件订阅 → 选"使用长连接接收事件" → 保存 → 添加 `im.message.receive_v1`
@@ -293,10 +293,12 @@ outbound: {
 
 ### 5. 权限需求
 
-在飞书开放平台配置以下权限：
+在飞书开放平台配置以下 5 个权限：
 - `im:message` -- 接收消息事件（读取用户发给机器人的单聊消息）
 - `im:message:send_as_bot` -- 以应用身份发消息
 - `im:resource` -- 获取与上传图片或文件资源（图片收发所需）
+- `im:message.group_msg` -- 接收群聊所有消息（群聊归档用）
+- `im:chat:readonly` -- 获取群信息（获取群名，归档索引用）
 
 事件订阅：
 - `im.message.receive_v1` -- 接收消息事件，使用长连接模式
