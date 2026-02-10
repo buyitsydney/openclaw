@@ -10,7 +10,7 @@
 - **对现有 Her（realtime 插件）代码：零修改** -- 已验证
 - **全部新增代码限制在 `extensions/feishu/` 目录内** -- 已验证
 - **风险评估：极低** -- 已通过端到端测试确认
-- **实际新增代码：~1000 行**（包含 cron 直投修复 + 富文本解析修复 + 图片收发 + 图片接收（vision）+ 目标解析 + 命令授权修复）
+- **实际新增代码：~1800 行**（包含 cron 直投修复 + 富文本解析修复 + 图片收发 + 图片接收（vision）+ 目标解析 + 命令授权修复 + 富文本回复 + CardKit 流式卡片 + 群聊归档）
 
 ---
 
@@ -47,7 +47,7 @@
 
 1. 在飞书开放平台（open.feishu.cn）创建一个自建应用，启用机器人能力
 2. 获取 `app_id` + `app_secret`
-3. 添加权限：`im:message` + `im:message:send_as_bot` + `im:resource` + `im:message.group_msg` + `im:chat:readonly`
+3. 添加权限：`im:message` + `im:message:send_as_bot` + `im:resource` + `im:message.group_msg` + `im:message.p2p_msg:readonly` + `im:chat:readonly` + `cardkit:card:write`
 4. 在 OpenClaw config 中配置 `channels.feishu.appId` + `channels.feishu.appSecret`
 5. **先启动 Gateway**（飞书 WSClient 自动连接，日志显示 `Feishu WSClient connected`）
 6. **回到飞书后台**：事件订阅 → 选"使用长连接接收事件" → 保存 → 添加 `im.message.receive_v1`
@@ -293,12 +293,14 @@ outbound: {
 
 ### 5. 权限需求
 
-在飞书开放平台配置以下 5 个权限：
-- `im:message` -- 接收消息事件（读取用户发给机器人的单聊消息）
+在飞书开放平台配置以下 7 个权限：
+- `im:message` -- 获取与发送单聊、群组消息
 - `im:message:send_as_bot` -- 以应用身份发消息
 - `im:resource` -- 获取与上传图片或文件资源（图片收发所需）
-- `im:message.group_msg` -- 接收群聊所有消息（群聊归档用）
+- `im:message.group_msg` -- 获取群组中所有消息（敏感权限，群聊归档用）
+- `im:message.p2p_msg:readonly` -- 读取用户发给机器人的单聊消息
 - `im:chat:readonly` -- 获取群信息（获取群名，归档索引用）
+- `cardkit:card:write` -- 创建与更新卡片（AI 流式回复打字机效果）
 
 事件订阅：
 - `im.message.receive_v1` -- 接收消息事件，使用长连接模式
@@ -331,12 +333,12 @@ outbound: {
 | `openclaw.plugin.json` | 9 | 插件清单 |
 | `package.json` | 39 | 依赖 + 通道元数据 |
 | `index.ts` | 17 | 入口注册 |
-| `src/channel.ts` | 253 | ChannelPlugin 主体 + sendMedia 图片上传 + 目标解析 |
+| `src/channel.ts` | 254 | ChannelPlugin 主体 + sendMedia 图片上传 + 目标解析 |
 | `src/runtime.ts` | 14 | Runtime 单例 |
-| `src/gateway.ts` | 390 | WSClient + pipeline 集成 + 富文本解析 + 回复投递 + 图片下载/接收（vision） |
-| `src/outbound.ts` | 161 | Lark SDK 消息发送 + 智能 ID 类型识别 + 图片上传/发送/下载 |
-| `src/accounts.ts` | 117 | 账户 / 凭证解析 |
-| **总计** | **~1000** | 全部在 `extensions/feishu/` 内 |
+| `src/gateway.ts` | 733 | WSClient + pipeline 集成 + 富文本解析 + 回复投递 + 图片下载/接收 + CardKit 流式卡片 + 群聊归档 |
+| `src/outbound.ts` | 667 | Lark SDK 消息发送 + ID 类型识别 + 图片上传/发送/下载 + Markdown→Post 转换 + CardKit API |
+| `src/accounts.ts` | 133 | 账户 / 凭证解析 + 群聊主人 ID 解析 |
+| **总计** | **~1800** | 全部在 `extensions/feishu/` 内 |
 
 ---
 
@@ -791,7 +793,7 @@ cardkit.v1.card.settings({
 
 **接入 TypingController**：走 OpenClaw 内置的 `ReplyDispatcherWithTypingOptions.onReplyStart` 回调。typing 由 `TypingSignaler.signalRunStart()` 触发——在 `runReplyAgent` 内部（已进入 session lane 之后）才触发，不会为排队中的消息发 typing。解决了 v1 的"多 placeholder"问题。
 
-**额外权限**：需要 `cardkit:card:write`（创建与更新卡片实例）
+**额外权限**：需要 `cardkit:card:write`（创建与更新卡片实例），已包含在 7 个标准权限中
 
 ---
 

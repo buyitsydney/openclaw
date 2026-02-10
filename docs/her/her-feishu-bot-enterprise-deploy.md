@@ -201,7 +201,7 @@ docker-compose up -d --no-deps emp-001
 |---|------|------|
 | 1 | 创建自建应用 + 启用机器人 | open.feishu.cn → 创建应用 → 添加「机器人」能力 |
 | 2 | 记录凭证 | 凭证与基础信息 → 复制 App ID + App Secret |
-| 3 | 开通 5 个权限 | 权限管理 → 搜索开通：`im:message`、`im:message:send_as_bot`、`im:resource`、`im:message.group_msg`、`im:chat:readonly` |
+| 3 | 开通 7 个权限 | 权限管理 → 搜索开通：`im:message`、`im:message:send_as_bot`、`im:resource`、`im:message.group_msg`、`im:message.p2p_msg:readonly`、`im:chat:readonly`、`cardkit:card:write` |
 | 4 | 交给部署者，等通知 | 部署者启动容器，确认 `Feishu WSClient connected` 后通知你 |
 | 5 | 配置事件订阅 | 事件与回调 → 订阅方式选「长连接」→ 保存 → 添加 `im.message.receive_v1` |
 | 6 | 发布 | 版本管理 → 创建版本 → 设置可用范围 → 发布 |
@@ -225,15 +225,17 @@ docker-compose up -d --no-deps emp-001
 
 **步骤 4：添加权限**
 
-左侧菜单「权限管理」→「API 权限」，搜索并开通以下 5 个权限：
+左侧菜单「权限管理」→「API 权限」，搜索并开通以下 7 个权限：
 
 | 搜索关键词 | 权限名称 | 用途 |
 |-----------|---------|------|
 | `im:message` | 获取与发送单聊、群组消息 | 接收用户消息 |
 | `im:message:send_as_bot` | 以应用的身份发消息 | 机器人回复 |
 | `im:resource` | 获取与上传图片或文件资源 | 收发图片 |
-| `im:message.group_msg` | 获取群组中所有消息 | 群聊归档（接收所有群消息） |
+| `im:message.group_msg` | 获取群组中所有消息（敏感权限） | 群聊归档（接收所有群消息） |
+| `im:message.p2p_msg:readonly` | 读取用户发给机器人的单聊消息 | 单聊消息读取 |
 | `im:chat:readonly` | 获取群组信息 | 获取群名（归档索引用） |
+| `cardkit:card:write` | 创建与更新卡片 | AI 流式回复（打字机效果） |
 
 > 群聊归档默认启用。Her 静默监听群消息并归档到本地，主人可在私聊中随时让 Her 总结群聊内容。
 
@@ -265,6 +267,10 @@ docker-compose up -d --no-deps emp-001
 在飞书搜索机器人名称 → 打开私聊 → 发消息 → 确认 AI 回复。
 
 > 搜索到但没有对话框？确认事件订阅已保存 + 已创建新版本并发布。
+
+**步骤 9：记录用户 open_id（用于单聊白名单和群聊主人识别）**
+
+员工第一次给 Bot 发消息后，部署者从容器日志中找到 `from=ou_xxx`，将这个 `ou_xxx` 填入 `docker/users.csv` 的 `feishu_owner_open_id` 列，然后重启容器（`./start-user.sh --id=N`）使白名单生效。
 
 #### 飞书 Bot 常见问题
 
