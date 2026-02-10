@@ -4,6 +4,7 @@
 # 用法:
 #   ./start-user.sh --id=1                    # user1 + 随机隧道（默认 Sonnet）
 #   ./start-user.sh --id=1 --model=opus       # user1 + Opus 4.6
+#   ./start-user.sh --id=1 --named            # user1 + 命名隧道（固定 URL，永不变化）
 #   ./start-user.sh --id=1 --local            # user1 仅本地（不开隧道）
 #   ./start-user.sh --id=1 --down             # 停止 user1
 #   ./start-user.sh --down                    # 停止所有用户容器
@@ -51,6 +52,7 @@ for arg in "$@"; do
     --model=*) MODEL_ARG="${arg#--model=}" ;;
     --host=*) HOST_ARG="${arg#--host=}" ;;
     --random) MODE="random" ;;
+    --named) MODE="named" ;;
     --local) MODE="local" ;;
     --down) ACTION="down" ;;
     --logs) ACTION="logs" ;;
@@ -63,6 +65,7 @@ for arg in "$@"; do
       echo "  --id=N        用户编号 (1-999)"
       echo "  --model=MODEL 指定 AI 模型（覆盖 users.csv 中的设置）"
       echo "  --host=IP     Webchat 访问地址（默认 localhost，企业部署用内网 IP）"
+      echo "  --named       使用命名隧道（固定 URL，永不变化）"
       echo "  --local       仅本地访问（不开隧道）"
       echo "  --down        停止容器（不指定 --id 则停止所有）"
       echo "  --logs        查看容器日志"
@@ -467,6 +470,68 @@ if [ "$MODE" = "local" ]; then
   echo -e "  停止: ${YELLOW}./start-user.sh --id=${USER_ID} --down${NC}"
   echo -e "  日志: ${YELLOW}./start-user.sh --id=${USER_ID} --logs${NC}"
   exit 0
+fi
+
+# --- Named tunnel mode (固定域名，永不变化) ---
+if [ "$MODE" = "named" ]; then
+  # 检查命名隧道配置
+  if [ ! -f "$HOME/.cloudflared/config.yml" ]; then
+    echo -e "${RED}✗ 未找到命名隧道配置 (~/.cloudflared/config.yml)${NC}"
+    echo "  请先运行: cloudflared tunnel login && cloudflared tunnel create carher"
+    exit 1
+  fi
+
+  # 用户 id → 固定域名映射（在 ~/.cloudflared/config.yml 中配置对应 ingress 规则）
+  # 默认约定: u{id}.carher.net (Realtime/Bootstrap) + u{id}-proxy.carher.net (WS Proxy)
+  # 特殊别名: id=2 → vendor.carher.net / vendor-proxy.carher.net
+  case "$USER_ID" in
+    2) NAMED_RT_HOST="vendor.carher.net"; NAMED_PROXY_HOST="vendor-proxy.carher.net" ;;
+    *) NAMED_RT_HOST="u${USER_ID}.carher.net"; NAMED_PROXY_HOST="u${USER_ID}-proxy.carher.net" ;;
+  esac
+
+  NAMED_BOOTSTRAP_URL="https://${NAMED_RT_HOST}/api/realtime/bootstrap"
+  NAMED_PROXY_URL="wss://${NAMED_PROXY_HOST}"
+  NAMED_OPENCLAW_URL="wss://${NAMED_RT_HOST}/ws"
+
+  echo ""
+  echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
+  echo -e "${GREEN}  🚗 User ${USER_ID} — 固定 URL（命名隧道，永不变化）${NC}"
+  echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
+  echo ""
+  echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+  echo -e "${CYAN}  厂商对接信息（直接复制发给厂商）${NC}"
+  echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+  echo ""
+  echo "  BOOTSTRAP_URL (App 启动时 HTTP GET 调用一次):"
+  echo "    $NAMED_BOOTSTRAP_URL"
+  echo ""
+  echo "  PROXY_URL (WS 连接 1 — 音频双向流):"
+  echo "    $NAMED_PROXY_URL"
+  echo ""
+  echo "  OPENCLAW_URL (WS 连接 2 — 后台 AI):"
+  echo "    $NAMED_OPENCLAW_URL"
+  echo ""
+  echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+  echo ""
+  echo -e "  隧道域名映射:"
+  echo "    ${NAMED_RT_HOST}        → localhost:${PORT_RT} (Realtime/Bootstrap)"
+  echo "    ${NAMED_PROXY_HOST}  → localhost:${PORT_WS} (WS Proxy)"
+  echo ""
+
+  # 检查命名隧道是否已在运行
+  if pgrep -f "cloudflared tunnel run" &>/dev/null; then
+    echo -e "${GREEN}✓ 命名隧道已在运行中${NC}"
+    echo ""
+    echo -e "  停止容器: ${YELLOW}./start-user.sh --id=${USER_ID} --down${NC}"
+    echo -e "  查看日志: ${YELLOW}./start-user.sh --id=${USER_ID} --logs${NC}"
+    exit 0
+  fi
+
+  # 启动命名隧道（前台，Ctrl+C 停止）
+  echo -e "${YELLOW}启动命名隧道 (carher)...${NC}"
+  echo -e "${YELLOW}按 Ctrl+C 关闭隧道（容器 ${CONTAINER_NAME} 保持运行）${NC}"
+  echo ""
+  exec cloudflared tunnel run carher
 fi
 
 # --- Start Cloudflare random tunnels ---

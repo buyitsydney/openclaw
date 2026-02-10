@@ -96,18 +96,20 @@
 
 我方提供 **3 个 URL**，仅此而已。厂商不需要任何 API Key、Token 或密钥。
 
-联调前，我方运行启动脚本后，终端会打印如下内容，直接复制给厂商：
+联调期间使用以下**固定 URL**（命名隧道，永不变化）：
 
 ```
   BOOTSTRAP_URL (App 启动时 HTTP GET 调用一次):
-    https://xxx.trycloudflare.com/api/realtime/bootstrap
+    https://vendor.carher.net/api/realtime/bootstrap
 
   PROXY_URL (WS 连接 1 — 音频双向流):
-    wss://yyy.trycloudflare.com
+    wss://vendor-proxy.carher.net
 
   OPENCLAW_URL (WS 连接 2 — 后台 AI):
-    wss://xxx.trycloudflare.com/ws
+    wss://vendor.carher.net/ws
 ```
+
+> 这些 URL 通过 Cloudflare 命名隧道映射到我方服务器，域名固定不变，重启服务后 URL 不会改变。
 
 **3 个 URL 的用途：**
 
@@ -198,7 +200,7 @@ import org.json.JSONObject
 
 /**
  * 调用 Bootstrap 获取 AI 配置。
- * @param bootstrapUrl 我方提供的 BOOTSTRAP_URL，如 "https://xxx.trycloudflare.com/api/realtime/bootstrap"
+ * @param bootstrapUrl 我方提供的 BOOTSTRAP_URL，如 "https://vendor.carher.net/api/realtime/bootstrap"
  * @return 解析后的 JSON 对象
  */
 fun fetchBootstrap(bootstrapUrl: String): JSONObject {
@@ -213,7 +215,7 @@ fun fetchBootstrap(bootstrapUrl: String): JSONObject {
 }
 
 // 使用示例:
-// val config = fetchBootstrap("https://xxx.trycloudflare.com/api/realtime/bootstrap")
+// val config = fetchBootstrap("https://vendor.carher.net/api/realtime/bootstrap")
 // val serviceSetup: JSONObject = config.getJSONObject("geminiProxy").getJSONObject("serviceSetup")
 // val sessionSetup: JSONObject = config.getJSONObject("geminiProxy").getJSONObject("sessionSetup")
 ```
@@ -257,7 +259,7 @@ val sessionSetup: JSONObject = config.getJSONObject("geminiProxy").getJSONObject
 ```kotlin
 import okhttp3.*
 
-// OPENCLAW_URL 由我方提供，如 "wss://xxx.trycloudflare.com/ws"
+// OPENCLAW_URL 由我方提供，如 "wss://vendor.carher.net/ws"
 val openclawWs: WebSocket = OkHttpClient().newWebSocket(
     Request.Builder().url(OPENCLAW_URL).build(),
     object : WebSocketListener() {
@@ -292,7 +294,7 @@ val openclawWs: WebSocket = OkHttpClient().newWebSocket(
 ### Step 3: 连接 PROXY_URL（WS 连接 1）
 
 ```kotlin
-// PROXY_URL 由我方提供，如 "wss://yyy.trycloudflare.com"
+// PROXY_URL 由我方提供，如 "wss://vendor-proxy.carher.net"
 val proxyWs: WebSocket = OkHttpClient().newWebSocket(
     Request.Builder().url(PROXY_URL).build(),
     object : WebSocketListener() {
