@@ -36,11 +36,66 @@
 
 ### 账号与密钥（P0，必须提前申请）
 
-| # | 项目 | 获取方式 | 说明 |
-|---|------|---------|------|
-| 1 | **OpenRouter API Key** | 注册 [openrouter.ai](https://openrouter.ai) → Keys → Create Key | **最核心依赖，没有它 AI 完全不能工作。** 一个 key 可供所有 200 容器共用。充值建议：先充 $50 测试，正式运行按 ~$1,500/月预算 |
-| 2 | **Google Cloud 凭证** | 注册 Google Cloud → 启用 Vertex AI API → `gcloud auth application-default login` | 语音功能（Gemini Live）依赖。即使暂时只用文字，脚本也需要此凭证文件存在（`~/.config/gcloud/application_default_credentials.json`） |
-| 3 | **飞书管理员账号** | 企业飞书管理后台 → 确认有「创建自建应用」权限 | 后续创建 200 个 Bot 需要此权限 |
+共需 3 项，全部就绪后才能开始部署。
+
+#### ① OpenRouter API Key（AI 核心依赖，没有它什么都不能用）
+
+1. 打开 [openrouter.ai](https://openrouter.ai)，点击右上角 Sign Up，用 Google 或邮箱注册
+2. 登录后点击左侧 **Keys** → **Create Key**
+3. 复制生成的 key（格式：`sk-or-v1-xxxx`），妥善保管
+4. 充值：点击左侧 **Credits** → **Add Credits**，先充 **$50** 用于测试，正式运行按 ~$1,500/月预算
+
+> 一个 key 可供所有 200 个容器共用，不需要每人一个。
+
+#### ② Google Cloud 凭证（语音功能依赖，脚本强制检查）
+
+即使暂时只用文字聊天，启动脚本也会检查此凭证文件是否存在。请提前完成。
+
+**第一步：注册 Google Cloud**
+
+1. 打开 [console.cloud.google.com](https://console.cloud.google.com)
+2. 用企业 Google 账号登录（或个人 Gmail）
+3. 首次使用会提示创建项目，项目名随意填（如 `carher-prod`）
+4. 新账号有 $300 免费额度，足够长期测试
+
+**第二步：启用 API**
+
+1. 在 Google Cloud Console 顶部搜索栏输入 `Vertex AI API`
+2. 点击进入 → 点击 **启用**（Enable）
+3. 如果提示需要关联计费账号，按引导绑定信用卡（语音功能产生的费用从这里扣）
+
+**第三步：在服务器上安装 gcloud CLI**
+
+```bash
+# Debian/Ubuntu
+curl https://sdk.cloud.google.com | bash
+# 安装完成后重新打开终端，或执行：
+exec -l $SHELL
+# 验证安装
+gcloud --version
+```
+
+**第四步：登录并生成凭证文件**
+
+```bash
+# 登录 Google 账号（会打开浏览器，服务器无桌面则用下面的 --no-browser 方式）
+gcloud auth application-default login
+
+# 如果服务器没有浏览器（纯命令行服务器），使用远程登录模式：
+gcloud auth application-default login --no-browser
+# 按提示在本地电脑浏览器打开链接 → 登录 → 复制授权码 → 粘贴回终端
+```
+
+**第五步：验证**
+
+```bash
+ls ~/.config/gcloud/application_default_credentials.json
+# 看到文件存在即成功
+```
+
+#### ③ 飞书管理员账号
+
+登录 [飞书管理后台](https://feishu.cn/admin)，确认当前账号有「创建自建应用」权限。后续创建 200 个 Bot 需要此权限。
 
 ### 代码部署
 
@@ -53,17 +108,14 @@ cd carher
 echo 'export OPENROUTER_API_KEY=sk-or-v1-你的key' >> ~/.bashrc
 source ~/.bashrc
 
-# 3. 设置 Google Cloud 凭证（按提示在浏览器登录）
-gcloud auth application-default login
-
-# 4. 首次构建 Docker 镜像（约 5-10 分钟，后续自动检测变更）
+# 3. 首次构建 Docker 镜像（约 5-10 分钟，后续自动检测变更）
 ./start-user.sh --id=1 --local
 # 脚本会自动构建镜像，看到 "✓ 容器已启动" 即成功
-# 首次启动后 Ctrl+C 停止，进入下一步创建飞书 Bot
+# 首次验证后停止容器，进入下一步创建飞书 Bot
 ./start-user.sh --id=1 --down
 ```
 
-> **检查清单**：运行 `./start-user.sh --id=1 --local`，如果看到 `✓ Docker 镜像已是最新` + `✓ OpenRouter API key` + `✓ Google Cloud 凭证` + `✓ 容器已启动`，说明环境 100% 就绪。
+> **检查清单**：运行 `./start-user.sh --id=1 --local`，如果看到 `✓ Docker 镜像已是最新` + `✓ OpenRouter API key` + `✓ Google Cloud 凭证` + `✓ 容器已启动`，说明环境 100% 就绪。如果任何一项显示 `✗`，根据错误提示排查对应的账号/密钥配置。
 
 ---
 
