@@ -563,6 +563,90 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 
 ---
 
+## ACK 超时与事件重推 Bug（2026-02-10 确认）
+
+### 问题现象
+
+Docker 容器中的飞书 bot 在容器重启后，反复收到"幽灵"欢迎消息。用户未发送任何指令，但 bot 在 +15s、+5min、+1h、+6h 反复触发 `/new` 处理并发送欢迎。
+
+### 根因（已用诊断日志 100% 确认）
+
+飞书 WebSocket SDK (`@larksuiteoapi/node-sdk`) 的 `handleEventData` 方法中，**先 `await` 用户 handler，再发 ACK**：
+
+```
+handleEventData():
+  yield eventDispatcher.invoke(...)   // ← await 用户 handler
+  this.sendMessage(ACK)               // ← handler 完成后才发 ACK
+```
+
+而我们的 handler 中 `await handleInboundMessage()` 包含了**完整的 AI 处理流程**（思考 + 生成 + 发送回复），耗时远超飞书的 ACK 超时窗口。
+
+### 修复前诊断数据（2026-02-10 本地实测）
+
+| 消息内容 | handler 耗时 | 飞书是否重推 | 重推间隔 |
+|---------|-------------|------------|---------|
+| "在吗"（简单对话） | **9,013ms** | 是 | +19s（首次重试） |
+| "/new"（新会话） | **6,537ms** | 是 | +19s（首次重试） |
+| "帮我查一下上海天气"（工具调用） | **27,107ms** | 是 | +19s（首次重试） |
+| "在吗" 重试（trackMessageId 拦截） | **10ms** | 否 | - |
+| "/new" 重试（trackMessageId 拦截） | **7ms** | 否 | - |
+| "查天气" 重试（trackMessageId 拦截） | **7ms** | 否 | - |
+
+**关键发现**：
+- 飞书 WebSocket 的 ACK 超时窗口约 **3-5 秒**
+- 所有正常消息的 handler 耗时均 **6-27 秒**，远超超时窗口 → ACK 永远迟到
+- 内存去重 `trackMessageId` 能拦截重试消息（10ms 内返回），ACK 及时发出 → 重试链中断
+- **容器重启 → 内存去重缓存清空 → 重试消息无法拦截 → 每次都走完整 handler → ACK 每次都超时 → 7.1 小时持续重推**
+
+### 飞书事件重试间隔
+
+| 重试次序 | 间隔 | 累计 |
+|---------|------|------|
+| 第 1 次 | +15 秒 | 15s |
+| 第 2 次 | +5 分钟 | 5m15s |
+| 第 3 次 | +1 小时 | 1h5m15s |
+| 第 4 次 | +6 小时 | 7h5m15s |
+
+### 修复方案
+
+将 handler 注册从 `await`（同步等待）改为 `void`（异步触发不等待），让 SDK 在毫秒内发出 ACK：
+
+```typescript
+// 修复前（ACK 等 AI 处理完，6-27 秒）
+"im.message.receive_v1": async (data) => {
+  await handleInboundMessage(data, deps);  // 阻塞 ACK
+}
+
+// 修复后（ACK 立即发出，毫秒级）
+"im.message.receive_v1": async (data) => {
+  void handleInboundMessage(data, deps).catch(err => log(err));
+  // handler 立即 return → SDK 发 ACK → 飞书确认 → 不再重试
+}
+```
+
+### 修复后验证数据（2026-02-10 本地实测）
+
+修复后发送 5 条消息（含断电重启场景），**零重试**：
+
+| 消息内容 | msgId（后4位） | 是否被飞书重推 |
+|---------|--------------|--------------|
+| "/new" | f87c | 否 |
+| "帮我看一下北京天气吧" | 4566 | 否 |
+| "看一下无锡天气"（断电重启后） | e14b | 否 |
+| "/reset" | 1612 | 否 |
+| "/new" | 9416 | 否 |
+
+**断电测试**：发送"北京天气"后立即断电重启。ACK 已及时发出（飞书不重推），但 AI 回复因进程被 kill 而丢失。这是 `void` 方案的已知代价——trade-off：**消除重复推送 vs 极端断电时可能丢一条回复**。
+
+**状态：已修复（2026-02-10），修改文件 `extensions/feishu/src/gateway.ts`。**
+
+### 后续可选加固
+
+- 持久化 `trackMessageId`（写文件/volume），防止容器重启后缓存丢失
+- 基于 `createTime` 过滤过期事件（>10min 的消息直接丢弃）
+
+---
+
 ## 后续增强方向
 
 当前 MVP 实现覆盖了核心聊天 + 定时任务 + 富文本功能，以下为可选增强：

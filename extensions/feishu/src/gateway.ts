@@ -142,11 +142,14 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
 
   const eventDispatcher = new Lark.EventDispatcher({}).register({
     "im.message.receive_v1": async (data) => {
-      try {
-        await handleInboundMessage(data, { account, config, log, setStatus, core });
-      } catch (err) {
-        log?.error(`[${account.accountId}] error handling message: ${String(err)}`);
-      }
+      // Return immediately so the SDK sends the ACK frame within milliseconds.
+      // Without this, Feishu's ~3-5s ACK timeout expires before the AI finishes
+      // processing (6-27s observed), causing Feishu to retry at +15s/+5m/+1h/+6h.
+      void handleInboundMessage(data, { account, config, log, setStatus, core }).catch(
+        (err) => {
+          log?.error(`[${account.accountId}] error handling message: ${String(err)}`);
+        },
+      );
     },
   });
 
