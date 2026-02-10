@@ -9,16 +9,22 @@ import * as Lark from "@larksuiteoapi/node-sdk";
 import type { ChannelAccountSnapshot, ChannelLogSink, OpenClawConfig, RuntimeEnv } from "openclaw/plugin-sdk";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import {
-  getFeishuClient,
   sendFeishuText,
   sendFeishuRichText,
+  sendFeishuReply,
   createFeishuCardStream,
   uploadFeishuImage,
   sendFeishuImage,
   downloadFeishuImage,
+  getBotOpenId,
+  getFeishuChatName,
   type FeishuCardStream,
 } from "./outbound.js";
+import { resolveGroupOwnerIds } from "./accounts.js";
 import { getFeishuRuntime } from "./runtime.js";
+import { existsSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 
 export type FeishuGatewayOptions = {
   account: ResolvedFeishuAccount;
@@ -184,6 +190,93 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
   });
 }
 
+// ── Group chat message archive ──────────────────────────────────────────
+
+/** Resolve the base directory for group chat archives.
+ *  Uses OPENCLAW_HOME env var if set (Docker), otherwise ~/.openclaw. */
+function resolveGroupArchiveDir(): string {
+  const base = process.env.OPENCLAW_HOME ?? join(homedir(), ".openclaw");
+  return join(base, "feishu-groups");
+}
+
+type GroupIndexEntry = { name: string; lastMessage: string };
+
+/** Append a message to the group's JSONL archive and update index.json.
+ *  Creates directories + files on first call for a given chatId. */
+function archiveGroupMessage(params: {
+  chatId: string;
+  chatName: string | null;
+  senderId: string;
+  senderName: string;
+  text: string;
+  msgId: string;
+}): void {
+  const archiveDir = resolveGroupArchiveDir();
+  const chatDir = join(archiveDir, params.chatId);
+
+  // Ensure directories exist.
+  if (!existsSync(chatDir)) {
+    mkdirSync(chatDir, { recursive: true });
+  }
+
+  // Append message to JSONL.
+  const record = {
+    ts: Math.floor(Date.now() / 1000),
+    sender: params.senderName || params.senderId,
+    senderId: params.senderId,
+    text: params.text,
+    msgId: params.msgId,
+  };
+  appendFileSync(join(chatDir, "messages.jsonl"), JSON.stringify(record) + "\n");
+
+  // Update index.json.
+  const indexPath = join(archiveDir, "index.json");
+  let index: Record<string, GroupIndexEntry> = {};
+  try {
+    if (existsSync(indexPath)) {
+      index = JSON.parse(readFileSync(indexPath, "utf-8"));
+    }
+  } catch {
+    // Corrupted index — start fresh.
+  }
+  index[params.chatId] = {
+    name: params.chatName || index[params.chatId]?.name || params.chatId,
+    lastMessage: new Date().toISOString(),
+  };
+  writeFileSync(indexPath, JSON.stringify(index, null, 2) + "\n");
+}
+
+// ── Mention parsing helpers ─────────────────────────────────────────────
+
+type FeishuMention = { key: string; id: string; name?: string };
+
+/** Parse the mentions array from the Feishu event body.
+ *  Returns structured mention entries. */
+// oxlint-disable-next-line typescript/no-explicit-any
+function parseMentions(message: any): FeishuMention[] {
+  const raw = message?.mentions;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((m: { key?: string; id?: string }) => m.key && m.id)
+    .map((m: { key: string; id: string; name?: string }) => ({
+      key: m.key,
+      id: m.id,
+      name: m.name,
+    }));
+}
+
+/** Extract sender name from Feishu event.
+ *  Tries various SDK fields; falls back to senderId. */
+// oxlint-disable-next-line typescript/no-explicit-any
+function extractSenderName(sender: any): string {
+  return (
+    sender?.sender_id?.name ??
+    sender?.sender_id?.id ??
+    sender?.sender_id?.open_id ??
+    ""
+  );
+}
+
 // ── Inbound message processing ──────────────────────────────────────────
 
 type InboundDeps = {
@@ -273,6 +366,72 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
   log?.info(`[${account.accountId}] inbound: chat=${chatId} from=${senderId} type=${chatType}${mediaPath ? " +image" : ""}`);
   setStatus({ lastInboundAt: Date.now() });
+
+  // ── Group chat handling: archive + owner-only reply gating ──
+  if (isGroup) {
+    const groupConfig = account.config.groups;
+    const groupsEnabled = groupConfig?.enabled === true;
+
+    if (!groupsEnabled) {
+      log?.info(`[${account.accountId}] group chat disabled, ignoring group message`);
+      return;
+    }
+
+    // Archive all group messages (regardless of who sent them).
+    const shouldArchive = groupConfig?.archive !== false;
+    if (shouldArchive) {
+      const senderName = extractSenderName(sender);
+      // Fetch chat name (cached) — fire-and-forget to not block processing.
+      let chatName: string | null = null;
+      try {
+        chatName = await getFeishuChatName(account, chatId);
+      } catch {
+        // Ignore — index will use chatId as fallback name.
+      }
+      try {
+        archiveGroupMessage({
+          chatId,
+          chatName,
+          senderId,
+          senderName: senderName || senderId,
+          text: cleanText,
+          msgId: messageId,
+        });
+        log?.info(`[${account.accountId}] archived group msg from ${senderId} in ${chatId}`);
+      } catch (err) {
+        log?.error(`[${account.accountId}] group archive failed: ${String(err)}`);
+      }
+    }
+
+    // Parse @mentions to detect if bot was mentioned.
+    const mentions = parseMentions(message);
+    let botOpenId: string | null = null;
+    try {
+      botOpenId = await getBotOpenId(account);
+    } catch {
+      // Unable to determine bot identity — skip mention detection.
+    }
+    const wasMentioned = botOpenId ? mentions.some((m) => m.id === botOpenId) : false;
+
+    if (!wasMentioned) {
+      // Not @mentioned — just archive (already done above), don't reply.
+      log?.info(`[${account.accountId}] group msg not mentioning bot, skipping reply`);
+      return;
+    }
+
+    // Bot was @mentioned. Check if sender is the owner.
+    const ownerIds = resolveGroupOwnerIds(account.config);
+    const isOwner = ownerIds.length === 0 || ownerIds.includes(senderId);
+
+    if (!isOwner) {
+      // Non-owner @mentioned bot — stay completely silent.
+      log?.info(`[${account.accountId}] non-owner ${senderId} @mentioned bot in group, ignoring`);
+      return;
+    }
+
+    // Owner @mentioned bot in group — proceed to reply.
+    log?.info(`[${account.accountId}] owner ${senderId} @mentioned bot in group, processing`);
+  }
 
   // DM access control: for now use "open" policy (private bot, only you can see it).
   // Full pairing/allowlist support can be added later.
@@ -447,6 +606,8 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
               payload: { mediaUrls: payload.mediaUrls, mediaUrl: payload.mediaUrl },
               account,
               chatId,
+              isGroup,
+              replyToMessageId: isGroup ? messageId : undefined,
               log,
               setStatus,
               config,
@@ -461,6 +622,8 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           payload,
           account,
           chatId,
+          isGroup,
+          replyToMessageId: isGroup ? messageId : undefined,
           log,
           setStatus,
           config,
@@ -493,12 +656,14 @@ async function deliverFeishuReply(params: {
   payload: { text?: string; mediaUrls?: string[]; mediaUrl?: string; replyToId?: string };
   account: ResolvedFeishuAccount;
   chatId: string;
+  isGroup?: boolean;
+  replyToMessageId?: string;
   log?: ChannelLogSink;
   setStatus: (patch: Partial<ChannelAccountSnapshot>) => void;
   config: OpenClawConfig;
   core: ReturnType<typeof getFeishuRuntime>;
 }): Promise<void> {
-  const { payload, account, chatId, log, setStatus, config, core } = params;
+  const { payload, account, chatId, isGroup, replyToMessageId, log, setStatus, config, core } = params;
 
   // Handle media (images) if present.
   const mediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
@@ -533,10 +698,14 @@ async function deliverFeishuReply(params: {
     const chunkLimit = 4000;
     const chunkMode = core.channel.text.resolveChunkMode(config, "feishu", account.accountId);
     const chunks = core.channel.text.chunkMarkdownTextWithMode(payload.text, chunkLimit, chunkMode);
-    for (const chunk of chunks) {
+    for (let ci = 0; ci < chunks.length; ci++) {
       try {
-        // Use rich-text Post format to render Markdown (bold, code, links, etc.).
-        await sendFeishuRichText({ account, chatId, text: chunk });
+        // In group chats, first chunk uses quote-reply to the original message.
+        if (isGroup && replyToMessageId && ci === 0) {
+          await sendFeishuReply({ account, messageId: replyToMessageId, text: chunks[ci] });
+        } else {
+          await sendFeishuRichText({ account, chatId, text: chunks[ci] });
+        }
         setStatus({ lastOutboundAt: Date.now() });
       } catch (err) {
         log?.error(`Feishu send failed: ${String(err)}`);

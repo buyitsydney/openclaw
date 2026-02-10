@@ -13,8 +13,24 @@ export type FeishuAccountConfig = {
     policy?: string;
     allowFrom?: string[];
   };
+  groups?: {
+    /** Enable group chat support (default: false). */
+    enabled?: boolean;
+    /** Archive all group messages to local JSONL files (default: true when groups enabled). */
+    archive?: boolean;
+    /** Explicit owner open_ids for group chats. Falls back to dm.allowFrom if not set. */
+    ownerIds?: string[];
+  };
   [key: string]: unknown;
 };
+
+/** Resolve owner IDs for group chat gating.
+ *  Priority: groups.ownerIds > dm.allowFrom. */
+export function resolveGroupOwnerIds(accountConfig: FeishuAccountConfig): string[] {
+  const groupOwners = accountConfig.groups?.ownerIds;
+  if (groupOwners && groupOwners.length > 0) return groupOwners;
+  return accountConfig.dm?.allowFrom ?? [];
+}
 
 export type ResolvedFeishuAccount = {
   accountId: string;

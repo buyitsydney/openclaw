@@ -4,6 +4,12 @@ import type { ResolvedFeishuAccount } from "./accounts.js";
 // Cache Lark clients per appId to avoid redundant token fetches.
 const clientCache = new Map<string, Lark.Client>();
 
+// Cache bot open_id per appId (fetched once via GET /bot/v3/info).
+const botOpenIdCache = new Map<string, string>();
+
+// Cache chat names per chatId (fetched once via GET /im/v1/chats/{chat_id}).
+const chatNameCache = new Map<string, string>();
+
 export function getFeishuClient(account: ResolvedFeishuAccount): Lark.Client {
   const key = account.appId;
   let client = clientCache.get(key);
@@ -17,6 +23,50 @@ export function getFeishuClient(account: ResolvedFeishuAccount): Lark.Client {
     clientCache.set(key, client);
   }
   return client;
+}
+
+/** Fetch the bot's own open_id via GET /bot/v3/info (cached per appId).
+ *  Needed for @mention detection in group chats. */
+export async function getBotOpenId(account: ResolvedFeishuAccount): Promise<string | null> {
+  const cached = botOpenIdCache.get(account.appId);
+  if (cached) return cached;
+  try {
+    const client = getFeishuClient(account);
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const resp = (await (client as any).bot.v3.botInfo.get({})) as {
+      data?: { bot?: { open_id?: string } };
+    };
+    const openId = resp?.data?.bot?.open_id;
+    if (openId) {
+      botOpenIdCache.set(account.appId, openId);
+      return openId;
+    }
+  } catch {
+    // Silently fail — caller handles null.
+  }
+  return null;
+}
+
+/** Fetch a Feishu chat's name via GET /im/v1/chats/{chat_id} (cached per chatId).
+ *  Used for group archive index. */
+export async function getFeishuChatName(
+  account: ResolvedFeishuAccount,
+  chatId: string,
+): Promise<string | null> {
+  const cached = chatNameCache.get(chatId);
+  if (cached) return cached;
+  try {
+    const client = getFeishuClient(account);
+    const resp = await client.im.chat.get({ path: { chat_id: chatId } });
+    const name = (resp?.data?.name as string)?.trim();
+    if (name) {
+      chatNameCache.set(chatId, name);
+      return name;
+    }
+  } catch {
+    // Silently fail — caller handles null.
+  }
+  return null;
 }
 
 /**
@@ -256,20 +306,32 @@ export async function sendFeishuText(params: {
   });
 }
 
-/** Send a reply to a specific message (quote-reply). */
+/** Send a reply to a specific message (quote-reply).
+ *  Supports Markdown → Post format for rich rendering. */
 export async function sendFeishuReply(params: {
   account: ResolvedFeishuAccount;
   messageId: string;
   text: string;
 }): Promise<void> {
   const client = getFeishuClient(params.account);
-  await client.im.message.reply({
-    path: { message_id: params.messageId },
-    data: {
-      content: JSON.stringify({ text: params.text }),
-      msg_type: "text",
-    },
-  });
+  if (hasMarkdown(params.text)) {
+    const postContent = markdownToPost(params.text);
+    await client.im.message.reply({
+      path: { message_id: params.messageId },
+      data: {
+        content: JSON.stringify(postContent),
+        msg_type: "post",
+      },
+    });
+  } else {
+    await client.im.message.reply({
+      path: { message_id: params.messageId },
+      data: {
+        content: JSON.stringify({ text: params.text }),
+        msg_type: "text",
+      },
+    });
+  }
 }
 
 /** Upload an image buffer to Feishu and return the image_key.

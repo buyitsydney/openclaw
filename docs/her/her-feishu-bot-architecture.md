@@ -796,7 +796,7 @@ cardkit.v1.card.settings({
 1. ~~**富文本回复**~~：已实现（2026-02-09）-- Markdown -> 飞书 Post 格式转换，见上方"富文本支持矩阵"
 2. ~~**图片/文件收发**~~：已实现（2026-02-07 发送，2026-02-08 接收+vision）-- 双向图片支持
 3. ~~**Typing / 流式回复**~~：已实现（2026-02-10）-- CardKit 流式卡片 + 打字机效果，见上方"v2 方案"
-4. **群聊支持**：见下方「群聊支持设计」章节（已设计，待实现）
+4. ~~**群聊支持**~~：已实现（2026-02-10）-- 群消息归档 + 主人@bot回复 + 非主人静默，见下方「群聊支持设计」章节
 5. **Onboarding CLI**：`openclaw setup` 交互式引导配置飞书凭证
 6. **状态探测**：`openclaw channels status` 显示飞书连接状态
 7. **企业多用户部署**：见 [her-feishu-bot-enterprise-deploy.md](her-feishu-bot-enterprise-deploy.md)（200 Bot + 200 Docker 方案，已验证）
