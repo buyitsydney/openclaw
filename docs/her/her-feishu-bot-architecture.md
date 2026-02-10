@@ -647,18 +647,74 @@ handleEventData():
 
 ---
 
+## Typing 指示器 / 流式回复
+
+### v1 方案：占位消息 + message.update（已回退，2026-02-10）
+
+**方案**：用户发消息后立即发一条"正在思考..."占位消息，AI 回复后用 `im.message.update()` 原地替换。
+
+**回退原因（三个根本缺陷）**：
+
+1. **"已编辑"标记**：飞书对任何被 `update` 过的消息都会自动标记"（已编辑）"，无法绕过。导致每一条 AI 回复都带"已编辑"标记
+2. **连续消息产生多个 placeholder**：placeholder 在 `handleInboundMessage` 进入 dispatch 之前发送，但 session lane 是串行的。第 2 条消息还在排队等第 1 条处理完，用户已经看到了 2 个"正在思考..."——欺骗用户
+3. **placeholder 被 tool result 消耗**：deliver 回调可能先收到没有 text 的 tool result payload，导致 placeholder 被白白消耗，真正的文本回复无 placeholder 可更新
+
+**教训**：飞书没有 Telegram 的 `sendChatAction("typing")` 原生 API。用真实消息模拟 typing 不可行——"已编辑"标记、多 placeholder、消耗竞争等问题无法解决。
+
+### v2 方案：CardKit 流式卡片 + 打字机效果（实现中）
+
+**核心发现**：飞书 `cardkit.v1` API 提供**官方的"打字机"效果**——`cardElement.content()` 方法的官方描述是"以传入的文本内容覆盖已有卡片组件内容，卡片将自动识别其中的增量变更内容，并以'打字机'效果输出"。
+
+**技术确认（三层全部通过）**：
+
+| 层 | 确认项 | 结果 |
+|----|--------|------|
+| OpenClaw 框架 | `onPartialReply` 回调（AI 每输出一个 token 就回调） | 已有，Telegram draft stream 用的就是这个 |
+| 飞书 SDK | `cardkit.v1.card.create()` + `cardkit.v1.cardElement.content()` | SDK 1.58.0 已支持，类型定义完整 |
+| 飞书 SDK | `im.message.create({ msg_type: "interactive" })` 发送卡片消息 | 已支持 |
+
+**数据流**：
+
+```
+AI 逐 token 输出
+  -> onPartialReply 回调（每个 token）
+    -> createFeishuCardStream.update(累积文本)
+      -> throttle 300ms
+        -> cardElement.content(card_id, element_id, 累积文本, sequence++)
+          -> 飞书客户端自动以打字机动画渲染增量
+```
+
+**与 Telegram 的对比**：
+
+| 维度 | Telegram | 飞书 |
+|------|----------|------|
+| 原生 typing API | `sendChatAction("typing")`（顶部状态栏） | 无 |
+| 流式文本 | `sendMessageDraft()`（OpenClaw 自实现的 hack，私聊+topics 限定） | `cardkit.cardElement.content()`（官方 API，原生打字机动画） |
+| 效果 | draft 消息逐步更新（非官方） | 卡片内容逐字出现（官方打字机效果） |
+| 最终样式 | 普通文本气泡 | 卡片样式（有边框） |
+
+**接入 TypingController**：走 OpenClaw 内置的 `ReplyDispatcherWithTypingOptions.onReplyStart` 回调。typing 由 `TypingSignaler.signalRunStart()` 触发——在 `runReplyAgent` 内部（已进入 session lane 之后）才触发，不会为排队中的消息发 typing。解决了 v1 的"多 placeholder"问题。
+
+**实现 TODO**：
+
+- [ ] `outbound.ts`：新增 `createFeishuCardStream()`（创建卡片 -> 发卡片消息 -> 返回 stream 对象）、`update()` 方法（throttle + `cardElement.content`）、`stop()` 方法
+- [ ] `gateway.ts`：接入 `onPartialReply`（字级流式）和 `onReplyStart`（typing 回调），创建 `FeishuCardStream` 实例
+- [ ] 确认需要哪些新权限（cardkit 相关）
+- [ ] 本地测试：普通消息流式、`/new`、图片、连续消息、tool call
+
+---
+
 ## 后续增强方向
 
-当前 MVP 实现覆盖了核心聊天 + 定时任务 + 富文本功能，以下为可选增强：
+当前实现覆盖了核心聊天 + 定时任务 + 富文本 + 图片收发功能，以下为可选增强：
 
-1. ~~**富文本回复**~~：已实现（2026-02-09）-- Markdown -> 飞书 Post 格式转换，见下方"富文本支持矩阵"
-2. ~~**图片/文件收发**~~：已实现（2026-02-07 发送，2026-02-08 接收+vision）-- 双向图片支持：AI 可发送图片，也能识别用户发来的图片
-3. **交互卡片**：使用飞书 Interactive Card 展示结构化回复
+1. ~~**富文本回复**~~：已实现（2026-02-09）-- Markdown -> 飞书 Post 格式转换，见上方"富文本支持矩阵"
+2. ~~**图片/文件收发**~~：已实现（2026-02-07 发送，2026-02-08 接收+vision）-- 双向图片支持
+3. **Typing / 流式回复**：CardKit 流式卡片方案，实现中（见上方"v2 方案"）
 4. **群聊支持**：@mention 检测、群权限策略、群级别配置
 5. **Onboarding CLI**：`openclaw setup` 交互式引导配置飞书凭证
 6. **状态探测**：`openclaw channels status` 显示飞书连接状态
-7. **Typing 指示器**：发送"正在输入..."临时消息
-8. **企业多用户部署**：见 [her-feishu-bot-enterprise-deploy.md](her-feishu-bot-enterprise-deploy.md)（200 Bot + 200 Docker 方案，已验证）
+7. **企业多用户部署**：见 [her-feishu-bot-enterprise-deploy.md](her-feishu-bot-enterprise-deploy.md)（200 Bot + 200 Docker 方案，已验证）
 
 ---
 
