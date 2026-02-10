@@ -271,6 +271,18 @@ export async function startRealtimeServer(params: {
       return;
     }
 
+    // CORS preflight for cross-origin requests (e.g. vendor-fe → vendor API)
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Max-Age": "86400",
+      });
+      res.end();
+      return;
+    }
+
     // Bootstrap endpoint (support query params like ?agentId=xxx)
     if (req.url?.startsWith("/api/realtime/bootstrap") && req.method === "GET") {
       handleBootstrap(req, res, api, defaultAgentId);

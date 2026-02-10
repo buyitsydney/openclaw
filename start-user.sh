@@ -482,21 +482,33 @@ if [ "$MODE" = "named" ]; then
   fi
 
   # 用户 id → 固定域名映射（在 ~/.cloudflared/config.yml 中配置对应 ingress 规则）
-  # 默认约定: u{id}.carher.net (Realtime/Bootstrap) + u{id}-proxy.carher.net (WS Proxy)
-  # 特殊别名: id=2 → vendor.carher.net / vendor-proxy.carher.net
+  # 默认约定: u{id}.carher.net (Realtime/Bootstrap) + u{id}-proxy.carher.net (WS Proxy) + u{id}-fe.carher.net (Frontend)
+  # 特殊别名: id=2 → vendor.carher.net / vendor-proxy.carher.net / vendor-fe.carher.net
   case "$USER_ID" in
-    2) NAMED_RT_HOST="vendor.carher.net"; NAMED_PROXY_HOST="vendor-proxy.carher.net" ;;
-    *) NAMED_RT_HOST="u${USER_ID}.carher.net"; NAMED_PROXY_HOST="u${USER_ID}-proxy.carher.net" ;;
+    2) NAMED_RT_HOST="vendor.carher.net"; NAMED_PROXY_HOST="vendor-proxy.carher.net"; NAMED_FE_HOST="vendor-fe.carher.net" ;;
+    *) NAMED_RT_HOST="u${USER_ID}.carher.net"; NAMED_PROXY_HOST="u${USER_ID}-proxy.carher.net"; NAMED_FE_HOST="u${USER_ID}-fe.carher.net" ;;
   esac
 
   NAMED_BOOTSTRAP_URL="https://${NAMED_RT_HOST}/api/realtime/bootstrap"
   NAMED_PROXY_URL="wss://${NAMED_PROXY_HOST}"
   NAMED_OPENCLAW_URL="wss://${NAMED_RT_HOST}/ws"
+  NAMED_PROXY_ENCODED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${NAMED_PROXY_URL}'))")
+  NAMED_OPENCLAW_ENCODED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${NAMED_OPENCLAW_URL}'))")
+  NAMED_MOBILE_URL="https://${NAMED_FE_HOST}/mobile.html?proxy=${NAMED_PROXY_ENCODED}&openclaw=${NAMED_OPENCLAW_ENCODED}"
+  NAMED_DESKTOP_URL="https://${NAMED_FE_HOST}?proxy=${NAMED_PROXY_ENCODED}&openclaw=${NAMED_OPENCLAW_ENCODED}"
 
   echo ""
   echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
   echo -e "${GREEN}  🚗 User ${USER_ID} — 固定 URL（命名隧道，永不变化）${NC}"
   echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
+  echo ""
+  echo -e "  ${CYAN}📱 手机测试（固定 URL，直接打开）：${NC}"
+  echo ""
+  echo "  $NAMED_MOBILE_URL"
+  echo ""
+  echo -e "  ${CYAN}🖥  桌面测试：${NC}"
+  echo ""
+  echo "  $NAMED_DESKTOP_URL"
   echo ""
   echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
   echo -e "${CYAN}  厂商对接信息（直接复制发给厂商）${NC}"
@@ -514,6 +526,7 @@ if [ "$MODE" = "named" ]; then
   echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
   echo ""
   echo -e "  隧道域名映射:"
+  echo "    ${NAMED_FE_HOST}     → localhost:${PORT_FE} (Frontend)"
   echo "    ${NAMED_RT_HOST}        → localhost:${PORT_RT} (Realtime/Bootstrap)"
   echo "    ${NAMED_PROXY_HOST}  → localhost:${PORT_WS} (WS Proxy)"
   echo ""
