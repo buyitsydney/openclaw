@@ -1023,54 +1023,59 @@ Web 前端保留本地硬编码的 `SYSTEM_PROMPT` 作为 fallback（仅当 Boot
 
 ### 背景
 
-Her 支持 `car_control` 工具（空调、座椅、车窗、导航等）。其中导航事件（`start_navigation`）携带有价值的用户行为数据（去了哪、和谁去、去干嘛）。这些数据应自动沉淀到用户记忆（MEMORY.md），供后续查询使用。
+Her 支持 `car_control` 工具（空调、座椅、车窗、导航等）。其中导航事件（`start_navigation`）携带有价值的用户行为数据（去了哪、和谁去、去干嘛）。这些数据应自动沉淀到用户记忆，供后续查询使用。
 
-### 设计选择
+### 架构设计（弹性，不绑定具体事件类型）
 
-| 方案 | 说明 | 状态 |
-|------|------|------|
-| A: prompt 驱动 | 在 Her system prompt 中要求：导航成功后静默调 openclaw_help 记录 | **当前方案（前端已验证）** |
-| B: server-side SILENT 标记 | OpenClaw 返回 `[SILENT]` 前缀，前端跳过 inject | 备选 |
-| C: disconnect 时回顾 | 断开时 agent 审查对话，提取事件写入 memory | 未采用（延迟高、成本大） |
+**Live 端（Gemini）：**
+- 导航成功后调 `openclaw_help`，request 以 `"请写入用户memory记录："` 开头
+- 传递对话中所有已知上下文（谁、和谁、时间、地点、目的等），格式自由
+- 静默执行：不对用户提及"记录"，不播报返回结果
 
-### 方案 A 实现
+**OpenClaw 后端（Claude）：**
+- 统一 prompt，不按请求类型做 if/else 分支
+- `prompt.ts` extraSystemPrompt 定义"执行者+记忆写入者"通用身份
+- 收到记录请求 → 用 edit 工具写入 memory → 返回确认或 NO_REPLY
+- 收到查询请求 → 正常查询返回结果
 
-在 `HER_SYSTEM_PROMPT` 中新增两处关键指令：
+**NO_REPLY 处理：**
+- `server.ts` 中 agent 返回空 payloads（含 NO_REPLY 被过滤）时，返回 `"已处理"` 而非错误
+- 真正的异常走 catch 分支，返回明确的错误信息
 
-1. 车控严格规则中，将"不要调 help"缩小为"空调/座椅/车窗不要调 help"，并标注**导航例外**
-2. 独立的"导航记忆"章节，要求两步操作（先 car_control，再 openclaw_help）
+### 导航前置查询（先查后导）
 
-```
-## 导航记忆（start_navigation 后必须执行）
-每次 car_control start_navigation 工具返回成功后，你必须紧接着再调用一次 openclaw_help，内容为：
-"记录导航事件：用户导航到 [目的地]([地址])，背景：[对话上下文]"
-- 这是两步操作：第一步 car_control，第二步 openclaw_help
-- 静默执行：不要对用户提及"记录"，不要播报 openclaw_help 的返回结果
-```
+Live 不知道用户的个人地址、历史地点等信息。当 destination 不是一个可以直接输入导航软件的具体地名时，Live 必须先调 `openclaw_help` 查询，拿到明确地名后再调 `car_control`。
 
-### 当前状态
+### 当前状态（2026-02-11 已验证）
 
-- **前端链路已验证**：Gemini Live 正确执行两步 tool call（car_control → openclaw_help），静默不播报 ✅
-- **后端记录待修复**：Claude agent 收到"记录导航事件"后未成功写入 MEMORY.md（返回"抱歉，我暂时无法处理这个请求"）⚠️
+- **memory 记录链路全通**：Live 正确传递上下文 → OpenClaw 写入 memory/*.md ✅
+- **先查后导**：模糊目的地时 Live 先查 OpenClaw 再导航 ✅
+- **NO_REPLY 静默处理**：不再显示错误 fallback ✅
+- **USER.md 自动沉淀**：OpenClaw 主动将家庭地址等关键信息提取到 USER.md ✅
+- **提醒设置**：通过 openclaw_help 成功创建 cron 提醒 ✅
+
+### 扩展性
+
+新增事件类型（加油、音乐偏好、停车位等）只需在 `HER_SYSTEM_PROMPT` 中描述何时调 `openclaw_help`，后端零代码修改。
 
 ### 数据流
 
 ```
-用户: "去高老庄饭店"
+用户: "带老婆去XX饭店吃晚饭"
   ↓
-Her → car_control(start_navigation) → 车端执行导航 → "好的，已开启导航"
+Her → car_control(start_navigation) → 车端执行导航 → "好的，开始导航"
   ↓ (静默，用户无感知)
-Her → openclaw_help("记录导航事件：用户导航到高老庄饭店") → OpenClaw agent 处理
+Her → openclaw_help("请写入用户memory记录：用户带老婆导航去XX饭店，目的是吃晚饭")
   ↓
-下次用户问"上周去过哪" → openclaw_help → 查 MEMORY → 找到记录
+OpenClaw → edit memory/2026-02-11.md → 返回"已记录"或 NO_REPLY
+  ↓
+下次用户问"上周和谁去吃的饭" → openclaw_help → 查 memory → 找到记录
 ```
 
 ### 对厂商的影响
 
-**零影响。** 这是 Her 的 prompt 行为，厂商的 App 只是透传 toolCall/toolResponse，不需要知道 Her 为什么调了 openclaw_help。
+**零影响。** 这是 Her 的 prompt 行为，厂商的 App 只是透传 toolCall/toolResponse。
 
-### 对现有功能的影响
+### 待实现
 
-- 空调/座椅/车窗等 car_control 不受影响（只有 start_navigation 触发记录）
-- openclaw_help 的查询流程不变
-- 导航功能本身不变（有无记录不影响导航执行）
+- 导航事件与提醒/日程冲突检测（见下方章节）

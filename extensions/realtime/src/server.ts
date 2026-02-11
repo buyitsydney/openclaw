@@ -103,12 +103,27 @@ const HER_SYSTEM_PROMPT = `你是 Her，车载语音助手，负责快思考。�
 - 空调、座椅、车窗操作：不要调用 openclaw_help
 - **导航例外**：start_navigation 成功后，必须再调一次 openclaw_help 记录导航事件（见下方"导航记忆"章节）
 
+**导航前置查询（先查后导）：**
+- start_navigation 的 destination 必须是**你能确定的具体地点名称**
+- 如果你无法从用户的话中确定一个具体地名（比如用户引用了过去的记忆、用代词/指代、或提到你不知道的地点），必须**先调 openclaw_help 查询**，拿到明确地名后再调 car_control
+- 判断标准：如果 destination 不能直接输入导航软件得到结果，就说明你还不知道具体地点，需要先查
+
 ## 导航记忆（start_navigation 后必须执行）
-每次 car_control start_navigation 工具返回成功后，你必须紧接着再调用一次 openclaw_help，内容为：
-"记录导航事件：用户导航到 [目的地]([地址])，背景：[对话上下文，如同行人、目的等]"
-- 这是两步操作：第一步 car_control，第二步 openclaw_help
-- 静默执行：不要对用户提及"记录"，不要播报 openclaw_help 的返回结果
-- 对用户只说导航相关的确认（如"好的，开始导航"）
+每次 car_control start_navigation 成功后，必须紧接着调用一次 openclaw_help 来记录此事件。
+
+**request 必须以"请写入用户memory记录："开头**，后面跟对话中已知的所有信息。这些信息会被记入用户长期记忆，将来可以回溯"上周去过哪"、"和谁吃的饭"等。信息越完整越好，宁多勿少。
+
+你应该从对话中提取：谁在车上、和谁去、什么时间、去哪里、地址、干什么、为什么去、约了谁，以及任何相关细节。
+
+**示例：**
+- 用户说"带老婆去XX饭店吃晚饭" → "请写入用户memory记录：用户带老婆导航去XX饭店，目的是吃晚饭"
+- 用户说"去机场接朋友，三点的航班" → "请写入用户memory记录：用户导航去机场，接朋友，航班三点到"
+- 用户说"去公司" → "请写入用户memory记录：用户导航去公司"
+
+**执行规则：**
+- 两步操作：第一步 car_control，第二步 openclaw_help
+- 静默执行：不对用户提及"记录"，不播报 openclaw_help 的返回结果
+- 对用户只说导航确认（如"好的，开始导航"）
 
 ## 判断规则
 收到用户输入后判断：
@@ -518,9 +533,9 @@ async function handleHelpRequest(
       { agentId },
     );
 
-    // Build prompt with conversation context
+    // Build prompt with conversation context (unified — no per-request-type branching)
     const conversationContext = client.conversation.join("\n");
-    const prompt = `用户通过语音助手请求帮助：
+    const prompt = `Live 语音助手转发了一条请求，请执行。
 
 ## 对话上下文
 ${conversationContext || "（暂无之前的对话）"}
@@ -528,7 +543,7 @@ ${conversationContext || "（暂无之前的对话）"}
 ## 当前请求
 ${request}
 
-请处理这个请求，返回给语音助手说的内容。`;
+请执行这个请求。查询类请求返回结果；记录/记忆类请求写入 MEMORY.md 后可简短确认或静默完成。`;
 
     // Build extra system prompt for backend mode
     const extraSystemPrompt = buildBackendModePrompt(conversationContext);
@@ -571,13 +586,15 @@ ${request}
       agentDir,
     });
 
-    // Extract text reply
+    // Extract text reply — NO_REPLY / empty payloads means "task done silently"
     const texts = (result.payloads ?? [])
       .filter((p) => p.text && !p.isError)
       .map((p) => p.text?.trim())
       .filter(Boolean);
 
-    const replyText = texts.join(" ") || "抱歉，我暂时无法处理这个请求。";
+    // "已处理" for silent completions (e.g. memory writes that return NO_REPLY);
+    // error fallback only when the agent truly threw an exception (caught below).
+    const replyText = texts.join(" ") || "已处理";
 
     api.logger.info(`[realtime] Agent reply: ${replyText.slice(0, 100)}...`);
 
