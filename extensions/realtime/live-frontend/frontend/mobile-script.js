@@ -20,6 +20,8 @@ const CONFIG = {
 // ---------------------------------------------------------------------------
 // System prompt (same as desktop default)
 // ---------------------------------------------------------------------------
+// FALLBACK ONLY: 正常情况下 prompt 从 Bootstrap API 获取（唯一信源: server.ts HER_SYSTEM_PROMPT）。
+// 仅当 Bootstrap 未返回 system prompt 时使用此本地副本。
 const SYSTEM_PROMPT = `你是 Her，车载语音助手，负责快思考。用户正在开车。
 
 ## 你的身份
@@ -43,12 +45,21 @@ const SYSTEM_PROMPT = `你是 Her，车载语音助手，负责快思考。用�
 - 空调：set_ac_temperature（温度 16-32）、set_ac_power（开关）、set_ac_mode（cool/heat/auto）
 - 座椅加热：set_seat_heat（seat: driver/passenger, level: 0-3，0=关）
 - 车窗：set_window（position: driver/passenger, open: true/false）
+- 导航：start_navigation（destination: 地点名, address: 可选详细地址）— 只有用户明确要求"去/导航到"某地时才调用
 
 严格规则：
-- 任何涉及空调、座椅、车窗的操作，必须调用 car_control 工具，不能只用嘴说"已打开"
+- 任何涉及空调、座椅、车窗、导航的操作，必须调用 car_control 工具，不能只用嘴说"已打开"
 - 你不具备直接控制车辆的能力，只有 car_control 工具才能真正执行操作
 - 先调用工具，等工具返回结果后，再用语音简洁确认
-- 不要调用 openclaw_help 来处理车控指令
+- 空调、座椅、车窗操作：不要调用 openclaw_help
+- **导航例外**：start_navigation 成功后，必须再调一次 openclaw_help 记录导航事件（见下方"导航记忆"章节）
+
+## 导航记忆（start_navigation 后必须执行）
+每次 car_control start_navigation 工具返回成功后，你必须紧接着再调用一次 openclaw_help，内容为：
+"记录导航事件：用户导航到 [目的地]([地址])，背景：[对话上下文，如同行人、目的等]"
+- 这是两步操作：第一步 car_control，第二步 openclaw_help
+- 静默执行：不要对用户提及"记录"，不要播报 openclaw_help 的返回结果
+- 对用户只说导航相关的确认（如"好的，开始导航"）
 
 ## 判断规则
 收到用户输入后判断：
@@ -105,7 +116,7 @@ const state = {
   audio: { streamer: null, player: null, isStreaming: false },
   video: { streamer: null, isStreaming: false },
   screen: { capture: null, isSharing: false },
-  openclaw: { connected: false, liveMemoryCapsule: "" },
+  openclaw: { connected: false, liveMemoryCapsule: "", systemPrompt: null, toolDeclarations: null },
   gemini: { turnComplete: true },
   audioObs: {
     lastAudioRecvAtMs: null,
@@ -381,6 +392,27 @@ async function connectOpenClaw() {
   state.openclaw.liveMemoryCapsule = data.liveMemoryCapsule || "";
   if (!state.openclaw.liveMemoryCapsule) throw new Error("liveMemoryCapsule 为空");
 
+  // Extract system prompt from Bootstrap (single source of truth: server.ts HER_SYSTEM_PROMPT)
+  // Bootstrap already bakes capsule into system_instruction, so no need to append separately.
+  const bootstrapSetup = data.geminiProxy?.sessionSetup?.setup;
+  const bootstrapPrompt = bootstrapSetup?.system_instruction?.parts?.[0]?.text;
+  if (bootstrapPrompt) {
+    state.openclaw.systemPrompt = bootstrapPrompt;
+    dbgLog(`Bootstrap OK: prompt ${bootstrapPrompt.length} chars (from server)`);
+  } else {
+    state.openclaw.systemPrompt = null;
+    dbgLog("Bootstrap: no system prompt in response, using local fallback");
+  }
+
+  // Extract tool declarations from Bootstrap (single source of truth: server.ts TOOL_DECLARATIONS)
+  const bootstrapTools = bootstrapSetup?.tools?.function_declarations;
+  if (bootstrapTools && Array.isArray(bootstrapTools) && bootstrapTools.length > 0) {
+    state.openclaw.toolDeclarations = bootstrapTools;
+    dbgLog(`Bootstrap OK: ${bootstrapTools.length} tools (from server: ${bootstrapTools.map(t => t.name).join(", ")})`);
+  } else {
+    state.openclaw.toolDeclarations = null;
+    dbgLog("Bootstrap: no tool declarations in response, using local fallback");
+  }
   dbgLog(`Bootstrap OK: capsule ${state.openclaw.liveMemoryCapsule.length} chars`);
   if (agentId) dbgLog(`Agent ID: ${agentId}`);
 
@@ -413,6 +445,12 @@ async function connectOpenClaw() {
 }
 
 function buildSystemInstructions() {
+  // Prefer Bootstrap prompt (single source of truth: server.ts HER_SYSTEM_PROMPT).
+  // Bootstrap already bakes capsule into the prompt, so return as-is.
+  if (state.openclaw.systemPrompt) {
+    return state.openclaw.systemPrompt;
+  }
+  // Fallback: local hardcoded prompt + capsule (should rarely happen)
   let instructions = SYSTEM_PROMPT;
   if (state.openclaw.connected && state.openclaw.liveMemoryCapsule) {
     instructions += "\n\n" + state.openclaw.liveMemoryCapsule;
@@ -443,13 +481,18 @@ async function connectGemini() {
   };
   state.client.activityHandling = "ACTIVITY_HANDLING_UNSPECIFIED";
 
-  // Register OpenClaw help tool (slow thinking — external queries, memory, etc.)
+  // Register local tool classes for execution logic (functionsMap routing).
+  // Schema sent to Gemini comes from Bootstrap (if available), not from these classes.
   const openclawTool = new OpenClawHelpTool(openclawConnection);
   state.client.addFunction(openclawTool);
-
-  // Register car control tool (local — AC, seat heat, windows via JS Bridge)
   const carTool = new CarControlTool();
   state.client.addFunction(carTool);
+
+  // Use Bootstrap tool declarations as the schema sent to Gemini (single source of truth).
+  // Local classes above are still used for execution routing via functionsMap.
+  if (state.openclaw.toolDeclarations) {
+    state.client.externalToolDeclarations = state.openclaw.toolDeclarations;
+  }
 
   state.client.onReceiveResponse = handleMessage;
   state.client.onErrorMessage = (msg) => {

@@ -9,7 +9,7 @@ const state = {
   audio: { streamer: null, player: null, isStreaming: false },
   video: { streamer: null, isStreaming: false },
   screen: { capture: null, isSharing: false },
-  openclaw: { connected: false, liveMemoryCapsule: "" },
+  openclaw: { connected: false, liveMemoryCapsule: "", systemPrompt: null, toolDeclarations: null },
   gemini: {
     // Only inject after Gemini completes a turn (TURN_COMPLETE).
     turnComplete: true,
@@ -219,6 +219,22 @@ async function connectOpenClaw() {
     if (!state.openclaw.liveMemoryCapsule) {
       throw new Error("Bootstrap failed: liveMemoryCapsule is empty");
     }
+
+    // Extract system prompt from Bootstrap (single source of truth: server.ts HER_SYSTEM_PROMPT)
+    const bootstrapSetup = bootstrap.geminiProxy?.sessionSetup?.setup;
+    const bootstrapPrompt = bootstrapSetup?.system_instruction?.parts?.[0]?.text;
+    if (bootstrapPrompt) {
+      state.openclaw.systemPrompt = bootstrapPrompt;
+      console.log(`🦞 Bootstrap prompt: ${bootstrapPrompt.length} chars (from server)`);
+    }
+
+    // Extract tool declarations from Bootstrap (single source of truth: server.ts TOOL_DECLARATIONS)
+    const bootstrapTools = bootstrapSetup?.tools?.function_declarations;
+    if (bootstrapTools && Array.isArray(bootstrapTools) && bootstrapTools.length > 0) {
+      state.openclaw.toolDeclarations = bootstrapTools;
+      console.log(`🦞 Bootstrap tools: ${bootstrapTools.length} (${bootstrapTools.map(t => t.name).join(", ")})`);
+    }
+
     console.log("🦞 Bootstrap loaded:", {
       liveMemoryCapsule: state.openclaw.liveMemoryCapsule.slice(0, 120) + "...",
       agentId: agentId || "(default)",
@@ -270,19 +286,17 @@ async function connectOpenClaw() {
   }
 }
 
-// Build system instructions with OpenClaw context
+// Build system instructions — prefer Bootstrap prompt (single source of truth: server.ts)
 function buildSystemInstructions() {
-  let instructions = elements.systemInstructions.value || "";
-  
-  // If OpenClaw is connected and we have a capsule, enhance instructions safely.
-  // IMPORTANT: never embed full USER.md / MEMORY.md here — it causes Live prompt pollution.
-  if (state.openclaw.connected && state.openclaw.liveMemoryCapsule) {
-    instructions += `
-
-${state.openclaw.liveMemoryCapsule}
-`;
+  // Bootstrap prompt already has capsule baked in
+  if (state.openclaw.systemPrompt) {
+    return state.openclaw.systemPrompt;
   }
-  
+  // Fallback: textarea value + capsule
+  let instructions = elements.systemInstructions.value || "";
+  if (state.openclaw.connected && state.openclaw.liveMemoryCapsule) {
+    instructions += `\n\n${state.openclaw.liveMemoryCapsule}`;
+  }
   return instructions;
 }
 
@@ -355,10 +369,18 @@ async function connectGemini() {
       console.log("✅ CSS style tool enabled");
     }
 
-    // ALWAYS register OpenClaw help tool (single-button flow guarantees OpenClaw is connected).
+    // Register tool classes for execution routing (functionsMap).
+    // Schema sent to Gemini comes from Bootstrap when available.
     const openclawTool = new OpenClawHelpTool(openclawConnection);
     state.client.addFunction(openclawTool);
-    console.log("✅ OpenClaw help tool enabled");
+    const carTool = new CarControlTool();
+    state.client.addFunction(carTool);
+    console.log("✅ Tools registered (openclaw_help, car_control)");
+
+    // Use Bootstrap tool declarations as schema (single source of truth: server.ts)
+    if (state.openclaw.toolDeclarations) {
+      state.client.externalToolDeclarations = state.openclaw.toolDeclarations;
+    }
 
     // Set callbacks
     state.client.onReceiveResponse = handleMessage;
@@ -555,8 +577,14 @@ function handleMessage(message) {
             // Response will be sent via openclawConnection.onHelpResult callback
           }
         } else {
-          // Sync tools - call immediately
-          state.client.callFunction(functionName, parameters);
+          // Sync tools (e.g. car_control) — execute and send result back to Gemini
+          const tool = state.client.functionsMap[functionName];
+          if (tool) {
+            const result = tool.functionToCall(parameters, functionCallId);
+            if (state.client) {
+              state.client.sendToolResponse(functionCallId, functionName, result || { ok: true });
+            }
+          }
         }
       }
       break;

@@ -964,3 +964,113 @@ Frontend                    RealtimePlugin                  OpenClawAgent
 - [ ] `PluginRuntime` 增加 `callGateway` 方法，让插件不需要动态 import
 - [ ] `agent` method 支持 `provider` 标记，让 heartbeat 能识别 Her 通道
 - [ ] 监控 main session 文件大小，评估是否需要 session 分片策略
+
+---
+
+## Prompt 和 Tool 统一信源架构
+
+### 问题
+
+早期 Web 前端（mobile-script.js、script.js、index.html）各自硬编码了 system prompt 和 tool declarations 的副本。这导致修改 prompt 或新增 tool 参数时容易遗漏，出现各端不一致的 bug。
+
+### 解决方案：Bootstrap 统一信源
+
+**唯一信源：`extensions/realtime/src/server.ts`**
+
+| 组件 | 信源 | 变量名 |
+|------|------|--------|
+| System Prompt | `server.ts` | `HER_SYSTEM_PROMPT` |
+| Tool Schema | `server.ts` | `TOOL_DECLARATIONS` |
+| Memory Capsule | Bootstrap API 动态生成 | `liveMemoryCapsule` |
+
+### 数据流
+
+```
+server.ts (HER_SYSTEM_PROMPT + TOOL_DECLARATIONS + capsule)
+  ↓ Bootstrap API (/api/realtime/bootstrap)
+  ↓
+┌─────────────────────────────────────────────┐
+│ Web 前端 (mobile / desktop)                  │
+│  connectOpenClaw() → fetch(bootstrap)       │
+│    → state.openclaw.systemPrompt            │
+│    → state.openclaw.toolDeclarations        │
+│  connectGemini()                            │
+│    → systemInstructions = bootstrap prompt  │
+│    → externalToolDeclarations = bootstrap   │
+│    → addFunction() 只注册执行逻辑           │
+└─────────────────────────────────────────────┘
+┌─────────────────────────────────────────────┐
+│ 原生 Android App                             │
+│  fetch(bootstrap) → 直接使用 sessionSetup   │
+│  schema + execution 都在 Kotlin 端          │
+└─────────────────────────────────────────────┘
+```
+
+### 修改 prompt 或 tool 的操作流程
+
+1. 改 `server.ts` 中的 `HER_SYSTEM_PROMPT` 或 `TOOL_DECLARATIONS`
+2. 重启 Gateway（`./start.sh`）
+3. 刷新 Web 前端页面（或 Native App 重新连接）
+4. 全端自动拿到最新版本
+
+### Fallback 机制
+
+Web 前端保留本地硬编码的 `SYSTEM_PROMPT` 作为 fallback（仅当 Bootstrap 未返回时使用）。正常情况下永远不会触发。
+
+---
+
+## 导航事件自动记忆
+
+### 背景
+
+Her 支持 `car_control` 工具（空调、座椅、车窗、导航等）。其中导航事件（`start_navigation`）携带有价值的用户行为数据（去了哪、和谁去、去干嘛）。这些数据应自动沉淀到用户记忆（MEMORY.md），供后续查询使用。
+
+### 设计选择
+
+| 方案 | 说明 | 状态 |
+|------|------|------|
+| A: prompt 驱动 | 在 Her system prompt 中要求：导航成功后静默调 openclaw_help 记录 | **当前方案（前端已验证）** |
+| B: server-side SILENT 标记 | OpenClaw 返回 `[SILENT]` 前缀，前端跳过 inject | 备选 |
+| C: disconnect 时回顾 | 断开时 agent 审查对话，提取事件写入 memory | 未采用（延迟高、成本大） |
+
+### 方案 A 实现
+
+在 `HER_SYSTEM_PROMPT` 中新增两处关键指令：
+
+1. 车控严格规则中，将"不要调 help"缩小为"空调/座椅/车窗不要调 help"，并标注**导航例外**
+2. 独立的"导航记忆"章节，要求两步操作（先 car_control，再 openclaw_help）
+
+```
+## 导航记忆（start_navigation 后必须执行）
+每次 car_control start_navigation 工具返回成功后，你必须紧接着再调用一次 openclaw_help，内容为：
+"记录导航事件：用户导航到 [目的地]([地址])，背景：[对话上下文]"
+- 这是两步操作：第一步 car_control，第二步 openclaw_help
+- 静默执行：不要对用户提及"记录"，不要播报 openclaw_help 的返回结果
+```
+
+### 当前状态
+
+- **前端链路已验证**：Gemini Live 正确执行两步 tool call（car_control → openclaw_help），静默不播报 ✅
+- **后端记录待修复**：Claude agent 收到"记录导航事件"后未成功写入 MEMORY.md（返回"抱歉，我暂时无法处理这个请求"）⚠️
+
+### 数据流
+
+```
+用户: "去高老庄饭店"
+  ↓
+Her → car_control(start_navigation) → 车端执行导航 → "好的，已开启导航"
+  ↓ (静默，用户无感知)
+Her → openclaw_help("记录导航事件：用户导航到高老庄饭店") → OpenClaw agent 处理
+  ↓
+下次用户问"上周去过哪" → openclaw_help → 查 MEMORY → 找到记录
+```
+
+### 对厂商的影响
+
+**零影响。** 这是 Her 的 prompt 行为，厂商的 App 只是透传 toolCall/toolResponse，不需要知道 Her 为什么调了 openclaw_help。
+
+### 对现有功能的影响
+
+- 空调/座椅/车窗等 car_control 不受影响（只有 start_navigation 触发记录）
+- openclaw_help 的查询流程不变
+- 导航功能本身不变（有无记录不影响导航执行）

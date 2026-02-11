@@ -158,6 +158,7 @@ class GeminiLiveAPI {
     this.enableFunctionCalls = false;
     this.functions = [];
     this.functionsMap = {};
+    this.externalToolDeclarations = null; // If set, use these instead of getFunctionDefinitions()
     this.previousImage = null;
     this.totalBytesSent = 0;
 
@@ -321,7 +322,12 @@ class GeminiLiveAPI {
     };
     this.sendMessage(serviceSetupMessage);
 
-    const tools = this.getFunctionDefinitions();
+    // Prefer external tool declarations (from Bootstrap) over locally-built ones.
+    // Local classes are still registered via addFunction() for execution (functionsMap).
+    const tools = this.externalToolDeclarations || this.getFunctionDefinitions();
+    if (this.externalToolDeclarations) {
+      console.log("🛠️ Using Bootstrap tool declarations:", tools.length, "tools");
+    }
 
     const sessionSetupMessage = {
       setup: {

@@ -4,17 +4,20 @@
 # 模式：
 #   默认：命名隧道模式（需先配置 cloudflared tunnel，URL 固定不变）
 #   --random：随机隧道模式（无需配置，但每次重启 URL 变化）
+#   --local：纯本地模式（不启动任何隧道，只打印 localhost URL）
 #
 # 前提：
 #   1. OpenClaw Gateway 已运行（./start.sh in openclaw root）
 #   2. CarHer server.py 已运行（./start.sh in live-frontend/）
-#   3. 已安装 cloudflared（brew install cloudflared）
+#   3. 已安装 cloudflared（除 --local 模式外）
 
 set -e
 
 MODE="named"
 if [ "$1" = "--random" ]; then
   MODE="random"
+elif [ "$1" = "--local" ]; then
+  MODE="local"
 fi
 
 # OpenClaw Realtime 插件端口（默认 18790，厂商联调用 OPENCLAW_REALTIME_PORT=19010）
@@ -26,9 +29,10 @@ echo "║   CarHer Remote Access — 手机实时语音 Demo              ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
 
-# Check cloudflared
-if ! command -v cloudflared &>/dev/null; then
+# Check cloudflared (skip in local mode)
+if [ "$MODE" != "local" ] && ! command -v cloudflared &>/dev/null; then
   echo "错误: 未安装 cloudflared，请运行: brew install cloudflared"
+  echo "  或使用本地模式: $0 --local"
   exit 1
 fi
 
@@ -47,9 +51,52 @@ check_port "$REALTIME_PORT" "OpenClaw Realtime 插件 (端口 $REALTIME_PORT)"
 echo "本地服务检查通过 ✓"
 echo ""
 
-# Auto-open local pages in Mac browser for debugging
-open "http://localhost:8000/mobile.html" 2>/dev/null || true
-open "http://localhost:8000/" 2>/dev/null || true
+# Auto-open local pages in Mac browser for debugging (skip in local mode, already on localhost)
+if [ "$MODE" != "local" ]; then
+  open "http://localhost:8000/mobile.html" 2>/dev/null || true
+  open "http://localhost:8000/" 2>/dev/null || true
+fi
+
+# ============================================================
+# 纯本地模式 (--local) — 不启动隧道，直接用 localhost
+# ============================================================
+if [ "$MODE" = "local" ]; then
+  MOBILE_URL="http://localhost:8000/mobile.html?proxy=ws%3A%2F%2Flocalhost%3A8080&openclaw=ws%3A%2F%2Flocalhost%3A${REALTIME_PORT}%2Fws"
+  DESKTOP_URL="http://localhost:8000?proxy=ws%3A%2F%2Flocalhost%3A8080&openclaw=ws%3A%2F%2Flocalhost%3A${REALTIME_PORT}%2Fws"
+  CHECK_URL="http://localhost:8000/car-check.html"
+
+  echo "╔══════════════════════════════════════════════════════════╗"
+  echo "║   纯本地模式 — 无隧道，直接 localhost                    ║"
+  echo "╠══════════════════════════════════════════════════════════╣"
+  echo "║                                                          ║"
+  echo "║  手机版（需同一局域网或 Mac 浏览器直接访问）：              ║"
+  echo "║                                                          ║"
+  echo "╚══════════════════════════════════════════════════════════╝"
+  echo ""
+  echo "$MOBILE_URL"
+  echo ""
+  echo "-----------------------------------------------------------"
+  echo "桌面版（完整调试界面）："
+  echo "$DESKTOP_URL"
+  echo ""
+  echo "-----------------------------------------------------------"
+  echo "环境检测页面："
+  echo "$CHECK_URL"
+  echo ""
+  echo "-----------------------------------------------------------"
+  echo "本地端口："
+  echo "  前端页面:     http://localhost:8000"
+  echo "  Gemini 代理:  ws://localhost:8080"
+  echo "  OpenClaw:     ws://localhost:$REALTIME_PORT/ws"
+  echo "-----------------------------------------------------------"
+  echo ""
+  echo "💡 纯本地模式，不消耗 Cloudflare 隧道配额"
+  echo "   手机测试请确保与 Mac 在同一 WiFi，并将 localhost 换成 Mac 的局域网 IP"
+  echo ""
+  open "$MOBILE_URL" 2>/dev/null || true
+  open "$DESKTOP_URL" 2>/dev/null || true
+  exit 0
+fi
 
 # 多用户 agentId 列表（自动附加到 URL 后面）
 AGENT_IDS=("user1" "user2" "user3")
