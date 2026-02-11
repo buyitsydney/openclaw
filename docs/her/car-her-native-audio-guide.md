@@ -677,6 +677,7 @@ AI 收到后会语音确认："好的，空调已经调到25度了"。
 | `set_ac_mode` | `{"mode": "cool"}` | cool / heat / auto |
 | `set_seat_heat` | `{"seat": "driver", "level": 2}` | 座椅加热 0-3（0=关） |
 | `set_window` | `{"position": "driver", "open": true}` | 车窗开/关 |
+| `start_navigation` | `{"destination": "锦里老灶火锅", "address": "人民路123号"}` | 导航到目的地（address 可选） |
 
 **厂商实现参考（Kotlin）：**
 
@@ -708,6 +709,13 @@ fun handleCarControl(args: JSONObject, callId: String) {
             val pos = params.optString("position", "driver")
             val open = params.optBoolean("open", true)
             """{"ok":true,"message":"${pos}车窗已${if (open) "打开" else "关闭"}"}"""
+        }
+        "start_navigation" -> {
+            val destination = params.optString("destination", "")
+            val address = params.optString("address", "")
+            // TODO: 调用厂商导航 SDK，设置目的地
+            // NavigationSDK.startNavigation(destination, address)
+            """{"ok":true,"message":"已开始导航到${destination}"}"""
         }
         else -> """{"ok":false,"error":"未知操作: $action"}"""
     }
@@ -941,6 +949,37 @@ AI:   ← audio: "好的，空调已经调到25度了"                  (App 播
       ← turnComplete
 
 [用户听到确认，感受到空调变化]
+```
+
+### 8.3 一次完整的导航交互（记忆 + 确认 + 导航）
+
+```
+[用户说] "去上周和老王喝酒的饭店"
+
+App:  AudioRecord → 讯飞降噪 → Base64 → realtime_input → WS1
+
+AI:   需要查记忆 → ← functionCall: openclaw_help({request:"查询上周和老王喝酒的饭店"})
+
+App:  ACK → WS1（AI 说"好的让我查一下"）
+      help 请求 → WS2
+
+WS2:  OpenClaw 查询记忆 → 找到"锦里老灶火锅，人民路123号"
+      ← help_result: "上周和老王去的是锦里老灶火锅，地址是人民路123号"
+
+App:  注入结果 → WS1
+
+AI:   ← audio: "你上周和老王去的是锦里老灶火锅，要帮你导航过去吗？"
+
+[用户说] "好的"
+
+AI:   ← functionCall: car_control({action:"start_navigation", params:{destination:"锦里老灶火锅", address:"人民路123号"}})
+
+App:  调用导航 SDK (本地)
+      → WS1: tool_response({ok:true, message:"已开始导航到锦里老灶火锅"})
+
+AI:   ← audio: "好的，导航已设置好了"
+
+[车机开始导航]
 ```
 
 ---

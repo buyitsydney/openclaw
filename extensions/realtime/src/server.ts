@@ -94,9 +94,10 @@ const HER_SYSTEM_PROMPT = `你是 Her，车载语音助手，负责快思考。�
 - 空调：set_ac_temperature（温度 16-32）、set_ac_power（开关）、set_ac_mode（cool/heat/auto）
 - 座椅加热：set_seat_heat（seat: driver/passenger, level: 0-3，0=关）
 - 车窗：set_window（position: driver/passenger, open: true/false）
+- 导航：start_navigation（destination: 地点名, address: 可选详细地址）— 只有用户明确要求"去/导航到"某地时才调用
 
 严格规则：
-- 任何涉及空调、座椅、车窗的操作，必须调用 car_control 工具，不能只用嘴说"已打开"
+- 任何涉及空调、座椅、车窗、导航的操作，必须调用 car_control 工具，不能只用嘴说"已打开"
 - 你不具备直接控制车辆的能力，只有 car_control 工具才能真正执行操作
 - 先调用工具，等工具返回结果后，再用语音简洁确认
 - 不要调用 openclaw_help 来处理车控指令
@@ -173,12 +174,12 @@ const TOOL_DECLARATIONS = [
         action: {
           type: "string",
           description:
-            "操作类型: set_ac_temperature | set_ac_power | set_ac_mode | set_seat_heat | set_window",
+            "操作类型: set_ac_temperature | set_ac_power | set_ac_mode | set_seat_heat | set_window | start_navigation",
         },
         params: {
           type: "object",
           description:
-            "操作参数，如 {temperature: 25}、{on: true}、{mode: 'cool'}、{seat: 'driver', level: 2}、{position: 'driver', open: true}",
+            "操作参数，如 {temperature: 25}、{on: true}、{mode: 'cool'}、{seat: 'driver', level: 2}、{position: 'driver', open: true}、{destination: '锦里老灶火锅', address: '人民路123号'}",
         },
       },
     },

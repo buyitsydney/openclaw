@@ -21,12 +21,12 @@ class CarControlTool extends FunctionCallDefinition {
           action: {
             type: "string",
             description:
-              "操作类型: set_ac_temperature | set_ac_power | set_ac_mode | set_seat_heat | set_window",
+              "操作类型: set_ac_temperature | set_ac_power | set_ac_mode | set_seat_heat | set_window | start_navigation",
           },
           params: {
             type: "object",
             description:
-              "操作参数，如 {temperature: 25}、{on: true}、{mode: 'cool'}、{seat: 'driver', level: 2}、{position: 'driver', open: true}",
+              "操作参数，如 {temperature: 25}、{on: true}、{mode: 'cool'}、{seat: 'driver', level: 2}、{position: 'driver', open: true}、{destination: '锦里老灶火锅', address: '人民路123号'}",
           },
         },
       },
@@ -99,6 +99,15 @@ function simulateCarControl(action, params) {
         ok: true,
         message: `[模拟] ${pos}车窗已${open ? "打开" : "关闭"}`,
       };
+    }
+    case "start_navigation": {
+      const dest = params?.destination ?? "未知目的地";
+      const addr = params?.address ?? "";
+      const msg = addr
+        ? `[模拟] 已开始导航到${dest}（${addr}）`
+        : `[模拟] 已开始导航到${dest}`;
+      console.log(`🧭 NAV | destination=${dest} address=${addr}`);
+      return { ok: true, message: msg };
     }
     default:
       return { ok: false, error: `[模拟] 未知操作: ${action}` };
