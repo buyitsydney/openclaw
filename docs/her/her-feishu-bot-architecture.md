@@ -1065,8 +1065,8 @@ npm 上至少有 4 个飞书相关包：
 | 4 | **多维表格 Bitable** | ✅ 已实现（待测试） | `feishu_bitable` 工具已注册。尚未被 AI 实际调用 |
 | 5 | **引用消息内容获取** | ✅ 已验证 | `getQuotedMessageContent()` 自动获取被引用消息内容 |
 | 6 | **权限错误自动诊断** | ✅ 已验证 | `extractPermissionError()` 正确检测 code=99991672 并提取 grant URL |
-| 7 | **发送者姓名解析** | ✅ 已实现（需验证） | `resolveFeishuSenderName()` 需要 `contact:contact.base:readonly`（已开通） |
-| 8 | **画板/白板内容读取** | ✅ 已实现（待权限） | `feishu_doc` 的 `read`/`list_blocks` 自动检测 block type_43，通过 Board API `download_as_image` 导出为 PNG 并以 vision image block 返回。需要 `board:whiteboard` 权限（**尚未开通**）。**独家能力** |
+| 7 | **发送者姓名解析** | ❌ 个人版不可用 | `resolveFeishuSenderName()` 代码正常，权限已开通，API 返回 `code=0` 但 user 对象只有 `open_id,union_id,mobile_visible`，无 `name` 字段。**飞书个人版通讯录 API 不返回用户姓名（平台限制）**，需企业版/旗舰版 |
+| 8 | **画板/白板内容读取** | ✅ 已验证 | `feishu_doc` 的 `read` 自动检测 block type_43，Board API 导出 PNG + vision image block 返回。日志 11:35/12:18/12:19 确认图片自动 resize 后 AI 成功理解画板内容（2063 字总结）。需要 `board:whiteboard` 权限（已开通）。**独家能力** |
 
 注：**Markdown 卡片/表格渲染**已由 CardKit 流式卡片天然支持（schema 2.0 + `tag: "markdown"`），无需额外实现。实测 car her 表格渲染完美，社区版 post 模式反而渲染异常。
 
@@ -1083,7 +1083,7 @@ npm 上至少有 4 个飞书相关包：
 | `im:chat:readonly` | 读取群信息 | 群名获取 |
 | `im:resource` | 消息资源 | 图片下载 |
 | `cardkit:card:write` | 卡片写入 | CardKit 流式卡片 |
-| `contact:contact.base:readonly` | 通讯录读取 | 发送者姓名解析 |
+| `contact:contact.base:readonly` | 通讯录读取 | 发送者姓名解析（已开通，API 调用成功但个人版不返回 name 字段——平台限制，需企业版） |
 | `docs:doc` | 旧版文档 | 兼容 |
 | `docx:document` | 新版文档完整 | 文档读写 |
 | `docx:document:readonly` | 文档只读 | 文档读取 |
@@ -1093,13 +1093,14 @@ npm 上至少有 4 个飞书相关包：
 | `drive:drive:readonly` | 云盘只读 | 云盘文件列表 |
 | `wiki:wiki` | 知识库完整 | Wiki 读写 |
 | `wiki:wiki:readonly` | 知识库只读 | Wiki 导航/读取 |
+| `board:whiteboard` | 画板/白板读取 | 画板导出为 PNG 图片（P1 #8，已验证） |
+| `board:whiteboard:node:create` | 画板节点创建 | 画板操作 |
+| `board:whiteboard:node:read` | 画板节点读取 | 画板操作 |
+| `bitable:app:readonly` | 多维表格只读 | 多维表格数据读取（P1 #4，已开通待测试） |
 
 **尚未开通（需要时申请）：**
 
-| 权限 scope | 用途 | 需要的功能 |
-|------------|------|-----------|
-| `board:whiteboard` | 画板/白板读取 | 画板导出为 PNG 图片（P1 #8） |
-| `bitable:app:readonly` | 多维表格只读 | 多维表格数据读取（P1 #4） |
+（当前所有已知需要的权限均已开通）
 
 **资源级权限（非 API scope，在飞书 UI 中配置）：**
 - 知识库空间权限：需将 bot 添加为空间成员，或设置"飞书个人版所有人可见"，或通过包含 bot 的群组间接授权
@@ -1131,7 +1132,22 @@ npm 上至少有 4 个飞书相关包：
 | 企业 200 Bot 部署 | ✅ 已验证 | Docker 容器隔离 + CSV 用户管理 + 滚动升级 |
 | 纯 @mention 回复 | ✅ 已验证 | 群聊中纯 @bot（不带文字）不再被丢弃，正常触发回复（2026-02-12） |
 | Wiki→Doc 全链路 | ✅ 已验证 | `feishu_wiki` 返回 hint 引导 AI 用 `feishu_doc` 读取正文。日志 11:32 确认 wiki(2次)→doc(3次) 全链路零报错、800 字总结（2026-02-12） |
-| **画板/白板内容读取** | ✅ 已实现（待权限） | `feishu_doc` 的 `read`/`list_blocks` 自动检测 block type_43，通过 Board API 导出 PNG 并以 vision image block 返回给 AI。需在开发者后台开通 `board:whiteboard` 权限。**社区版和所有已知飞书 bot 均未实现——独家优势**（2026-02-12） |
+| **画板/白板内容读取** | ✅ 已验证 | `feishu_doc` 的 `read` 自动检测 block type_43，Board API 导出 PNG + vision。日志 11:35/12:18/12:19 三次确认图片 resize + AI 2063 字总结。**社区版和所有已知飞书 bot 均未实现——独家优势**（2026-02-12） |
+
+#### 实测对比：本地 car her vs Docker 社区版（2026-02-12 12:45-12:49）
+
+测试文档："usb 拓扑"，包含 1 个表格（日期/任务/状态/备注）+ 3 个画板（3c 拓扑图、road test→fdi→cdi 流程图、RK3399 USB 完整拓扑大图）。
+
+| 维度 | 本地 car her（自研） | Docker her（社区版） |
+|------|---------------------|---------------------|
+| 文档定位 | 直接成功 | 第 1 次失败（"没找到 USB 拓扑文档"），第 2 次才成功 |
+| 表格内容 | 读到（2685 字总结含表格细节） | 读到（"包含表格的文档"） |
+| 画板内容（3 个） | 全部读到（`Image exceeds→resized`，AI 通过 vision 看到画板 PNG 并描述了拓扑细节） | 完全没读到（日志无任何 Image 处理） |
+| 输出方式 | 1 条 CardKit 流式卡片 | 5 条碎片消息逐条发送 |
+| 输出字数 | 2685 字完整总结 | 碎片式（每次 tool 中间结果都发一条消息） |
+| 加载体验 | 流式卡片打字机动画 | typing emoji reaction（闪烁） |
+| 群消息 | 正常处理+归档 | "我无法主动搜索或读取群组的历史聊天记录" |
+| 插件健康度 | 无警告 | 大量 `duplicate plugin id detected` 警告 |
 
 ---
 

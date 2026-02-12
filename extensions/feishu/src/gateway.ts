@@ -79,15 +79,21 @@ async function resolveFeishuSenderName(params: {
       path: { user_id: senderOpenId },
       params: { user_id_type: "open_id" },
     });
+    const user = res?.data?.user;
     const name: string | undefined =
-      res?.data?.user?.name ||
-      res?.data?.user?.display_name ||
-      res?.data?.user?.nickname ||
-      res?.data?.user?.en_name;
+      user?.name ||
+      user?.display_name ||
+      user?.nickname ||
+      user?.en_name;
     if (name && typeof name === "string") {
       senderNameCache.set(senderOpenId, { name, expireAt: now + SENDER_NAME_TTL_MS });
       return { name };
     }
+    // API succeeded but returned no usable name — log for diagnostics
+    log?.info(
+      `[${account.accountId}] sender name lookup returned no name for ${senderOpenId}` +
+        ` (code=${res?.code}, hasUser=${!!user}, keys=${user ? Object.keys(user).join(",") : "n/a"})`,
+    );
     return {};
   } catch (err) {
     const permErr = extractPermissionError(err);
@@ -557,7 +563,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     const wasMentioned = botOpenId ? mentions.some((m) => m.id === botOpenId) : false;
 
     log?.info(
-      `[${account.accountId}] group mention check: botOpenId=${botOpenId} mentions=${JSON.stringify(mentions.map((m) => ({ key: m.key, id: m.id })))} wasMentioned=${wasMentioned}`,
+      `[${account.accountId}] group mention check: botOpenId=${botOpenId} mentions=${JSON.stringify(mentions.map((m) => ({ key: m.key, id: m.id, name: m.name })))} wasMentioned=${wasMentioned}`,
     );
 
     if (!wasMentioned) {
