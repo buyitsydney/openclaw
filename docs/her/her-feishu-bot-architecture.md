@@ -967,13 +967,141 @@ IT 创建 Bot 时在权限管理中额外开通：
 
 ---
 
+## 与开源社区飞书插件对比分析（2026-02-12）
+
+### 背景
+
+OpenClaw 官方已收录社区飞书插件 `@openclaw/feishu`（npm），由 @m1heng 维护。官方文档 docs.openclaw.ai/channels 已列入飞书为 supported channel（plugin, installed separately）。
+
+npm 上至少有 4 个飞书相关包：
+- `@openclaw/feishu` v2026.2.9 — 官方命名空间，"community maintained by @m1heng"，maintainer 是 steipete（OpenClaw 作者）
+- `@m1heng-clawd/feishu` v0.1.9 — m1heng 个人早期版本
+- `@openclaw-cn/feishu` v2026.2.2 — 中文社区版
+- `@max1874/feishu` v0.2.26 — 另一社区贡献者
+
+**我们的飞书实现（`extensions/feishu/`）只在本地 dev 分支，未提交到 origin/main，未发布到 npm。**
+
+### 代码规模对比
+
+| 维度 | 我们的版本 | @openclaw/feishu (m1heng) |
+|------|-----------|--------------------------|
+| 源文件数 | 5 个 | 30 个 |
+| 总代码量 | ~1,800 行 | ~6,025 行 |
+| Lark SDK 版本 | ^1.50.0 | ^1.58.0 |
+| 附带 Skills | 0 | 4 个（doc/wiki/drive/perm） |
+
+### 功能对比
+
+| 功能 | 我们的版本 | m1heng 版 | 说明 |
+|------|-----------|-----------|------|
+| **核心消息收发** | ✅ | ✅ | 均完整 |
+| **CardKit 流式卡片（打字机效果）** | ✅ 官方 API | ❌ 无 | **我们的核心差异化能力**，~250 行核心逻辑，踩了 4 个竞争条件坑 |
+| **群聊 JSONL 归档** | ✅ | ❌ 无 | **我们的核心差异化能力**，~60 行，企业场景刚需 |
+| **ACK 超时修复** | ✅ `void` 异步 | ❌ `await` 阻塞 | m1heng 版有此 bug：handler 6-27s 阻塞 ACK → 飞书 3-5s 超时重推，且无 trackMessageId 去重 |
+| **Markdown 渲染** | 自研 `markdownToPost()` 140 行 | 飞书卡片原生 `tag: "md"` | m1heng 更简洁，且**支持表格**（我们的 Post 格式不支持） |
+| **图片收发 + Vision** | ✅ | ✅ | 均完整 |
+| **飞书文档读写 (docx)** | ❌ | ✅ 521 行 | Markdown↔Block 双向转换，支持 20+ 种 Block 类型 |
+| **知识库 Wiki** | ❌ | ✅ 232 行 | 空间/节点导航 + 创建/移动/重命名 |
+| **云盘 Drive** | ❌ | ✅ 227 行 | 文件夹 CRUD + 文件管理 |
+| **多维表格 Bitable** | ❌ | ✅ 461 行 | 20+ 字段类型，筛选/排序/分页 |
+| **权限管理 Perm** | ❌ | ✅ 173 行 | 协作者 CRUD |
+| **通讯录 Directory** | ❌ | ✅ 177 行 | 列出企业用户/群组 |
+| **@mention 转发** | ❌ | ✅ 126 行 | 群里 @bot+@张三 → 回复自动 @张三 |
+| **引用消息获取** | ❌ | ✅ | `getMessageFeishu` 获取被引用的原消息内容 |
+| **Emoji 表情回应** | ❌ | ✅ 160 行 | 消息 reaction |
+| **Typing 提示** | CardKit 流式卡片 | Emoji reaction 加/移除 | 方案不同，我们体验远优 |
+| **输入状态 (typing indicator)** | CardKit streaming | emoji reaction | — |
+| **权限错误自动诊断** | ❌ | ✅ | 缺权限时提取 grant URL 通知 agent，200 bot 部署排障利器 |
+| **Config Schema 验证** | 空 schema | ✅ Typebox 完整校验 | 减少配置错误 |
+| **Onboarding 引导** | ❌ | ✅ 359 行 | CLI 交互式配置 |
+| **多账户并行** | 支持（单账户使用） | 完善的并行启动 | — |
+| **Markdown 表格渲染** | ❌ 不支持 | ✅ 支持 | 卡片原生 md 支持表格 |
+| **Render Mode 可配** | 固定 Post 格式 | auto/raw/card 三种 | 按内容自动选择卡片或文本 |
+
+### 架构差异
+
+| 维度 | 我们的版本 | m1heng 版 |
+|------|-----------|-----------|
+| 入口 | `gateway.ts` 单文件 733 行大函数 | `bot.ts` 871 行 + `monitor.ts` 190 行，职责分离 |
+| 回复派发 | `dispatchReplyWithBufferedBlockDispatcher`（自研 card stream 驱动） | `dispatchReplyFromConfig` + `createReplyDispatcherWithTyping`（OpenClaw 标准 typing 框架） |
+| SDK 封装 | 直接操作 Lark SDK + 手写 HTTP（绕 SDK bug） | 封装了 `createFeishuClient` + `createEventDispatcher` |
+| 发送层 | `outbound.ts` 667 行（含 CardKit streaming 全部逻辑） | `send.ts` 358 行 + `outbound.ts` 55 行 + `reply-dispatcher.ts` 179 行 |
+
+### m1heng 版已知问题（我们已解决）
+
+1. **ACK 超时 bug**：`bot.ts` 中 `await handleFeishuMessage()` 阻塞 ACK 发送。AI 处理耗时 6-27s，飞书 3-5s 超时后会在 +15s/+5min/+1h/+6h 重推。且无内存去重机制（`trackMessageId`），**生产环境会出现消息重复**。我们在 2026-02-10 发现并修复（`void` 异步 + 去重缓存）。
+
+2. **Markdown 渲染虽简洁但有局限**：m1heng 用飞书卡片 `tag: "md"` 原生 markdown，优势是支持表格、代码更少。但卡片样式有边框，不如普通消息气泡自然。我们的 Post 格式更接近普通消息外观，但不支持表格。
+
+### 战略评估：继续自研
+
+**结论：继续自研，选择性吸收开源能力。**
+
+理由：
+
+1. **自主可控是企业核心需求**：Autolink 将 Her 部署给全公司 200+ 人 + 未来 C 端车主，飞书通道是核心基础设施。依赖外部维护者的 npm 包存在断更/breaking change 风险，不可接受。
+
+2. **踩坑经验是护城河**：ACK 超时、CardKit 4 个竞争条件、Post 格式收发不一致、SDK image 参数 bug —— 这些深水区问题的解决经验无法迁移到别人的代码库。
+
+3. **发展方向不同**：我们的路线是企业 200 人部署 + 车载 Her + 家庭 Her → 需要多租户安全隔离、群聊归档、流式体验。m1heng 是通用社区插件 → 功能广但不深。
+
+4. **流式卡片和群聊归档是不可替代的差异化**：m1heng 版完全没有这两个能力，这正是企业用户体验的核心。
+
+---
+
+## 后续 TODO（从开源版本吸收）
+
+基于对 `@openclaw/feishu` v2026.2.9 源码的详细分析，以下能力值得移植到我们的自研版本中。按优先级排列：
+
+### P1 — 短期必做（提升核心体验 + 企业部署必备）
+
+| # | 任务 | 参考文件 | 工作量 | 说明 |
+|---|------|---------|--------|------|
+| 1 | **卡片 Markdown 渲染模式** | `send.ts` `buildMarkdownCard()` | 0.5 天 | 用飞书 interactive card 原生 markdown 替代（或补充）自研 `markdownToPost()`。优势：支持表格渲染。可实现 auto 模式——检测到代码块/表格时用 card，否则用 Post |
+| 2 | **引用消息内容获取** | `send.ts` `getMessageFeishu()` | 0.5 天 | 用户回复某条消息时，自动获取被引用的原消息内容，拼入 inbound context。提升 AI 理解上下文的能力 |
+| 3 | **权限错误自动诊断** | `bot.ts` `extractPermissionError()` | 0.5 天 | 飞书 API 返回权限错误（code 99991672）时，自动提取 grant URL 通知 agent。200 bot 部署时排障效率提升 10 倍 |
+| 4 | **发送者姓名解析** | `bot.ts` `resolveFeishuSenderName()` | 0.5 天 | 调用 `contact/v3/users` 获取发送者真名（带 TTL 缓存），agent 能看到"张三: 明天开会"而非"ou_xxx: 明天开会"。群聊场景尤其重要 |
+
+### P2 — 中期（企业功能扩展）
+
+| # | 任务 | 参考文件 | 工作量 | 说明 |
+|---|------|---------|--------|------|
+| 5 | **@mention 转发** | `mention.ts` 126 行 | 1 天 | 群里 @bot + @张三 "帮我问问他进度" → bot 回复自动 @张三。企业群协作场景 |
+| 6 | **飞书文档读写工具** | `docx.ts` 521 行 + skill | 2 天 | 注册 `feishu_doc` MCP 工具，AI 可直接读写飞书文档。核心难点：Markdown↔Block 20+ 类型双向转换 |
+| 7 | **知识库 Wiki 导航** | `wiki.ts` 232 行 + skill | 1 天 | 注册 `feishu_wiki` 工具，导航 Wiki 空间/节点。依赖 feishu_doc |
+| 8 | **Emoji 表情回应** | `reactions.ts` 160 行 | 0.5 天 | 消息 reaction 能力，agent 可以对消息加 emoji |
+| 9 | **Config Schema 验证** | `config-schema.ts` 172 行 | 1 天 | Typebox 完整配置校验，减少 200 bot 部署时的配置错误 |
+
+### P3 — 长期（按需）
+
+| # | 任务 | 参考文件 | 工作量 | 说明 |
+|---|------|---------|--------|------|
+| 10 | **云盘文件管理** | `drive.ts` 227 行 + skill | 1 天 | `feishu_drive` 工具，文件夹 CRUD |
+| 11 | **多维表格 Bitable** | `bitable.ts` 461 行 | 1.5 天 | `feishu_bitable` 工具，20+ 字段类型 |
+| 12 | **权限管理** | `perm.ts` 173 行 + skill | 0.5 天 | `feishu_perm` 工具，协作者 CRUD |
+| 13 | **通讯录查询** | `directory.ts` 177 行 | 1 天 | 列出企业用户/群组，200 人部署场景有用 |
+| 14 | **Onboarding CLI** | `onboarding.ts` 359 行 | 1.5 天 | `openclaw setup` 交互式引导配置飞书凭证 |
+| 15 | **状态探测** | `probe.ts` 44 行 | 0.5 天 | `openclaw channels status` 显示飞书连接状态 |
+
+### 自研独有，不在开源版本中（持续维护）
+
+| 能力 | 状态 | 说明 |
+|------|------|------|
+| CardKit 流式卡片 | ✅ 已实现 | 官方打字机动画，~250 行核心，竞争条件已全部修复 |
+| 群聊 JSONL 归档 | ✅ 已实现 | 本地归档 + index.json + skill 读取，~60 行 |
+| ACK 超时修复 | ✅ 已实现 | `void` 异步 + `trackMessageId` 去重 |
+| 企业 200 Bot 部署 | ✅ 已验证 | Docker 容器隔离 + CSV 用户管理 + 滚动升级 |
+
+---
+
 ## 总结
 
 飞书通道本质上是在 OpenClaw 的通道体系中新增一个标准通道插件。它与 Her（realtime 语音通道）完全平行，与 Telegram/Slack/Discord 完全同构。
 
-- 实际新增代码 ~1000 行，全部在 `extensions/feishu/` 内
+- 实际新增代码 ~1,800 行，全部在 `extensions/feishu/` 内
 - 不修改 OpenClaw 核心代码的任何一行
 - 不修改 Her（realtime 插件）的任何一行
 - 不修改任何已有扩展的任何一行
 - 风险极低：官方 API + 独立插件 + 活跃维护的 SDK
 - 端到端聊天已验证通过
+- 与开源社区版本对比后决策：**继续自研，选择性吸收开源能力**（2026-02-12）
