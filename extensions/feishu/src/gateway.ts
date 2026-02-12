@@ -9,6 +9,7 @@ import * as Lark from "@larksuiteoapi/node-sdk";
 import type { ChannelAccountSnapshot, ChannelLogSink, OpenClawConfig, RuntimeEnv } from "openclaw/plugin-sdk";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import {
+  getFeishuClient,
   sendFeishuText,
   sendFeishuRichText,
   sendFeishuReply,
@@ -25,6 +26,136 @@ import { getFeishuRuntime } from "./runtime.js";
 import { existsSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+
+// ── Permission error extraction ─────────────────────────────────────────
+// Detect Feishu API permission errors (code 99991672) and extract the grant URL
+// so the agent can report actionable guidance instead of an opaque error.
+
+type PermissionError = { code: number; message: string; grantUrl?: string };
+
+export function extractPermissionError(err: unknown): PermissionError | null {
+  if (!err || typeof err !== "object") return null;
+  const axiosErr = err as { response?: { data?: unknown } };
+  const data = axiosErr.response?.data;
+  if (!data || typeof data !== "object") return null;
+  const feishuErr = data as {
+    code?: number;
+    msg?: string;
+    error?: { permission_violations?: Array<{ uri?: string }> };
+  };
+  if (feishuErr.code !== 99991672) return null;
+  const msg = feishuErr.msg ?? "";
+  const urlMatch = msg.match(/https:\/\/[^\s,]+\/app\/[^\s,]+/);
+  return { code: feishuErr.code, message: msg, grantUrl: urlMatch?.[0] };
+}
+
+// Cache permission-error notifications to avoid spamming on every API call.
+const permissionErrorNotifiedAt = new Map<string, number>();
+const PERMISSION_ERROR_COOLDOWN_MS = 5 * 60 * 1000;
+
+// ── Sender name resolution (contact/v3/users) ──────────────────────────
+// Resolve open_id -> display name so the agent sees "张三" not "ou_xxx".
+// TTL-cached per open_id to minimise API calls.
+
+const SENDER_NAME_TTL_MS = 10 * 60 * 1000;
+const senderNameCache = new Map<string, { name: string; expireAt: number }>();
+
+type SenderNameResult = { name?: string; permissionError?: PermissionError };
+
+async function resolveFeishuSenderName(params: {
+  account: ResolvedFeishuAccount;
+  senderOpenId: string;
+  log?: ChannelLogSink;
+}): Promise<SenderNameResult> {
+  const { account, senderOpenId, log } = params;
+  if (!senderOpenId) return {};
+  const cached = senderNameCache.get(senderOpenId);
+  const now = Date.now();
+  if (cached && cached.expireAt > now) return { name: cached.name };
+  try {
+    const client = getFeishuClient(account);
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const res: any = await client.contact.user.get({
+      path: { user_id: senderOpenId },
+      params: { user_id_type: "open_id" },
+    });
+    const name: string | undefined =
+      res?.data?.user?.name ||
+      res?.data?.user?.display_name ||
+      res?.data?.user?.nickname ||
+      res?.data?.user?.en_name;
+    if (name && typeof name === "string") {
+      senderNameCache.set(senderOpenId, { name, expireAt: now + SENDER_NAME_TTL_MS });
+      return { name };
+    }
+    return {};
+  } catch (err) {
+    const permErr = extractPermissionError(err);
+    if (permErr) {
+      log?.info(`[${account.accountId}] permission error resolving sender name: code=${permErr.code}`);
+      return { permissionError: permErr };
+    }
+    log?.info(`[${account.accountId}] failed to resolve sender name for ${senderOpenId}: ${String(err)}`);
+    return {};
+  }
+}
+
+// ── Quoted message content retrieval (im.message.get) ───────────────────
+// When a user replies to a message, Feishu sends parent_id (the quoted msg).
+// We fetch its content so the AI has the full context of what was quoted.
+
+export type FeishuMessageInfo = {
+  messageId: string;
+  chatId: string;
+  senderId?: string;
+  content: string;
+  contentType: string;
+};
+
+async function getQuotedMessageContent(params: {
+  account: ResolvedFeishuAccount;
+  parentMessageId: string;
+  log?: ChannelLogSink;
+}): Promise<FeishuMessageInfo | null> {
+  const { account, parentMessageId, log } = params;
+  try {
+    const client = getFeishuClient(account);
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const response: any = await client.im.message.get({
+      path: { message_id: parentMessageId },
+    });
+    if (response?.code !== 0) return null;
+    const item = response?.data?.items?.[0];
+    if (!item) return null;
+    let content: string = item.body?.content ?? "";
+    try {
+      const parsed = JSON.parse(content);
+      if (item.msg_type === "text" && parsed.text) {
+        content = parsed.text;
+      } else if (item.msg_type === "post" && parsed.zh_cn) {
+        // Flatten post body to plain text.
+        content = flattenPostBody(parsed.zh_cn) ?? content;
+      }
+    } catch {
+      // Keep raw content if parsing fails.
+    }
+    return {
+      messageId: item.message_id ?? parentMessageId,
+      chatId: item.chat_id ?? "",
+      senderId: item.sender?.id,
+      content,
+      contentType: item.msg_type ?? "text",
+    };
+  } catch (err) {
+    const permErr = extractPermissionError(err);
+    if (permErr) {
+      log?.info(`[${account.accountId}] permission error fetching quoted msg: code=${permErr.code}`);
+    } else {
+      log?.info(`[${account.accountId}] failed to fetch quoted msg ${parentMessageId}: ${String(err)}`);
+    }
+    return null;
+  }
+}
 
 export type FeishuGatewayOptions = {
   account: ResolvedFeishuAccount;
@@ -309,6 +440,8 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   const content: string = message.content ?? "{}";
   const senderId: string = sender.sender_id?.open_id ?? sender.sender_id?.user_id ?? "";
   const senderType: string = sender.sender_type ?? "";
+  // parent_id is the message being replied to (quoted message).
+  const parentId: string = message.parent_id ?? "";
 
   // Skip bot messages.
   if (senderType === "bot") return;
@@ -316,7 +449,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // Debug: log raw inbound for diagnosis (create_time helps detect replayed messages).
   const createTime: string = message.create_time ?? "";
   log?.info(
-    `[${account.accountId}] raw inbound: msgId=${messageId} createTime=${createTime} msgType=${msgType} from=${senderId} content=${content.slice(0, 120)}`,
+    `[${account.accountId}] raw inbound: msgId=${messageId} createTime=${createTime} msgType=${msgType} from=${senderId} parentId=${parentId} content=${content.slice(0, 120)}`,
   );
 
   // Deduplicate.
@@ -367,9 +500,12 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
   // Strip @mentions (Feishu uses @_user_N patterns in text).
   const cleanText = textFromMessage.replace(/@_user_\d+/g, "").trim();
-  if (!cleanText) return;
-
   const isGroup = chatType === "group";
+
+  // Allow through if: has text, is a reply (quoted msg context will be injected),
+  // or is a group @mention (bot will respond based on context).
+  // Only drop truly empty non-reply, non-mention messages.
+  if (!cleanText && !parentId && !isGroup) return;
 
   log?.info(`[${account.accountId}] inbound: chat=${chatId} from=${senderId} type=${chatType}${mediaPath ? " +image" : ""}`);
   setStatus({ lastInboundAt: Date.now() });
@@ -465,6 +601,44 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     }
   }
 
+  // ── Resolve sender display name (best-effort, non-blocking) ──
+  let senderDisplayName: string | undefined;
+  try {
+    const nameResult = await resolveFeishuSenderName({ account, senderOpenId: senderId, log });
+    senderDisplayName = nameResult.name;
+    // Surface permission errors once per cooldown period so the admin knows.
+    if (nameResult.permissionError) {
+      const cooldownKey = account.appId ?? "default";
+      const lastNotified = permissionErrorNotifiedAt.get(cooldownKey) ?? 0;
+      if (Date.now() - lastNotified > PERMISSION_ERROR_COOLDOWN_MS) {
+        permissionErrorNotifiedAt.set(cooldownKey, Date.now());
+        log?.error(
+          `[${account.accountId}] Feishu permission error (sender name): ${nameResult.permissionError.message}` +
+            (nameResult.permissionError.grantUrl ? ` Grant: ${nameResult.permissionError.grantUrl}` : ""),
+        );
+      }
+    }
+  } catch {
+    // Best-effort — continue without display name.
+  }
+  if (senderDisplayName) {
+    log?.info(`[${account.accountId}] sender resolved: ${senderId} -> ${senderDisplayName}`);
+  }
+
+  // ── Fetch quoted message content (if this is a reply) ──
+  let quotedContext = "";
+  if (parentId) {
+    try {
+      const quoted = await getQuotedMessageContent({ account, parentMessageId: parentId, log });
+      if (quoted?.content) {
+        quotedContext = `\n[Quoted message: "${quoted.content.slice(0, 500)}"]`;
+        log?.info(`[${account.accountId}] quoted msg fetched: ${parentId} -> ${quoted.content.slice(0, 80)}`);
+      }
+    } catch (err) {
+      log?.info(`[${account.accountId}] quoted msg fetch failed: ${String(err)}`);
+    }
+  }
+
   // Resolve agent route for this message.
   const route = core.channel.routing.resolveAgentRoute({
     cfg: config,
@@ -474,6 +648,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   });
 
   // Build envelope for the agent.
+  // Include sender display name and quoted context in the body so the AI sees them.
   const storePath = core.channel.session.resolveStorePath(config.session?.store, {
     agentId: route.agentId,
   });
@@ -482,13 +657,15 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     storePath,
     sessionKey: route.sessionKey,
   });
+  const enrichedFrom = senderDisplayName ? `${senderDisplayName} (${senderId})` : senderId;
+  const enrichedBody = cleanText + quotedContext;
   const body = core.channel.reply.formatAgentEnvelope({
     channel: "Feishu",
-    from: senderId,
+    from: enrichedFrom,
     timestamp: Date.now(),
     previousTimestamp,
     envelope: envelopeOptions,
-    body: cleanText,
+    body: enrichedBody,
   });
 
   const ctxPayload = core.channel.reply.finalizeInboundContext({

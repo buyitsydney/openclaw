@@ -1057,17 +1057,20 @@ npm 上至少有 4 个飞书相关包：
 
 ### P1 — 短期必做（核心体验 + 飞书生态工具）
 
-| # | 任务 | 参考文件 | 工作量 | 说明 |
-|---|------|---------|--------|------|
-| 1 | **飞书文档读写** | `docx.ts` ~430 行 + skill | 2 天 | 注册 `feishu_doc` MCP 工具，AI 直接读写飞书文档。核心难点：Markdown<>Block 20+ 类型双向转换 |
-| 2 | **知识库 Wiki 导航** | `wiki.ts` ~230 行 + skill | 1 天 | 注册 `feishu_wiki` 工具，导航 Wiki 空间/节点。依赖 feishu_doc |
-| 3 | **云盘文件管理** | `drive.ts` ~210 行 + skill | 1 天 | `feishu_drive` 工具，文件夹 CRUD |
-| 4 | **多维表格 Bitable** | `bitable.ts` ~330 行 | 1.5 天 | `feishu_bitable` 工具，20+ 字段类型读写 |
-| 5 | **引用消息内容获取** | `send.ts` `getMessageFeishu()` | 0.5 天 | 用户回复某条消息时，自动获取被引用的原消息内容，拼入 inbound context。提升 AI 理解上下文的能力 |
-| 6 | **权限错误自动诊断** | `bot.ts` `extractPermissionError()` | 0.5 天 | 飞书 API 返回权限错误（code 99991672）时，自动提取 grant URL 通知 agent。200 bot 部署时排障效率提升 10 倍 |
-| 7 | **发送者姓名解析** | `bot.ts` `resolveFeishuSenderName()` | 0.5 天 | 调用 `contact/v3/users` 获取发送者真名（带 TTL 缓存），agent 能看到"张三: 明天开会"而非"ou_xxx: 明天开会"。群聊场景尤其重要 |
+| # | 任务 | 状态 | 说明 |
+|---|------|------|------|
+| 1 | **飞书文档读写** | ✅ 已实现+已验证 | `feishu_doc` 工具，读取/写入/追加/创建文档。需要 `docx:document:readonly` + `docx:document:write_only` + `docx:document:create` + `docx:document.block:convert`。日志确认读写均无报错（10:44 后） |
+| 2 | **知识库 Wiki 导航** | ✅ 已实现+已验证 | `feishu_wiki` 工具，空间列表/节点导航/内容获取。需要 `wiki:wiki:readonly` + 知识库空间成员权限（通过群组间接授权或设置公开范围）。日志确认 09:41-09:54 多次调用零报错 |
+| 3 | **云盘文件管理** | ✅ 已实现+已验证 | `feishu_drive` 工具，文件夹列表/创建/移动/删除。需要 `drive:drive:readonly`。日志确认 09:27/09:54 调用无报错 |
+| 4 | **多维表格 Bitable** | ✅ 已实现（待测试） | `feishu_bitable` 工具已注册。需要 `bitable:app:readonly`。尚未在实际对话中被 AI 调用测试 |
+| 5 | **引用消息内容获取** | ✅ 已实现+已验证 | `getQuotedMessageContent()` 自动获取被引用消息内容。日志确认 09:46/09:55/10:38/10:39 多次成功获取。图片引用返回原始 JSON（可优化为"[引用了一张图片]"） |
+| 6 | **权限错误自动诊断** | ✅ 已实现+已验证 | `extractPermissionError()` 正确检测 code=99991672 并提取 grant URL。日志 07:32/10:37 等多次正确触发 |
+| 7 | **发送者姓名解析** | ✅ 已实现（需权限） | `resolveFeishuSenderName()` 需要 `contact:contact.base:readonly`（已开通）。首次调用 07:32 报权限错误，后续未再单独测试（可能需重启后验证缓存清除） |
+| 8 | **画板/白板内容读取** | 📋 TODO | 飞书文档嵌入的画板（block type_43）通过 `GET /board/v1/whiteboards/{token}/download_as_image` 导出为 PNG，结合 vision 让 AI 理解画板内容。需要 `board:whiteboard` 权限。**独家能力：社区版和所有已知飞书 bot 均未实现** |
 
 注：**Markdown 卡片/表格渲染**已由 CardKit 流式卡片天然支持（schema 2.0 + `tag: "markdown"`），无需额外实现。实测 car her 表格渲染完美，社区版 post 模式反而渲染异常。
+
+飞书开发者后台已开通权限（2026-02-12 确认）：`cardkit:card:write`, `contact:contact.base:readonly`, `docs:doc`, `docx:document`, `docx:document.block:convert`, `docx:document:create`, `docx:document:readonly`, `docx:document:write_only`, `drive:drive:readonly`, `im:chat:readonly`, `im:message`, `im:message.group_msg`, `im:message.p2p_msg:readonly`, `im:message:send_as_bot`, `im:resource`, `wiki:wiki`, `wiki:wiki:readonly`。知识库空间权限通过"飞书个人版所有人可见"或群组间接授权解决。
 
 ### P2 — 中期（企业功能扩展）
 
@@ -1094,6 +1097,8 @@ npm 上至少有 4 个飞书相关包：
 | 群聊 JSONL 归档 | ✅ 已实现 | 本地归档 + index.json + skill 读取，~60 行。社区版完全没有此能力，群聊总结场景远远领先 |
 | ACK 超时修复 | ✅ 已实现 | `void` 异步 + `trackMessageId` 去重。社区版 WebSocket 模式仍有此 bug |
 | 企业 200 Bot 部署 | ✅ 已验证 | Docker 容器隔离 + CSV 用户管理 + 滚动升级 |
+| 纯 @mention 回复 | ✅ 已修复 | 群聊中纯 @bot（不带文字）不再被丢弃，正常触发回复（2026-02-12） |
+| **画板/白板内容读取** | 📋 TODO | 飞书文档嵌入的画板（block type_43）通过 `GET /board/v1/whiteboards/{token}/download_as_image` 导出为 PNG，结合 vision 让 AI 理解画板内容。需要 `board:whiteboard` 权限。**社区版和所有已知飞书 bot 均未实现此能力，实现后为独家优势** |
 
 ---
 

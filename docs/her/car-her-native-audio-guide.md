@@ -505,6 +505,17 @@ fun onWS1Message(jsonStr: String) {
         return
     }
 
+    // ⚠️ 工具调用是顶层 toolCall 字段，不在 serverContent 内！
+    val toolCall = json.optJSONObject("toolCall")
+    if (toolCall != null) {
+        val functionCalls = toolCall.optJSONArray("functionCalls") ?: return
+        for (i in 0 until functionCalls.length()) {
+            val fc = functionCalls.getJSONObject(i)
+            handleToolCall(fc)  // fc 包含 name, id, args（见第六章）
+        }
+        return
+    }
+
     val serverContent = json.optJSONObject("serverContent") ?: return
     val modelTurn = serverContent.optJSONObject("modelTurn")
 
@@ -540,7 +551,7 @@ fun onWS1Message(jsonStr: String) {
         return
     }
 
-    // 5. modelTurn 中的内容
+    // 5. modelTurn 中的内容（音频和文本；工具调用已在上方 toolCall 分支处理）
     if (modelTurn != null) {
         val parts = modelTurn.optJSONArray("parts") ?: return
         for (i in 0 until parts.length()) {
@@ -564,12 +575,7 @@ fun onWS1Message(jsonStr: String) {
                 continue
             }
 
-            // 5c. 工具调用 → 分发处理（见第六章）
-            val functionCall = part.optJSONObject("functionCall")
-            if (functionCall != null) {
-                handleToolCall(functionCall)
-                continue
-            }
+            // 注意：工具调用（toolCall）已在上方顶层处理，不会出现在 parts 中
         }
     }
 }
@@ -587,10 +593,12 @@ fun onWS1Message(jsonStr: String) {
 {"serverContent":{"modelTurn":{"parts":[{"text":"好的，我帮你查一下天气"}]}}}
 ```
 
-**工具调用（functionCall）：**
+**工具调用（toolCall — 顶层字段，不在 serverContent 内）：**
 ```json
-{"serverContent":{"modelTurn":{"parts":[{"functionCall":{"name":"car_control","id":"call_abc123","args":{"action":"set_ac_temperature","params":{"temperature":25}}}}]}}}
+{"toolCall":{"functionCalls":[{"name":"car_control","args":{"action":"set_ac_temperature","params":{"temperature":25}}}]}}
 ```
+
+> 注意：`functionCalls` 数组中每个元素只有 `name` 和 `args` 两个字段，**没有 `id` 字段**。
 
 **用户语音转写：**
 ```json
@@ -621,10 +629,13 @@ AI 会通过 WS 连接 1 发送工具调用。有两种工具：`openclaw_help`�
 ### 6.1 工具调用分发（伪代码）
 
 ```kotlin
+// functionCall 是 toolCall.functionCalls[] 数组中的单个元素
+// ⚠️ Gemini Live 返回的 functionCall 只有 name 和 args，没有 id 字段
 fun handleToolCall(functionCall: JSONObject) {
     val name = functionCall.getString("name")
-    val callId = functionCall.getString("id")
     val args = functionCall.optJSONObject("args") ?: JSONObject()
+    // App 自行生成 callId 用于关联 WS2 的 help 请求/响应
+    val callId = UUID.randomUUID().toString()
 
     when (name) {
         "openclaw_help" -> handleOpenClawHelp(args.optString("request"), callId)
@@ -641,12 +652,13 @@ fun handleToolCall(functionCall: JSONObject) {
 **完整流程：**
 
 ```
-收到: functionCall(name="car_control", id="call_123", args={action:"set_ac_temperature", params:{temperature:25}})
+WS1 收到顶层消息: {"toolCall":{"functionCalls":[{"name":"car_control","args":{...}}]}}
 
-    1. 提取 action 和 params
-    2. 调用厂商车控 SDK 执行（本地，毫秒级）
-    3. 得到结果
-    4. 通过 WS 连接 1 发送 tool_response:
+    1. 从 toolCall.functionCalls[0] 提取 name 和 args
+    2. 从 args 提取 action 和 params
+    3. 调用厂商车控 SDK 执行（本地，毫秒级）
+    4. 得到结果
+    5. 通过 WS 连接 1 发送 tool_response:
 ```
 
 **发送给 WS 连接 1 的 tool_response：**
@@ -655,7 +667,7 @@ fun handleToolCall(functionCall: JSONObject) {
 {
   "tool_response": {
     "functionResponses": [{
-      "id": "call_123",
+      "id": "",
       "name": "car_control",
       "response": {
         "ok": true,
@@ -664,6 +676,9 @@ fun handleToolCall(functionCall: JSONObject) {
     }]
   }
 }
+```
+
+> `id` 字段传空字符串即可（Gemini Live 的 toolCall 不返回 id）。
 ```
 
 AI 收到后会语音确认："好的，空调已经调到25度了"。
@@ -682,7 +697,7 @@ AI 收到后会语音确认："好的，空调已经调到25度了"。
 **厂商实现参考（Kotlin）：**
 
 ```kotlin
-fun handleCarControl(args: JSONObject, callId: String) {
+fun handleCarControl(args: JSONObject, callId: String) {  // callId 由 App 生成（见 6.1）
     val action = args.optString("action")
     val params = args.optJSONObject("params") ?: JSONObject()
 
@@ -721,7 +736,7 @@ fun handleCarControl(args: JSONObject, callId: String) {
     }
 
     // 发送 tool_response 给 WS 连接 1
-    val response = """{"tool_response":{"functionResponses":[{"id":"$callId","name":"car_control","response":$result}]}}"""
+    val response = """{"tool_response":{"functionResponses":[{"id":"","name":"car_control","response":$result}]}}"""
     ws1.send(response)
 }
 ```
@@ -733,23 +748,26 @@ fun handleCarControl(args: JSONObject, callId: String) {
 **完整流程：**
 
 ```
-收到: functionCall(name="openclaw_help", id="call_456", args={request:"今天北京天气"})
+WS1 收到顶层消息: {"toolCall":{"functionCalls":[{"name":"openclaw_help","args":{"request":"今天北京天气"}}]}}
+
+App 生成 callId（如 UUID）用于关联 WS2 的请求/响应:
+    val callId = UUID.randomUUID().toString()  // 例如 "a1b2c3d4"
 
 Step 1: 立即向 WS 连接 1 发送 ACK（让 AI 知道工具已收到）
 
     {"tool_response": {"functionResponses": [{
-        "id": "call_456",
+        "id": "",
         "name": "openclaw_help",
         "response": {"result": "正在处理，请稍等"}
     }]}}
 
-Step 2: 向 WS 连接 2 发送 help 请求
+Step 2: 向 WS 连接 2 发送 help 请求（callId 由 App 生成）
 
-    {"type": "help", "request": "今天北京天气", "callId": "call_456"}
+    {"type": "help", "request": "今天北京天气", "callId": "a1b2c3d4"}
 
 Step 3: 等待 WS 连接 2 返回结果（可能需要 2-30 秒）
 
-    ← {"type": "help_result", "callId": "call_456", "reply": "北京现在气温4.5°C，多云，南风约7公里/小时"}
+    ← {"type": "help_result", "callId": "a1b2c3d4", "reply": "北京现在气温4.5°C，多云，南风约7公里/小时"}
 
 Step 4: 将结果注入 WS 连接 1（让 AI 知道查询结果，并语音播报）
 
@@ -759,9 +777,9 @@ Step 4: 将结果注入 WS 连接 1（让 AI 知道查询结果，并语音播�
         "turn_complete": false
     }}
 
-    发送第二条（触发 AI 播报）:
+    发送第二条（触发 AI 播报，注意 role 是 user！）:
     {"client_content": {
-        "turns": [{"role": "model", "parts": [{"text": "以上信息来自 backend ai，请你根据实际情况回复用户信息！"}]}],
+        "turns": [{"role": "user", "parts": [{"text": "以上信息来自 backend ai，请你根据实际情况回复用户信息！"}]}],
         "turn_complete": true
     }}
 
@@ -771,9 +789,9 @@ Step 5: AI 收到后会语音播报："北京现在气温大约4度半，天气�
 **厂商实现参考（Kotlin）：**
 
 ```kotlin
-fun handleOpenClawHelp(request: String, callId: String) {
-    // Step 1: 立即 ACK
-    ws1.send("""{"tool_response":{"functionResponses":[{"id":"$callId","name":"openclaw_help","response":{"result":"正在处理，请稍等"}}]}}""")
+fun handleOpenClawHelp(request: String, callId: String) {  // callId 由 App 生成（见 6.1）
+    // Step 1: 立即 ACK（id 传空字符串，Gemini Live 不使用此字段）
+    ws1.send("""{"tool_response":{"functionResponses":[{"id":"","name":"openclaw_help","response":{"result":"正在处理，请稍等"}}]}}""")
 
     // Step 2: 转发到 WS2
     ws2.send("""{"type":"help","request":"$request","callId":"$callId"}""")
@@ -807,8 +825,8 @@ fun onWS2Message(jsonStr: String) {
 fun injectToGemini(text: String) {
     // 第一条：注入内容
     ws1.send("""{"client_content":{"turns":[{"role":"model","parts":[{"text":"$text"}]}],"turn_complete":false}}""")
-    // 第二条：触发播报（这是系统信号，AI 不会朗读这句话）
-    ws1.send("""{"client_content":{"turns":[{"role":"model","parts":[{"text":"以上信息来自 backend ai，请你根据实际情况回复用户信息！"}]}],"turn_complete":true}}""")
+    // 第二条：触发播报（注意 role 是 "user"，不是 "model"！）
+    ws1.send("""{"client_content":{"turns":[{"role":"user","parts":[{"text":"以上信息来自 backend ai，请你根据实际情况回复用户信息！"}]}],"turn_complete":true}}""")
 }
 ```
 
@@ -915,7 +933,7 @@ App:  AudioRecord → 讯飞降噪 → Base64 → realtime_input → WS1
 AI:   (VAD 检测到语音结束)                                │
       ← inputTranscription: "帮我查一下今天北京天气"      ←┘
       ← audio: "好的，我帮你查一下"                       (App 播放)
-      ← functionCall: openclaw_help({request:"今天北京天气"})
+      ← toolCall: openclaw_help({request:"今天北京天气"})
 
 App:  → WS1: tool_response (ACK)
       → WS2: help 请求
@@ -940,7 +958,7 @@ AI:   ← audio: "北京现在气温大约4度半，天气多云"           (App
 
 App:  AudioRecord → 讯飞降噪 → Base64 → realtime_input → WS1
 
-AI:   ← functionCall: car_control({action:"set_ac_temperature", params:{temperature:25}})
+AI:   ← toolCall: car_control({action:"set_ac_temperature", params:{temperature:25}})
 
 App:  调用厂商车控 SDK (本地, <100ms)
       → WS1: tool_response({ok:true, message:"空调已设置为25度"})
@@ -958,7 +976,7 @@ AI:   ← audio: "好的，空调已经调到25度了"                  (App 播
 
 App:  AudioRecord → 讯飞降噪 → Base64 → realtime_input → WS1
 
-AI:   需要查记忆 → ← functionCall: openclaw_help({request:"查询上周和老王喝酒的饭店"})
+AI:   需要查记忆 → ← toolCall: openclaw_help({request:"查询上周和老王喝酒的饭店"})
 
 App:  ACK → WS1（AI 说"好的让我查一下"）
       help 请求 → WS2
@@ -972,7 +990,7 @@ AI:   ← audio: "你上周和老王去的是锦里老灶火锅，要帮你导�
 
 [用户说] "好的"
 
-AI:   ← functionCall: car_control({action:"start_navigation", params:{destination:"锦里老灶火锅", address:"人民路123号"}})
+AI:   ← toolCall: car_control({action:"start_navigation", params:{destination:"锦里老灶火锅", address:"人民路123号"}})
 
 App:  调用导航 SDK (本地)
       → WS1: tool_response({ok:true, message:"已开始导航到锦里老灶火锅"})
@@ -1101,10 +1119,10 @@ config.geminiProxy.sessionSetup
 
 # 文本注入（openclaw 结果）
 {"client_content":{"turns":[{"role":"model","parts":[{"text":"注入的文本"}]}],"turn_complete":false}}
-{"client_content":{"turns":[{"role":"model","parts":[{"text":"以上信息来自 backend ai，请你根据实际情况回复用户信息！"}]}],"turn_complete":true}}
+{"client_content":{"turns":[{"role":"user","parts":[{"text":"以上信息来自 backend ai，请你根据实际情况回复用户信息！"}]}],"turn_complete":true}}
 
-# 工具响应
-{"tool_response":{"functionResponses":[{"id":"<callId>","name":"<工具名>","response":{...}}]}}
+# 工具响应（id 传空字符串）
+{"tool_response":{"functionResponses":[{"id":"","name":"<工具名>","response":{...}}]}}
 ```
 
 ### WS1 → App（接收）
@@ -1119,8 +1137,8 @@ config.geminiProxy.sessionSetup
 # 文本回复
 {"serverContent":{"modelTurn":{"parts":[{"text":"..."}]}}}
 
-# 工具调用
-{"serverContent":{"modelTurn":{"parts":[{"functionCall":{"name":"car_control","id":"call_xxx","args":{...}}}]}}}
+# 工具调用（⚠️ 顶层字段，不在 serverContent 内；无 id 字段）
+{"toolCall":{"functionCalls":[{"name":"car_control","args":{...}}]}}
 
 # 用户语音转写
 {"serverContent":{"inputTranscription":{"text":"用户说的话","finished":true}}}
