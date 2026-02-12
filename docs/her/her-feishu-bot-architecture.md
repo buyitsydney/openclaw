@@ -1049,47 +1049,50 @@ npm 上至少有 4 个飞书相关包：
 
 ---
 
-## 后续 TODO（从开源版本吸收）
+## 后续 TODO（从开源版本吸收到自研版本）
 
-基于对 `@openclaw/feishu` v2026.2.9 源码的详细分析，以下能力值得移植到我们的自研版本中。按优先级排列：
+策略：**直接吸收社区版能力到本地 `extensions/feishu/`**，使其成为最强版本——既有流式卡片 + 群聊归档（社区版没有的），又有飞书文档/Wiki/云盘/Bitable 工具（当前没有的）。
 
-### P1 — 短期必做（提升核心体验 + 企业部署必备）
+基于对 `@m1heng-clawd/feishu` v0.1.9 源码的详细分析和实际测试（2026-02-12），按优先级排列：
+
+### P1 — 短期必做（核心体验 + 飞书生态工具）
 
 | # | 任务 | 参考文件 | 工作量 | 说明 |
 |---|------|---------|--------|------|
-| 1 | **卡片 Markdown 渲染模式** | `send.ts` `buildMarkdownCard()` | 0.5 天 | 用飞书 interactive card 原生 markdown 替代（或补充）自研 `markdownToPost()`。优势：支持表格渲染。可实现 auto 模式——检测到代码块/表格时用 card，否则用 Post |
-| 2 | **引用消息内容获取** | `send.ts` `getMessageFeishu()` | 0.5 天 | 用户回复某条消息时，自动获取被引用的原消息内容，拼入 inbound context。提升 AI 理解上下文的能力 |
-| 3 | **权限错误自动诊断** | `bot.ts` `extractPermissionError()` | 0.5 天 | 飞书 API 返回权限错误（code 99991672）时，自动提取 grant URL 通知 agent。200 bot 部署时排障效率提升 10 倍 |
-| 4 | **发送者姓名解析** | `bot.ts` `resolveFeishuSenderName()` | 0.5 天 | 调用 `contact/v3/users` 获取发送者真名（带 TTL 缓存），agent 能看到"张三: 明天开会"而非"ou_xxx: 明天开会"。群聊场景尤其重要 |
+| 1 | **飞书文档读写** | `docx.ts` ~430 行 + skill | 2 天 | 注册 `feishu_doc` MCP 工具，AI 直接读写飞书文档。核心难点：Markdown<>Block 20+ 类型双向转换 |
+| 2 | **知识库 Wiki 导航** | `wiki.ts` ~230 行 + skill | 1 天 | 注册 `feishu_wiki` 工具，导航 Wiki 空间/节点。依赖 feishu_doc |
+| 3 | **云盘文件管理** | `drive.ts` ~210 行 + skill | 1 天 | `feishu_drive` 工具，文件夹 CRUD |
+| 4 | **多维表格 Bitable** | `bitable.ts` ~330 行 | 1.5 天 | `feishu_bitable` 工具，20+ 字段类型读写 |
+| 5 | **引用消息内容获取** | `send.ts` `getMessageFeishu()` | 0.5 天 | 用户回复某条消息时，自动获取被引用的原消息内容，拼入 inbound context。提升 AI 理解上下文的能力 |
+| 6 | **权限错误自动诊断** | `bot.ts` `extractPermissionError()` | 0.5 天 | 飞书 API 返回权限错误（code 99991672）时，自动提取 grant URL 通知 agent。200 bot 部署时排障效率提升 10 倍 |
+| 7 | **发送者姓名解析** | `bot.ts` `resolveFeishuSenderName()` | 0.5 天 | 调用 `contact/v3/users` 获取发送者真名（带 TTL 缓存），agent 能看到"张三: 明天开会"而非"ou_xxx: 明天开会"。群聊场景尤其重要 |
+
+注：**Markdown 卡片/表格渲染**已由 CardKit 流式卡片天然支持（schema 2.0 + `tag: "markdown"`），无需额外实现。实测 car her 表格渲染完美，社区版 post 模式反而渲染异常。
 
 ### P2 — 中期（企业功能扩展）
 
 | # | 任务 | 参考文件 | 工作量 | 说明 |
 |---|------|---------|--------|------|
-| 5 | **@mention 转发** | `mention.ts` 126 行 | 1 天 | 群里 @bot + @张三 "帮我问问他进度" → bot 回复自动 @张三。企业群协作场景 |
-| 6 | **飞书文档读写工具** | `docx.ts` 521 行 + skill | 2 天 | 注册 `feishu_doc` MCP 工具，AI 可直接读写飞书文档。核心难点：Markdown↔Block 20+ 类型双向转换 |
-| 7 | **知识库 Wiki 导航** | `wiki.ts` 232 行 + skill | 1 天 | 注册 `feishu_wiki` 工具，导航 Wiki 空间/节点。依赖 feishu_doc |
-| 8 | **Emoji 表情回应** | `reactions.ts` 160 行 | 0.5 天 | 消息 reaction 能力，agent 可以对消息加 emoji |
-| 9 | **Config Schema 验证** | `config-schema.ts` 172 行 | 1 天 | Typebox 完整配置校验，减少 200 bot 部署时的配置错误 |
+| 8 | **Emoji 表情回应** | `reactions.ts` ~160 行 | 0.5 天 | 消息 reaction 能力，agent 可以对消息加 emoji |
+| 9 | **权限管理工具** | `perm.ts` ~170 行 + skill | 0.5 天 | `feishu_perm` 工具，协作者 CRUD |
+| 10 | **通讯录查询** | `directory.ts` ~175 行 | 1 天 | 列出企业用户/群组，200 人部署场景有用 |
+| 11 | **Config Schema 验证** | `config-schema.ts` ~172 行 | 1 天 | Typebox 完整配置校验，减少 200 bot 部署时的配置错误 |
+| 12 | **Onboarding CLI** | `onboarding.ts` ~359 行 | 1.5 天 | `openclaw setup` 交互式引导配置飞书凭证 |
+| 13 | **状态探测** | `probe.ts` ~44 行 | 0.5 天 | `openclaw channels status` 显示飞书连接状态 |
 
-### P3 — 长期（按需）
+### P3 — 按需
 
 | # | 任务 | 参考文件 | 工作量 | 说明 |
 |---|------|---------|--------|------|
-| 10 | **云盘文件管理** | `drive.ts` 227 行 + skill | 1 天 | `feishu_drive` 工具，文件夹 CRUD |
-| 11 | **多维表格 Bitable** | `bitable.ts` 461 行 | 1.5 天 | `feishu_bitable` 工具，20+ 字段类型 |
-| 12 | **权限管理** | `perm.ts` 173 行 + skill | 0.5 天 | `feishu_perm` 工具，协作者 CRUD |
-| 13 | **通讯录查询** | `directory.ts` 177 行 | 1 天 | 列出企业用户/群组，200 人部署场景有用 |
-| 14 | **Onboarding CLI** | `onboarding.ts` 359 行 | 1.5 天 | `openclaw setup` 交互式引导配置飞书凭证 |
-| 15 | **状态探测** | `probe.ts` 44 行 | 0.5 天 | `openclaw channels status` 显示飞书连接状态 |
+| 14 | **@mention 转发** | `mention.ts` ~126 行 | 1 天 | 群里 @bot + @人类同事 -> bot 回复自动 @张三。场景较少，优先级低 |
 
 ### 自研独有，不在开源版本中（持续维护）
 
 | 能力 | 状态 | 说明 |
 |------|------|------|
-| CardKit 流式卡片 | ✅ 已实现 | 官方打字机动画，~250 行核心，竞争条件已全部修复 |
-| 群聊 JSONL 归档 | ✅ 已实现 | 本地归档 + index.json + skill 读取，~60 行 |
-| ACK 超时修复 | ✅ 已实现 | `void` 异步 + `trackMessageId` 去重 |
+| CardKit 流式卡片 | ✅ 已实现 | 官方打字机动画，~250 行核心，竞争条件已全部修复。天然支持 Markdown 表格渲染（社区版 post 模式反而异常） |
+| 群聊 JSONL 归档 | ✅ 已实现 | 本地归档 + index.json + skill 读取，~60 行。社区版完全没有此能力，群聊总结场景远远领先 |
+| ACK 超时修复 | ✅ 已实现 | `void` 异步 + `trackMessageId` 去重。社区版 WebSocket 模式仍有此 bug |
 | 企业 200 Bot 部署 | ✅ 已验证 | Docker 容器隔离 + CSV 用户管理 + 滚动升级 |
 
 ---
@@ -1104,4 +1107,4 @@ npm 上至少有 4 个飞书相关包：
 - 不修改任何已有扩展的任何一行
 - 风险极低：官方 API + 独立插件 + 活跃维护的 SDK
 - 端到端聊天已验证通过
-- 与开源社区版本对比后决策：**继续自研，选择性吸收开源能力**（2026-02-12）
+- 与开源社区版本对比后决策：**直接吸收社区版生态工具到自研版本**，打造最强飞书插件（2026-02-12）
