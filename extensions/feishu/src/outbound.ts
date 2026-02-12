@@ -432,6 +432,32 @@ export async function sendFeishuImage(params: {
   }
 }
 
+// ── Board / Whiteboard API (raw HTTP — SDK has no board namespace) ───────
+
+/** Download a Feishu whiteboard/canvas as a PNG image.
+ *  Uses Board API: GET /open-apis/board/v1/whiteboards/{token}/download_as_image
+ *  Requires `board:whiteboard` scope. Returns raw PNG buffer or null on failure. */
+export async function downloadWhiteboardImage(params: {
+  account: ResolvedFeishuAccount;
+  whiteboardToken: string;
+}): Promise<{ buffer: Buffer; contentType: string } | null> {
+  const client = getFeishuClient(params.account);
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const token = await (client as any).tokenManager.getTenantAccessToken({});
+  if (!token) return null;
+
+  const url = `https://open.feishu.cn/open-apis/board/v1/whiteboards/${params.whiteboardToken}/download_as_image`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return null;
+
+  const contentType = res.headers.get("content-type") ?? "image/png";
+  const buffer = Buffer.from(await res.arrayBuffer());
+  if (buffer.length === 0) return null;
+  return { buffer, contentType };
+}
+
 // ── CardKit Streaming (typing / typewriter effect) ───────────────────────
 
 const DEFAULT_STREAM_THROTTLE_MS = 300;

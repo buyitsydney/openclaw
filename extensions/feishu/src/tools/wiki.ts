@@ -37,10 +37,15 @@ async function listNodes(client: Lark.Client, spaceId: string, parentNodeToken?:
     params: { parent_node_token: parentNodeToken },
   });
   if (res.code !== 0) throw new Error(res.msg);
+  const nodes = (res.data?.items ?? []).map((n: { node_token?: string; obj_token?: string; obj_type?: string; title?: string; has_child?: boolean }) => ({
+    node_token: n.node_token, obj_token: n.obj_token, obj_type: n.obj_type, title: n.title, has_child: n.has_child,
+  }));
   return {
-    nodes: (res.data?.items ?? []).map((n: { node_token?: string; obj_token?: string; obj_type?: string; title?: string; has_child?: boolean }) => ({
-      node_token: n.node_token, obj_token: n.obj_token, obj_type: n.obj_type, title: n.title, has_child: n.has_child,
-    })),
+    nodes,
+    // Guide AI to use feishu_doc for reading document content (including embedded whiteboards).
+    hint: nodes.length > 0
+      ? "To read a document's full content (including embedded whiteboards/boards), use feishu_doc with action: 'read' and the obj_token as doc_token. Board/whiteboard images are automatically exported as vision-compatible PNG."
+      : undefined,
   };
 }
 
@@ -116,7 +121,7 @@ export function registerFeishuWikiTools(api: OpenClawPluginApi) {
     {
       name: "feishu_wiki",
       label: "Feishu Wiki",
-      description: "Feishu knowledge base operations. Actions: spaces, nodes, get, create, move, rename",
+      description: "Feishu knowledge base operations. Actions: spaces, nodes, get, create, move, rename. Note: this tool only returns node metadata (title, tokens). To read a document's full content including embedded whiteboards, use feishu_doc with action 'read' and the node's obj_token as doc_token.",
       parameters: FeishuWikiSchema,
       // oxlint-disable-next-line typescript/no-explicit-any
       async execute(_toolCallId: string, params: any) {
