@@ -19,6 +19,8 @@ import {
   downloadFeishuImage,
   getBotOpenId,
   getFeishuChatName,
+  addFeishuReaction,
+  removeFeishuReaction,
   type FeishuCardStream,
 } from "./outbound.js";
 import { resolveGroupOwnerIds } from "./accounts.js";
@@ -776,6 +778,34 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     await cardStream.finalize(cardStreamFinalText);
   };
 
+  // ── ACK reaction: add a "typing" emoji when we start processing ──
+  // Shows users an immediate visual indicator that their message was received.
+  // The emoji is removed after the reply is delivered (like the test bot behavior).
+  const ACK_EMOJI = "Get";
+  let ackReactionId: string | null = null;
+  const addAckReaction = async () => {
+    if (isCommand) return;
+    try {
+      ackReactionId = await addFeishuReaction({ account, messageId, emoji: ACK_EMOJI });
+      if (ackReactionId) {
+        log?.info(`[${account.accountId}] added ACK reaction (${ACK_EMOJI}) to ${messageId}`);
+      }
+    } catch (err) {
+      // Non-fatal: ACK reaction is a UX nicety, not critical.
+      log?.info(`[${account.accountId}] ACK reaction failed: ${String(err)}`);
+    }
+  };
+  const removeAckReaction = async () => {
+    if (!ackReactionId) return;
+    try {
+      await removeFeishuReaction({ account, messageId, reactionId: ackReactionId });
+      log?.info(`[${account.accountId}] removed ACK reaction from ${messageId}`);
+    } catch (err) {
+      log?.info(`[${account.accountId}] ACK reaction removal failed: ${String(err)}`);
+    }
+    ackReactionId = null;
+  };
+
   // Dispatch through the auto-reply pipeline and deliver response.
   // Strategy: onPartialReply drives the card typewriter (streaming display).
   // deliver only accumulates text for finalize — it does NOT update the card,
@@ -834,7 +864,10 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       onError: (err, info) => {
         log?.error(`[${account.accountId}] Feishu ${info.kind} reply failed: ${String(err)}`);
       },
-      onReplyStart: startCardStream,
+      onReplyStart: async () => {
+        // Fire ACK reaction and card stream in parallel when AI starts processing.
+        await Promise.all([addAckReaction(), startCardStream()]);
+      },
     },
     replyOptions: {
       // Disable block streaming when card stream is active (non-command messages).
@@ -845,10 +878,11 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         : undefined,
     },
   });
-  // Ensure card stream is stopped after dispatch completes.
-  if (cardStream?.started) {
-    await stopCardStream();
-  }
+  // Ensure card stream is stopped and ACK reaction is removed after dispatch completes.
+  await Promise.all([
+    cardStream?.started ? stopCardStream() : Promise.resolve(),
+    removeAckReaction(),
+  ]);
 }
 
 // ── Reply delivery ──────────────────────────────────────────────────────

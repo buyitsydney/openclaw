@@ -2,10 +2,14 @@ import {
   DEFAULT_ACCOUNT_ID,
   applyAccountNameToChannelSection,
   buildChannelConfigSchema,
+  createActionGate,
   deleteAccountFromConfigSection,
   formatPairingApproveHint,
+  jsonResult,
   normalizeAccountId,
+  readStringParam,
   setAccountEnabledInConfigSection,
+  type ChannelMessageActionName,
   type ChannelPlugin,
   type OpenClawConfig,
 } from "openclaw/plugin-sdk";
@@ -15,7 +19,14 @@ import {
   resolveFeishuAccount,
   type ResolvedFeishuAccount,
 } from "./accounts.js";
-import { sendFeishuText, sendFeishuRichText, uploadFeishuImage, sendFeishuImage } from "./outbound.js";
+import {
+  sendFeishuText,
+  sendFeishuRichText,
+  uploadFeishuImage,
+  sendFeishuImage,
+  addFeishuReaction,
+  removeFeishuReaction,
+} from "./outbound.js";
 import { startFeishuGateway } from "./gateway.js";
 import { getFeishuRuntime } from "./runtime.js";
 
@@ -162,6 +173,46 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
         return /^(oc_|ou_|on_)/.test(trimmed);
       },
       hint: "<chat_id (oc_...) | open_id (ou_...) | union_id (on_...)>",
+    },
+  },
+  actions: {
+    listActions: ({ cfg }) => {
+      if (!cfg.channels?.["feishu"]) return [];
+      const section = cfg.channels["feishu"] as Record<string, unknown> | undefined;
+      const gate = createActionGate(section?.actions as Record<string, boolean> | undefined);
+      const actions = new Set<ChannelMessageActionName>();
+      if (gate("reactions")) {
+        actions.add("react");
+      }
+      return Array.from(actions);
+    },
+    supportsAction: ({ action }) => action === "react",
+    handleAction: async ({ action, params, cfg, accountId }) => {
+      if (action !== "react") {
+        throw new Error(`Action "${action}" is not supported for Feishu.`);
+      }
+      const account = resolveFeishuAccount({ cfg, accountId });
+      const messageIdParam = readStringParam(params, "messageId", { required: true });
+      const emoji = readStringParam(params, "emoji", { allowEmpty: true });
+      const remove = typeof params.remove === "boolean" ? params.remove : undefined;
+
+      if (remove) {
+        // Remove requires a reaction_id. The caller must pass it as messageId (reaction_id).
+        // Feishu's remove API needs both message_id and reaction_id.
+        // Convention: params.messageId = the message, params.groupId = the reaction_id to remove.
+        const reactionId = readStringParam(params, "groupId");
+        if (!reactionId) {
+          throw new Error("Feishu reaction removal requires a reaction_id (pass via groupId param).");
+        }
+        const ok = await removeFeishuReaction({ account, messageId: messageIdParam, reactionId });
+        return jsonResult({ ok, removed: true });
+      }
+
+      if (!emoji) {
+        throw new Error("Emoji is required to add a Feishu reaction.");
+      }
+      const reactionId = await addFeishuReaction({ account, messageId: messageIdParam, emoji });
+      return jsonResult({ ok: !!reactionId, added: emoji, reactionId });
     },
   },
   outbound: {

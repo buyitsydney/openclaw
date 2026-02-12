@@ -1008,9 +1008,9 @@ npm 上至少有 4 个飞书相关包：
 | **通讯录 Directory** | ❌ | ✅ 177 行 | 列出企业用户/群组 |
 | **@mention 转发** | ❌ | ✅ 126 行 | 群里 @bot+@张三 → 回复自动 @张三 |
 | **引用消息获取** | ❌ | ✅ | `getMessageFeishu` 获取被引用的原消息内容 |
-| **Emoji 表情回应** | ❌ | ✅ 160 行 | 消息 reaction |
-| **Typing 提示** | CardKit 流式卡片 | Emoji reaction 加/移除 | 方案不同，我们体验远优 |
-| **输入状态 (typing indicator)** | CardKit streaming | emoji reaction | — |
+| **Emoji 表情回应** | ✅ 已实现 | ✅ 160 行 | 消息 reaction，我们支持双机制（自动 ACK + AI 主动 react） |
+| **Typing 提示** | CardKit 流式卡片 + Get emoji ACK | Emoji reaction 加/移除 | 双重方案：CardKit 流式打字 + Get emoji 收到即反馈 |
+| **输入状态 (typing indicator)** | CardKit streaming + Get emoji | emoji reaction | 我们双管齐下 |
 | **权限错误自动诊断** | ❌ | ✅ | 缺权限时提取 grant URL 通知 agent，200 bot 部署排障利器 |
 | **Config Schema 验证** | 空 schema | ✅ Typebox 完整校验 | 减少配置错误 |
 | **Onboarding 引导** | ❌ | ✅ 359 行 | CLI 交互式配置 |
@@ -1062,11 +1062,12 @@ npm 上至少有 4 个飞书相关包：
 | 1 | **飞书文档读写** | ✅ 已验证 | `feishu_doc` 工具，读取/写入/追加/创建文档。日志 11:32 确认 wiki→doc 链路零报错，800 字总结 |
 | 2 | **知识库 Wiki 导航** | ✅ 已验证 | `feishu_wiki` 工具，空间列表/节点导航。`listNodes` 自动附带 hint 引导 AI 用 `feishu_doc` 读取正文。日志 11:32 确认 wiki→doc 全链路正常 |
 | 3 | **云盘文件管理** | ✅ 已验证 | `feishu_drive` 工具，文件夹列表/创建/移动/删除 |
-| 4 | **多维表格 Bitable** | ✅ 已实现（待测试） | `feishu_bitable` 工具已注册。尚未被 AI 实际调用 |
+| 4 | **多维表格 Bitable** | ✅ 已验证 | `feishu_bitable` 工具已注册并成功调用。日志 13:24 确认 wiki(2)+bitable(3) 全链路读取多维表格 "hello"（2026-02-12） |
 | 5 | **引用消息内容获取** | ✅ 已验证 | `getQuotedMessageContent()` 自动获取被引用消息内容 |
 | 6 | **权限错误自动诊断** | ✅ 已验证 | `extractPermissionError()` 正确检测 code=99991672 并提取 grant URL |
 | 7 | **发送者姓名解析** | ❌ 个人版不可用 | `resolveFeishuSenderName()` 代码正常，权限已开通，API 返回 `code=0` 但 user 对象只有 `open_id,union_id,mobile_visible`，无 `name` 字段。**飞书个人版通讯录 API 不返回用户姓名（平台限制）**，需企业版/旗舰版 |
 | 8 | **画板/白板内容读取** | ✅ 已验证 | `feishu_doc` 的 `read` 自动检测 block type_43，Board API 导出 PNG + vision image block 返回。日志 11:35/12:18/12:19 确认图片自动 resize 后 AI 成功理解画板内容（2063 字总结）。需要 `board:whiteboard` 权限（已开通）。**独家能力** |
+| 9 | **Emoji 表情回应** | ✅ 已实现 | 两个机制：(1) 自动 ACK reaction — 收到消息时加 `Get` emoji，AI 回复后移除（typing indicator）；(2) AI 主动 react — 通过 `message` tool 的 `action="react"` 对消息加任意 emoji。已验证点赞（THUMBSUP）正常工作。需要 `im:message.reaction:create` 权限。**待修复**：AI 回复消息未显示为"回复"样式（缺少 reply 关联） |
 
 注：**Markdown 卡片/表格渲染**已由 CardKit 流式卡片天然支持（schema 2.0 + `tag: "markdown"`），无需额外实现。实测 car her 表格渲染完美，社区版 post 模式反而渲染异常。
 
@@ -1097,6 +1098,7 @@ npm 上至少有 4 个飞书相关包：
 | `board:whiteboard:node:create` | 画板节点创建 | 画板操作 |
 | `board:whiteboard:node:read` | 画板节点读取 | 画板操作 |
 | `bitable:app:readonly` | 多维表格只读 | 多维表格数据读取（P1 #4，已开通待测试） |
+| `im:message.reaction:create` | 消息表情回应 | Emoji reaction 自动 ACK + AI 主动 react（P1 #9） |
 
 **尚未开通（需要时申请）：**
 
@@ -1109,7 +1111,6 @@ npm 上至少有 4 个飞书相关包：
 
 | # | 任务 | 参考文件 | 工作量 | 说明 |
 |---|------|---------|--------|------|
-| 8 | **Emoji 表情回应** | `reactions.ts` ~160 行 | 0.5 天 | 消息 reaction 能力，agent 可以对消息加 emoji |
 | 9 | **权限管理工具** | `perm.ts` ~170 行 + skill | 0.5 天 | `feishu_perm` 工具，协作者 CRUD |
 | 10 | **通讯录查询** | `directory.ts` ~175 行 | 1 天 | 列出企业用户/群组，200 人部署场景有用 |
 | 11 | **Config Schema 验证** | `config-schema.ts` ~172 行 | 1 天 | Typebox 完整配置校验，减少 200 bot 部署时的配置错误 |

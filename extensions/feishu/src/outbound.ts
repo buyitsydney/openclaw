@@ -691,3 +691,43 @@ export async function createFeishuCardStream(params: {
 
   return { update, flush, stop, sendFinal, finalize, started: true, messageId };
 }
+
+// ── Emoji Reactions ─────────────────────────────────────────────────────
+
+/** Add an emoji reaction to a Feishu message.
+ *  Uses POST /open-apis/im/v1/messages/{message_id}/reactions
+ *  Requires `im:message.reaction:create` scope (or equivalent).
+ *  Returns the reaction_id (used for removal), or null on failure. */
+export async function addFeishuReaction(params: {
+  account: ResolvedFeishuAccount;
+  messageId: string;
+  emoji: string;
+}): Promise<string | null> {
+  const client = getFeishuClient(params.account);
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const res: any = await client.im.messageReaction.create({
+    path: { message_id: params.messageId },
+    data: { reaction_type: { emoji_type: params.emoji } },
+  });
+  if (res?.code !== 0) return null;
+  return res?.data?.reaction_id ?? null;
+}
+
+/** Remove an emoji reaction from a Feishu message by reaction_id.
+ *  Uses DELETE /open-apis/im/v1/messages/{message_id}/reactions/{reaction_id}
+ *  Requires `im:message.reaction:create` scope (or equivalent). */
+export async function removeFeishuReaction(params: {
+  account: ResolvedFeishuAccount;
+  messageId: string;
+  reactionId: string;
+}): Promise<boolean> {
+  const client = getFeishuClient(params.account);
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const res: any = await client.im.messageReaction.delete({
+    path: {
+      message_id: params.messageId,
+      reaction_id: params.reactionId,
+    },
+  });
+  return res?.code === 0;
+}
