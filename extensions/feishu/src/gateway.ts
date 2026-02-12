@@ -727,6 +727,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       cardStream = await createFeishuCardStream({
         account,
         chatId,
+        replyToMessageId: messageId,
         log: (msg) => log?.info(`[${account.accountId}] ${msg}`),
         warn: (msg) => log?.error(`[${account.accountId}] ${msg}`),
       });

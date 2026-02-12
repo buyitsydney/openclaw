@@ -533,7 +533,8 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 > 企业部署相关的验证记录已迁移至 [her-feishu-bot-enterprise-deploy.md](her-feishu-bot-enterprise-deploy.md#已完成的验证2026-02-09)。
 
 - [ ] **P1**: 支持 `--feishu-allow=ou_xxx` 参数设置 allowlist
-- [ ] **P2**: 在 getting-started.md 中补充飞书 Bot 创建的详细截图指南
+- [ ] **P2**: 引用卡片消息优化 — 用户引用 AI 的 CardKit 卡片消息时，`getQuotedMessageContent()` 获取到的是 `{"tag":"img","image_key":"..."}` 占位内容（飞书对 interactive 消息返回降级 body），AI 无法看到卡片的实际文字。需要在引用获取逻辑中检测 `msg_type=interactive`，通过 `cardkit.card.idConvert` 获取 `card_id`，再读取卡片内容
+- [ ] **P3**: 在 getting-started.md 中补充飞书 Bot 创建的详细截图指南
 
 ### 富文本回复 (2026-02-09)
 
@@ -1067,7 +1068,8 @@ npm 上至少有 4 个飞书相关包：
 | 6 | **权限错误自动诊断** | ✅ 已验证 | `extractPermissionError()` 正确检测 code=99991672 并提取 grant URL |
 | 7 | **发送者姓名解析** | ❌ 个人版不可用 | `resolveFeishuSenderName()` 代码正常，权限已开通，API 返回 `code=0` 但 user 对象只有 `open_id,union_id,mobile_visible`，无 `name` 字段。**飞书个人版通讯录 API 不返回用户姓名（平台限制）**，需企业版/旗舰版 |
 | 8 | **画板/白板内容读取** | ✅ 已验证 | `feishu_doc` 的 `read` 自动检测 block type_43，Board API 导出 PNG + vision image block 返回。日志 11:35/12:18/12:19 确认图片自动 resize 后 AI 成功理解画板内容（2063 字总结）。需要 `board:whiteboard` 权限（已开通）。**独家能力** |
-| 9 | **Emoji 表情回应** | ✅ 已实现 | 两个机制：(1) 自动 ACK reaction — 收到消息时加 `Get` emoji，AI 回复后移除（typing indicator）；(2) AI 主动 react — 通过 `message` tool 的 `action="react"` 对消息加任意 emoji。已验证点赞（THUMBSUP）正常工作。需要 `im:message.reaction:create` 权限。**待修复**：AI 回复消息未显示为"回复"样式（缺少 reply 关联） |
+| 9 | **Emoji 表情回应** | ✅ 已验证 | 两个机制：(1) 自动 ACK reaction — 收到消息时加 `Get` emoji，AI 回复后移除（typing indicator）；(2) AI 主动 react — 通过 `message` tool 的 `action="react"` 对消息加任意 emoji（已验证 THUMBSUP）。需要 `im:message.reaction:create` 权限 |
+| 10 | **回复样式（quote-reply）** | ✅ 已验证 | CardKit 流式卡片通过 `im.message.reply` + `msg_type=interactive` 发送，AI 回复自动关联用户原消息，显示 `回复 Bob: xxx` 引用样式。私聊和群聊均生效 |
 
 注：**Markdown 卡片/表格渲染**已由 CardKit 流式卡片天然支持（schema 2.0 + `tag: "markdown"`），无需额外实现。实测 car her 表格渲染完美，社区版 post 模式反而渲染异常。
 

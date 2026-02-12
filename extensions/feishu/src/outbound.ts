@@ -498,6 +498,8 @@ export type FeishuCardStream = {
 export async function createFeishuCardStream(params: {
   account: ResolvedFeishuAccount;
   chatId: string;
+  /** When set, the card message is sent as a reply to this message (quote-reply style). */
+  replyToMessageId?: string;
   throttleMs?: number;
   log?: (msg: string) => void;
   warn?: (msg: string) => void;
@@ -554,23 +556,30 @@ export async function createFeishuCardStream(params: {
     return { update: () => {}, flush: async () => {}, stop: () => {}, sendFinal: async () => {}, finalize: async (_t: string) => {}, started: false };
   }
 
-  // ── Step 2: Send the card as a message ──
+  // ── Step 2: Send the card as a message (reply style when replyToMessageId is set) ──
+  const cardContent = JSON.stringify({ type: "card", data: { card_id: cardId } });
   try {
-    const sendResp = await client.im.message.create({
-      params: { receive_id_type: receiveIdType },
-      data: {
-        receive_id: receiveId,
-        content: JSON.stringify({ type: "card", data: { card_id: cardId } }),
-        msg_type: "interactive",
-      },
-    });
+    // oxlint-disable-next-line typescript/no-explicit-any
+    let sendResp: any;
+    if (params.replyToMessageId) {
+      // Quote-reply: card appears as a reply to the user's message.
+      sendResp = await client.im.message.reply({
+        path: { message_id: params.replyToMessageId },
+        data: { content: cardContent, msg_type: "interactive" },
+      });
+    } else {
+      sendResp = await client.im.message.create({
+        params: { receive_id_type: receiveIdType },
+        data: { receive_id: receiveId, content: cardContent, msg_type: "interactive" },
+      });
+    }
     messageId = sendResp?.data?.message_id;
     if (!messageId) {
-      params.warn?.("Feishu card stream: message.create returned no message_id");
+      params.warn?.("Feishu card stream: message send returned no message_id");
       return { update: () => {}, flush: async () => {}, stop: () => {}, sendFinal: async () => {}, finalize: async (_t: string) => {}, started: false };
     }
   } catch (err) {
-    params.warn?.(`Feishu card stream: message.create failed: ${String(err)}`);
+    params.warn?.(`Feishu card stream: message send failed: ${String(err)}`);
     return { update: () => {}, flush: async () => {}, stop: () => {}, sendFinal: async () => {}, finalize: async (_t: string) => {}, started: false };
   }
 
