@@ -1,16 +1,17 @@
 #!/bin/bash
-# CarHer 用户容器管理 — 启动独立容器 + Cloudflare 隧道
+# CarHer 用户容器管理
 #
 # 用法:
-#   ./start-user.sh --id=1                    # user1 + 随机隧道（默认 Sonnet）
+#   ./start-user.sh --id=1                    # 启动 user1 容器（默认 Sonnet）
 #   ./start-user.sh --id=1 --model=opus       # user1 + Opus 4.6
-#   ./start-user.sh --id=1 --named            # user1 + 命名隧道（固定 URL，永不变化）
-#   ./start-user.sh --id=1 --local            # user1 仅本地（不开隧道）
+#   ./start-user.sh --id=1 --random           # user1 + 临时随机隧道（一次性演示用）
 #   ./start-user.sh --id=1 --down             # 停止 user1
 #   ./start-user.sh --down                    # 停止所有用户容器
 #   ./start-user.sh --id=1 --logs             # 查看 user1 日志
+#   ./start-user.sh --list                    # 列出所有用户
 #
-# 每个用户 = 一个独立 Docker 容器 = 完全隔离的文件系统
+# 每个用户 = 一个独立 Docker 容器（--restart unless-stopped，Docker 自动保活）
+# 固定隧道由 cloudflared Docker 容器单独管理（见 start-tunnel.sh）
 # 你的个人 Her（start.sh）不受任何影响
 
 set -e
@@ -22,6 +23,9 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
+
+# 跨平台 SHA-256：Ubuntu 用 sha256sum，macOS 用 shasum -a 256
+sha256() { command -v sha256sum &>/dev/null && sha256sum || shasum -a 256; }
 
 # --- Model shortcuts (短名 → 完整 OpenRouter 路径) ---
 resolve_model() {
@@ -40,7 +44,7 @@ resolve_model() {
 
 # --- Parse arguments ---
 USER_ID=""
-MODE="random"  # 默认开启远程隧道（厂商用户一定是远程访问）
+MODE=""  # 默认不开隧道（隧道由 cloudflared Docker 容器管理）
 ACTION="start"
 MODEL_ARG=""
 HOST_ARG="localhost"  # Webchat URL base host（默认 localhost，企业部署用内网 IP）
@@ -52,26 +56,26 @@ for arg in "$@"; do
     --model=*) MODEL_ARG="${arg#--model=}" ;;
     --host=*) HOST_ARG="${arg#--host=}" ;;
     --random) MODE="random" ;;
-    --named) MODE="named" ;;
-    --local) MODE="local" ;;
+    --local) ;; # 向后兼容，现在是默认行为
     --down) ACTION="down" ;;
     --logs) ACTION="logs" ;;
     --list) ACTION="list" ;;
     --sync-workspace) ACTION="sync-workspace" ;;
     --no-rebuild) NO_REBUILD="yes" ;;
     -h|--help)
-      echo "用法: ./start-user.sh --id=N [--model=MODEL] [--host=IP] [--local] [--down] [--logs]"
+      echo "用法: ./start-user.sh --id=N [--model=MODEL] [--host=IP] [--down] [--logs]"
       echo ""
       echo "  --id=N        用户编号 (1-999)"
       echo "  --model=MODEL 指定 AI 模型（覆盖 users.csv 中的设置）"
       echo "  --host=IP     Webchat 访问地址（默认 localhost，企业部署用内网 IP）"
-      echo "  --named       使用命名隧道（固定 URL，永不变化）"
-      echo "  --local       仅本地访问（不开隧道）"
+      echo "  --random      附加临时随机隧道（一次性演示，关终端就消失）"
       echo "  --down        停止容器（不指定 --id 则停止所有）"
       echo "  --logs        查看容器日志"
       echo "  --list        列出所有注册用户和容器状态"
       echo "  --sync-workspace  同步 docker/workspace/ 模板到容器"
       echo "  --no-rebuild  跳过自动镜像重建检查"
+      echo ""
+      echo "固定隧道由 cloudflared Docker 容器管理: ./start-tunnel.sh"
       echo ""
       echo "用户注册表: docker/users.csv（IT 维护，含飞书凭证等）"
       echo ""
@@ -147,7 +151,7 @@ fi
 # --- Validate user ID ---
 if [ -z "$USER_ID" ]; then
   echo -e "${RED}✗ 必须指定用户 ID: --id=N${NC}"
-  echo "  用法: ./start-user.sh --id=1 --random"
+  echo "  用法: ./start-user.sh --id=1"
   echo "  帮助: ./start-user.sh --help"
   exit 1
 fi
@@ -218,7 +222,7 @@ CURRENT_SHA=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
 SOURCE_DIRS="src/ extensions/ skills/ package.json pnpm-lock.yaml Dockerfile.carher scripts/carher-entrypoint.sh ui/"
 DIFF_OUTPUT=$(git diff HEAD -- $SOURCE_DIRS 2>/dev/null || true)
 if [ -n "$DIFF_OUTPUT" ]; then
-  DIRTY_HASH=$(printf '%s' "$DIFF_OUTPUT" | shasum -a 256 | cut -d' ' -f1)
+  DIRTY_HASH=$(printf '%s' "$DIFF_OUTPUT" | sha256 | cut -d' ' -f1)
   CURRENT_BUILD_HASH="${CURRENT_SHA}-dirty-${DIRTY_HASH:0:16}"
 else
   CURRENT_BUILD_HASH="$CURRENT_SHA"
@@ -249,10 +253,14 @@ else
   echo -e "${GREEN}  ✓ Docker 镜像已是最新 (${CURRENT_BUILD_HASH:0:16})${NC}"
 fi
 
-# Check cloudflared (unless --local)
-if [ "$MODE" != "local" ]; then
+# Check cloudflared (only for --random)
+if [ "$MODE" = "random" ]; then
   if ! command -v cloudflared &>/dev/null; then
-    echo -e "${RED}✗ 未安装 cloudflared: brew install cloudflared${NC}"
+    if [[ "$(uname)" == "Darwin" ]]; then
+      echo -e "${RED}✗ 未安装 cloudflared: brew install cloudflared${NC}"
+    else
+      echo -e "${RED}✗ 未安装 cloudflared: apt install cloudflared 或参考 https://pkg.cloudflare.com${NC}"
+    fi
     exit 1
   fi
   echo -e "${GREEN}  ✓ cloudflared 就绪${NC}"
@@ -432,6 +440,7 @@ echo -e "  端口映射: GW=${PORT_GW} RT=${PORT_RT} FE=${PORT_FE} WS=${PORT_WS}
 docker run -d \
   --name "$CONTAINER_NAME" \
   --init \
+  --restart unless-stopped \
   -e HOME=/data \
   -e OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
   -e GOOGLE_APPLICATION_CREDENTIALS=/gcloud/application_default_credentials.json \
@@ -485,89 +494,48 @@ echo -e "  WS Proxy:  ${GREEN}ws://localhost:${PORT_WS}${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
 
-# --- If --local, done ---
-if [ "$MODE" = "local" ]; then
-  echo -e "${GREEN}✓ User ${USER_ID} 已启动（仅本地访问）${NC}"
-  echo ""
-  echo -e "  去掉 ${YELLOW}--local${NC} 即可开启远程隧道"
-  echo -e "  停止: ${YELLOW}./start-user.sh --id=${USER_ID} --down${NC}"
-  echo -e "  日志: ${YELLOW}./start-user.sh --id=${USER_ID} --logs${NC}"
-  exit 0
+# --- Print fixed remote URLs (based on naming convention) ---
+# 域名约定: uN.carher.net / uN-proxy.carher.net / uN-fe.carher.net
+# 特殊别名: id=2 → vendor.carher.net
+case "$USER_ID" in
+  2) NAMED_RT_HOST="vendor.carher.net"; NAMED_PROXY_HOST="vendor-proxy.carher.net"; NAMED_FE_HOST="vendor-fe.carher.net" ;;
+  *) NAMED_RT_HOST="u${USER_ID}.carher.net"; NAMED_PROXY_HOST="u${USER_ID}-proxy.carher.net"; NAMED_FE_HOST="u${USER_ID}-fe.carher.net" ;;
+esac
+
+NAMED_PROXY_ENCODED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('wss://${NAMED_PROXY_HOST}'))")
+NAMED_OPENCLAW_ENCODED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('wss://${NAMED_RT_HOST}/ws'))")
+
+echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+echo -e "${CYAN}  User ${USER_ID} — 固定远程 URL（需 cloudflared 隧道运行）${NC}"
+echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+echo -e "  Mobile:    ${CYAN}https://${NAMED_FE_HOST}/mobile.html?proxy=${NAMED_PROXY_ENCODED}&openclaw=${NAMED_OPENCLAW_ENCODED}${NC}"
+echo -e "  Desktop:   ${CYAN}https://${NAMED_FE_HOST}?proxy=${NAMED_PROXY_ENCODED}&openclaw=${NAMED_OPENCLAW_ENCODED}${NC}"
+echo ""
+echo -e "  Bootstrap: https://${NAMED_RT_HOST}/api/realtime/bootstrap"
+echo -e "  Proxy:     wss://${NAMED_PROXY_HOST}"
+echo -e "  OpenClaw:  wss://${NAMED_RT_HOST}/ws"
+echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+echo ""
+
+# --- Tunnel status check ---
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^cloudflared$"; then
+  echo -e "${GREEN}✓ cloudflared 隧道运行中（Docker 容器）${NC}"
+elif pgrep -f "cloudflared tunnel run" &>/dev/null; then
+  echo -e "${GREEN}✓ cloudflared 隧道运行中（原生进程）${NC}"
+else
+  echo -e "${YELLOW}⚠ cloudflared 隧道未运行（远程 URL 不可用）${NC}"
+  echo -e "  启动隧道: ${YELLOW}./start-tunnel.sh${NC}"
 fi
+echo ""
 
-# --- Named tunnel mode (固定域名，永不变化) ---
-if [ "$MODE" = "named" ]; then
-  # 检查命名隧道配置
-  if [ ! -f "$HOME/.cloudflared/config.yml" ]; then
-    echo -e "${RED}✗ 未找到命名隧道配置 (~/.cloudflared/config.yml)${NC}"
-    echo "  请先运行: cloudflared tunnel login && cloudflared tunnel create carher"
-    exit 1
-  fi
+echo -e "${GREEN}✓ User ${USER_ID} 已启动${NC}"
+echo ""
+echo -e "  停止: ${YELLOW}./start-user.sh --id=${USER_ID} --down${NC}"
+echo -e "  日志: ${YELLOW}./start-user.sh --id=${USER_ID} --logs${NC}"
 
-  # 用户 id → 固定域名映射（在 ~/.cloudflared/config.yml 中配置对应 ingress 规则）
-  # 默认约定: u{id}.carher.net (Realtime/Bootstrap) + u{id}-proxy.carher.net (WS Proxy) + u{id}-fe.carher.net (Frontend)
-  # 特殊别名: id=2 → vendor.carher.net / vendor-proxy.carher.net / vendor-fe.carher.net
-  case "$USER_ID" in
-    2) NAMED_RT_HOST="vendor.carher.net"; NAMED_PROXY_HOST="vendor-proxy.carher.net"; NAMED_FE_HOST="vendor-fe.carher.net" ;;
-    *) NAMED_RT_HOST="u${USER_ID}.carher.net"; NAMED_PROXY_HOST="u${USER_ID}-proxy.carher.net"; NAMED_FE_HOST="u${USER_ID}-fe.carher.net" ;;
-  esac
-
-  NAMED_BOOTSTRAP_URL="https://${NAMED_RT_HOST}/api/realtime/bootstrap"
-  NAMED_PROXY_URL="wss://${NAMED_PROXY_HOST}"
-  NAMED_OPENCLAW_URL="wss://${NAMED_RT_HOST}/ws"
-  NAMED_PROXY_ENCODED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${NAMED_PROXY_URL}'))")
-  NAMED_OPENCLAW_ENCODED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${NAMED_OPENCLAW_URL}'))")
-  NAMED_MOBILE_URL="https://${NAMED_FE_HOST}/mobile.html?proxy=${NAMED_PROXY_ENCODED}&openclaw=${NAMED_OPENCLAW_ENCODED}"
-  NAMED_DESKTOP_URL="https://${NAMED_FE_HOST}?proxy=${NAMED_PROXY_ENCODED}&openclaw=${NAMED_OPENCLAW_ENCODED}"
-
-  echo ""
-  echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
-  echo -e "${GREEN}  🚗 User ${USER_ID} — 固定 URL（命名隧道，永不变化）${NC}"
-  echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
-  echo ""
-  echo -e "  ${CYAN}📱 手机测试（固定 URL，直接打开）：${NC}"
-  echo ""
-  echo "  $NAMED_MOBILE_URL"
-  echo ""
-  echo -e "  ${CYAN}🖥  桌面测试：${NC}"
-  echo ""
-  echo "  $NAMED_DESKTOP_URL"
-  echo ""
-  echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-  echo -e "${CYAN}  厂商对接信息（直接复制发给厂商）${NC}"
-  echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-  echo ""
-  echo "  BOOTSTRAP_URL (App 启动时 HTTP GET 调用一次):"
-  echo "    $NAMED_BOOTSTRAP_URL"
-  echo ""
-  echo "  PROXY_URL (WS 连接 1 — 音频双向流):"
-  echo "    $NAMED_PROXY_URL"
-  echo ""
-  echo "  OPENCLAW_URL (WS 连接 2 — 后台 AI):"
-  echo "    $NAMED_OPENCLAW_URL"
-  echo ""
-  echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-  echo ""
-  echo -e "  隧道域名映射:"
-  echo "    ${NAMED_FE_HOST}     → localhost:${PORT_FE} (Frontend)"
-  echo "    ${NAMED_RT_HOST}        → localhost:${PORT_RT} (Realtime/Bootstrap)"
-  echo "    ${NAMED_PROXY_HOST}  → localhost:${PORT_WS} (WS Proxy)"
-  echo ""
-
-  # 检查命名隧道是否已在运行
-  if pgrep -f "cloudflared tunnel run" &>/dev/null; then
-    echo -e "${GREEN}✓ 命名隧道已在运行中${NC}"
-    echo ""
-    echo -e "  停止容器: ${YELLOW}./start-user.sh --id=${USER_ID} --down${NC}"
-    echo -e "  查看日志: ${YELLOW}./start-user.sh --id=${USER_ID} --logs${NC}"
-    exit 0
-  fi
-
-  # 启动命名隧道（前台，Ctrl+C 停止）
-  echo -e "${YELLOW}启动命名隧道 (carher)...${NC}"
-  echo -e "${YELLOW}按 Ctrl+C 关闭隧道（容器 ${CONTAINER_NAME} 保持运行）${NC}"
-  echo ""
-  exec cloudflared tunnel run carher
+# --- If no tunnel mode, we're done ---
+if [ "$MODE" != "random" ]; then
+  exit 0
 fi
 
 # --- Start Cloudflare random tunnels ---

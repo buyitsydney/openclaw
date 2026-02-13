@@ -15,6 +15,8 @@
 
 以下工具只需要安装一次。打开 **终端**（Terminal.app），逐条执行。
 
+> **Ubuntu 用户**：本指南以 macOS 为例。Ubuntu 上把 `brew install` 替换为 `apt install`，Docker Desktop 替换为 Docker Engine（`curl -fsSL https://get.docker.com | sh`），额外安装 `apt install tmux`。其余脚本（`start.sh`、`start-user.sh`、`start-tunnel.sh`）macOS / Ubuntu 通用，无需修改。企业部署详见 [企业部署文档](/her/her-feishu-bot-enterprise-deploy)。
+
 ### 0.1 Homebrew（macOS 包管理器）
 
 几乎所有后续工具都通过 Homebrew 安装。如果你之前从没用过命令行安装软件，先装这个。
@@ -286,10 +288,11 @@ pnpm openclaw config set env.vars.OPENROUTER_API_KEY "$OPENROUTER_API_KEY"
 ```
 
 脚本会自动：
-1. 编译最新代码
-2. 启动 Gateway（后端服务）
-3. 启动 Live Frontend（语音代理）
-4. 打印所有访问 URL
+1. 进入 tmux 会话 `her`（终端/Cursor 重启后进程不丢失，`tmux attach -t her` 可重新进入）
+2. 编译最新代码
+3. 启动 Gateway（后端服务）
+4. 启动 Live Frontend（语音代理）
+5. 打印本地 + 远程访问 URL，以及 cloudflared 隧道状态
 
 看到类似以下输出说明成功：
 
@@ -303,7 +306,16 @@ pnpm openclaw config set env.vars.OPENROUTER_API_KEY "$OPENROUTER_API_KEY"
   Desktop UI: http://localhost:8000
   Mobile UI:  http://localhost:8000/mobile.html
 ═══════════════════════════════════════════════════════════════
+
+═══════════════════════════════════════════════════════════════
+  个人 Her — 固定远程 URL（需 cloudflared 隧道运行）
+═══════════════════════════════════════════════════════════════
+  Mobile:  https://carher.carher.net/mobile.html?proxy=...
+  Desktop: https://carher.carher.net?proxy=...
+═══════════════════════════════════════════════════════════════
 ```
+
+> tmux 需要提前安装：macOS `brew install tmux`，Ubuntu `apt install tmux`。如果未安装 tmux，脚本仍可正常运行，但终端关闭后进程会丢失。
 
 ### 3.4 在浏览器里体验
 

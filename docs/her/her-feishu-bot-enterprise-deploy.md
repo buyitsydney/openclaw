@@ -7,7 +7,7 @@
 
 **最终方案：200 Bot + 200 Docker（每人一个独立 OpenClaw 容器）**
 
-**验证状态 (2026-02-09)：飞书并发测试通过、数据隔离已确认、Webchat 隔离已确认、自动镜像重建已实现**
+**验证状态 (2026-02-09)：飞书并发测试通过、数据隔离已确认、Webchat 隔离已确认、自动镜像重建已实现**（均为本地 Mac 验证，Ubuntu 企业部署尚未执行）
 
 ---
 
@@ -32,6 +32,7 @@
 | Docker | `curl -fsSL https://get.docker.com \| sh` | 容器运行环境 |
 | Git | `apt install git` | 拉取部署代码 |
 | Python 3 | `apt install python3` | 配置生成脚本依赖 |
+| tmux | `apt install tmux` | 终端会话持久化（start.sh 自动使用） |
 | cloudflared | `curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \| tee /usr/share/keyrings/cloudflare.gpg && apt install cloudflared` | 远程隧道（可选，仅远程访问时需要） |
 
 ### 账号与密钥（P0，必须提前申请）
@@ -114,13 +115,35 @@ echo 'export OPENROUTER_API_KEY=sk-or-v1-你的key' >> ~/.bashrc
 source ~/.bashrc
 
 # 3. 首次构建 Docker 镜像（约 5-10 分钟，后续自动检测变更）
-./start-user.sh --id=1 --local
+./start-user.sh --id=1
 # 脚本会自动构建镜像，看到 "✓ 容器已启动" 即成功
 # 首次验证后停止容器，进入下一步创建飞书 Bot
 ./start-user.sh --id=1 --down
 ```
 
-> **检查清单**：运行 `./start-user.sh --id=1 --local`，如果看到 `✓ Docker 镜像已是最新` + `✓ OpenRouter API key` + `✓ Google Cloud 凭证` + `✓ 容器已启动`，说明环境 100% 就绪。如果任何一项显示 `✗`，根据错误提示排查对应的账号/密钥配置。
+> **检查清单**：运行 `./start-user.sh --id=1`，如果看到 `✓ Docker 镜像已是最新` + `✓ OpenRouter API key` + `✓ Google Cloud 凭证` + `✓ 容器已启动`，说明环境 100% 就绪。如果任何一项显示 `✗`，根据错误提示排查对应的账号/密钥配置。
+
+### 首次验证（管理员个人 Her）
+
+部署 200 用户容器前，建议先启动管理员自己的 Her 确认基础环境（Node.js、pnpm、AI Key、网络）正确：
+
+```bash
+# 1. 启动个人 Her（自动进入 tmux 会话 "her"，终端关闭后进程不丢失）
+./start.sh
+
+# 2. 用手机访问本地 URL，验证语音 + 文字功能
+#    脚本启动后会打印本地 URL（http://localhost:8000/mobile.html）
+
+# 3. 启动 Cloudflare 隧道（如需远程访问）
+./start-tunnel.sh
+
+# 4. 用手机访问远程 URL 验证隧道连通
+#    远程 URL 格式：https://carher.carher.net/mobile.html?proxy=...
+
+# 5. 确认一切正常后，再 ./start-user.sh --id=1 启动第一个企业用户容器
+```
+
+> 个人 Her 通过 `start.sh` 启动，在 tmux 会话 `her` 中运行，与用户容器（Docker）完全独立。macOS 和 Ubuntu 上操作完全一致。
 
 ---
 

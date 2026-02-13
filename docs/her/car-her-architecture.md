@@ -939,6 +939,39 @@ Frontend                    RealtimePlugin                  OpenClawAgent
 
 ---
 
+## 已知严重 Bug
+
+### P0: Gemini Live Tool Call 异步时序导致语音静默（2026-02-13 发现）
+
+**现象**：用户通过语音发出需要后端处理的请求（如"查一下今天的提醒"），Gemini Live 正确调用 `openclaw_help` 工具，但在 OpenClaw 后端返回结果后，Gemini 反复 `RESPONSE_REJECTED`，不播报结果。用户只能在屏幕文字中看到结果，语音完全静默。
+
+**影响范围**：所有 Docker 容器用户的语音交互（u1、u2、u3 均复现）。个人 Her 偶尔也会出现，但频率低得多。
+
+**根本原因**：tool call 的异步时序冲突。
+
+```
+时间线：
+1. Gemini Live 调用 openclaw_help      → 前端立刻回复 status=processing
+2. Gemini 说"好的，我帮您查一下"        → TURN COMPLETE（Gemini 结束当前轮）
+3. Gemini 发出第二次异常 tool call       → "以上信息来自 backend ai，请你根据实际情况回复用户信息！"
+4. 多次 RESPONSE_REJECTED               ← Gemini 上下文已混乱
+5. OpenClaw 后端结果返回                 → 通过 client_content 注入
+6. 继续 RESPONSE_REJECTED               ← Gemini 拒绝基于 client_content 生成语音
+```
+
+核心矛盾：OpenClaw 后端处理耗时 2-8 秒，而 Gemini Live 在 TURN COMPLETE 后进入"等待用户输入"状态。异步回注的 `client_content` 无法可靠触发 Gemini 生成语音回复。
+
+**临时缓解**：用户重新提问可触发 Gemini 重新读取上下文中的结果。但体验极差。
+
+**待修复方向**：
+- 方案 A：在 tool call 期间让 Gemini 保持等待（不发 TURN COMPLETE），直到后端结果返回后一起发送 tool response
+- 方案 B：tool result 回来后用新的 user turn 触发 Gemini 重新生成（而非 client_content）
+- 方案 C：探索 Gemini Live API 的 server-initiated turn 机制
+
+**关联文件**：`extensions/realtime/live-frontend/frontend/tools.js`（help_result 处理）、`extensions/realtime/live-frontend/frontend/geminilive.js`（tool call 协议）
+
+---
+
 ## TODO
 
 ### P0（核心重构）

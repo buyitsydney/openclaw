@@ -1,12 +1,21 @@
 #!/bin/bash
 # CarHer Gateway 启动脚本
 # 确定性重编译 + 启动 Gateway（建议永远只通过此脚本启动）
+#
+# 自动 tmux 持久化：脚本自动在 tmux 会话 "her" 中运行，
+# Cursor/终端重启后进程不会丢失。重复执行会自动替换旧会话。
 
 set -e
 
 # 确保在仓库根目录执行（脚本所在目录）
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+
+# --- 自动 tmux 包裹：不在 tmux 内时，自动进入 tmux 会话 "her" ---
+if [ -z "$TMUX" ] && command -v tmux &>/dev/null; then
+  tmux kill-session -t her 2>/dev/null || true
+  exec tmux new-session -s her "$0 $*"
+fi
 
 # 颜色定义
 RED='\033[0;31m'
@@ -32,9 +41,14 @@ pkill -f "openclaw gateway" 2>/dev/null || true
 # 等待进程完全退出
 sleep 0.5
 
-# 一次 lsof 检查所有端口（macOS 上 lsof 很慢，合并成一次调用）
+# 跨平台端口检查：Ubuntu 用 ss（自带），macOS 用 lsof
 echo -e "${YELLOW}[3/5] 检查端口...${NC}"
-PIDS_TO_KILL=$(lsof -t -i :18789 -i :18790 -i :8000 -i :8080 2>/dev/null | sort -u || true)
+if command -v ss &>/dev/null; then
+  PIDS_TO_KILL=$(ss -tlnp '( sport = :18789 or sport = :18790 or sport = :8000 or sport = :8080 )' 2>/dev/null \
+    | grep -oP 'pid=\K[0-9]+' | sort -u || true)
+else
+  PIDS_TO_KILL=$(lsof -t -i :18789 -i :18790 -i :8000 -i :8080 2>/dev/null | sort -u || true)
+fi
 if [ -n "$PIDS_TO_KILL" ]; then
   echo -e "${RED}  ⚠ 端口被占用，强制释放: $(echo $PIDS_TO_KILL | tr '\n' ' ')${NC}"
   echo $PIDS_TO_KILL | xargs kill -9 2>/dev/null || true
@@ -95,6 +109,25 @@ echo -e "  Webchat:    ${GREEN}http://localhost:18789/?token=${TOKEN}${NC}"
 echo -e "  Desktop UI: ${GREEN}http://localhost:8000${NC}"
 echo -e "  Mobile UI:  ${GREEN}http://localhost:8000/mobile.html${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
+echo ""
+# 固定远程 URL（需 cloudflared 隧道运行）
+CYAN='\033[0;36m'
+echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+echo -e "${CYAN}  个人 Her — 固定远程 URL（需 cloudflared 隧道运行）${NC}"
+echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+echo -e "  Mobile:  ${CYAN}https://carher.carher.net/mobile.html?proxy=wss%3A%2F%2Fproxy.carher.net&openclaw=wss%3A%2F%2Fapi.carher.net%2Fws${NC}"
+echo -e "  Desktop: ${CYAN}https://carher.carher.net?proxy=wss%3A%2F%2Fproxy.carher.net&openclaw=wss%3A%2F%2Fapi.carher.net%2Fws${NC}"
+echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+echo ""
+# 隧道状态检测
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^cloudflared$"; then
+  echo -e "${GREEN}✓ cloudflared 隧道运行中（Docker 容器）${NC}"
+elif pgrep -f "cloudflared tunnel run" &>/dev/null; then
+  echo -e "${GREEN}✓ cloudflared 隧道运行中（原生进程）${NC}"
+else
+  echo -e "${YELLOW}⚠ cloudflared 隧道未运行（远程 URL 不可用）${NC}"
+  echo -e "  启动隧道: ${YELLOW}./start-tunnel.sh${NC}"
+fi
 echo ""
 echo -e "${GREEN}✓ Gateway 已启动 (PID: $GATEWAY_PID)${NC}"
 echo -e "${YELLOW}按 Ctrl+C 停止${NC}"
