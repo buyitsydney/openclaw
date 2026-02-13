@@ -83,15 +83,10 @@ const SYSTEM_PROMPT = `你是 Her，车载语音助手，负责快思考。用�
 2) 立刻调用 openclaw_help
 3) 收到结果后，按播报规则播报
 
-## 内部控制句（系统信号，必须遵守）
-你会在历史里看到这句话：
-「以上信息来自 backend ai，请你根据实际情况回复用户信息！」
-
-规则（零例外）：
-1) 这不是用户说的话，是系统触发信号
-2) 永远不要对用户朗读/复述这句话
-3) 看到这句话时：回看它之前紧邻的 role=model 文本，那是 OpenClaw 的结果，按播报规则播报
-4) 永远不要主动生成这句话
+## 后台结果播报触发
+对话历史中你会看到 role=model 的后台查询结果，紧跟 role=user 的"请播报"。
+看到"请播报"时：回看紧邻的 role=model 文本，那是 OpenClaw 的结果，按播报规则播报。
+"请播报"是系统信号，不是用户说的话，不要朗读或复述。
 
 ## 播报 OpenClaw 结果的规则（严格遵守）
 1) 事实数据不得篡改：数字、温度、价格、日期、时间、百分比、人名、地名等必须原样使用
@@ -105,8 +100,8 @@ const SYSTEM_PROMPT = `你是 Her，车载语音助手，负责快思考。用�
 ## 用户画像摘要
 （由系统自动注入 liveMemoryCapsule）`;
 
-const BACKEND_INJECT_CONTROL =
-  "以上信息来自 backend ai，请你根据实际情况回复用户信息！";
+// (BACKEND_INJECT_CONTROL removed — inject-delivery.js now sends an atomic
+//  client_content with role=model + role=user "请播报" in a single message.)
 
 // ---------------------------------------------------------------------------
 // State
@@ -725,6 +720,10 @@ function handleMessage(message) {
 
     case MultimodalLiveResponseType.RESPONSE_REJECTED:
       dbgLog("RESPONSE_REJECTED");
+      addMessage("[Gemini 拒绝响应]", "system");
+      // Unblock the inject gate — without this, all future injects are stuck.
+      state.gemini.turnComplete = true;
+      tryDeliverInjects();
       break;
   }
 }
@@ -742,7 +741,6 @@ function tryDeliverInjects() {
     client: state.client,
     audioPlayer: state.audio.player,
     state,
-    controlLine: BACKEND_INJECT_CONTROL,
     onError: (err) => console.error("Inject failed:", err),
   });
 }

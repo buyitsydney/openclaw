@@ -941,34 +941,158 @@ Frontend                    RealtimePlugin                  OpenClawAgent
 
 ## 已知严重 Bug
 
-### P0: Gemini Live Tool Call 异步时序导致语音静默（2026-02-13 发现）
+### P0: Gemini Live Tool Call 异步时序导致语音静默（2026-02-13 发现，已修复验证）
+
+**状态**：已修复并验证（2026-02-13）。本地 Her 3/3、User2 4/4、User3 2/2 tool call 全部成功播报，0 次 RESPONSE_REJECTED，0 次死循环。
 
 **现象**：用户通过语音发出需要后端处理的请求（如"查一下今天的提醒"），Gemini Live 正确调用 `openclaw_help` 工具，但在 OpenClaw 后端返回结果后，Gemini 反复 `RESPONSE_REJECTED`，不播报结果。用户只能在屏幕文字中看到结果，语音完全静默。
 
 **影响范围**：所有 Docker 容器用户的语音交互（u1、u2、u3 均复现）。个人 Her 偶尔也会出现，但频率低得多。
 
-**根本原因**：tool call 的异步时序冲突。
+#### 当前流程（偶尔成功）
 
+两阶段 ACK 协议：收到 tool call 后立刻发 `processing` ACK 让 Gemini 说过渡语，真正结果回来后通过 `client_content` 注入。
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Gemini as Gemini_Live
+    participant FE as Frontend_JS
+    participant Server as OpenClaw_Server
+    participant Agent as Backend_Agent
+
+    User->>Gemini: 语音: 查一下今天的提醒
+    Gemini->>FE: audio 好的我帮您查一下
+    Gemini->>FE: toolCall openclaw_help
+    FE->>Gemini: tool_response ACK processing
+    FE->>Server: help callId=A
+    Gemini->>FE: TURN_COMPLETE
+    Server->>Agent: runEmbeddedPiAgent
+    Agent-->>Server: 今天没有提醒
+    Server->>FE: help_result callId=A
+    FE->>Gemini: client_content role=model 结果
+    FE->>Gemini: client_content role=user 控制句
+    Gemini->>FE: audio 播报结果
+    Gemini->>FE: TURN_COMPLETE
+    Gemini->>User: 用户听到结果
 ```
-时间线：
-1. Gemini Live 调用 openclaw_help      → 前端立刻回复 status=processing
-2. Gemini 说"好的，我帮您查一下"        → TURN COMPLETE（Gemini 结束当前轮）
-3. Gemini 发出第二次异常 tool call       → "以上信息来自 backend ai，请你根据实际情况回复用户信息！"
-4. 多次 RESPONSE_REJECTED               ← Gemini 上下文已混乱
-5. OpenClaw 后端结果返回                 → 通过 client_content 注入
-6. 继续 RESPONSE_REJECTED               ← Gemini 拒绝基于 client_content 生成语音
+
+#### 失败流程（高频复现）
+
+ACK 让 Gemini 提前结束 turn。结果通过 `client_content` 注入后，控制句 `role=user` 被 Gemini 误解为用户请求，触发第二次垃圾 tool call，上下文污染后进入 RESPONSE_REJECTED 循环。
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Gemini as Gemini_Live
+    participant FE as Frontend_JS
+    participant Server as OpenClaw_Server
+    participant Agent as Backend_Agent
+
+    User->>Gemini: 语音: 查一下今天的提醒
+    Gemini->>FE: audio 好的我帮您查一下
+    Gemini->>FE: toolCall A openclaw_help
+    FE->>Gemini: tool_response ACK processing
+    FE->>Server: help callId=A
+    Gemini->>FE: TURN_COMPLETE
+    Server->>Agent: runEmbeddedPiAgent
+    Agent-->>Server: 今天没有提醒
+    Server->>FE: help_result callId=A 快速返回
+    FE->>Gemini: client_content role=model 结果
+    FE->>Gemini: client_content role=user 控制句
+    Gemini->>FE: toolCall B 把控制句当请求转发
+    FE->>Gemini: tool_response ACK processing
+    FE->>Server: help callId=B 垃圾请求
+    Gemini->>FE: RESPONSE_REJECTED x N
+    Server->>Agent: 处理垃圾请求
+    Agent-->>Server: 无意义结果
+    Server->>FE: help_result callId=B
+    FE->>Gemini: client_content 再次注入
+    Gemini->>FE: RESPONSE_REJECTED x N
+    User->>User: 听不到任何结果
 ```
 
-核心矛盾：OpenClaw 后端处理耗时 2-8 秒，而 Gemini Live 在 TURN COMPLETE 后进入"等待用户输入"状态。异步回注的 `client_content` 无法可靠触发 Gemini 生成语音回复。
+#### 根本原因
 
-**临时缓解**：用户重新提问可触发 Gemini 重新读取上下文中的结果。但体验极差。
+**第一层：两阶段 ACK 协议导致必须用 client_content 回注。** `mobile-script.js:681-688` 收到 tool call 后立即发 `{ status: "processing" }` ACK，Gemini 认为工具调用已完成 → TURN_COMPLETE → 结束当前轮。真正结果只能通过 `client_content` 注入。
 
-**待修复方向**：
-- 方案 A：在 tool call 期间让 Gemini 保持等待（不发 TURN COMPLETE），直到后端结果返回后一起发送 tool response
-- 方案 B：tool result 回来后用新的 user turn 触发 Gemini 重新生成（而非 client_content）
-- 方案 C：探索 Gemini Live API 的 server-initiated turn 机制
+**第二层：client_content 注入的控制句被 Gemini 误解为用户请求。** `inject-delivery.js:44-47` 注入 `role=model`（结果）+ `role=user`（"以上信息来自 backend ai..."）。尽管系统 prompt（`server.ts:223-231`）明确指示不要把控制句当用户请求，但 Gemini Live 模型不总是遵守，有时会把控制句路由到 `openclaw_help`，造成垃圾递归 + 上下文污染 → RESPONSE_REJECTED 循环。
 
-**关联文件**：`extensions/realtime/live-frontend/frontend/tools.js`（help_result 处理）、`extensions/realtime/live-frontend/frontend/geminilive.js`（tool call 协议）
+**为什么个人 Her 较少出问题**：个人 Her 有丰富记忆数据，agent 处理时间更长（3-8 秒），help_result 返回时 Gemini 已完全"安顿"好。Docker 容器是空数据，agent 处理极快（<1 秒），inject delivery 在 Gemini 还没稳定时就触发。
+
+#### 修复方案：原子 client_content + RESPONSE_REJECTED 恢复（2026-02-13 实施）
+
+**根因深入分析**：inject-delivery.js 发送两条**独立**的 `client_content`，都带 `turnComplete: true`。根据 Gemini API 文档："A message here will interrupt any current model generation"。因此第一条（role=model）触发 Gemini 生成，第二条（role=user 控制句）立刻**打断**它并重新触发。这违反了 Google 官方 "incremental content updates" 模式。
+
+同时，mobile-script.js 的 `RESPONSE_REJECTED` 分支没有设 `state.gemini.turnComplete = true`，导致一旦 reject，inject gate 永久锁死，后续所有 inject 堵死。
+
+**修复内容**：
+
+1. **inject-delivery.js — 改为单条原子 client_content**
+
+将两条 `sendTextMessage`（各自 `turnComplete: true`）替换为一条 `sendMessage`，包含两个 turns：
+
+```javascript
+// 旧代码（有竞争条件）：
+client.sendTextMessage(reply, { role: "model" });      // turnComplete: true → 触发生成
+client.sendTextMessage(controlLine, { role: "user" });  // turnComplete: true → 打断 + 重触发
+
+// 新代码（单条原子消息，匹配官方 incremental content updates 模式）：
+client.sendMessage({
+  client_content: {
+    turns: [
+      { role: "model", parts: [{ text: reply }] },
+      { role: "user", parts: [{ text: "请播报" }] },
+    ],
+    turn_complete: true,
+  },
+});
+```
+
+- 单条消息消除"第一条触发、第二条打断"的竞争
+- 控制句从"以上信息来自 backend ai，请你根据实际情况回复用户信息！"→ "请播报"（两个字不可能触发 tool call）
+- `BACKEND_INJECT_CONTROL` 常量和 `controlLine` 参数被移除
+
+2. **mobile-script.js + script.js — RESPONSE_REJECTED 恢复 gate**
+
+```javascript
+case MultimodalLiveResponseType.RESPONSE_REJECTED:
+  addMessage("[Gemini 拒绝响应]", "system");  // 让用户看到
+  state.gemini.turnComplete = true;            // 解除 inject gate
+  tryDeliverInjects();                          // 尝试投递下一个 pending inject
+  break;
+```
+
+3. **system prompt — 简化控制句规则**
+
+旧："内部控制句（系统信号，必须遵守）"段落（4 条规则）
+新："后台结果播报触发"段落（3 行说明"请播报"是系统信号）
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Gemini as Gemini_Live
+    participant FE as Frontend_JS
+    participant Server as OpenClaw_Server
+    participant Agent as Backend_Agent
+
+    User->>Gemini: 语音: 查一下今天的提醒
+    Gemini->>FE: audio 好的我帮您查一下
+    Gemini->>FE: toolCall openclaw_help
+    FE->>Gemini: tool_response ACK processing
+    FE->>Server: help callId=A
+    Gemini->>FE: TURN_COMPLETE
+    Server->>Agent: runEmbeddedPiAgent
+    Agent-->>Server: 今天没有提醒
+    Server->>FE: help_result callId=A
+    Note over FE: 单条原子 client_content
+    FE->>Gemini: role=model 结果 + role=user 请播报
+    Gemini->>FE: audio 播报结果
+    Gemini->>FE: TURN_COMPLETE
+    Gemini->>User: 用户听到结果
+```
+
+**关联文件**：`inject-delivery.js`、`mobile-script.js`、`script.js`、`server.ts`
 
 ---
 

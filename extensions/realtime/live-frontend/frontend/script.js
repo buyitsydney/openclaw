@@ -33,11 +33,8 @@ const state = {
 
 // Backend inject control line (internal). This line is used to force Gemini to
 // continue generation after we inject backend context as role=model.
-//
-// Control line to trigger Gemini to speak after receiving async result.
-// IMPORTANT: This must be treated as internal-only by the model (see system prompt rules).
-const BACKEND_INJECT_CONTROL =
-  "以上信息来自 backend ai，请你根据实际情况回复用户信息！";
+// (BACKEND_INJECT_CONTROL removed — inject-delivery.js now sends an atomic
+//  client_content with role=model + role=user "请播报" in a single message.)
 
 // Debug logger for tracking message flow
 function debugLog(direction, eventType, data = {}) {
@@ -644,6 +641,9 @@ function handleMessage(message) {
     case MultimodalLiveResponseType.RESPONSE_REJECTED:
       console.log("🚫 RESPONSE_REJECTED - Gemini refused to respond (proactiveAudio)");
       addMessage("[REJECTED] Gemini 拒绝响应", "system");
+      // Unblock the inject gate — without this, all future injects are stuck.
+      state.gemini.turnComplete = true;
+      tryDeliverInjects();
       break;
   }
 }
@@ -659,7 +659,6 @@ function tryDeliverInjects() {
     client: state.client,
     audioPlayer: state.audio.player,
     state,
-    controlLine: BACKEND_INJECT_CONTROL,
     onError: (err) => console.error("Inject delivery failed:", err),
   });
 }

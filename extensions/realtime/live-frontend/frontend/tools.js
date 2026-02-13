@@ -40,7 +40,7 @@ class OpenClawHelpTool extends FunctionCallDefinition {
         }
       },
       ["request"]
-      // Note: NON_BLOCKING behavior removed - may not be supported by current model
+      // behavior: "NON_BLOCKING" — Vertex AI 不支持，会导致连接被拒绝（2026-02-13 验证）
     );
     this.openclawConnection = openclawConnection;
     this.isAsync = true; // Mark as async tool
