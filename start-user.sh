@@ -343,6 +343,29 @@ model = '${MODEL_FULL}'
 if model:
     cfg['agents']['defaults']['model']['primary'] = model
 
+# Gemini config for realtime plugin
+# Priority: env var > host openclaw.json > error
+import os, pathlib
+gemini_project = os.environ.get('GEMINI_PROJECT_ID', '')
+gemini_model = os.environ.get('GEMINI_MODEL', '')
+if not gemini_project:
+    # Read from host's local openclaw.json as fallback
+    host_cfg_path = pathlib.Path.home() / '.openclaw' / 'openclaw.json'
+    if host_cfg_path.exists():
+        with open(host_cfg_path) as hf:
+            host_cfg = json.load(hf)
+        host_gemini = host_cfg.get('plugins', {}).get('entries', {}).get('realtime', {}).get('config', {}).get('gemini', {})
+        gemini_project = host_gemini.get('projectId', '')
+        if not gemini_model:
+            gemini_model = host_gemini.get('model', '')
+if not gemini_model:
+    gemini_model = 'gemini-live-2.5-flash-native-audio'
+if gemini_project:
+    rt = cfg.setdefault('plugins', {}).setdefault('entries', {}).setdefault('realtime', {}).setdefault('config', {})
+    rt['gemini'] = {'projectId': gemini_project, 'model': gemini_model}
+else:
+    print('WARNING: GEMINI_PROJECT_ID not found (env / ~/.openclaw/openclaw.json)', file=sys.stderr)
+
 # Feishu credentials from users.csv
 feishu_id = '${CSV_FEISHU_ID}'
 feishu_secret = '${CSV_FEISHU_SECRET}'

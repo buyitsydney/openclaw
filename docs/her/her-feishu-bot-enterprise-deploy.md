@@ -58,13 +58,18 @@
 3. 首次使用会提示创建项目，项目名随意填（如 `carher-prod`）
 4. 新账号有 $300 免费额度，足够长期测试
 
-**第二步：启用 API**
+**第二步：记录项目 ID**
+
+1. 在 Google Cloud Console 顶部的项目选择器中，复制当前项目 ID（格式如 `carher-prod` 或 `gen-lang-client-xxx`）
+2. 这个项目 ID 后续要配置到 `openclaw.json` 中，语音费用记在这个项目的计费账号下
+
+**第三步：启用 API**
 
 1. 在 Google Cloud Console 顶部搜索栏输入 `Vertex AI API`
 2. 点击进入 → 点击 **启用**（Enable）
 3. 如果提示需要关联计费账号，按引导绑定信用卡（语音功能产生的费用从这里扣）
 
-**第三步：在服务器上安装 gcloud CLI**
+**第四步：在服务器上安装 gcloud CLI**
 
 ```bash
 # Debian/Ubuntu
@@ -75,7 +80,7 @@ exec -l $SHELL
 gcloud --version
 ```
 
-**第四步：登录并生成凭证文件**
+**第五步：登录并生成凭证文件**
 
 ```bash
 # 登录 Google 账号（会打开浏览器，服务器无桌面则用下面的 --no-browser 方式）
@@ -86,7 +91,7 @@ gcloud auth application-default login --no-browser
 # 按提示在本地电脑浏览器打开链接 → 登录 → 复制授权码 → 粘贴回终端
 ```
 
-**第五步：验证**
+**第六步：验证**
 
 ```bash
 ls ~/.config/gcloud/application_default_credentials.json
@@ -211,7 +216,16 @@ source ~/.bashrc
   },
   "plugins": {
     "entries": {
-      "feishu": { "enabled": true }
+      "feishu": { "enabled": true },
+      "realtime": {
+        "enabled": true,
+        "config": {
+          "gemini": {
+            "projectId": "企业的Google Cloud项目ID",
+            "model": "gemini-live-2.5-flash-native-audio"
+          }
+        }
+      }
     }
   }
 }
@@ -223,6 +237,8 @@ source ~/.bashrc
 > - `groups.enabled` + `groups.archive` 默认启用群聊归档，主人可在私聊让 bot 总结群聊内容
 > - `nativeSkills: "auto"` 必须配置，否则 AI 只能看到少数无依赖的 skill
 > - `controlUi.dangerouslyDisableDeviceAuth: true` 跳过设备配对，允许 token 直接访问 Webchat
+> - `realtime.config.gemini.projectId` 必须填企业自己的 Google Cloud 项目 ID（前置条件中记录的），语音费用记在该项目下。**不配置则语音请求返回 500 错误，不会 fallback 到他人账号**
+> - `realtime.config.gemini.projectId` 和 `model` 均支持热切换：修改 `openclaw.json` 后无需重启服务，下一次语音连接自动使用新值（已验证：本地 + Docker 8 项测试全部通过）
 > - 飞书插件在用户发送 `/new` 时自动发送 Webchat URL（从 gateway 配置自动计算，Docker 模式下可通过 `WEBCHAT_URL` 环境变量覆盖）
 
 ### Docker 部署

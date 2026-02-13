@@ -11,8 +11,8 @@
 const CONFIG = {
   proxyUrl: "ws://localhost:8080",
   openclawUrl: "ws://localhost:18790/ws",
-  projectId: "gen-lang-client-0519229117",
-  model: "gemini-live-2.5-flash-native-audio",
+  projectId: "", // 从 Bootstrap API 获取（server.ts 读取 openclaw.json 配置）
+  model: "", // 从 Bootstrap API 获取
   voice: "Puck",
   temperature: 1.0,
 };
@@ -116,7 +116,7 @@ const state = {
   audio: { streamer: null, player: null, isStreaming: false },
   video: { streamer: null, isStreaming: false },
   screen: { capture: null, isSharing: false },
-  openclaw: { connected: false, liveMemoryCapsule: "", systemPrompt: null, toolDeclarations: null },
+  openclaw: { connected: false, liveMemoryCapsule: "", systemPrompt: null, toolDeclarations: null, geminiProjectId: "", geminiModel: "" },
   gemini: { turnComplete: true },
   audioObs: {
     lastAudioRecvAtMs: null,
@@ -413,6 +413,18 @@ async function connectOpenClaw() {
     state.openclaw.toolDeclarations = null;
     dbgLog("Bootstrap: no tool declarations in response, using local fallback");
   }
+  // Extract Gemini projectId/model from Bootstrap model URI (single source of truth: server.ts)
+  const bootstrapModel = bootstrapSetup?.model || "";
+  // model URI format: "projects/{projectId}/locations/{loc}/publishers/google/models/{model}"
+  const modelUriMatch = bootstrapModel.match(/^projects\/([^/]+)\/locations\/[^/]+\/publishers\/google\/models\/(.+)$/);
+  if (modelUriMatch) {
+    state.openclaw.geminiProjectId = modelUriMatch[1];
+    state.openclaw.geminiModel = modelUriMatch[2];
+    dbgLog(`Bootstrap OK: Gemini project=${modelUriMatch[1]}, model=${modelUriMatch[2]}`);
+  } else if (bootstrapModel) {
+    dbgLog(`Bootstrap: unrecognized model URI format: ${bootstrapModel}`);
+  }
+
   dbgLog(`Bootstrap OK: capsule ${state.openclaw.liveMemoryCapsule.length} chars`);
   if (agentId) dbgLog(`Agent ID: ${agentId}`);
 
@@ -461,7 +473,15 @@ function buildSystemInstructions() {
 async function connectGemini() {
   updateDbgStatus("dbgGeminiStatus", "连接中...", null);
 
-  state.client = new GeminiLiveAPI(CONFIG.proxyUrl, CONFIG.projectId, CONFIG.model);
+  // Bootstrap 返回的 projectId/model 优先；CONFIG 作为兜底（仅本地开发时可用）
+  const projectId = state.openclaw.geminiProjectId || CONFIG.projectId;
+  const model = state.openclaw.geminiModel || CONFIG.model;
+  if (!projectId || !model) {
+    throw new Error(`Gemini 配置缺失: projectId="${projectId}", model="${model}"。请检查 Bootstrap API 或 openclaw.json 配置`);
+  }
+  dbgLog(`Gemini config: project=${projectId}, model=${model} (source: ${state.openclaw.geminiProjectId ? "Bootstrap" : "CONFIG"})`);
+
+  state.client = new GeminiLiveAPI(CONFIG.proxyUrl, projectId, model);
 
   state.client.systemInstructions = buildSystemInstructions();
   state.client.inputAudioTranscription = true;

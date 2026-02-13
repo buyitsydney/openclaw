@@ -21,6 +21,7 @@ export interface RealtimeConfig {
   port?: number;
   gemini?: {
     projectId?: string;
+    model?: string;
     location?: string;
   };
 }

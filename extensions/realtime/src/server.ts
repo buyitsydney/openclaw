@@ -9,7 +9,9 @@
 
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { URL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
@@ -64,11 +66,73 @@ const LIVE_MEMORY_CAPSULE_PROMPT_VERSION = "v3.1";
 
 // ---------------------------------------------------------------------------
 // Gemini Live config for native app Bootstrap
+// Read from plugin config (openclaw.json → plugins.entries.realtime.config.gemini)
+// or environment variables. No fallback — missing config = explicit error.
 // ---------------------------------------------------------------------------
-const GEMINI_PROJECT_ID = "gen-lang-client-0519229117";
-const GEMINI_MODEL = "gemini-live-2.5-flash-native-audio";
 const GEMINI_SERVICE_URL =
   "wss://us-central1-aiplatform.googleapis.com/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent";
+
+interface GeminiConfig {
+  projectId: string;
+  model: string;
+}
+
+/**
+ * Resolve the openclaw.json config file path.
+ * Uses OPENCLAW_CONFIG_PATH env var if set, else $HOME/.openclaw/openclaw.json.
+ */
+function resolveConfigFilePath(): string {
+  const explicit = process.env.OPENCLAW_CONFIG_PATH?.trim();
+  if (explicit) return explicit;
+  return path.join(os.homedir(), ".openclaw", "openclaw.json");
+}
+
+/**
+ * Read Gemini config directly from disk (supports true hot-reload).
+ * api.config / api.pluginConfig are static snapshots from plugin load time
+ * and do NOT update when openclaw.json changes. Reading from disk ensures
+ * every Bootstrap request reflects the latest config.
+ */
+function readGeminiConfigFromDisk(): { projectId?: string; model?: string } {
+  try {
+    const cfgPath = resolveConfigFilePath();
+    const raw = fsSync.readFileSync(cfgPath, "utf-8");
+    const cfg = JSON.parse(raw);
+    const gemini = cfg?.plugins?.entries?.realtime?.config?.gemini;
+    return {
+      projectId: gemini?.projectId,
+      model: gemini?.model,
+    };
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Resolve Gemini project ID and model from config or environment.
+ * Called on every Bootstrap request so config changes take effect without restart.
+ * Priority: env var > openclaw.json on disk (live read).
+ * Throws if projectId or model is missing — never falls back to a hardcoded value.
+ */
+function resolveGeminiConfig(): GeminiConfig {
+  const fromDisk = readGeminiConfigFromDisk();
+
+  const projectId = process.env.GEMINI_PROJECT_ID || fromDisk.projectId;
+  const model = process.env.GEMINI_MODEL || fromDisk.model;
+
+  if (!projectId) {
+    throw new Error(
+      "[realtime] GEMINI_PROJECT_ID 未配置。请在 openclaw.json 设置 plugins.entries.realtime.config.gemini.projectId，或设置环境变量 GEMINI_PROJECT_ID",
+    );
+  }
+  if (!model) {
+    throw new Error(
+      "[realtime] GEMINI_MODEL 未配置。请在 openclaw.json 设置 plugins.entries.realtime.config.gemini.model，或设置环境变量 GEMINI_MODEL",
+    );
+  }
+
+  return { projectId, model };
+}
 
 /** Her system prompt for Gemini Live (canonical source; mobile-script.js mirrors this). */
 const HER_SYSTEM_PROMPT = `你是 Her，车载语音助手，负责快思考。用户正在开车。
@@ -219,8 +283,8 @@ const TOOL_DECLARATIONS = [
 ];
 
 /** Build the complete Bootstrap response including Gemini proxy config for native apps. */
-function buildBootstrapResponse(capsuleText: string) {
-  const modelUri = `projects/${GEMINI_PROJECT_ID}/locations/us-central1/publishers/google/models/${GEMINI_MODEL}`;
+function buildBootstrapResponse(capsuleText: string, gemini: GeminiConfig) {
+  const modelUri = `projects/${gemini.projectId}/locations/us-central1/publishers/google/models/${gemini.model}`;
 
   // Bake capsule into system prompt so native app gets a ready-to-send blob
   const fullSystemPrompt = capsuleText
@@ -621,6 +685,9 @@ async function handleBootstrap(
   defaultAgentId: string,
 ) {
   try {
+    // Resolve Gemini config on every request (supports hot-reload without restart)
+    const gemini = resolveGeminiConfig();
+
     // Load core dependencies if not already loaded
     if (!coreDeps) {
       coreDeps = await loadCoreAgentDeps();
@@ -663,7 +730,7 @@ async function handleBootstrap(
         "Content-Type": "application/json",
         "Access-Control-Allow-Origin": "*",
       });
-      res.end(JSON.stringify(buildBootstrapResponse(cached.text)));
+      res.end(JSON.stringify(buildBootstrapResponse(cached.text, gemini)));
       return;
     }
 
@@ -694,10 +761,13 @@ async function handleBootstrap(
     });
     // buildBootstrapResponse includes liveMemoryCapsule (backward compat)
     // plus geminiProxy.serviceSetup/sessionSetup for native apps.
-    res.end(JSON.stringify(buildBootstrapResponse(capsule.text)));
+    res.end(JSON.stringify(buildBootstrapResponse(capsule.text, gemini)));
   } catch (err) {
     api.logger.error(`[realtime] Bootstrap error: ${err}`);
-    res.writeHead(500, { "Content-Type": "application/json" });
+    res.writeHead(500, {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+    });
     res.end(JSON.stringify({ error: String(err) }));
   }
 }
