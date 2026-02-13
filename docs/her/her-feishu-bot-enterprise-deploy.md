@@ -20,7 +20,7 @@
 | 项目 | 最低配置（200 人文字） | 推荐配置（200 人文字 + 语音） |
 |------|----------------------|---------------------------|
 | 服务器 | 1 台：16 核 CPU、64GB RAM、500GB SSD | 2-4 台：各 8 核 CPU、32GB RAM、500GB SSD |
-| 网络 | 公网出口（容器需访问飞书 API + OpenRouter API） | 同左 |
+| 网络 | 公网出口（需访问：GitHub、飞书 API、OpenRouter API、Google Cloud API） | 同左 |
 | 操作系统 | Ubuntu 22.04+ / Debian 12+ | 同左 |
 
 > 每容器约 200MB RAM，200 容器合计约 40GB。CPU 负载极低（AI 推理在云端），16 核足够。
@@ -43,7 +43,7 @@
 1. 打开 [openrouter.ai](https://openrouter.ai)，点击右上角 Sign Up，用 Google 或邮箱注册
 2. 登录后点击左侧 **Keys** → **Create Key**
 3. 复制生成的 key（格式：`sk-or-v1-xxxx`），妥善保管
-4. 充值：点击左侧 **Credits** → **Add Credits**，先充 **$50** 用于测试，正式运行按 ~$1,500/月预算
+4. 充值：点击左侧 **Credits** → **Add Credits** → 选择 **Not using Link** → 用**支付宝**支付，先充 **$500** 用于初期测试和部署验证，正式运行按 ~$1,500/月预算
 
 > 一个 key 可供所有 200 个容器共用，不需要每人一个。
 
@@ -106,8 +106,8 @@ ls ~/.config/gcloud/application_default_credentials.json
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/your-org/carher.git
-cd carher
+git clone <内部仓库 URL>
+cd <仓库目录>
 
 # 2. 设置 OpenRouter API Key（写入 shell 配置，所有终端生效）
 echo 'export OPENROUTER_API_KEY=sk-or-v1-你的key' >> ~/.bashrc
@@ -243,70 +243,61 @@ source ~/.bashrc
 
 ### Docker 部署
 
-#### docker-compose.yml 模板
+#### 实际部署方式（start-user.sh + docker run）
 
-```yaml
-# 每个员工一个 service，共用同一个镜像
-services:
-  emp-001:
-    image: carher:local
-    container_name: enterprise-001
-    init: true
-    restart: always
-    environment:
-      HOME: /data
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
-    ports:
-      - "39001:18789"    # Gateway / Webchat
-    volumes:
-      - enterprise-001-data:/data/.openclaw
-      - ./config/emp-001.json:/data/.openclaw/openclaw.json:ro
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: '0.5'
-    # 无需指定 command，Dockerfile 默认 CMD=["/entrypoint.sh"]
+不使用 docker-compose。每个容器由 `start-user.sh` 直接通过 `docker run` 管理：
 
-  # ... 由 start-user.sh 自动管理，无需手写 docker-compose
+```bash
+# 启动用户 1 的容器（自动从 CSV 读取飞书凭证，自动构建/更新镜像）
+./start-user.sh --id=1 --local
 
-volumes:
-  enterprise-001-data:
-  # ... 200 个 named volume
+# 停止用户 1
+./start-user.sh --id=1 --down
+
+# 查看用户 1 日志
+./start-user.sh --id=1 --logs
+
+# 列出所有用户和容器状态
+./start-user.sh --list
+
+# 停止所有容器
+./start-user.sh --down
 ```
+
+每个容器的端口自动分配：`base = 29000 + (id-1) * 10`，如用户 1 = 29001（Gateway）、29002（Realtime）、29003（Frontend）、29004（WS Proxy）。
 
 #### 目录结构
 
 ```
-enterprise-deploy/
-├── docker-compose.yml          ← 200 个 service 定义（脚本生成）
-├── config/
-│   ├── emp-001.json            ← 张三的配置（含 Bot-001 凭证）
-│   ├── emp-002.json            ← 李四的配置（含 Bot-002 凭证）
-│   └── ...
-└── scripts/
-    ├── generate-compose.sh     ← 生成 docker-compose.yml
-    ├── add-employee.sh         ← 入职：创建配置 + 启动容器
-    └── remove-employee.sh      ← 离职：停止容器 + 归档数据
+仓库根目录/
+├── start-user.sh               ← 用户容器管理主脚本（启动/停止/日志/列表）
+├── Dockerfile.carher            ← Docker 镜像构建文件
+├── scripts/
+│   └── carher-entrypoint.sh     ← 容器入口脚本
+└── docker/
+    ├── users.csv                ← 用户注册表（飞书凭证，.gitignore 不入库）
+    ├── carher-config.json       ← 基础配置模板
+    └── workspace/               ← workspace 模板文件（SOUL.md 等，启动时自动同步到容器）
 ```
 
 ### 升级/回滚
 
 ```bash
-# 重新构建镜像（不影响线上，旧容器继续运行）
-docker build -f Dockerfile.carher -t carher:v2026.2.10 .
-docker tag carher:v2026.2.10 carher:local
+# 拉取最新代码
+git pull
 
-# 滚动重启（每次只影响 1 人 2-3 秒）
+# 滚动升级（start-user.sh 自动检测代码变更并重建镜像，每次只影响 1 人 2-3 秒）
 for i in $(seq 1 200); do
-  id=$(printf "emp-%03d" $i)
-  docker-compose up -d --no-deps "$id"
+  ./start-user.sh --id=$i --local
   sleep 10
 done
 
-# 回滚（秒级，切换镜像 tag）
-docker tag carher:v旧版本 carher:local
-docker-compose up -d --no-deps emp-001
+# 跳过镜像重建（仅重启容器，用于配置变更）
+./start-user.sh --id=1 --local --no-rebuild
+
+# 回滚：checkout 旧版本代码后重新启动（镜像会自动重建为旧版本）
+git checkout v旧版本
+./start-user.sh --id=1 --local
 ```
 
 ---
@@ -315,7 +306,7 @@ docker-compose up -d --no-deps emp-001
 
 ### 创建飞书 Bot（IT 操作清单）
 
-每个 Bot 约 15-20 分钟。**整个流程分三个阶段，IT 和部署者需要配合完成。** 飞书的"长连接"模式要求服务端先启动，IT 才能保存事件订阅配置。
+每个 Bot 约 15-20 分钟。**整个流程需要发布两次**：第一次让 Bot 在飞书客户端可见，第二次包含事件订阅配置使 Bot 真正能收发消息。
 
 #### 快速 Checklist（批量创建时看这里）
 
@@ -325,12 +316,15 @@ docker-compose up -d --no-deps emp-001
 |---|------|------|
 | 1 | 创建自建应用 + 启用机器人 | open.feishu.cn → 创建应用 → 添加「机器人」能力 |
 | 2 | 记录凭证 | 凭证与基础信息 → 复制 App ID + App Secret |
-| 3 | 开通 7 个权限 | 权限管理 → 搜索开通：`im:message`、`im:message:send_as_bot`、`im:resource`、`im:message.group_msg`、`im:message.p2p_msg:readonly`、`im:chat:readonly`、`cardkit:card:write` |
-| 4 | 交给部署者，等通知 | 部署者启动容器，确认 `Feishu WSClient connected` 后通知你 |
-| 5 | 配置事件订阅 | 事件与回调 → 订阅方式选「长连接」→ 保存 → 添加 `im.message.receive_v1` |
-| 6 | 发布 | 版本管理 → 创建版本 → 设置可用范围 → 发布 |
+| 3 | 批量导入 22 个权限 | 权限管理 → API 权限 → 右上角「批量导入/导出权限」→ 粘贴 JSON → 确认 |
+| 4 | **第一次发布** | 版本管理 → 创建版本 → 设置可用范围 → 发布（让 Bot 在飞书客户端可见） |
+| 5 | 去飞书客户端找到 Bot | 搜索 Bot 名称，确认能找到（此时无法聊天，正常） |
+| 6 | 交给部署者，等通知 | 部署者启动容器，确认 `Feishu WSClient connected` 后通知你 |
+| 7 | 配置事件订阅 | 事件与回调 → 订阅方式选「长连接」→ 保存 → 添加 `im.message.receive_v1` |
+| 8 | **第二次发布** | 版本管理 → 再次创建版本 → 发布（包含事件订阅配置） |
+| 9 | 验证 | 在飞书给 Bot 发消息，确认 AI 回复 |
 
-#### 阶段 A：IT 创建应用（独立完成，约 10 分钟）
+#### 阶段 A：IT 创建应用 + 首次发布（独立完成，约 10 分钟）
 
 **步骤 1：创建自建应用**
 
@@ -347,23 +341,64 @@ docker-compose up -d --no-deps emp-001
 1. 左侧菜单点击「凭证与基础信息」
 2. 记录 **App ID**（`cli_xxx`）和 **App Secret**（妥善保管）
 
-**步骤 4：添加权限**
+**步骤 4：批量导入权限**
 
-左侧菜单「权限管理」→「API 权限」，搜索并开通以下 7 个权限：
+左侧菜单「权限管理」→「API 权限」→ 右上角「批量导入/导出权限」→ 选择「导入」标签页，粘贴以下 JSON：
 
-| 搜索关键词 | 权限名称 | 用途 |
-|-----------|---------|------|
-| `im:message` | 获取与发送单聊、群组消息 | 接收用户消息 |
-| `im:message:send_as_bot` | 以应用的身份发消息 | 机器人回复 |
-| `im:resource` | 获取与上传图片或文件资源 | 收发图片 |
-| `im:message.group_msg` | 获取群组中所有消息（敏感权限） | 群聊归档（接收所有群消息） |
-| `im:message.p2p_msg:readonly` | 读取用户发给机器人的单聊消息 | 单聊消息读取 |
-| `im:chat:readonly` | 获取群组信息 | 获取群名（归档索引用） |
-| `cardkit:card:write` | 创建与更新卡片 | AI 流式回复（打字机效果） |
+```json
+{
+  "scopes": {
+    "tenant": [
+      "bitable:app:readonly",
+      "board:whiteboard:node:create",
+      "board:whiteboard:node:read",
+      "cardkit:card:write",
+      "contact:contact.base:readonly",
+      "docs:doc",
+      "docx:document",
+      "docx:document.block:convert",
+      "docx:document:create",
+      "docx:document:readonly",
+      "docx:document:write_only",
+      "drive:drive:readonly",
+      "im:chat:readonly",
+      "im:message",
+      "im:message.group_msg",
+      "im:message.p2p_msg:readonly",
+      "im:message.reactions:read",
+      "im:message.reactions:write_only",
+      "im:message:send_as_bot",
+      "im:resource",
+      "wiki:wiki",
+      "wiki:wiki:readonly"
+    ],
+    "user": []
+  }
+}
+```
 
-> 群聊归档默认启用。Her 静默监听群消息并归档到本地，主人可在私聊中随时让 Her 总结群聊内容。
+点击「下一步，确认新增权限」→ 确认即可。已开通的权限不会重复添加。
 
-**步骤 5：将凭证交给部署者**
+> **权限分类（共 22 个，全部为 tenant 级别）**：
+> - **消息基础**（6 个）：`im:message`、`im:message:send_as_bot`、`im:message.group_msg`、`im:message.p2p_msg:readonly`、`im:chat:readonly`、`im:resource` — 消息收发 + 图片 + 群聊归档
+> - **卡片流式回复**（1 个）：`cardkit:card:write` — AI 打字机效果
+> - **Emoji 表情**（2 个）：`im:message.reactions:read`、`im:message.reactions:write_only` — AI 自动 Get 回应 + 点赞
+> - **联系人**（1 个）：`contact:contact.base:readonly` — 获取发送者姓名
+> - **文档/知识库**（12 个）：`docs:doc`、`docx:document*`（5 个）、`drive:drive:readonly`、`wiki:wiki*`（2 个）、`board:whiteboard*`（2 个）、`bitable:app:readonly` — AI 读写飞书文档、Wiki、白板、多维表格
+
+**步骤 5：第一次发布（让 Bot 在飞书客户端可见）**
+
+1. 「应用发布」→「版本管理与发布」→「创建版本」
+2. 设置可用范围（建议先选指定人员测试）→ 提交发布
+
+> 这次发布的目的是让 Bot 出现在飞书客户端中。此时 Bot 还不能聊天，这是正常的。
+
+**步骤 6：去飞书客户端确认 Bot 存在**
+
+1. 打开飞书客户端，搜索刚创建的 Bot 名称
+2. 确认能找到 Bot（点开后无法聊天，正常）
+
+**步骤 7：将凭证交给部署者**
 
 通过安全渠道（当面、加密消息）提供 App ID + App Secret，告知部署者先启动服务，完成后通知 IT 继续。
 
@@ -375,28 +410,30 @@ docker-compose up -d --no-deps emp-001
 2. 运行 `./start-user.sh --id=N --local`
 3. 确认日志出现 `Feishu WSClient connected` 后通知 IT 继续
 
-#### 阶段 C：IT 配置事件订阅 + 发布（约 5 分钟）
+#### 阶段 C：IT 配置事件订阅 + 第二次发布（约 5 分钟）
 
-**步骤 6：配置事件订阅**
+**步骤 8：配置事件订阅**
 
-1. 飞书开放平台 → 你的应用 →「事件与回调」→「事件配置」
+1. 回到飞书开放平台 → 你的应用 →「事件与回调」→「事件配置」
 2. 订阅方式选 **"使用 长连接 接收事件"** → **保存**
 3. 添加事件：搜索 `im.message.receive_v1`（接收消息 v2.0）→ 添加
 
 > 保存失败 = 服务未启动。让部署者确认 `Feishu WSClient connected` 已出现。
 
-**步骤 7：发布**
+**步骤 9：第二次发布（包含事件订阅配置）**
 
 1. 「应用发布」→「版本管理与发布」→「创建版本」
-2. 设置可用范围（建议先选指定人员测试）→ 提交发布
+2. 提交发布（可用范围沿用第一次的设置）
 
-**步骤 8：验证**
+> 必须再次发布！第一次发布时不包含事件订阅配置，不发布第二次 Bot 收不到消息。
+
+**步骤 10：验证**
 
 在飞书搜索机器人名称 → 打开私聊 → 发消息 → 确认 AI 回复。
 
-> 搜索到但没有对话框？确认事件订阅已保存 + 已创建新版本并发布。
+> 搜索到但没有回复？确认事件订阅已保存 + 已创建第二个版本并发布。
 
-**步骤 9：记录用户 open_id（用于单聊白名单和群聊主人识别）**
+**步骤 11：记录用户 open_id（用于单聊白名单和群聊主人识别）**
 
 员工第一次给 Bot 发消息后：
 
@@ -411,7 +448,8 @@ docker-compose up -d --no-deps emp-001
 | 创建应用要付费吗？ | 不需要，飞书自建应用完全免费 |
 | 需要备案域名或公网 IP 吗？ | 不需要，长连接模式无需网络配置 |
 | 为什么事件订阅保存失败？ | 服务端未启动，确认日志有 `Feishu WSClient connected` |
-| 搜索到机器人但没有对话框？ | 事件订阅未配置或未包含在已发布版本中 |
+| 飞书客户端搜不到 Bot？ | 还没有发布第一个版本，或可用范围未包含你 |
+| 搜索到 Bot 但没有回复？ | 事件订阅未配置，或配置后没有发布第二个版本 |
 
 ### 员工生命周期
 

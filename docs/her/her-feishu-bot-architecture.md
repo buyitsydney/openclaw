@@ -43,16 +43,18 @@
 
 ### 配置流程（已验证）
 
-> **注意：步骤顺序很重要！** 飞书的"长连接"事件订阅要求 SDK 客户端已在线才能保存，所以必须先启动 Gateway，再回飞书后台配置事件。
+> **注意：步骤顺序很重要！需要发布两次。** 第一次发布让 Bot 在飞书客户端可见；之后配置长连接事件订阅（要求 SDK 客户端已在线），再第二次发布才能收发消息。
 
 1. 在飞书开放平台（open.feishu.cn）创建一个自建应用，启用机器人能力
 2. 获取 `app_id` + `app_secret`
-3. 添加权限：`im:message` + `im:message:send_as_bot` + `im:resource` + `im:message.group_msg` + `im:message.p2p_msg:readonly` + `im:chat:readonly` + `cardkit:card:write`
-4. 在 OpenClaw config 中配置 `channels.feishu.appId` + `channels.feishu.appSecret`
-5. **先启动 Gateway**（飞书 WSClient 自动连接，日志显示 `Feishu WSClient connected`）
-6. **回到飞书后台**：事件订阅 → 选"使用长连接接收事件" → 保存 → 添加 `im.message.receive_v1`
-7. 创建版本 → 设置可用范围 → 发布
-8. 在飞书里找到机器人，开始聊天
+3. 添加权限（批量导入 22 个，见企业部署文档）
+4. **第一次发布**：创建版本 → 设置可用范围 → 发布（让 Bot 在飞书客户端可见）
+5. 去飞书客户端搜索 Bot，确认能找到（此时无法聊天，正常）
+6. 在 OpenClaw config 中配置 `channels.feishu.appId` + `channels.feishu.appSecret`
+7. **启动 Gateway**（飞书 WSClient 自动连接，日志显示 `Feishu WSClient connected`）
+8. **回到飞书后台**：事件订阅 → 选"使用长连接接收事件" → 保存 → 添加 `im.message.receive_v1`
+9. **第二次发布**：创建版本 → 发布（包含事件订阅配置）
+10. 在飞书里找到机器人，开始聊天
 
 详细步骤见 [企业部署文档](her-feishu-bot-enterprise-deploy.md)。
 

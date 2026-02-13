@@ -351,28 +351,54 @@ cd ~/Documents/openclaw    # 进入项目目录
 
 ### 4.3 添加权限
 
-点左侧 "权限管理"，搜索并添加以下权限：
+点左侧 "权限管理" → "API 权限" → 右上角「批量导入/导出权限」→「导入」，粘贴以下 JSON 一键开通所有权限：
 
-| 权限 | 说明 |
-|------|------|
-| `im:message` | 接收用户发给机器人的消息 |
-| `im:message:send_as_bot` | 以机器人身份发送消息 |
-| `im:resource` | 上传和下载图片（Her 发截图等需要） |
+```json
+{
+  "scopes": {
+    "tenant": [
+      "bitable:app:readonly",
+      "board:whiteboard:node:create",
+      "board:whiteboard:node:read",
+      "cardkit:card:write",
+      "contact:contact.base:readonly",
+      "docs:doc",
+      "docx:document",
+      "docx:document.block:convert",
+      "docx:document:create",
+      "docx:document:readonly",
+      "docx:document:write_only",
+      "drive:drive:readonly",
+      "im:chat:readonly",
+      "im:message",
+      "im:message.group_msg",
+      "im:message.p2p_msg:readonly",
+      "im:message.reactions:read",
+      "im:message.reactions:write_only",
+      "im:message:send_as_bot",
+      "im:resource",
+      "wiki:wiki",
+      "wiki:wiki:readonly"
+    ],
+    "user": []
+  }
+}
+```
 
-### 4.4 配置事件订阅
+点击「下一步，确认新增权限」→ 确认即可。
 
-1. 点左侧 "事件与回调"
-2. 点 "添加事件" → 搜索 `im.message.receive_v1` → 添加
-3. 在"订阅方式"中选择 **长连接**（非常重要，不要选 Webhook）
-
-> 为什么选长连接？因为长连接不需要你有公网 IP 或域名，在你的电脑上直接就能用。
-
-### 4.5 发布应用
+### 4.4 第一次发布（让 Bot 在飞书客户端可见）
 
 1. 点左侧 "版本管理与发布"
-2. 点 "创建版本"
-3. 填写版本号和更新说明
-4. 提交发布（自建应用通常立即生效，不需要审核）
+2. 点 "创建版本"，填写版本号和更新说明
+3. 提交发布（自建应用通常立即生效，不需要审核）
+
+> 这次发布是为了让 Bot 出现在飞书客户端中。此时 Bot 还不能聊天，正常。
+
+### 4.5 去飞书客户端确认 Bot 存在
+
+1. 打开飞书客户端，搜索你刚创建的 Bot 名称
+2. 确认能找到（点开后无法聊天，正常）
 
 ### 4.6 配置到 OpenClaw
 
@@ -383,7 +409,7 @@ pnpm openclaw config set channels.feishu.appId "cli_你的AppID"
 pnpm openclaw config set channels.feishu.appSecret "你的AppSecret"
 ```
 
-### 4.7 重启 Her
+### 4.7 启动 Her
 
 回到运行 `start.sh` 的终端，按 `Ctrl+C` 停止，然后重新运行：
 
@@ -391,10 +417,29 @@ pnpm openclaw config set channels.feishu.appSecret "你的AppSecret"
 ./start.sh
 ```
 
-### 4.8 验证
+确认终端日志中出现 `Feishu WSClient connected`，说明服务已连接飞书。
+
+### 4.8 配置事件订阅
+
+1. 回到飞书开放平台 → 你的应用 → 点左侧 "事件与回调"
+2. 在"订阅方式"中选择 **"使用 长连接 接收事件"** → **保存**
+3. 点 "添加事件" → 搜索 `im.message.receive_v1` → 添加
+
+> 为什么选长连接？因为长连接不需要你有公网 IP 或域名，在你的电脑上直接就能用。
+>
+> 保存失败？说明 Her 服务未启动，确认终端日志有 `Feishu WSClient connected`。
+
+### 4.9 第二次发布
+
+1. 点左侧 "版本管理与发布"
+2. 再次 "创建版本" → 提交发布
+
+> 必须再发布一次！第一次发布不包含事件订阅配置，不发布第二次 Bot 收不到消息。
+
+### 4.10 验证
 
 1. 打开飞书客户端
-2. 在通讯录或搜索中找到你刚创建的机器人
+2. 搜索你的机器人名称，打开私聊
 3. 发一条消息，比如 "你好"
 4. 如果收到回复，说明飞书通道已接通
 
@@ -565,11 +610,10 @@ npm install -g pnpm@latest
 
 ### 飞书机器人没反应
 
-1. 确认 `start.sh` 正在运行（飞书通道跟随 Gateway 启动）
-2. 检查终端日志里是否有 `[feishu] starting Feishu bot` 字样
-3. 确认飞书应用已发布版本
-4. 确认选择了"长连接"模式（不是 Webhook）
-5. 重新检查 `appId` 和 `appSecret` 是否正确
+1. 确认 `start.sh` 正在运行，终端日志有 `Feishu WSClient connected`
+2. 确认飞书应用已**发布两次**（第一次让 Bot 可见，第二次包含事件订阅）
+3. 确认事件订阅选了"长连接"模式（不是 Webhook），且添加了 `im.message.receive_v1`
+4. 重新检查 `appId` 和 `appSecret` 是否正确
 
 ### 手机浏览器听不到声音
 
