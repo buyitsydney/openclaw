@@ -70,6 +70,7 @@
 | 4 | WebSocket 客户端（2 条连接） | 中 |
 | 5 | 工具调用分发（openclaw_help + car_control） | 中 |
 | 6 | 车控 SDK 对接 | 厂商自有 |
+| 7 | ⚠️ inject 安全机制（turnComplete gate + 队列 + RESPONSE_REJECTED 恢复） | 中（见第 6.5 节） |
 
 ### 厂商不需要关心的事
 
@@ -138,7 +139,7 @@ GET <BOOTSTRAP_URL>
     },
     "sessionSetup": {
       "setup": {
-        "model": "projects/gen-lang-client-0519229117/locations/us-central1/publishers/google/models/gemini-live-2.5-flash-native-audio",
+        "model": "projects/<YOUR_PROJECT_ID>/locations/us-central1/publishers/google/models/gemini-live-2.5-flash-native-audio",
         "generation_config": {
           "response_modalities": ["AUDIO"],
           "temperature": 1,
@@ -272,17 +273,8 @@ val openclawWs: WebSocket = OkHttpClient().newWebSocket(
                     Log.i("WS2", "Connected, sessionId=$sessionId")
                     // 现在可以进入 Step 3
                 }
-                "help_result" -> {
-                    // openclaw_help 的结果，注入给 WS1（见第六章）
-                    val reply = msg.getString("reply")
-                    val callId = msg.getString("callId")
-                    injectToGemini(reply)
-                }
-                "inject" -> {
-                    // 服务端主动推送（如定时提醒），注入给 WS1
-                    val reply = msg.getString("reply")
-                    injectToGemini(reply)
-                }
+                "help_result" -> onWS2HelpResult(msg)   // 见第 6.3 节
+                "inject" -> onWS2Inject(msg)             // 见第 6.4 节
             }
         }
     }
@@ -424,26 +416,7 @@ fun playAudio(base64Audio: String) {
 | 编码 | **PCM → Base64** | 原始 PCM 字节转 Base64 字符串 |
 | 发送频率 | 每 **20ms** 一帧 | 320 samples = 640 bytes PCM |
 
-**处理流水线：**
-
-```
-AudioRecord.read(buffer)     // 640 bytes (20ms @ 16kHz)
-    │
-    ▼
-讯飞降噪SDK.process(buffer)   // 输入输出同格式
-    │
-    ▼
-Base64.encode(buffer)         // 640B → ~856 字符
-    │
-    ▼ 封装为 JSON 并发送到 WS 连接 1:
-
-{"realtime_input": {"media_chunks": [{"mime_type": "audio/pcm", "data": "<base64字符串>"}]}}
-```
-
-**重要：**
-- 使用 WebSocket **text frame** 发送（不是 binary frame）
-- 持续发送，即使用户没有说话（静音检测由云端 AI 处理）
-- 不要攒多帧合并发送，每帧独立发送
+> 完整实现代码见 Step 4，发送规则见 Step 4 "重要规则"。
 
 ### 4.2 下行（云端 → 扬声器）
 
@@ -455,37 +428,27 @@ AI 回复的音频在 WS 连接 1 的 JSON 消息中。**注意：下行采样�
 | 位深 | **16 bit** signed int16, little-endian |
 | 声道 | **单声道 (mono)** |
 
-**收到音频消息时：**
+> 完整实现代码见 Step 5，JSON 格式见 5.2 消息示例。
 
-```json
-{
-  "serverContent": {
-    "modelTurn": {
-      "parts": [{
-        "inlineData": {
-          "mimeType": "audio/pcm;rate=24000",
-          "data": "<base64 编码的 PCM 音频>"
-        }
-      }]
-    }
-  }
-}
+### 4.3 指定麦克风设备
+
+```kotlin
+val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+val mics = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+    .filter { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC
+           || it.type == AudioDeviceInfo.TYPE_USB_DEVICE
+           || it.type == AudioDeviceInfo.TYPE_USB_HEADSET }
+
+// 指定使用特定麦克风（如车顶麦克风）
+audioRecord.setPreferredDevice(mics[targetIndex])
 ```
 
-**处理方式：**
+### 4.4 回声消除（AEC）
 
-```
-提取 serverContent.modelTurn.parts[0].inlineData.data
-    │
-    ▼
-Base64.decode → raw PCM bytes
-    │
-    ▼
-AudioTrack.write(pcmBytes)  // 24kHz, 16bit, mono
-    │
-    ▼
-车载扬声器播放
-```
+车内扬声器和麦克风距离近时需要 AEC。两种方案：
+
+1. **Android 系统 AEC**（推荐）：Step 4 代码中使用 `AudioSource.VOICE_COMMUNICATION`，系统自动处理
+2. **讯飞 SDK AEC**：将 AudioTrack 的播放信号作为参考信号喂入讯飞 SDK
 
 ---
 
@@ -496,22 +459,19 @@ WS 连接 1 会收到多种 JSON 消息，App 需要根据字段判断类型并�
 ### 5.1 消息类型判断（伪代码）
 
 ```kotlin
-fun onWS1Message(jsonStr: String) {
-    val json = JSONObject(jsonStr)
+// ⚠️ 转写文本是分段到达的，需要累积后再上报 WS2
+var pendingUserTranscript: String = ""
+var pendingLiveTranscript: String = ""
 
-    if (json.has("setupComplete")) {
-        // AI 会话就绪
-        onSetupComplete()
-        return
-    }
-
+// Step 3 的 onMessage 已处理 setupComplete，此处处理后续所有消息
+fun handleWS1Message(json: JSONObject) {
     // ⚠️ 工具调用是顶层 toolCall 字段，不在 serverContent 内！
     val toolCall = json.optJSONObject("toolCall")
     if (toolCall != null) {
         val functionCalls = toolCall.optJSONArray("functionCalls") ?: return
         for (i in 0 until functionCalls.length()) {
             val fc = functionCalls.getJSONObject(i)
-            handleToolCall(fc)  // fc 包含 name, id, args（见第六章）
+            handleToolCall(fc)  // 详见第六章
         }
         return
     }
@@ -525,29 +485,51 @@ fun onWS1Message(jsonStr: String) {
         return
     }
 
-    // 2. 一轮回复结束
+    // 2. 一轮回复结束（⚠️ 注意：RESPONSE_REJECTED 也是 turnComplete=true，需要额外检查 reason）
     if (serverContent.optBoolean("turnComplete")) {
-        onTurnComplete()
-        return
-    }
-
-    // 3. 用户语音转写
-    val inputTx = serverContent.optJSONObject("inputTranscription")
-    if (inputTx != null) {
-        val text = inputTx.optString("text")
-        val finished = inputTx.optBoolean("finished")
-        onUserTranscription(text, finished)
-        // 同时上报给 WS2:
-        if (finished && text.isNotEmpty()) {
-            ws2.send("""{"type":"transcript","role":"user","text":"$text"}""")
+        val reason = serverContent.optString("turnCompleteReason", "")
+        if (reason == "RESPONSE_REJECTED") {
+            // ⚠️ 厂商必须处理：AI 拒绝响应（见第 6.5 节安全机制）
+            onResponseRejected()
+        } else {
+            onTurnComplete()
         }
         return
     }
 
-    // 4. AI 语音转写
+    // 3. 用户语音转写（多段到达，需要累积；finished=true 表示完整句子结束）
+    val inputTx = serverContent.optJSONObject("inputTranscription")
+    if (inputTx != null) {
+        val text = inputTx.optString("text")
+        val finished = inputTx.optBoolean("finished")
+        if (!finished) {
+            pendingUserTranscript += text  // 累积 partial 片段
+        } else {
+            // 上报完整句子给 WS2
+            if (pendingUserTranscript.isNotEmpty()) {
+                ws2.send("""{"type":"transcript","role":"user","text":"$pendingUserTranscript"}""")
+            }
+            pendingUserTranscript = ""
+        }
+        onUserTranscription(text, finished)
+        return
+    }
+
+    // 4. AI 语音转写（多段到达，需要累积；finished=true 表示一轮说完）
     val outputTx = serverContent.optJSONObject("outputTranscription")
     if (outputTx != null) {
-        onAITranscription(outputTx.optString("text"))
+        val text = outputTx.optString("text")
+        val finished = outputTx.optBoolean("finished")
+        if (!finished) {
+            pendingLiveTranscript += text  // 累积 partial 片段
+        } else {
+            // 上报完整 AI 回复给 WS2
+            if (pendingLiveTranscript.isNotEmpty()) {
+                ws2.send("""{"type":"transcript","role":"live","text":"$pendingLiveTranscript"}""")
+            }
+            pendingLiveTranscript = ""
+        }
+        onAITranscription(text, finished)
         return
     }
 
@@ -567,11 +549,10 @@ fun onWS1Message(jsonStr: String) {
             }
 
             // 5b. 文本回复 → 展示（如有 UI）
+            // 注意：AI 回复的转写由上方 outputTranscription 处理并上报 WS2，此处只做 UI 展示
             val text = part.optString("text")
             if (text.isNotEmpty()) {
                 onAIText(text)
-                // 同时上报给 WS2:
-                ws2.send("""{"type":"transcript","role":"live","text":"$text"}""")
                 continue
             }
 
@@ -581,43 +562,17 @@ fun onWS1Message(jsonStr: String) {
 }
 ```
 
-### 5.2 各消息类型完整 JSON 示例
+### 5.2 各消息类型 JSON 示例
 
-**音频回复：**
 ```json
-{"serverContent":{"modelTurn":{"parts":[{"inlineData":{"mimeType":"audio/pcm;rate=24000","data":"base64..."}}]}}}
-```
-
-**文本回复：**
-```json
-{"serverContent":{"modelTurn":{"parts":[{"text":"好的，我帮你查一下天气"}]}}}
-```
-
-**工具调用（toolCall — 顶层字段，不在 serverContent 内）：**
-```json
-{"toolCall":{"functionCalls":[{"name":"car_control","args":{"action":"set_ac_temperature","params":{"temperature":25}}}]}}
-```
-
-> 注意：`functionCalls` 数组中每个元素只有 `name` 和 `args` 两个字段，**没有 `id` 字段**。
-
-**用户语音转写：**
-```json
-{"serverContent":{"inputTranscription":{"text":"帮我把空调调到25度","finished":true}}}
-```
-
-**AI 语音转写：**
-```json
-{"serverContent":{"outputTranscription":{"text":"好的，空调已经调到25度了"}}}
-```
-
-**一轮结束：**
-```json
-{"serverContent":{"turnComplete":true}}
-```
-
-**用户打断：**
-```json
-{"serverContent":{"interrupted":true}}
+音频:     {"serverContent":{"modelTurn":{"parts":[{"inlineData":{"mimeType":"audio/pcm;rate=24000","data":"..."}}]}}}
+文本:     {"serverContent":{"modelTurn":{"parts":[{"text":"好的，我帮你查一下天气"}]}}}
+工具调用: {"toolCall":{"functionCalls":[{"name":"car_control","args":{...}}]}}
+用户转写: {"serverContent":{"inputTranscription":{"text":"帮我查天气","finished":true}}}
+AI转写:   {"serverContent":{"outputTranscription":{"text":"好的"}}}
+一轮结束: {"serverContent":{"turnComplete":true}}
+拒绝响应: {"serverContent":{"turnComplete":true,"turnCompleteReason":"RESPONSE_REJECTED"}}
+用户打断: {"serverContent":{"interrupted":true}}
 ```
 
 ---
@@ -645,45 +600,11 @@ fun handleToolCall(functionCall: JSONObject) {
 }
 ```
 
-### 6.2 car_control — 本地执行
+### 6.2 car_control — 本地执行（同步）
 
-这是**同步**操作。收到后立即在本地执行，然后把结果返回给 AI。
+收到后立即在本地执行，把结果通过 `tool_response` 返回给 AI。AI 收到后会语音确认。
 
-**完整流程：**
-
-```
-WS1 收到顶层消息: {"toolCall":{"functionCalls":[{"name":"car_control","args":{...}}]}}
-
-    1. 从 toolCall.functionCalls[0] 提取 name 和 args
-    2. 从 args 提取 action 和 params
-    3. 调用厂商车控 SDK 执行（本地，毫秒级）
-    4. 得到结果
-    5. 通过 WS 连接 1 发送 tool_response:
-```
-
-**发送给 WS 连接 1 的 tool_response：**
-
-```json
-{
-  "tool_response": {
-    "functionResponses": [{
-      "id": "",
-      "name": "car_control",
-      "response": {
-        "ok": true,
-        "message": "空调已设置为25度"
-      }
-    }]
-  }
-}
-```
-
-> `id` 字段传空字符串即可（Gemini Live 的 toolCall 不返回 id）。
-```
-
-AI 收到后会语音确认："好的，空调已经调到25度了"。
-
-**car_control 的 action 列表：**
+**action 列表：**
 
 | action | args.params 示例 | 说明 |
 |--------|-----------------|------|
@@ -735,63 +656,37 @@ fun handleCarControl(args: JSONObject, callId: String) {  // callId 由 App 生�
         else -> """{"ok":false,"error":"未知操作: $action"}"""
     }
 
-    // 发送 tool_response 给 WS 连接 1
-    val response = """{"tool_response":{"functionResponses":[{"id":"","name":"car_control","response":$result}]}}"""
+    // 发送 tool_response 给 WS 连接 1（id 使用 callId）
+    val response = """{"tool_response":{"functionResponses":[{"id":"$callId","name":"car_control","response":$result}]}}"""
     ws1.send(response)
 }
 ```
 
-### 6.3 openclaw_help — 转发到云端
+### 6.3 openclaw_help — 转发到云端（异步）
 
-这是**异步**操作。AI 调用后不会等待结果，而是继续说话（比如"好，我查一下"）。结果稍后通过 WS 连接 2 返回，再注入给 AI。
+AI 调用后不会等待结果，而是继续说话（如"好，我查一下"）。结果稍后通过 WS2 返回，再注入给 AI。
 
-**完整流程：**
+**流程概要**：WS1 收到 toolCall → App 发 ACK → 转发到 WS2 → 等 WS2 返回 → 等 AI 说完（turnComplete）→ 原子注入 → AI 播报。
 
-```
-WS1 收到顶层消息: {"toolCall":{"functionCalls":[{"name":"openclaw_help","args":{"request":"今天北京天气"}}]}}
-
-App 生成 callId（如 UUID）用于关联 WS2 的请求/响应:
-    val callId = UUID.randomUUID().toString()  // 例如 "a1b2c3d4"
-
-Step 1: 立即向 WS 连接 1 发送 ACK（让 AI 知道工具已收到）
-
-    {"tool_response": {"functionResponses": [{
-        "id": "",
-        "name": "openclaw_help",
-        "response": {"result": "正在处理，请稍等"}
-    }]}}
-
-Step 2: 向 WS 连接 2 发送 help 请求（callId 由 App 生成）
-
-    {"type": "help", "request": "今天北京天气", "callId": "a1b2c3d4"}
-
-Step 3: 等待 WS 连接 2 返回结果（可能需要 2-30 秒）
-
-    ← {"type": "help_result", "callId": "a1b2c3d4", "reply": "北京现在气温4.5°C，多云，南风约7公里/小时"}
-
-Step 4: 将结果注入 WS 连接 1（让 AI 知道查询结果，并语音播报）
-
-    发送第一条（注入内容）:
-    {"client_content": {
-        "turns": [{"role": "model", "parts": [{"text": "北京现在气温4.5°C，多云，南风约7公里/小时"}]}],
-        "turn_complete": false
-    }}
-
-    发送第二条（触发 AI 播报，注意 role 是 user！）:
-    {"client_content": {
-        "turns": [{"role": "user", "parts": [{"text": "以上信息来自 backend ai，请你根据实际情况回复用户信息！"}]}],
-        "turn_complete": true
-    }}
-
-Step 5: AI 收到后会语音播报："北京现在气温大约4度半，天气多云"
-```
-
-**厂商实现参考（Kotlin）：**
+**Kotlin 实现：**
 
 ```kotlin
 fun handleOpenClawHelp(request: String, callId: String) {  // callId 由 App 生成（见 6.1）
-    // Step 1: 立即 ACK（id 传空字符串，Gemini Live 不使用此字段）
-    ws1.send("""{"tool_response":{"functionResponses":[{"id":"","name":"openclaw_help","response":{"result":"正在处理，请稍等"}}]}}""")
+    // Step 1: 立即 ACK（id 使用 callId，保持和 WS2 一致，便于日志追踪）
+    val ack = JSONObject().apply {
+        put("tool_response", JSONObject().apply {
+            put("functionResponses", org.json.JSONArray().put(JSONObject().apply {
+                put("id", callId)
+                put("name", "openclaw_help")
+                put("response", JSONObject().apply {
+                    put("ok", true)
+                    put("status", "processing")
+                    put("jobId", callId)
+                })
+            }))
+        })
+    }
+    ws1.send(ack.toString())
 
     // Step 2: 转发到 WS2
     ws2.send("""{"type":"help","request":"$request","callId":"$callId"}""")
@@ -799,129 +694,119 @@ fun handleOpenClawHelp(request: String, callId: String) {  // callId 由 App 生
     // Step 3-5: 在 WS2 的 onMessage 中处理（见下方）
 }
 
-// WS 连接 2 的消息处理
-fun onWS2Message(jsonStr: String) {
-    val msg = JSONObject(jsonStr)
-    when (msg.optString("type")) {
-        "connected" -> {
-            // 连接成功，保存 sessionId
-            sessionId = msg.optString("sessionId")
-        }
-        "help_result" -> {
-            // Step 3: 收到结果
-            val reply = msg.getString("reply")
-            // Step 4: 注入 WS1
-            injectToGemini(reply)
-        }
-        "inject" -> {
-            // 服务端主动推送（如定时提醒）
-            val reply = msg.getString("reply")
-            injectToGemini(reply)
-        }
-    }
+// WS 连接 2 的 help_result 处理（Step 2 的 onMessage 中调用）
+fun onWS2HelpResult(msg: JSONObject) {
+    val reply = msg.getString("reply")
+    pendingInjects.add(reply)
+    tryDeliverInjects()  // 见第 6.5 节
 }
 
-// 将文本注入 Gemini 对话历史，触发 AI 语音播报
+// WS 连接 2 的 inject 处理（Step 2 的 onMessage 中调用）
+fun onWS2Inject(msg: JSONObject) {
+    val reply = msg.getString("reply")
+    pendingInjects.add(reply)
+    tryDeliverInjects()  // 见第 6.5 节
+}
+
+// ⚠️ 厂商关键改动：必须用单条原子消息注入！
+// 将 backend 结果和触发词打包为一条 client_content，包含两个 turn
 fun injectToGemini(text: String) {
-    // 第一条：注入内容
-    ws1.send("""{"client_content":{"turns":[{"role":"model","parts":[{"text":"$text"}]}],"turn_complete":false}}""")
-    // 第二条：触发播报（注意 role 是 "user"，不是 "model"！）
-    ws1.send("""{"client_content":{"turns":[{"role":"user","parts":[{"text":"以上信息来自 backend ai，请你根据实际情况回复用户信息！"}]}],"turn_complete":true}}""")
+    // 单条原子消息：role=model（结果）+ role=user（触发播报）
+    // ⚠️ 绝对不能拆成两条 ws1.send()！拆开会导致第二条打断第一条，触发死循环/静默 bug
+    val msg = JSONObject().apply {
+        put("client_content", JSONObject().apply {
+            put("turns", org.json.JSONArray().apply {
+                put(JSONObject().apply {
+                    put("role", "model")
+                    put("parts", org.json.JSONArray().put(JSONObject().put("text", text)))
+                })
+                put(JSONObject().apply {
+                    put("role", "user")
+                    put("parts", org.json.JSONArray().put(JSONObject().put("text", "请播报")))
+                })
+            })
+            put("turn_complete", true)
+        })
+    }
+    ws1.send(msg.toString())
 }
 ```
 
 ### 6.4 inject 处理（服务端主动推送）
 
-WS 连接 2 可能随时收到 `inject` 消息（如 AI 主动提醒"你有一个会议"）。处理方式和 `help_result` 完全相同：调用 `injectToGemini(reply)`。
+WS 连接 2 可能随时收到 `inject` 消息（如 AI 主动提醒"你有一个会议"）。处理方式和 `help_result` 完全相同：加入 `pendingInjects` 队列，调用 `tryDeliverInjects()`。
+
+### 6.5 厂商必须实现的安全机制（⚠️ 关键！）
+
+> **背景**：早期测试中发现，如果不实现以下机制，AI 会出现**死循环**（反复调用工具）或**永久静默**（不再播报任何结果）。这是一个已确认的 P0 级别 bug，已在我方前端修复。厂商必须在原生 App 中实现等价逻辑。
+
+**厂商需要维护的状态变量：**
+
+```kotlin
+// ⚠️ 厂商关键代码：以下 2 个变量必须维护
+var geminiTurnComplete: Boolean = true          // AI 是否空闲（可注入）
+val pendingInjects: MutableList<String> = mutableListOf()  // inject 队列
+```
+
+**机制 1：turnComplete Gate（注入门控）**
+
+```kotlin
+// ⚠️ 厂商关键代码：不能在 AI 说话中途注入！
+fun tryDeliverInjects() {
+    if (!geminiTurnComplete) return       // AI 正在说话，等它说完
+    if (pendingInjects.isEmpty()) return  // 没有待注入内容
+
+    val reply = pendingInjects.removeAt(0)  // 每次只注入一条
+
+    // 标记为注入中（等下一次 turnComplete 后才能再注入）
+    geminiTurnComplete = false
+
+    // 等 AudioTrack 播完当前音频后再注入（避免打断正在播放的语音）
+    waitForAudioPlaybackIdle {
+        injectToGemini(reply)
+    }
+}
+```
+
+**机制 2：turnComplete 事件驱动注入**
+
+```kotlin
+// 收到正常的 turnComplete 时
+fun onTurnComplete() {
+    geminiTurnComplete = true
+    tryDeliverInjects()  // 尝试投递下一个 pending inject
+
+    // 通知 WS2 一轮结束（后台用于跟踪对话状态）
+    ws2.send("""{"type":"turn_complete"}""")
+}
+```
+
+**机制 3：RESPONSE_REJECTED 恢复（⚠️ 不处理会导致永久卡死）**
+
+```kotlin
+// ⚠️ 厂商关键代码：RESPONSE_REJECTED 必须恢复 gate！
+fun onResponseRejected() {
+    Log.w("WS1", "Gemini RESPONSE_REJECTED - 恢复注入 gate")
+
+    // 恢复 gate，否则后续所有 inject 永远无法投递
+    geminiTurnComplete = true
+    tryDeliverInjects()  // 尝试重新投递
+}
+```
+
+**为什么这三个机制缺一不可：**
+
+| 缺少的机制 | 后果 |
+|-----------|------|
+| 无 turnComplete Gate | inject 在 AI 说话中途发送，`client_content` 打断正在进行的生成，触发 `RESPONSE_REJECTED`，后续 inject 卡死 |
+| 无 inject 队列 | 多个 help_result 同时到达时互相覆盖，丢失结果 |
+| 无 RESPONSE_REJECTED 恢复 | 一旦发生 reject，`geminiTurnComplete` 永远是 `false`，所有后续 inject 卡死 |
 
 ---
 
-## 七、音频采集与降噪
+## 七、完整时序图
 
-### 7.1 AudioRecord 配置
-
-```kotlin
-val sampleRate = 16000
-val bufferSize = AudioRecord.getMinBufferSize(
-    sampleRate,
-    AudioFormat.CHANNEL_IN_MONO,
-    AudioFormat.ENCODING_PCM_16BIT
-)
-
-val audioRecord = AudioRecord(
-    MediaRecorder.AudioSource.VOICE_COMMUNICATION,  // 启用系统 AEC
-    sampleRate,
-    AudioFormat.CHANNEL_IN_MONO,
-    AudioFormat.ENCODING_PCM_16BIT,
-    bufferSize
-)
-```
-
-> 使用 `VOICE_COMMUNICATION` 而非 `MIC`，Android 会自动启用系统级回声消除（AEC）。
-
-### 7.2 指定麦克风设备
-
-```kotlin
-val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-val mics = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
-    .filter { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC
-           || it.type == AudioDeviceInfo.TYPE_USB_DEVICE
-           || it.type == AudioDeviceInfo.TYPE_USB_HEADSET }
-
-// 指定使用特定麦克风（如车顶麦克风）
-audioRecord.setPreferredDevice(mics[targetIndex])
-```
-
-### 7.3 讯飞降噪集成
-
-```
-AudioRecord.read(buffer)         // 640 bytes (20ms)
-    │
-    ▼
-IFlySpeechDenoiser.process(buffer)  // 讯飞本地降噪
-    │
-    ▼ 降噪后 PCM（同格式：16kHz 16bit mono）
-    │
-Base64.encodeToString(buffer, Base64.NO_WRAP)
-    │
-    ▼ 发送到 WS 连接 1
-```
-
-**注意事项：**
-- 讯飞 SDK 输入输出必须是 **16kHz, 16bit, mono**
-- 降噪延迟控制在 5ms 以内
-- 如果讯飞 SDK 需要其他采样率，App 负责重采样
-
-### 7.4 回声消除（AEC）
-
-车内扬声器和麦克风距离近时需要 AEC。两种方案：
-
-1. **Android 系统 AEC**（推荐）：使用 `AudioSource.VOICE_COMMUNICATION`，系统自动处理
-2. **讯飞 SDK AEC**：将 AudioTrack 的播放信号作为参考信号喂入讯飞 SDK
-
-### 7.5 AudioTrack 配置
-
-```kotlin
-val audioTrack = AudioTrack.Builder()
-    .setAudioAttributes(AudioAttributes.Builder()
-        .setUsage(AudioAttributes.USAGE_ASSISTANT)
-        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-        .build())
-    .setAudioFormat(AudioFormat.Builder()
-        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-        .setSampleRate(24000)                        // 注意：下行是 24kHz
-        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-        .build())
-    .setBufferSizeInBytes(/* AudioTrack.getMinBufferSize(...) */)
-    .setTransferMode(AudioTrack.MODE_STREAM)
-    .build()
-```
-
----
-
-## 八、完整时序图
-
-### 8.1 一次完整的语音对话（用户问天气）
+### 7.1 一次完整的语音对话（用户问天气）
 
 ```
 时间线 →
@@ -932,26 +817,34 @@ App:  AudioRecord → 讯飞降噪 → Base64 → realtime_input → WS1
                                                           │
 AI:   (VAD 检测到语音结束)                                │
       ← inputTranscription: "帮我查一下今天北京天气"      ←┘
-      ← audio: "好的，我帮你查一下"                       (App 播放)
       ← toolCall: openclaw_help({request:"今天北京天气"})
 
 App:  → WS1: tool_response (ACK)
       → WS2: help 请求
 
+AI:   ← audio: "好的，我帮你查一下"                       (App 播放)
+      ← turnComplete                                      (App: geminiTurnComplete = true)
+
       ... 等待 3-5 秒 ...
 
 WS2:  ← help_result: "北京现在气温4.5°C，多云"
 
-App:  → WS1: client_content("北京现在气温4.5°C，多云")
-      → WS1: client_content("以上信息来自 backend ai...")
+App:  pendingInjects.add(reply)
+      tryDeliverInjects():
+        geminiTurnComplete == true → 可以注入
+        geminiTurnComplete = false
+        → WS1: 单条原子 client_content:
+            role=model "北京现在气温4.5°C，多云"
+            role=user  "请播报"
+            turn_complete=true
 
 AI:   ← audio: "北京现在气温大约4度半，天气多云"           (App 播放)
-      ← turnComplete
+      ← turnComplete                                      (App: geminiTurnComplete = true)
 
 [用户听到回复]
 ```
 
-### 8.2 一次完整的车控交互（用户开空调）
+### 7.2 一次完整的车控交互（用户开空调）
 
 ```
 [用户说] "帮我把空调调到25度"
@@ -969,7 +862,7 @@ AI:   ← audio: "好的，空调已经调到25度了"                  (App 播
 [用户听到确认，感受到空调变化]
 ```
 
-### 8.3 一次完整的导航交互（记忆 + 确认 + 导航）
+### 7.3 一次完整的导航交互（记忆 + 确认 + 导航）
 
 ```
 [用户说] "去上周和老王喝酒的饭店"
@@ -981,10 +874,13 @@ AI:   需要查记忆 → ← toolCall: openclaw_help({request:"查询上周和�
 App:  ACK → WS1（AI 说"好的让我查一下"）
       help 请求 → WS2
 
+AI:   ← turnComplete
+
 WS2:  OpenClaw 查询记忆 → 找到"锦里老灶火锅，人民路123号"
       ← help_result: "上周和老王去的是锦里老灶火锅，地址是人民路123号"
 
-App:  注入结果 → WS1
+App:  pendingInjects.add(reply)
+      tryDeliverInjects() → 单条原子 inject → WS1
 
 AI:   ← audio: "你上周和老王去的是锦里老灶火锅，要帮你导航过去吗？"
 
@@ -1002,7 +898,7 @@ AI:   ← audio: "好的，导航已设置好了"
 
 ---
 
-## 九、Android App 类结构参考
+## 八、Android App 类结构参考
 
 ```
 CarHerApp/
@@ -1035,6 +931,12 @@ CarHerApp/
 │
 ├── tools/
 │   ├── ToolHandler.kt               // 工具调用分发
+│   ├── InjectManager.kt             // ⚠️ inject 安全机制（gate + 队列 + REJECTED 恢复）
+│   │   ├── pendingInjects: List     // inject 队列
+│   │   ├── geminiTurnComplete: Bool // turnComplete gate
+│   │   ├── tryDeliverInjects()      // 门控投递
+│   │   ├── onTurnComplete()         // 恢复 gate + 投递
+│   │   └── onResponseRejected()     // REJECTED 恢复
 │   └── CarControlSDK.kt             // 厂商车控封装
 │       └── execute(action, params) → JSON result
 │
@@ -1046,7 +948,7 @@ CarHerApp/
 
 ---
 
-## 十、联调步骤
+## 九、联调步骤
 
 ```
 Step 1: 本地闭环（无需我方服务）
@@ -1066,9 +968,10 @@ Step 4: 车控指令
   说"打开空调" → 收到 car_control → 本地执行 → 返回结果 → AI 确认
   验证: 语音说出车控指令后，车辆真实响应
 
-Step 5: 云端工具
-  说"帮我查天气" → openclaw_help → 注入结果 → AI 播报
+Step 5: 云端工具（⚠️ 重点验证 inject 安全机制）
+  说"帮我查天气" → openclaw_help → 等 turnComplete → 注入结果 → AI 播报
   验证: 能查到真实天气并语音播报
+  验证: 连续说两句需要查询的话（"查天气"、"查日程"），两次结果都能依次播报
 
 Step 6: 端到端演示
   完整流程无卡顿
@@ -1078,7 +981,7 @@ Step 6: 端到端演示
 
 ---
 
-## 十一、错误处理
+## 十、错误处理
 
 | 场景 | 处理方式 |
 |------|---------|
@@ -1090,10 +993,11 @@ Step 6: 端到端演示
 | 讯飞 SDK 初始化失败 | 跳过降噪，直接用原始 PCM 继续工作 |
 | AudioRecord 启动失败 | 提示用户检查麦克风权限 |
 | car_control 执行失败 | 返回 `{"ok":false,"error":"执行失败"}` 给 AI |
+| RESPONSE_REJECTED | 恢复 inject gate（`geminiTurnComplete = true`），尝试重新投递队列中的 inject（见 6.5 节） |
 
 ---
 
-## 十二、AndroidManifest.xml 权限
+## 十一、AndroidManifest.xml 权限
 
 ```xml
 <uses-permission android:name="android.permission.INTERNET" />
@@ -1103,91 +1007,51 @@ Step 6: 端到端演示
 
 ---
 
-## 附录 A：WS 连接 1 消息格式速查
+## 附录：消息格式速查
 
-### App → WS1（发送）
+> 详细说明见正文对应章节，此处仅列格式。
 
-```
-# 认证（Bootstrap 返回，原样发送）
-config.geminiProxy.serviceSetup
+**WS1 App→Gemini（发送）：**
 
-# 会话配置（Bootstrap 返回，原样发送）
-config.geminiProxy.sessionSetup
+| 用途 | JSON |
+|------|------|
+| 认证 | `config.geminiProxy.serviceSetup`（原样发送） |
+| 会话配置 | `config.geminiProxy.sessionSetup`（原样发送） |
+| 音频帧 | `{"realtime_input":{"media_chunks":[{"mime_type":"audio/pcm","data":"<base64>"}]}}` |
+| 文本注入 | `{"client_content":{"turns":[{"role":"model","parts":[{"text":"..."}]},{"role":"user","parts":[{"text":"请播报"}]}],"turn_complete":true}}` |
+| 工具响应 | `{"tool_response":{"functionResponses":[{"id":"<callId>","name":"<工具名>","response":{...}}]}}` |
 
-# 音频帧（每 20ms 一帧）
-{"realtime_input":{"media_chunks":[{"mime_type":"audio/pcm","data":"<base64>"}]}}
+**WS1 Gemini→App（接收）：**
 
-# 文本注入（openclaw 结果）
-{"client_content":{"turns":[{"role":"model","parts":[{"text":"注入的文本"}]}],"turn_complete":false}}
-{"client_content":{"turns":[{"role":"user","parts":[{"text":"以上信息来自 backend ai，请你根据实际情况回复用户信息！"}]}],"turn_complete":true}}
+| 类型 | JSON |
+|------|------|
+| 会话就绪 | `{"setupComplete":{}}` |
+| 音频 | `{"serverContent":{"modelTurn":{"parts":[{"inlineData":{"mimeType":"audio/pcm;rate=24000","data":"..."}}]}}}` |
+| 文本 | `{"serverContent":{"modelTurn":{"parts":[{"text":"..."}]}}}` |
+| 工具调用 | `{"toolCall":{"functionCalls":[{"name":"...","args":{...}}]}}` |
+| 用户转写 | `{"serverContent":{"inputTranscription":{"text":"...","finished":true}}}` |
+| AI 转写 | `{"serverContent":{"outputTranscription":{"text":"..."}}}` |
+| 一轮结束 | `{"serverContent":{"turnComplete":true}}` |
+| 拒绝响应 | `{"serverContent":{"turnComplete":true,"turnCompleteReason":"RESPONSE_REJECTED"}}` |
+| 打断 | `{"serverContent":{"interrupted":true}}` |
 
-# 工具响应（id 传空字符串）
-{"tool_response":{"functionResponses":[{"id":"","name":"<工具名>","response":{...}}]}}
-```
+**WS2 App→OpenClaw（发送）：**
 
-### WS1 → App（接收）
+| 用途 | JSON |
+|------|------|
+| 请求帮助 | `{"type":"help","request":"...","callId":"..."}` |
+| 用户语音 | `{"type":"transcript","role":"user","text":"..."}` |
+| AI 回复 | `{"type":"transcript","role":"live","text":"..."}` |
+| 一轮结束 | `{"type":"turn_complete"}` |
 
-```
-# 会话就绪
-{"setupComplete":{}}
+**WS2 OpenClaw→App（接收）：**
 
-# 音频回复
-{"serverContent":{"modelTurn":{"parts":[{"inlineData":{"mimeType":"audio/pcm;rate=24000","data":"<base64>"}}]}}}
-
-# 文本回复
-{"serverContent":{"modelTurn":{"parts":[{"text":"..."}]}}}
-
-# 工具调用（⚠️ 顶层字段，不在 serverContent 内；无 id 字段）
-{"toolCall":{"functionCalls":[{"name":"car_control","args":{...}}]}}
-
-# 用户语音转写
-{"serverContent":{"inputTranscription":{"text":"用户说的话","finished":true}}}
-
-# AI 语音转写
-{"serverContent":{"outputTranscription":{"text":"AI说的话"}}}
-
-# 一轮结束
-{"serverContent":{"turnComplete":true}}
-
-# 用户打断
-{"serverContent":{"interrupted":true}}
-```
-
----
-
-## 附录 B：WS 连接 2 消息格式速查
-
-### App → WS2（发送）
-
-```
-# 请求帮助
-{"type":"help","request":"今天天气","callId":"call_xxx"}
-
-# 上报用户语音
-{"type":"transcript","role":"user","text":"帮我查天气"}
-
-# 上报 AI 回复
-{"type":"transcript","role":"live","text":"好的，我帮你查一下"}
-
-# 通知一轮结束
-{"type":"turn_complete"}
-```
-
-### WS2 → App（接收）
-
-```
-# 连接成功
-{"type":"connected","sessionId":"abc123"}
-
-# help 结果（需要注入 WS1）
-{"type":"help_result","callId":"call_xxx","reply":"北京气温4.5°C，多云"}
-
-# 主动推送（需要注入 WS1）
-{"type":"inject","reply":"提醒：你有一个会议"}
-
-# prompt 更新（可忽略，高级功能）
-{"type":"prompt_update","section":"memory","content":"..."}
-```
+| 类型 | JSON |
+|------|------|
+| 连接成功 | `{"type":"connected","sessionId":"..."}` |
+| help 结果 | `{"type":"help_result","callId":"...","reply":"..."}` |
+| 主动推送 | `{"type":"inject","reply":"..."}` |
+| prompt 更新 | `{"type":"prompt_update","section":"...","content":"..."}`（可忽略） |
 
 ---
 
