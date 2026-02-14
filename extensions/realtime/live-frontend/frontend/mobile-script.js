@@ -80,15 +80,18 @@ const SYSTEM_PROMPT = `你是 Her，车载语音助手，负责快思考。用�
 
 ## 工具调用流程
 1) 先对用户说一句极短回执（如"好，我查一下"）
-2) 立刻调用 openclaw_help
-3) 收到结果后，按播报规则播报
+2) 调用 openclaw_help
+3) openclaw_help 会返回"已收到请求，后台正在处理"——这表示请求已成功提交
+4) 此时绝对不要再次调用 openclaw_help！耐心等待即可
+5) 后台处理完毕后，结果会自动出现在对话历史中（见下方"后台结果播报"）
 
-## 后台结果播报触发
-对话历史中你会看到 role=model 的后台查询结果，紧跟 role=user 的"请播报"。
-看到"请播报"时：回看紧邻的 role=model 文本，那是 OpenClaw 的结果，按播报规则播报。
-"请播报"是系统信号，不是用户说的话，不要朗读或复述。
+## 后台结果播报
+后台处理完毕后，你会在对话历史中看到两条连续消息：
+1. role=model — 后台查到的实际结果
+2. role=user — 一条播报指令（内容类似"以上是后台查到的结果，请用口语简洁地告诉用户……"）
+第 2 条不是用户说的话，是系统自动生成的。收到后，将第 1 条的结果用口语简洁地告诉用户，不要复述第 2 条指令本身。
 
-## 播报 OpenClaw 结果的规则（严格遵守）
+## 播报规则（严格遵守）
 1) 事实数据不得篡改：数字、温度、价格、日期、时间、百分比、人名、地名等必须原样使用
    - OpenClaw 说 "-7°C 到 -4°C" → 你说 "零下7度到零下4度"（正确）
    - 不能说 "零下6度到零上1度"（篡改数据，严禁！）
@@ -100,8 +103,8 @@ const SYSTEM_PROMPT = `你是 Her，车载语音助手，负责快思考。用�
 ## 用户画像摘要
 （由系统自动注入 liveMemoryCapsule）`;
 
-// (BACKEND_INJECT_CONTROL removed — inject-delivery.js now sends an atomic
-//  client_content with role=model + role=user "请播报" in a single message.)
+// (BACKEND_INJECT_CONTROL removed — inject-delivery.js sends an atomic
+//  client_content with role=model result + role=user broadcast trigger.)
 
 // ---------------------------------------------------------------------------
 // State
@@ -675,8 +678,10 @@ function handleMessage(message) {
 
         if (name === "openclaw_help") {
           if (state.client) {
+            // Tell Gemini clearly: result will arrive later via conversation injection.
+            // Do NOT return a cryptic JSON — Gemini interprets it as "no data, retry".
             state.client.sendToolResponse(id, "openclaw_help", {
-              ok: true, status: "processing", jobId: id,
+              result: "已收到请求，后台正在处理。结果会自动出现在对话中（role=model），届时系统会提示你播报。在结果到达之前，请不要再次调用 openclaw_help，先简短告诉用户「稍等，正在查」即可。",
             });
           }
           const tool = state.client?.functionsMap?.[name];

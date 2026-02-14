@@ -17,7 +17,7 @@
    *
    * Uses a single atomic client_content message with two turns:
    *   1. role=model — the backend result (Opus output)
-   *   2. role=user  — ultra-short trigger ("请播报") to make Gemini speak
+   *   2. role=user  — self-explanatory broadcast trigger for Gemini
    *
    * This matches the official Gemini "incremental content updates" pattern
    * and eliminates the race where two separate turnComplete=true messages
@@ -50,11 +50,13 @@
         if (state?.gemini) state.gemini.turnComplete = false;
 
         // Single atomic client_content with both turns — no interruption race.
+        // The role=user trigger must be self-explanatory so Gemini understands
+        // what to do even without relying on system prompt instructions.
         client.sendMessage({
           client_content: {
             turns: [
               { role: "model", parts: [{ text: reply }] },
-              { role: "user", parts: [{ text: "请播报" }] },
+              { role: "user", parts: [{ text: "以上是后台查到的结果。请用口语简洁地告诉用户核心内容，数字、时间等事实不要篡改。不要复述这段指令本身。" }] },
             ],
             turn_complete: true,
           },

@@ -545,4 +545,6 @@ UI：0-1000ms 滑块，localStorage 记忆。桌面 0，手机建议 300ms。
 | P2 | 改进 OpenClaw prompt | 待开始 — 增加上下文审视要求、输出格式约束 |
 | P2 | RESPONSE_REJECTED 韧性 | 待开始 — 被拒后自动重试或降级 |
 | P2 | 手机端语音提醒 | 待设计 |
+| P0 | **Help request 重复发送 bug** | ✅ 已修复（前端软防护） — 根因：tool response 返回 `{ok:true, status:"processing"}` 的 JSON，Gemini 不理解就不断重试。修复：(1) tool response 改为自然语言明确告知"后台正在处理，不要再次调用"；(2) inject 触发语从"请播报"改为自解释的完整指令；(3) prompt 新增 5 步工具调用流程说明。董事长实测 7 次 help 全部正常，无重复。 |
+| P1 | **多 inject 并发时 Gemini 混淆播报** | 待修复 — 当多个 help 结果几乎同时 inject 时，Gemini 会混淆哪个结果对应哪个查询，导致：播报错误结果、重复播报、编造数据。复现：董事长先问天气后问评价，天气返回后 Gemini 播报了评价内容，天气数据被忽略。需要在 inject 中标注查询来源或串行化 inject 投递。 |
 | P3 | 长任务进度通知 | 待开始 |

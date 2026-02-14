@@ -33,8 +33,8 @@ const state = {
 
 // Backend inject control line (internal). This line is used to force Gemini to
 // continue generation after we inject backend context as role=model.
-// (BACKEND_INJECT_CONTROL removed — inject-delivery.js now sends an atomic
-//  client_content with role=model + role=user "请播报" in a single message.)
+// (BACKEND_INJECT_CONTROL removed — inject-delivery.js sends an atomic
+//  client_content with role=model result + role=user broadcast trigger.)
 
 // Debug logger for tracking message flow
 function debugLog(direction, eventType, data = {}) {
@@ -246,9 +246,8 @@ async function connectOpenClaw() {
     openclawConnection.onHelpResult = (callId, reply) => {
       console.log(`🦞 Help result for ${callId}:`, reply);
       debugLog("OPENCLAW→LIVE", "HELP_RESULT", { callId: callId, reply: reply.slice(0, 50) + "..." });
-      // Two-stage protocol: we already sent an immediate "processing ACK" tool_response.
-      // Now deliver the final result as role=model in a safe window.
-      // Gemini will naturally respond when user speaks next.
+      // Tool response already told Gemini to wait. Now deliver the final result
+      // as role=model + role=user broadcast trigger in a safe window.
       addMessage(`[OpenClaw] ${reply}`, "system");
       state.pendingInjects.push(reply);
       tryDeliverInjects();
@@ -556,15 +555,12 @@ function handleMessage(message) {
         if (functionName === "openclaw_help") {
           addMessage(`[Asking OpenClaw: ${parameters.request}]`, "system");
 
-          // Two-stage tool protocol (P0):
-          // 1) Immediately ACK the toolCall to unblock Gemini so her can speak right away.
-          // 2) Run the real OpenClaw task in parallel; the final result will be injected later.
+          // Tell Gemini clearly: result will arrive later via conversation injection.
+          // Do NOT return a cryptic JSON — Gemini interprets it as "no data, retry".
           if (state.client) {
             debugLog("LIVE→GEMINI", "TOOL_RESPONSE_ACK", { id: functionCallId, name: functionName });
             state.client.sendToolResponse(functionCallId, "openclaw_help", {
-              ok: true,
-              status: "processing",
-              jobId: functionCallId,
+              result: "已收到请求，后台正在处理。结果会自动出现在对话中（role=model），届时系统会提示你播报。在结果到达之前，请不要再次调用 openclaw_help，先简短告诉用户「稍等，正在查」即可。",
             });
           }
 
