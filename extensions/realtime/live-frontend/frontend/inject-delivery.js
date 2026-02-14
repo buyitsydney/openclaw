@@ -35,7 +35,17 @@
     if (!state?.pendingInjects?.length) return;
 
     // Deliver at most one inject per TURN_COMPLETE.
-    const reply = state.pendingInjects.shift();
+    const item = state.pendingInjects.shift();
+
+    // Support { seq, reply } objects and plain string (legacy).
+    const seq = typeof item === "object" && item.seq ? item.seq : 0;
+    const reply = typeof item === "object" && item.reply ? item.reply : String(item);
+
+    // role=model: pure result (no labels). role=user: numeric tag only.
+    // Using #N avoids Chinese text that Gemini might re-interpret as instructions.
+    const trigger = seq
+      ? `以上是 #${seq} 的后台结果。请用口语简洁地告诉用户，数字、时间等事实不要篡改。不要复述这段指令。`
+      : "以上是后台查到的结果。请用口语简洁地告诉用户，数字、时间等事实不要篡改。不要复述这段指令。";
 
     const chain = state.injectChain || Promise.resolve();
     state.injectChain = chain
@@ -50,13 +60,13 @@
         if (state?.gemini) state.gemini.turnComplete = false;
 
         // Single atomic client_content with both turns — no interruption race.
-        // The role=user trigger must be self-explanatory so Gemini understands
-        // what to do even without relying on system prompt instructions.
+        // The role=user trigger includes the request label so Gemini knows
+        // which query this result belongs to.
         client.sendMessage({
           client_content: {
             turns: [
               { role: "model", parts: [{ text: reply }] },
-              { role: "user", parts: [{ text: "以上是后台查到的结果。请用口语简洁地告诉用户核心内容，数字、时间等事实不要篡改。不要复述这段指令本身。" }] },
+              { role: "user", parts: [{ text: trigger }] },
             ],
             turn_complete: true,
           },

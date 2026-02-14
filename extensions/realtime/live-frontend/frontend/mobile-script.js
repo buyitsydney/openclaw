@@ -81,14 +81,15 @@ const SYSTEM_PROMPT = `你是 Her，车载语音助手，负责快思考。用�
 ## 工具调用流程
 1) 先对用户说一句极短回执（如"好，我查一下"）
 2) 调用 openclaw_help
-3) openclaw_help 会返回"已收到请求，后台正在处理"——这表示请求已成功提交
+3) 你会收到 "请求 #N 已收到，后台正在处理" — 记住这个编号
 4) 此时绝对不要再次调用 openclaw_help！耐心等待即可
 5) 后台处理完毕后，结果会自动出现在对话历史中（见下方"后台结果播报"）
 
 ## 后台结果播报
 后台处理完毕后，你会在对话历史中看到两条连续消息：
 1. role=model — 后台查到的实际结果
-2. role=user — 一条播报指令（内容类似"以上是后台查到的结果，请用口语简洁地告诉用户……"）
+2. role=user — 一条播报指令，标注了编号（如"以上是 #1 的后台结果"）
+通过编号 #N 你可以知道这是哪个请求的结果。如果你同时提交了多个请求，务必根据编号区分。
 第 2 条不是用户说的话，是系统自动生成的。收到后，将第 1 条的结果用口语简洁地告诉用户，不要复述第 2 条指令本身。
 
 ## 播报规则（严格遵守）
@@ -127,7 +128,10 @@ const state = {
   pendingUserTranscript: "",
   pendingLiveTranscript: "",
   injectChain: Promise.resolve(),
-  pendingInjects: [],
+  pendingInjects: [], // Each item: { seq, reply } or plain string (legacy)
+  // Map callId → { request, seq } for inject labeling.
+  helpRequests: new Map(),
+  helpCounter: 0, // Auto-increment sequence number for help requests
   phase: "idle", // idle | connecting | live | error
 };
 
@@ -433,9 +437,11 @@ async function connectOpenClaw() {
 
   // Callbacks
   openclawConnection.onHelpResult = (callId, reply) => {
-    dbgLog(`Help result: ${reply.slice(0, 60)}...`);
+    const entry = state.helpRequests.get(callId) || { request: "", seq: 0 };
+    state.helpRequests.delete(callId);
+    dbgLog(`Help result #${entry.seq} (${entry.request}): ${reply.slice(0, 60)}...`);
     addMessage(`[OpenClaw] ${reply}`, "system");
-    state.pendingInjects.push(reply);
+    state.pendingInjects.push({ seq: entry.seq, reply });
     tryDeliverInjects();
   };
 
@@ -677,11 +683,14 @@ function handleMessage(message) {
         addMessage(`[Tool: ${name}] ${argsStr}`, "system");
 
         if (name === "openclaw_help") {
+          const request = args?.request || "";
+          // Assign a short numeric sequence — no Chinese text that Gemini could
+          // misinterpret as an actionable instruction.
+          const seq = ++state.helpCounter;
+          state.helpRequests.set(id, { request, seq });
           if (state.client) {
-            // Tell Gemini clearly: result will arrive later via conversation injection.
-            // Do NOT return a cryptic JSON — Gemini interprets it as "no data, retry".
             state.client.sendToolResponse(id, "openclaw_help", {
-              result: "已收到请求，后台正在处理。结果会自动出现在对话中（role=model），届时系统会提示你播报。在结果到达之前，请不要再次调用 openclaw_help，先简短告诉用户「稍等，正在查」即可。",
+              result: `请求 #${seq} 已收到，后台正在处理。结果稍后会标注 #${seq} 自动出现，届时请播报给用户。在此之前不要再次调用 openclaw_help。`,
             });
           }
           const tool = state.client?.functionsMap?.[name];

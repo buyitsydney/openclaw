@@ -28,7 +28,10 @@ const state = {
   pendingLiveTranscript: "",
   // Serialize inject delivery to Gemini to avoid interrupting active audio playback.
   injectChain: Promise.resolve(),
-  pendingInjects: [],
+  pendingInjects: [], // Each item: { seq, reply } or plain string (legacy)
+  // Map callId → { request, seq } for inject labeling.
+  helpRequests: new Map(),
+  helpCounter: 0, // Auto-increment sequence number for help requests
 };
 
 // Backend inject control line (internal). This line is used to force Gemini to
@@ -244,12 +247,13 @@ async function connectOpenClaw() {
     
     // Set up callbacks
     openclawConnection.onHelpResult = (callId, reply) => {
-      console.log(`🦞 Help result for ${callId}:`, reply);
-      debugLog("OPENCLAW→LIVE", "HELP_RESULT", { callId: callId, reply: reply.slice(0, 50) + "..." });
-      // Tool response already told Gemini to wait. Now deliver the final result
-      // as role=model + role=user broadcast trigger in a safe window.
+      const entry = state.helpRequests.get(callId) || { request: "", seq: 0 };
+      state.helpRequests.delete(callId);
+      console.log(`🦞 Help result #${entry.seq} (${entry.request}) for ${callId}:`, reply);
+      debugLog("OPENCLAW→LIVE", "HELP_RESULT", { callId, seq: entry.seq, request: entry.request, reply: reply.slice(0, 50) + "..." });
+      // Deliver as labeled inject so Gemini can match result to query.
       addMessage(`[OpenClaw] ${reply}`, "system");
-      state.pendingInjects.push(reply);
+      state.pendingInjects.push({ seq: entry.seq, reply });
       tryDeliverInjects();
     };
     
@@ -553,21 +557,22 @@ function handleMessage(message) {
         
         // Special handling for OpenClaw help tool (async)
         if (functionName === "openclaw_help") {
-          addMessage(`[Asking OpenClaw: ${parameters.request}]`, "system");
+          const request = parameters.request || "";
+          addMessage(`[Asking OpenClaw: ${request}]`, "system");
+          // Assign numeric sequence — avoids Chinese text Gemini might re-interpret.
+          const seq = ++state.helpCounter;
+          state.helpRequests.set(functionCallId, { request, seq });
 
-          // Tell Gemini clearly: result will arrive later via conversation injection.
-          // Do NOT return a cryptic JSON — Gemini interprets it as "no data, retry".
           if (state.client) {
-            debugLog("LIVE→GEMINI", "TOOL_RESPONSE_ACK", { id: functionCallId, name: functionName });
+            debugLog("LIVE→GEMINI", "TOOL_RESPONSE_ACK", { id: functionCallId, name: functionName, seq });
             state.client.sendToolResponse(functionCallId, "openclaw_help", {
-              result: "已收到请求，后台正在处理。结果会自动出现在对话中（role=model），届时系统会提示你播报。在结果到达之前，请不要再次调用 openclaw_help，先简短告诉用户「稍等，正在查」即可。",
+              result: `请求 #${seq} 已收到，后台正在处理。结果稍后会标注 #${seq} 自动出现，届时请播报给用户。在此之前不要再次调用 openclaw_help。`,
             });
           }
 
           const tool = state.client.functionsMap[functionName];
           if (tool) {
             tool.functionToCall(parameters, functionCallId);
-            // Response will be sent via openclawConnection.onHelpResult callback
           }
         } else {
           // Sync tools (e.g. car_control) — execute and send result back to Gemini
