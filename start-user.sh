@@ -517,7 +517,7 @@ echo -e "  OpenClaw:  wss://${NAMED_RT_HOST}/ws"
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
 
-# --- Tunnel status check ---
+# --- Tunnel status (informational) ---
 if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^cloudflared$"; then
   echo -e "${GREEN}✓ cloudflared 隧道运行中（Docker 容器）${NC}"
 elif pgrep -f "cloudflared tunnel run" &>/dev/null; then

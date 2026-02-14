@@ -9,6 +9,19 @@
       }
     }
   },
+  "tools": {
+    "web": {
+      "search": {
+        "provider": "perplexity"
+      }
+    }
+  },
+  "browser": {
+    "enabled": true,
+    "headless": true,
+    "noSandbox": true,
+    "defaultProfile": "openclaw"
+  },
   "commands": {
     "native": "auto",
     "nativeSkills": "auto",
