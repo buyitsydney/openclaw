@@ -535,7 +535,7 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 > 企业部署相关的验证记录已迁移至 [her-feishu-bot-enterprise-deploy.md](her-feishu-bot-enterprise-deploy.md#已完成的验证2026-02-09)。
 
 - [ ] **P1**: 支持 `--feishu-allow=ou_xxx` 参数设置 allowlist
-- [ ] **P2**: 引用卡片消息优化 — 用户引用 AI 的 CardKit 卡片消息时，`getQuotedMessageContent()` 获取到的是 `{"tag":"img","image_key":"..."}` 占位内容（飞书对 interactive 消息返回降级 body），AI 无法看到卡片的实际文字。需要在引用获取逻辑中检测 `msg_type=interactive`，通过 `cardkit.card.idConvert` 获取 `card_id`，再读取卡片内容
+- [x] **P2**: 引用卡片消息优化 — 用户引用 AI 的 CardKit 卡片消息时，`getQuotedMessageContent()` 获取到的是降级 body。已通过本地缓存（CardKit stream 结束时缓存 messageId->finalText）+ 降级 elements 解析 fallback 解决。同时新增引用消息图片下载支持（standalone image、post embedded、interactive degraded img）。注：SDK 无 `card.get()` 读取 API，`cardkit.card.idConvert` 方案不可行，改用缓存方案（2026-02-14）
 - [ ] **P3**: 在 getting-started.md 中补充飞书 Bot 创建的详细截图指南
 
 ### 富文本回复 (2026-02-09)
@@ -811,6 +811,8 @@ cardkit.v1.card.settings({
 5. **Onboarding CLI**：`openclaw setup` 交互式引导配置飞书凭证
 6. **状态探测**：`openclaw channels status` 显示飞书连接状态
 7. **企业多用户部署**：见 [her-feishu-bot-enterprise-deploy.md](her-feishu-bot-enterprise-deploy.md)（200 Bot + 200 Docker 方案，已验证）
+8. **Context Window 自动约束**：默认限制 context window 为 200k token，防止用户无感知地大量消耗 token 导致高额费用。用户可通过配置手动提高上限
+9. **飞书端 Context Window 可视化**：在飞书消息中展示当前 context window 使用量（如 `42k / 200k`），当接近上限时主动提醒用户，让用户清楚感知对话长度和费用
 
 ---
 
@@ -1066,7 +1068,7 @@ npm 上至少有 4 个飞书相关包：
 | 2 | **知识库 Wiki 导航** | ✅ 已验证 | `feishu_wiki` 工具，空间列表/节点导航。`listNodes` 自动附带 hint 引导 AI 用 `feishu_doc` 读取正文。日志 11:32 确认 wiki→doc 全链路正常 |
 | 3 | **云盘文件管理** | ✅ 已验证 | `feishu_drive` 工具，文件夹列表/创建/移动/删除 |
 | 4 | **多维表格 Bitable** | ✅ 已验证 | `feishu_bitable` 工具已注册并成功调用。日志 13:24 确认 wiki(2)+bitable(3) 全链路读取多维表格 "hello"（2026-02-12） |
-| 5 | **引用消息内容获取** | ✅ 已验证 | `getQuotedMessageContent()` 自动获取被引用消息内容 |
+| 5 | **引用消息内容获取** | ✅ 已验证 | `getQuotedMessageContent()` 自动获取被引用消息内容。增强：CardKit 流式卡片引用通过本地缓存解析实际文字（而非降级占位符）；引用图片消息自动下载图片供 AI vision 识别；引用 post 消息修复 flat format 兼容（2026-02-14） |
 | 6 | **权限错误自动诊断** | ✅ 已验证 | `extractPermissionError()` 正确检测 code=99991672 并提取 grant URL |
 | 7 | **发送者姓名解析** | ❌ 个人版不可用 | `resolveFeishuSenderName()` 代码正常，权限已开通，API 返回 `code=0` 但 user 对象只有 `open_id,union_id,mobile_visible`，无 `name` 字段。**飞书个人版通讯录 API 不返回用户姓名（平台限制）**，需企业版/旗舰版 |
 | 8 | **画板/白板内容读取** | ✅ 已验证 | `feishu_doc` 的 `read` 自动检测 block type_43，Board API 导出 PNG + vision image block 返回。日志 11:35/12:18/12:19 确认图片自动 resize 后 AI 成功理解画板内容（2063 字总结）。需要 `board:whiteboard` 权限（已开通）。**独家能力** |

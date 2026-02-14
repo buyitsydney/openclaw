@@ -108,6 +108,26 @@ async function resolveFeishuSenderName(params: {
   }
 }
 
+// ── Card text cache ─────────────────────────────────────────────────────
+// CardKit streaming cards: im.message.get returns degraded body (image placeholder)
+// instead of the actual markdown text. We cache messageId -> finalText when the
+// stream completes so quoted-message lookups return the real content.
+
+const cardTextCache = new Map<string, { text: string; ts: number }>();
+const CARD_CACHE_MAX = 500;
+const CARD_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+
+function cacheCardText(messageId: string, text: string): void {
+  // Evict expired entries when over limit.
+  if (cardTextCache.size >= CARD_CACHE_MAX) {
+    const now = Date.now();
+    for (const [k, v] of cardTextCache) {
+      if (now - v.ts > CARD_CACHE_TTL_MS) { cardTextCache.delete(k); }
+    }
+  }
+  cardTextCache.set(messageId, { text, ts: Date.now() });
+}
+
 // ── Quoted message content retrieval (im.message.get) ───────────────────
 // When a user replies to a message, Feishu sends parent_id (the quoted msg).
 // We fetch its content so the AI has the full context of what was quoted.
@@ -118,6 +138,8 @@ export type FeishuMessageInfo = {
   senderId?: string;
   content: string;
   contentType: string;
+  /** Image keys found in the quoted message (for downstream download). */
+  imageKeys?: string[];
 };
 
 async function getQuotedMessageContent(params: {
@@ -136,13 +158,30 @@ async function getQuotedMessageContent(params: {
     const item = response?.data?.items?.[0];
     if (!item) return null;
     let content: string = item.body?.content ?? "";
+    const quotedImageKeys: string[] = [];
     try {
       const parsed = JSON.parse(content);
       if (item.msg_type === "text" && parsed.text) {
         content = parsed.text;
-      } else if (item.msg_type === "post" && parsed.zh_cn) {
-        // Flatten post body to plain text.
-        content = flattenPostBody(parsed.zh_cn) ?? content;
+      } else if (item.msg_type === "post") {
+        // Handle both flat format and locale-wrapped format.
+        content = extractPostText(parsed, quotedImageKeys) ?? content;
+      } else if (item.msg_type === "interactive") {
+        // CardKit streaming cards return degraded body via im.message.get.
+        // Primary: look up cached final text (we cached it when the stream finished).
+        const cached = cardTextCache.get(parentMessageId);
+        if (cached) {
+          content = cached.text;
+          log?.info(`[${account.accountId}] quoted interactive msg resolved from cache`);
+        } else {
+          // Fallback: extract text from the degraded legacy element structure.
+          content = flattenInteractiveBody(parsed, quotedImageKeys) ?? content;
+          log?.info(`[${account.accountId}] quoted interactive msg fallback parse (cache miss)`);
+        }
+      } else if (item.msg_type === "image") {
+        // Standalone image message: collect key for downstream download.
+        if (parsed.image_key) { quotedImageKeys.push(parsed.image_key); }
+        content = "[image]";
       }
     } catch {
       // Keep raw content if parsing fails.
@@ -153,6 +192,7 @@ async function getQuotedMessageContent(params: {
       senderId: item.sender?.id,
       content,
       contentType: item.msg_type ?? "text",
+      imageKeys: quotedImageKeys.length > 0 ? quotedImageKeys : undefined,
     };
   } catch (err) {
     const permErr = extractPermissionError(err);
@@ -248,6 +288,35 @@ function extractPostText(parsed: Record<string, unknown>, imageKeys?: string[]):
   const locales = parsed as Record<string, any>;
   const locale = locales.zh_cn ?? locales.en_us ?? Object.values(locales)[0];
   return flattenPostBody(locale, imageKeys);
+}
+
+/** Extract text from an interactive (card) message's degraded body.
+ *  When fetched via im.message.get, CardKit cards are returned in a legacy format:
+ *  { title?, elements: [[{tag,text,...}, ...], ...] }
+ *  We extract text/link content and collect image keys.
+ *  Returns null if the structure is unrecognisable (caller falls back to raw content). */
+// oxlint-disable-next-line typescript/no-explicit-any
+function flattenInteractiveBody(parsed: any, imageKeys?: string[]): string | null {
+  if (!parsed?.elements || !Array.isArray(parsed.elements)) { return null; }
+  const lines: string[] = [];
+  for (const row of parsed.elements) {
+    if (!Array.isArray(row)) { continue; }
+    let line = "";
+    for (const el of row) {
+      if (el.tag === "text" || el.tag === "a") {
+        line += el.text ?? "";
+      } else if (el.tag === "at") {
+        line += el.user_name ?? "";
+      } else if (el.tag === "img" && el.image_key) {
+        if (imageKeys) { imageKeys.push(el.image_key); }
+        line += "<media:image>";
+      }
+      // Skip buttons, hr, select, date_picker, overflow, note — UI-only elements.
+    }
+    if (line.trim()) { lines.push(line); }
+  }
+  const title = typeof parsed.title === "string" && parsed.title ? `${parsed.title}\n` : "";
+  return `${title}${lines.join("\n")}`.trim() || null;
 }
 
 /** Extract plain text from Feishu message content JSON.
@@ -642,6 +711,28 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         quotedContext = `\n[Quoted message: "${quoted.content.slice(0, 500)}"]`;
         log?.info(`[${account.accountId}] quoted msg fetched: ${parentId} -> ${quoted.content.slice(0, 80)}`);
       }
+      // Download images embedded in the quoted message (standalone image, post img, card degraded img).
+      if (quoted?.imageKeys?.length && quoted.messageId) {
+        for (const imgKey of quoted.imageKeys) {
+          try {
+            log?.info(`[${account.accountId}] downloading quoted image: key=${imgKey} msg=${quoted.messageId}`);
+            const imgData = await downloadFeishuImage({ account, messageId: quoted.messageId, imageKey: imgKey });
+            if (imgData) {
+              const saved = await core.channel.media.saveMediaBuffer(imgData.buffer, imgData.contentType, "inbound");
+              mediaPaths.push(saved.path);
+              mediaTypes.push(saved.contentType ?? imgData.contentType ?? "image/jpeg");
+              log?.info(`[${account.accountId}] quoted image saved: ${saved.path}`);
+            }
+          } catch (err) {
+            log?.info(`[${account.accountId}] quoted image download failed (key=${imgKey}): ${String(err)}`);
+          }
+        }
+        // Set primary media if not already set by the current message's own images.
+        if (!mediaPath && mediaPaths.length > 0) {
+          mediaPath = mediaPaths[0];
+          mediaType = mediaTypes[0];
+        }
+      }
     } catch (err) {
       log?.info(`[${account.accountId}] quoted msg fetch failed: ${String(err)}`);
     }
@@ -884,6 +975,12 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     cardStream?.started ? stopCardStream() : Promise.resolve(),
     removeAckReaction(),
   ]);
+
+  // Cache the final card text so quoted-message lookups can resolve the real content
+  // (im.message.get returns a degraded placeholder for CardKit interactive messages).
+  if (cardStream?.started && cardStream.messageId && cardStreamFinalText) {
+    cacheCardText(cardStream.messageId, cardStreamFinalText);
+  }
 }
 
 // ── Reply delivery ──────────────────────────────────────────────────────
