@@ -18,6 +18,7 @@
 |------|-----|---------|---------|------|
 | 机器之心 | jiqizhixin.com | 每日 06:00 CST | feishu | 国内最专业AI媒体 |
 | ArXiv Daily | huggingface.co/papers | 每日 06:00 CST | feishu | HuggingFace 论文精选 |
+| OpenClaw | github.com/openclaw/openclaw | 每日 06:00 CST | feishu | Her 的平台，commits/PR/releases |
 
 ## 推送偏好
 

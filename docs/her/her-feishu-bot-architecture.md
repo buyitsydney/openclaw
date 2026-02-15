@@ -362,6 +362,66 @@ outbound: {
 
 ---
 
+## 安全架构：两层防护模型（2026-02-15 设计）
+
+> **P0 安全风险：realtime 语音端口当前零认证，企业部署前必须修复。**
+
+### 飞书文字通道的安全模型（已实现，参考标准）
+
+飞书文字聊天之所以安全，靠的是**两层防护**：
+
+| 层 | 机制 | 效果 | 实现位置 |
+|----|------|------|---------|
+| **Layer 1：找不到** | 飞书可用范围 = 只选一人 | 其他员工在飞书客户端搜不到这个 Bot | 飞书开放平台（平台级隔离） |
+| **Layer 2：被拒绝** | `dm.allowFrom = [ou_xxx]` 白名单 | 即使找到 Bot，发消息也被忽略 | `extensions/feishu/src/channel.ts` resolveAllowFrom |
+
+```
+普通员工 → 搜索董事长的 Bot → 搜不到（Layer 1）
+普通员工 → 猜到 Bot ID 发消息 → Bot 忽略（Layer 2）
+董事长   → 搜索自己的 Bot  → 正常对话 ✓
+```
+
+### 语音 realtime 通道的安全模型（待实现）
+
+当前问题：realtime WebSocket 服务（端口 18790）**零认证**。任何能访问该端口的人可以直接建立语音连接，读取用户全部记忆（MEMORY.md、USER.md）、对话历史，甚至冒充用户与 Her 对话。
+
+**在 200 人企业部署中，这意味着任何员工可以连接董事长的语音端口，与董事长的 Her 对话。**
+
+```
+extensions/realtime/src/server.ts 第 395-411 行：
+  const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
+  wss.on("connection", (ws, req) => {
+    // 直接创建 session，没有任何 auth 检查
+    sendToClient(ws, { type: "connected", sessionId });
+  });
+```
+
+### 目标：与飞书文字通道完全对齐的两层防护
+
+| 层 | 飞书文字 | 语音 realtime（目标方案） |
+|----|---------|------------------------|
+| **Layer 1：找不到** | 可用范围 = 一人，搜不到 Bot | 端口不暴露（Docker 不 -p、cloudflared 不隧道），外部完全看不到入口 |
+| **Layer 2：被拒绝** | `dm.allowFrom` 白名单 | per-container 唯一 token 认证，即使找到也被拒绝 |
+| **授权途径** | 飞书平台自动配对 | 飞书 Bot 私聊发送语音链接（只有主人能看到 Bot → 只有主人能拿到链接） |
+
+```
+普通员工 → 端口扫描董事长容器 → 18790 未暴露，找不到（Layer 1）
+普通员工 → 猜到内部 URL → token 不对，401 拒绝（Layer 2）
+董事长   → 飞书 Bot 输入 /voice → Bot 私聊回复语音链接 → 正常语音 ✓
+```
+
+### 实现方案概要
+
+1. **不暴露 realtime 端口**：Docker 去掉 `-p 18790` 映射，cloudflared 不隧道该端口
+2. **Frontend proxy 内部转发**：Python 前端代理（我们的代码，8000/8080）在容器内部代理 bootstrap API 和 WebSocket 到 localhost:18790
+3. **Per-container 唯一 token**：`start-user.sh` 为每个容器生成 UUID token，写入 gateway.auth.token + realtime.config.token
+4. **Token 认证**：realtime server 检查 token（bootstrap + WebSocket upgrade），无效返回 401
+5. **飞书 Bot 投递**：`/voice` 命令通过飞书 Bot 私聊发送带 token 的语音 URL（复用飞书可用范围隔离）
+
+> **修改范围**：全部在可修改代码内（`extensions/realtime/`、`start-user.sh`、`scripts/`、`docker/`），不触碰上游 `src/` 代码。
+
+---
+
 ## 多通道 Session 与消息路由分析
 
 ### Session 共享机制
