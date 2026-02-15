@@ -1,0 +1,52 @@
+// CarHer 共享功能配置 — 本地 Her 和所有 Docker 用户容器共用
+// 修改此文件会同时影响所有环境（本地 + Docker），请谨慎
+//
+// 规则:
+// - 只放所有环境通用的功能配置
+// - 不放 secrets（API keys 用 ${VAR_NAME} 引用）
+// - 不放数组类型的值（$include deep merge 会 concat 数组，导致重复）
+// - 不放环境特有配置（gateway bind/auth、browser headless 等）
+
+{
+  // Agent 默认配置
+  agents: {
+    defaults: {
+      contextTokens: 240000,
+      compaction: { mode: "safeguard" },
+      // 语义搜索记忆 — apiKey 通过环境变量注入
+      memorySearch: {
+        provider: "openai",
+        remote: {
+          baseUrl: "https://openrouter.ai/api/v1/",
+          apiKey: "${OPENROUTER_API_KEY}",
+        },
+        model: "text-embedding-3-small",
+      },
+    },
+  },
+
+  // 工具配置
+  tools: {
+    web: {
+      search: { provider: "perplexity" },
+    },
+    // 注意: tools.media.audio 不需要配置，auto-detect 机制会自动
+    // 按优先级尝试: primary model → 本地 CLI → OpenAI → Groq → Deepgram → Google
+  },
+
+  // 命令（环境特有的 restart 由各自 overlay 设置）
+  commands: {
+    native: "auto",
+    nativeSkills: "auto",
+  },
+
+  // 消息格式
+  messages: {
+    ackReactionScope: "group-mentions",
+    tts: {
+      auto: "off",
+      provider: "edge",
+      edge: { voice: "zh-CN-XiaoxiaoNeural" },
+    },
+  },
+}

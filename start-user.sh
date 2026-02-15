@@ -277,7 +277,7 @@ echo -e "${GREEN}  ✓ Google Cloud 凭证${NC}"
 
 # Check OpenRouter API key
 if [ -z "${OPENROUTER_API_KEY:-}" ]; then
-  # Try to read from local openclaw config
+  # Try to read from local openclaw.json (env.vars is a sibling key, JSON.parse can read it)
   OPENROUTER_API_KEY=$(python3 -c "
 import json, os
 try:
@@ -336,28 +336,31 @@ else
 fi
 
 # --- Generate per-user config (model + feishu from CSV) ---
-CONFIG_FILE="${SCRIPT_DIR}/docker/carher-config.json"
+# Per-user config uses $include to reference Docker base config (which itself
+# $includes shared-config.json5). This ensures all environments share the same
+# functional config and only per-user/per-env overrides live here.
 CUSTOM_CONFIG="/tmp/carher-config-${USER_ID}.json"
 
 # Always generate a per-user config (may inject feishu credentials)
 python3 -c "
-import json, sys
+import json, sys, os, pathlib
 
-with open('${CONFIG_FILE}') as f:
-    cfg = json.load(f)
+# Build config with \$include pointing to Docker base inside the container.
+# OpenClaw resolves the include chain: per-user -> Docker base -> shared config.
+cfg = {
+    '\$include': '/app/docker/carher-config.json',
+}
 
-# Model override
+# Model override (sibling key overrides included value via deep merge)
 model = '${MODEL_FULL}'
 if model:
-    cfg['agents']['defaults']['model']['primary'] = model
+    cfg['agents'] = {'defaults': {'model': {'primary': model}}}
 
 # Gemini config for realtime plugin
-# Priority: env var > host openclaw.json > error
-import os, pathlib
+# Priority: env var > host openclaw.json (gemini is a sibling key, JSON.parse reads it) > error
 gemini_project = os.environ.get('GEMINI_PROJECT_ID', '')
 gemini_model = os.environ.get('GEMINI_MODEL', '')
 if not gemini_project:
-    # Read from host's local openclaw.json as fallback
     host_cfg_path = pathlib.Path.home() / '.openclaw' / 'openclaw.json'
     if host_cfg_path.exists():
         with open(host_cfg_path) as hf:
@@ -369,8 +372,9 @@ if not gemini_project:
 if not gemini_model:
     gemini_model = 'gemini-live-2.5-flash-native-audio'
 if gemini_project:
-    rt = cfg.setdefault('plugins', {}).setdefault('entries', {}).setdefault('realtime', {}).setdefault('config', {})
-    rt['gemini'] = {'projectId': gemini_project, 'model': gemini_model}
+    cfg.setdefault('plugins', {}).setdefault('entries', {}).setdefault('realtime', {}).setdefault('config', {})['gemini'] = {
+        'projectId': gemini_project, 'model': gemini_model
+    }
 else:
     print('WARNING: GEMINI_PROJECT_ID not found (env / ~/.openclaw/openclaw.json)', file=sys.stderr)
 
@@ -379,22 +383,18 @@ feishu_id = '${CSV_FEISHU_ID}'
 feishu_secret = '${CSV_FEISHU_SECRET}'
 feishu_owner = '${CSV_FEISHU_OWNER}'
 if feishu_id and feishu_secret:
-    # Build feishu channel config
     feishu_cfg = {
         'enabled': True,
         'appId': feishu_id,
         'appSecret': feishu_secret,
     }
-    # Owner identification (dm allowlist + group owner)
     if feishu_owner:
         feishu_cfg['dm'] = {'allowFrom': [feishu_owner]}
-    # Group chat: archive + owner-only reply (enabled by default when owner is set)
     feishu_cfg['groups'] = {
         'enabled': True,
         'archive': True,
     }
     cfg.setdefault('channels', {})['feishu'] = feishu_cfg
-    # Enable feishu plugin
     cfg.setdefault('plugins', {}).setdefault('entries', {})['feishu'] = {
         'enabled': True
     }

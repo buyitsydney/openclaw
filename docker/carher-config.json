@@ -1,35 +1,14 @@
 {
+  "$include": "./shared-config.json5",
   "meta": {
     "lastTouchedVersion": "2026.2.1"
   },
   "agents": {
     "defaults": {
-      "contextTokens": 240000,
       "model": {
         "primary": "openrouter/anthropic/claude-sonnet-4"
-      },
-      "compaction": {
-        "mode": "safeguard"
       }
     }
-  },
-  "tools": {
-    "web": {
-      "search": {
-        "provider": "perplexity"
-      }
-    }
-  },
-  "browser": {
-    "enabled": true,
-    "headless": true,
-    "noSandbox": true,
-    "defaultProfile": "openclaw"
-  },
-  "commands": {
-    "native": "auto",
-    "nativeSkills": "auto",
-    "restart": false
   },
   "models": {
     "providers": {
@@ -59,6 +38,15 @@
         ]
       }
     }
+  },
+  "browser": {
+    "enabled": true,
+    "headless": true,
+    "noSandbox": true,
+    "defaultProfile": "openclaw"
+  },
+  "commands": {
+    "restart": false
   },
   "gateway": {
     "port": 18789,

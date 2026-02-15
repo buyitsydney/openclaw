@@ -7,7 +7,7 @@
 
 **最终方案：200 Bot + 200 Docker（每人一个独立 OpenClaw 容器）**
 
-**验证状态 (2026-02-15)：飞书并发测试通过、数据隔离已确认、Webchat 隔离已确认、自动镜像重建已实现、Web Search (Perplexity) 已验证、Browser Use (Chromium headless) 已验证、Context Window 240K 保护已配置、CardKit 状态 Footer 已实现**（均为本地 Mac 验证，Ubuntu 企业部署尚未执行）
+**验证状态 (2026-02-15)：飞书并发测试通过、数据隔离已确认、Webchat 隔离已确认、自动镜像重建已实现、Web Search (Perplexity) 已验证、Browser Use (Chromium headless) 已验证、Context Window 240K 保护已配置、CardKit 状态 Footer 已实现、Config $include 零分叉架构已验证（本地 + Docker 全环境 0 error）、语音 Gemini Live 已验证（本地 + Docker）**（均为本地 Mac 验证，Ubuntu 企业部署尚未执行）
 
 ---
 
@@ -202,39 +202,15 @@ source ~/.bashrc
 
 ### 每容器配置
 
-每个容器的配置极简，就是标准的**单用户 OpenClaw + 飞书插件 + Web 搜索 + 浏览器**：
+每个容器的配置使用 `$include` 引用共享基础配置，只需写环境特有的覆盖项。以下是 `start-user.sh` 自动生成的 per-user 配置结构：
 
 ```json
 {
-  "gateway": {
-    "port": 18789,
-    "mode": "local",
-    "bind": "lan",
-    "auth": { "mode": "token", "token": "carher-container-token" },
-    "controlUi": { "dangerouslyDisableDeviceAuth": true }
-  },
+  "$include": "/app/docker/carher-config.json",
   "agents": {
     "defaults": {
       "model": { "primary": "openrouter/anthropic/claude-sonnet-4" }
     }
-  },
-  "tools": {
-    "web": {
-      "search": {
-        "provider": "perplexity"
-      }
-    }
-  },
-  "browser": {
-    "enabled": true,
-    "headless": true,
-    "noSandbox": true,
-    "defaultProfile": "openclaw"
-  },
-  "commands": {
-    "native": "auto",
-    "nativeSkills": "auto",
-    "restart": false
   },
   "channels": {
     "feishu": {
@@ -254,7 +230,6 @@ source ~/.bashrc
     "entries": {
       "feishu": { "enabled": true },
       "realtime": {
-        "enabled": true,
         "config": {
           "gemini": {
             "projectId": "企业的Google Cloud项目ID",
@@ -266,6 +241,8 @@ source ~/.bashrc
   }
 }
 ```
+
+`$include` 自动引入以下共享配置（来自 `carher-config.json` + `shared-config.json5`）：gateway（bind=lan, auth）、browser（headless Chromium）、tools（web search）、commands、messages（TTS）、models（Sonnet 4 + Opus 4.6 定义）、agents（contextTokens 240K, compaction, memorySearch）。
 
 > **注意事项**：
 > - 上述配置由 `start-user.sh` 从 `docker/users.csv` + `docker/carher-config.json` 自动生成，IT 无需手动编写
@@ -280,7 +257,7 @@ source ~/.bashrc
 > - 飞书插件在用户发送 `/new` 时自动发送 Webchat URL（从 gateway 配置自动计算，Docker 模式下可通过 `WEBCHAT_URL` 环境变量覆盖）
 >
 > **Context Window 240K 保护（2026-02-15 新增）**：
-> - `carher-config.json` 已预配置 `agents.defaults.contextTokens: 240000` + `compaction.mode: "safeguard"`，限制每个用户的最大上下文窗口为 240K token
+> - `shared-config.json5` 已预配置 `agents.defaults.contextTokens: 240000` + `compaction.mode: "safeguard"`，限制每个用户的最大上下文窗口为 240K token
 > - `models.providers` 定义了 Sonnet 4 和 Opus 4.6 两个模型，均设 `contextWindow: 240000`，确保 compaction 在接近上限时自动触发
 > - **关键**: `contextTokens` 和 `contextWindow` 必须对齐，否则 compaction 不会触发（已实测验证）
 > - 每条 AI 回复的飞书卡片底部自动显示模型名 + context 用量 + 压缩次数（CardKit 状态 footer）
@@ -322,9 +299,26 @@ source ~/.bashrc
 │   └── carher-entrypoint.sh     ← 容器入口脚本
 └── docker/
     ├── users.csv                ← 用户注册表（飞书凭证，.gitignore 不入库）
-    ├── carher-config.json       ← 基础配置模板
+    ├── shared-config.json5      ← 共享功能配置（所有环境通用：tools、messages、agent defaults）
+    ├── carher-config.json       ← Docker 基础配置（$include shared + Docker 特有覆盖）
     └── workspace/               ← workspace 模板文件（SOUL.md 等，启动时自动同步到容器）
 ```
+
+#### 配置架构（单一来源 Single Source of Truth）
+
+所有环境（本地 Her、Docker 200 用户）共享同一套功能配置，通过 OpenClaw 的 `$include` 机制实现零分叉：
+
+```
+shared-config.json5          ← 功能配置（tools/messages/agent defaults），Git 管控
+       ↓ $include
+carher-config.json           ← Docker 基础配置（+ browser/gateway/models 覆盖）
+       ↓ $include
+per-user.json / openclaw.json ← 每个环境的最终配置（+ secrets/channels 覆盖）
+```
+
+**所有环境使用相同的配置结构**：`$include` 指向 `carher-config.json` + 环境特有覆盖作为 sibling keys。修改 `shared-config.json5` 中的功能配置（如添加 web search、调整 TTS 语音），rebuild 镜像后所有容器自动生效，无需修改 per-user 配置。
+
+> **重要**：realtime 插件的 Gemini 配置（`plugins.entries.realtime.config.gemini`）必须作为 sibling key 写在 per-user 配置主文件中（不能放在被 `$include` 的文件里），因为 realtime 插件的 bootstrap 接口直接用 `JSON.parse()` 读取主配置文件。`start-user.sh` 已自动处理此约束。
 
 ### 升级/回滚
 
@@ -594,7 +588,7 @@ git checkout v旧版本
 | 飞书 | **可用** | 每人专属 Bot + 独立容器，CardKit 流式卡片回复，已验证 |
 | Webchat | **可用** | 每容器独立 Webchat（各自端口），已验证 |
 | Telegram | 可用 | 同飞书，每容器可额外配 Telegram Bot |
-| 语音 (realtime) | 待开发 | 需加用户认证；Google Cloud 凭证已在前置条件中配置 |
+| 语音 (realtime) | **可用（需认证）** | Gemini Live 原生语音已验证（本地 + Docker），但 200 人部署需开发 per-user 认证后才可开放 |
 | Web Search | **可用** | Perplexity Sonar 搜索引擎，复用 OpenRouter API key，已验证 |
 | Browser Use | **可用** | 容器内 Chromium headless 浏览器，可打开网页/截图/读取 JS 渲染内容，已验证 |
 | Web Fetch | **可用** | HTTP 网页抓取 + 正文提取（纯静态页面），默认启用 |
