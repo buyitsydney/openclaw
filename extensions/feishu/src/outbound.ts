@@ -402,6 +402,36 @@ export async function downloadFeishuImage(params: {
   return { buffer, contentType: typeof contentType === "string" ? contentType : "image/jpeg" };
 }
 
+/** Download a file attachment from a Feishu message using the message resource API.
+ *  Same endpoint as downloadFeishuImage but with type="file".
+ *  Handles PPT, PDF, DOCX, images-as-files, and any other file attachments.
+ *  Requires `im:message` or `im:resource` permission. ≤100 MB per Feishu docs. */
+export async function downloadFeishuFile(params: {
+  account: ResolvedFeishuAccount;
+  messageId: string;
+  fileKey: string;
+}): Promise<{ buffer: Buffer; contentType?: string } | null> {
+  const client = getFeishuClient(params.account);
+  const resp = await client.im.messageResource.get({
+    params: { type: "file" },
+    path: { message_id: params.messageId, file_key: params.fileKey },
+  });
+  if (!resp) return null;
+  const stream = resp.getReadableStream();
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  if (chunks.length === 0) return null;
+  const buffer = Buffer.concat(chunks);
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const headers = resp.headers as any;
+  const contentType =
+    (typeof headers?.get === "function" ? headers.get("content-type") : headers?.["content-type"]) ??
+    "application/octet-stream";
+  return { buffer, contentType: typeof contentType === "string" ? contentType : "application/octet-stream" };
+}
+
 /** Send an image message to a Feishu chat or user. */
 export async function sendFeishuImage(params: {
   account: ResolvedFeishuAccount;
