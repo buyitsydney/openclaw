@@ -1067,11 +1067,11 @@ npm 上至少有 4 个飞书相关包：
 | 1 | **飞书文档读写** | ✅ 已验证 | `feishu_doc` 工具，读取/写入/追加/创建文档。日志 11:32 确认 wiki→doc 链路零报错，800 字总结 |
 | 2 | **知识库 Wiki 导航** | ✅ 已验证 | `feishu_wiki` 工具，空间列表/节点导航。`listNodes` 自动附带 hint 引导 AI 用 `feishu_doc` 读取正文。日志 11:32 确认 wiki→doc 全链路正常 |
 | 3 | **云盘文件管理** | ✅ 已验证 | `feishu_drive` 工具，文件夹列表/创建/移动/删除 |
-| 4 | **多维表格 Bitable** | ✅ 已验证 | `feishu_bitable` 工具已注册并成功调用。日志 13:24 确认 wiki(2)+bitable(3) 全链路读取多维表格 "hello"（2026-02-12） |
+| 4 | **多维表格 Bitable** | ✅ 已验证 | `feishu_bitable` 工具，读取/创建/更新多维表格记录。权限已升级为 `bitable:app`（读写），19 项全量测试 18 项通过（2026-02-15） |
 | 5 | **引用消息内容获取** | ✅ 已验证 | `getQuotedMessageContent()` 自动获取被引用消息内容。增强：CardKit 流式卡片引用通过本地缓存解析实际文字（而非降级占位符）；引用图片消息自动下载图片供 AI vision 识别；引用 post 消息修复 flat format 兼容（2026-02-14） |
 | 6 | **权限错误自动诊断** | ✅ 已验证 | `extractPermissionError()` 正确检测 code=99991672 并提取 grant URL |
 | 7 | **发送者姓名解析** | ❌ 个人版不可用 | `resolveFeishuSenderName()` 代码正常，权限已开通，API 返回 `code=0` 但 user 对象只有 `open_id,union_id,mobile_visible`，无 `name` 字段。**飞书个人版通讯录 API 不返回用户姓名（平台限制）**，需企业版/旗舰版 |
-| 8 | **画板/白板内容读取** | ✅ 已验证 | `feishu_doc` 的 `read` 自动检测 block type_43，Board API 导出 PNG + vision image block 返回。日志 11:35/12:18/12:19 确认图片自动 resize 后 AI 成功理解画板内容（2063 字总结）。需要 `board:whiteboard` 权限（已开通）。**独家能力** |
+| 8 | **画板/白板内容读取** | ✅ 已验证 | `feishu_doc` 的 `read` 自动检测 block type_43，Board API 导出 PNG + vision image block 返回。日志 11:35/12:18/12:19 确认图片自动 resize 后 AI 成功理解画板内容（2063 字总结）。需要 `board:whiteboard:node:read` 权限（已开通）。**独家能力** |
 | 9 | **Emoji 表情回应** | ✅ 已验证 | 两个机制：(1) 自动 ACK reaction — 收到消息时加 `Get` emoji，AI 回复后移除（typing indicator）；(2) AI 主动 react — 通过 `message` tool 的 `action="react"` 对消息加任意 emoji（已验证 THUMBSUP）。需要 `im:message.reaction:create` 权限 |
 | 10 | **回复样式（quote-reply）** | ✅ 已验证 | CardKit 流式卡片通过 `im.message.reply` + `msg_type=interactive` 发送，AI 回复自动关联用户原消息，显示 `回复 Bob: xxx` 引用样式。私聊和群聊均生效 |
 
@@ -1079,7 +1079,7 @@ npm 上至少有 4 个飞书相关包：
 
 #### 飞书开发者后台权限清单
 
-**已开通（2026-02-12 确认）：**
+**已开通（2026-02-15 更新，共 25 个 tenant 级别权限）：**
 
 | 权限 scope | 用途 | 需要的功能 |
 |------------|------|-----------|
@@ -1097,14 +1097,17 @@ npm 上至少有 4 个飞书相关包：
 | `docx:document:write_only` | 文档写入 | 文档追加/写入 |
 | `docx:document:create` | 创建文档 | 新建文档 |
 | `docx:document.block:convert` | Block 转换 | Markdown→Block |
-| `drive:drive:readonly` | 云盘只读 | 云盘文件列表 |
+| `drive:drive` | 云盘读写 | 云盘文件列表/创建文件夹（2026-02-15 升级） |
+| `drive:drive.metadata:readonly` | 文件元数据 | 云空间文件元数据查看（2026-02-15 新增） |
+| `drive:drive.search:readonly` | 搜索云文档 | 云文档搜索（2026-02-15 新增） |
+| `drive:drive:version:readonly` | 文档版本查看 | 查看文档版本信息（2026-02-15 新增） |
 | `wiki:wiki` | 知识库完整 | Wiki 读写 |
 | `wiki:wiki:readonly` | 知识库只读 | Wiki 导航/读取 |
-| `board:whiteboard` | 画板/白板读取 | 画板导出为 PNG 图片（P1 #8，已验证） |
-| `board:whiteboard:node:create` | 画板节点创建 | 画板操作 |
-| `board:whiteboard:node:read` | 画板节点读取 | 画板操作 |
-| `bitable:app:readonly` | 多维表格只读 | 多维表格数据读取（P1 #4，已开通待测试） |
-| `im:message.reaction:create` | 消息表情回应 | Emoji reaction 自动 ACK + AI 主动 react（P1 #9） |
+| `board:whiteboard:node:create` | 画板节点创建 | 画板内容创建 |
+| `board:whiteboard:node:read` | 画板节点读取 | 画板导出为 PNG 图片（P1 #8，已验证） |
+| `bitable:app` | 多维表格读写 | 多维表格记录读取/创建/更新（P1 #4，2026-02-15 升级并验证） |
+| `im:message.reactions:read` | 表情回应读取 | 读取消息上的 emoji 回应列表 |
+| `im:message.reactions:write_only` | 表情回应写入 | Emoji reaction 自动 ACK + AI 主动 react（P1 #9） |
 
 **尚未开通（需要时申请）：**
 
@@ -1118,7 +1121,8 @@ npm 上至少有 4 个飞书相关包：
 | # | 任务 | 参考文件 | 工作量 | 说明 |
 |---|------|---------|--------|------|
 | 9 | **权限管理工具** | `perm.ts` ~170 行 + skill | 0.5 天 | `feishu_perm` 工具，协作者 CRUD |
-| 10 | **通讯录查询** | `directory.ts` ~175 行 | 1 天 | 列出企业用户/群组，200 人部署场景有用 |
+| 10 | **通讯录查询** | ✅ 已完成 | — | `feishu_directory` 工具（`directory.ts` 162 行），用户列表/用户详情/部门列表。个人版限制：不返回用户姓名（仅 open_id/status），企业版正常（2026-02-15） |
+| 10b | **群聊管理** | ✅ 已完成 | — | `feishu_chat` 工具（`chat.ts` 142 行），Bot 已加入的群列表/群详情/群成员列表。SDK 方法名修复：`chatMembers.get`（非 `.list`）（2026-02-15） |
 | 11 | **Config Schema 验证** | `config-schema.ts` ~172 行 | 1 天 | Typebox 完整配置校验，减少 200 bot 部署时的配置错误 |
 | 12 | **Onboarding CLI** | `onboarding.ts` ~359 行 | 1.5 天 | `openclaw setup` 交互式引导配置飞书凭证 |
 | 13 | **状态探测** | `probe.ts` ~44 行 | 0.5 天 | `openclaw channels status` 显示飞书连接状态 |
@@ -1138,6 +1142,7 @@ npm 上至少有 4 个飞书相关包：
 | ACK 超时修复 | ✅ 已验证 | `void` 异步 + `trackMessageId` 去重。社区版 WebSocket 模式仍有此 bug |
 | 企业 200 Bot 部署 | ✅ 已验证 | Docker 容器隔离 + CSV 用户管理 + 滚动升级 |
 | 纯 @mention 回复 | ✅ 已验证 | 群聊中纯 @bot（不带文字）不再被丢弃，正常触发回复（2026-02-12） |
+| 群聊管理 + 通讯录查询 | ✅ 已验证 | `feishu_chat`（群列表/群详情/群成员）+ `feishu_directory`（用户/部门查询）。19 项全量测试 18 项通过，唯一失败项为云盘 create_folder 工具层 bug（2026-02-15） |
 | Wiki→Doc 全链路 | ✅ 已验证 | `feishu_wiki` 返回 hint 引导 AI 用 `feishu_doc` 读取正文。日志 11:32 确认 wiki(2次)→doc(3次) 全链路零报错、800 字总结（2026-02-12） |
 | **画板/白板内容读取** | ✅ 已验证 | `feishu_doc` 的 `read` 自动检测 block type_43，Board API 导出 PNG + vision。日志 11:35/12:18/12:19 三次确认图片 resize + AI 2063 字总结。**社区版和所有已知飞书 bot 均未实现——独家优势**（2026-02-12） |
 

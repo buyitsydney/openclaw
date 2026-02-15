@@ -371,7 +371,7 @@ git checkout v旧版本
 |---|------|------|
 | 1 | 创建应用 + 启用机器人 | 创建应用，添加「机器人」能力 |
 | 2 | 记录凭证 | 复制 App ID + App Secret |
-| 3 | 批量导入权限 | 粘贴 JSON 导入 22 个权限 |
+| 3 | 批量导入权限 | 粘贴 JSON 导入 26 个权限 |
 | 4 | 第一次发布 | 可用范围 = 指定人员，只选一人（见下方说明） |
 | 5 | 确认 Bot 可见 | 让目标员工搜索 Bot，确认能找到 |
 | 6 | 交给部署者 | 等部署者确认 WSClient connected |
@@ -414,7 +414,7 @@ git checkout v旧版本
 {
   "scopes": {
     "tenant": [
-      "bitable:app:readonly",
+      "bitable:app",
       "board:whiteboard:node:create",
       "board:whiteboard:node:read",
       "cardkit:card:write",
@@ -425,7 +425,10 @@ git checkout v旧版本
       "docx:document:create",
       "docx:document:readonly",
       "docx:document:write_only",
-      "drive:drive:readonly",
+      "drive:drive",
+      "drive:drive.metadata:readonly",
+      "drive:drive.search:readonly",
+      "drive:drive:version:readonly",
       "im:chat:readonly",
       "im:message",
       "im:message.group_msg",
@@ -444,12 +447,12 @@ git checkout v旧版本
 
 点击「下一步，确认新增权限」→ 确认即可。已开通的权限不会重复添加。
 
-> **权限分类（共 22 个，全部为 tenant 级别）**：
+> **权限分类（共 25 个，全部为 tenant 级别）**：
 > - **消息基础**（6 个）：`im:message`、`im:message:send_as_bot`、`im:message.group_msg`、`im:message.p2p_msg:readonly`、`im:chat:readonly`、`im:resource` — 消息收发 + 图片 + 群聊归档
 > - **卡片流式回复**（1 个）：`cardkit:card:write` — AI 打字机效果
 > - **Emoji 表情**（2 个）：`im:message.reactions:read`、`im:message.reactions:write_only` — AI 自动 Get 回应 + 点赞
 > - **联系人**（1 个）：`contact:contact.base:readonly` — 获取发送者姓名
-> - **文档/知识库**（12 个）：`docs:doc`、`docx:document*`（5 个）、`drive:drive:readonly`、`wiki:wiki*`（2 个）、`board:whiteboard*`（2 个）、`bitable:app:readonly` — AI 读写飞书文档、Wiki、白板、多维表格
+> - **文档/知识库**（15 个）：`docs:doc`、`docx:document*`（5 个）、`drive:drive`（云盘读写）、`drive:drive.metadata:readonly`（文件元数据）、`drive:drive.search:readonly`（搜索）、`drive:drive:version:readonly`（版本查看）、`wiki:wiki*`（2 个）、`board:whiteboard:node:*`（2 个）、`bitable:app`（多维表格读写） — AI 读写飞书文档、Wiki、白板、多维表格、云盘
 
 **步骤 5：第一次发布（让 Bot 在飞书客户端可见 + 使长连接可用）**
 
