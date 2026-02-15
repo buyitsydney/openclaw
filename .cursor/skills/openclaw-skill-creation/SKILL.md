@@ -5,18 +5,28 @@ description: Create or add new OpenClaw agent skills (bundled or workspace). Use
 
 # Adding Skills to OpenClaw
 
+## CRITICAL: Skill 存放位置规则
+
+**所有 skill 必须放在 repo 的 `skills/` 目录下！禁止在 workspace 创建 skill！**
+
+- **允许**: `skills/<name>/SKILL.md`（repo 内，自动同步到所有 Docker 容器）
+- **禁止**: `~/.openclaw/workspace/skills/`（本地 workspace，不会同步到 Docker，造成本地和容器不一致）
+- **禁止**: AI 运行时自动在 workspace 下新建/迁移 skill
+
+原因：Docker 镜像只打包 repo 内的 `skills/`。workspace skills 不会同步到容器，导致本地 Her 和 Docker 企业部署的 skill 版本不一致。
+
+**如果 AI 在运行时修改了 skill 内容**（如更新 `references/sources.md`），修改应直接写入 repo 的 `skills/` 目录，而不是 workspace。
+
 ## Skill Types and Where to Put Them
 
 | Type | Path | Scope | Use When |
 |------|------|-------|----------|
-| **Bundled** | `skills/<name>/SKILL.md` (source repo) | All users, all Docker containers | Skill should ship with the product |
-| **Workspace** | `~/.openclaw/workspace/skills/<name>/SKILL.md` | Single user, local only | Personal/experimental skill |
-| **Managed** | `~/.openclaw/skills/<name>/SKILL.md` | Single machine, shared across workspaces | Installed via `openclaw skill install` |
+| **Bundled (唯一推荐)** | `skills/<name>/SKILL.md` (source repo) | All users, all Docker containers | 所有 skill 都放这里 |
+| ~~Workspace~~ | ~~`~/.openclaw/workspace/skills/`~~ | ~~Single user~~ | **禁止使用！不同步 Docker！** |
+| **Managed** | `~/.openclaw/skills/<name>/SKILL.md` | Single machine | 仅限 `openclaw skill install` 安装的第三方 skill |
 | **Plugin** | `extensions/<plugin>/skills/<name>/SKILL.md` | Users who enable the plugin | Skill tied to a specific plugin |
 
-**Priority** (highest wins for same-name skill): workspace > managed > bundled > extraDirs.
-
-**For Docker deployments**: only **bundled** skills are automatically included in the image. Workspace/managed skills require volume mounts.
+**For Docker deployments**: only **bundled** skills are automatically included in the image.
 
 ## Creating a New Bundled Skill
 

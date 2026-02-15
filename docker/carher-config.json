@@ -4,8 +4,12 @@
   },
   "agents": {
     "defaults": {
+      "contextTokens": 200000,
       "model": {
         "primary": "openrouter/anthropic/claude-sonnet-4"
+      },
+      "compaction": {
+        "mode": "safeguard"
       }
     }
   },
@@ -26,6 +30,35 @@
     "native": "auto",
     "nativeSkills": "auto",
     "restart": false
+  },
+  "models": {
+    "providers": {
+      "openrouter": {
+        "baseUrl": "https://openrouter.ai/api/v1",
+        "models": [
+          {
+            "id": "anthropic/claude-sonnet-4",
+            "name": "Claude Sonnet 4",
+            "api": "openai-completions",
+            "reasoning": true,
+            "input": ["text", "image"],
+            "contextWindow": 200000,
+            "maxTokens": 64000,
+            "cost": { "input": 3, "output": 15, "cacheRead": 0.3, "cacheWrite": 3.75 }
+          },
+          {
+            "id": "anthropic/claude-opus-4.6",
+            "name": "Claude Opus 4.6",
+            "api": "openai-completions",
+            "reasoning": true,
+            "input": ["text", "image"],
+            "contextWindow": 200000,
+            "maxTokens": 128000,
+            "cost": { "input": 5, "output": 25, "cacheRead": 0.5, "cacheWrite": 6.25 }
+          }
+        ]
+      }
+    }
   },
   "gateway": {
     "port": 18789,

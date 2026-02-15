@@ -1,13 +1,23 @@
 # 监控账号列表
 
-## 活跃账号
+## Twitter 账号
 
-| 账号 | Username | 推送频率 | 推送渠道 | 推送目标 | 备注 |
-|------|----------|---------|---------|---------|------|
-| Elon Musk | elonmusk | 每日 06:00 CST | feishu | ou_4e2a42036050d192b367829818e700d5 | 天哥关注 |
-| Google | Google | 每日 06:00 CST | feishu | ou_4e2a42036050d192b367829818e700d5 | 天哥关注 |
-| NVIDIA | nvidia | 每日 06:00 CST | feishu | ou_4e2a42036050d192b367829818e700d5 | 天哥关注 |
-| Microsoft | Microsoft | 每日 06:00 CST | feishu | ou_4e2a42036050d192b367829818e700d5 | 天哥关注 |
+| 账号 | Username | 推送频率 | 推送渠道 | 备注 |
+|------|----------|---------|---------|------|
+| Elon Musk | elonmusk | 每日 06:00 CST | feishu | Tesla/SpaceX/xAI/DOGE |
+| Google | Google | 每日 06:00 CST | feishu | Gemini/DeepMind |
+| Anthropic | AnthropicAI | 每日 06:00 CST | feishu | Claude（Her 主脑） |
+| Cursor | cursor_ai | 每日 06:00 CST | feishu | AI 编程工具 |
+| OpenAI | OpenAI | 每日 06:00 CST | feishu | GPT/Agents/竞品 |
+| Meta AI | AIatMeta | 每日 06:00 CST | feishu | Llama 开源生态 |
+| Andrej Karpathy | karpathy | 每日 06:00 CST | feishu | 前 Tesla AI，深度洞察 |
+
+## 非 Twitter 信息源
+
+| 来源 | URL | 推送频率 | 推送渠道 | 备注 |
+|------|-----|---------|---------|------|
+| 机器之心 | jiqizhixin.com | 每日 06:00 CST | feishu | 国内最专业AI媒体 |
+| ArXiv Daily | huggingface.co/papers | 每日 06:00 CST | feishu | HuggingFace 论文精选 |
 
 ## 推送偏好
 
@@ -18,3 +28,4 @@
 - 重要数据和数字要保留
 - 互动量大的重点标注
 - 图片要下载并发送
+- **精简格式**：重点展开 2-3 条 + 其余一行速览 + 综合洞察
