@@ -29,6 +29,66 @@ import { existsSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } fr
 import { join } from "node:path";
 import { homedir } from "node:os";
 
+// ── CardKit status footer helpers ────────────────────────────────────────
+// Appended to every AI reply card to show model + context usage at a glance.
+
+/** Shorten model ID to a display name (e.g., "claude-sonnet-4-20250514" → "Sonnet 4"). */
+function shortenModelName(model?: string): string {
+  if (!model) return "unknown";
+  const claude = model.match(/claude-(\w+)-([\d.]+)/);
+  if (claude) {
+    const family = claude[1].charAt(0).toUpperCase() + claude[1].slice(1);
+    return `${family} ${claude[2]}`;
+  }
+  if (model.startsWith("gpt-")) return model.replace(/-\d{4}-\d{2}-\d{2}$/, "");
+  if (model.startsWith("gemini-")) return model.replace(/-\d{4,}$/, "");
+  return model.length > 24 ? model.slice(0, 24) + "…" : model;
+}
+
+/** Format token count for compact display (e.g., 42000 → "42k"). */
+function formatTokenCompact(value?: number): string {
+  if (value === undefined || !Number.isFinite(value) || value <= 0) return "?";
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k`;
+  return String(Math.round(value));
+}
+
+/** Build a concise status footer for CardKit cards from the session store.
+ *  Same data source as /status. Returns empty string if unavailable. */
+function buildCardStatusFooter(params: {
+  storePath: string;
+  sessionKey: string;
+  config: OpenClawConfig;
+}): string {
+  try {
+    const raw = readFileSync(params.storePath, "utf-8");
+    const store = JSON.parse(raw);
+    const entry = store?.[params.sessionKey];
+    if (!entry) return "";
+
+    const model = entry.modelOverride ?? entry.model;
+    const totalTokens = entry.totalTokens ?? ((entry.inputTokens ?? 0) + (entry.outputTokens ?? 0));
+    const contextTokens =
+      entry.contextTokens ?? params.config?.agents?.defaults?.contextTokens ?? null;
+
+    const modelLabel = shortenModelName(model);
+    const totalLabel = formatTokenCompact(totalTokens);
+    const ctxLabel = contextTokens ? formatTokenCompact(contextTokens) : "?";
+    const pct =
+      contextTokens && totalTokens ? Math.round((totalTokens / contextTokens) * 100) : null;
+    const compactions = entry.compactionCount ?? 0;
+
+    const usageText =
+      pct !== null ? `${totalLabel}/${ctxLabel} (${pct}%)` : `${totalLabel}/${ctxLabel}`;
+
+    const warn = pct !== null && pct >= 70;
+    const icon = warn ? "⚠️" : "🧠";
+    return `\n\n---\n${icon} **${modelLabel}** · 📊 ${usageText} · 🧹 ${compactions}次压缩`;
+  } catch {
+    return "";
+  }
+}
+
 // ── Permission error extraction ─────────────────────────────────────────
 // Detect Feishu API permission errors (code 99991672) and extract the grant URL
 // so the agent can report actionable guidance instead of an opaque error.
@@ -970,6 +1030,13 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         : undefined,
     },
   });
+  // Append status footer (model + context usage) to the card before closing.
+  if (cardStream?.started && cardStreamFinalText) {
+    const footer = buildCardStatusFooter({ storePath, sessionKey: route.sessionKey, config });
+    if (footer) {
+      cardStreamFinalText += footer;
+    }
+  }
   // Ensure card stream is stopped and ACK reaction is removed after dispatch completes.
   await Promise.all([
     cardStream?.started ? stopCardStream() : Promise.resolve(),

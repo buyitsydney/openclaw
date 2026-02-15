@@ -7,7 +7,7 @@
 
 **最终方案：200 Bot + 200 Docker（每人一个独立 OpenClaw 容器）**
 
-**验证状态 (2026-02-14)：飞书并发测试通过、数据隔离已确认、Webchat 隔离已确认、自动镜像重建已实现、Web Search (Perplexity) 已验证、Browser Use (Chromium headless) 已验证**（均为本地 Mac 验证，Ubuntu 企业部署尚未执行）
+**验证状态 (2026-02-15)：飞书并发测试通过、数据隔离已确认、Webchat 隔离已确认、自动镜像重建已实现、Web Search (Perplexity) 已验证、Browser Use (Chromium headless) 已验证、Context Window 240K 保护已配置、CardKit 状态 Footer 已实现**（均为本地 Mac 验证，Ubuntu 企业部署尚未执行）
 
 ---
 
@@ -278,6 +278,14 @@ source ~/.bashrc
 > - `realtime.config.gemini.projectId` 必须填企业自己的 Google Cloud 项目 ID（前置条件中记录的），语音费用记在该项目下。**不配置则语音请求返回 500 错误，不会 fallback 到他人账号**
 > - `realtime.config.gemini.projectId` 和 `model` 均支持热切换：修改 `openclaw.json` 后无需重启服务，下一次语音连接自动使用新值（已验证：本地 + Docker 8 项测试全部通过）
 > - 飞书插件在用户发送 `/new` 时自动发送 Webchat URL（从 gateway 配置自动计算，Docker 模式下可通过 `WEBCHAT_URL` 环境变量覆盖）
+>
+> **Context Window 240K 保护（2026-02-15 新增）**：
+> - `carher-config.json` 已预配置 `agents.defaults.contextTokens: 240000` + `compaction.mode: "safeguard"`，限制每个用户的最大上下文窗口为 240K token
+> - `models.providers` 定义了 Sonnet 4 和 Opus 4.6 两个模型，均设 `contextWindow: 240000`，确保 compaction 在接近上限时自动触发
+> - **关键**: `contextTokens` 和 `contextWindow` 必须对齐，否则 compaction 不会触发（已实测验证）
+> - 每条 AI 回复的飞书卡片底部自动显示模型名 + context 用量 + 压缩次数（CardKit 状态 footer）
+> - 这是防止单个用户在长对话中无限消耗 token 导致高额费用的关键保护措施
+> - CSV 中 `模型` 列可覆盖默认模型（如 `opus`），上下文窗口限制仍然生效
 
 ### Docker 部署
 
@@ -527,6 +535,7 @@ git checkout v旧版本
 | 飞书客户端搜不到 Bot？ | 还没有发布第一个版本，或可用范围未包含你（让目标员工而非 IT 自己去搜） |
 | 搜索到 Bot 但没有回复？ | 事件订阅未配置，或配置后没有发布第二个版本 |
 | 每个应用最多几个长连接？ | 50 个。但 200 Bot 方案中每个 Bot 是独立应用（各 1 个连接），不受此限制 |
+| 容器重启后 Browser Use 不工作？ | Chrome 的 `SingletonLock` 文件残留（容器重启后 hostname 变化导致）。`carher-entrypoint.sh` 已内置自动清理，确保使用最新镜像。手动修复：`docker exec carher-N rm -f /data/.openclaw/browser/*/user-data/SingletonLock /data/.openclaw/browser/*/user-data/SingletonSocket /data/.openclaw/browser/*/user-data/SingletonCookie` 后重启容器 |
 
 ### 员工生命周期
 

@@ -4,7 +4,7 @@
   },
   "agents": {
     "defaults": {
-      "contextTokens": 200000,
+      "contextTokens": 240000,
       "model": {
         "primary": "openrouter/anthropic/claude-sonnet-4"
       },
@@ -42,7 +42,7 @@
             "api": "openai-completions",
             "reasoning": true,
             "input": ["text", "image"],
-            "contextWindow": 200000,
+            "contextWindow": 240000,
             "maxTokens": 64000,
             "cost": { "input": 3, "output": 15, "cacheRead": 0.3, "cacheWrite": 3.75 }
           },
@@ -52,7 +52,7 @@
             "api": "openai-completions",
             "reasoning": true,
             "input": ["text", "image"],
-            "contextWindow": 200000,
+            "contextWindow": 240000,
             "maxTokens": 128000,
             "cost": { "input": 5, "output": 25, "cacheRead": 0.5, "cacheWrite": 6.25 }
           }

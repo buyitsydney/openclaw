@@ -337,7 +337,7 @@ outbound: {
 | `index.ts` | 17 | 入口注册 |
 | `src/channel.ts` | 254 | ChannelPlugin 主体 + sendMedia 图片上传 + 目标解析 |
 | `src/runtime.ts` | 14 | Runtime 单例 |
-| `src/gateway.ts` | 733 | WSClient + pipeline 集成 + 富文本解析 + 回复投递 + 图片下载/接收 + CardKit 流式卡片 + 群聊归档 |
+| `src/gateway.ts` | 733 | WSClient + pipeline 集成 + 富文本解析 + 回复投递 + 图片下载/接收 + CardKit 流式卡片 + 群聊归档 + CardKit 状态 footer |
 | `src/outbound.ts` | 667 | Lark SDK 消息发送 + ID 类型识别 + 图片上传/发送/下载 + Markdown→Post 转换 + CardKit API |
 | `src/accounts.ts` | 133 | 账户 / 凭证解析 + 群聊主人 ID 解析 |
 | **总计** | **~1800** | 全部在 `extensions/feishu/` 内 |
@@ -811,8 +811,8 @@ cardkit.v1.card.settings({
 5. **Onboarding CLI**：`openclaw setup` 交互式引导配置飞书凭证
 6. **状态探测**：`openclaw channels status` 显示飞书连接状态
 7. **企业多用户部署**：见 [her-feishu-bot-enterprise-deploy.md](her-feishu-bot-enterprise-deploy.md)（200 Bot + 200 Docker 方案，已验证）
-8. **Context Window 自动约束**：默认限制 context window 为 200k token，防止用户无感知地大量消耗 token 导致高额费用。用户可通过配置手动提高上限
-9. **飞书端 Context Window 可视化**：在飞书消息中展示当前 context window 使用量（如 `42k / 200k`），当接近上限时主动提醒用户，让用户清楚感知对话长度和费用
+8. ~~**Context Window 自动约束**~~：已实现（2026-02-15）-- 默认限制 context window 为 240K token（`contextTokens` + `contextWindow` 对齐），防止用户无感知地大量消耗 token 导致高额费用。详见 [context-window-architecture.md](context-window-architecture.md)
+9. ~~**飞书端 Context Window 可视化**~~：已实现（2026-02-15）-- 每条 AI 回复的 CardKit 卡片底部自动追加状态行，格式: `🧠 **模型名** · 📊 Xk/240k (Y%) · 🧹 N次压缩`，数据源复用 `/status` session store，>=70% 自动警告。实现位于 `extensions/feishu/src/gateway.ts`
 
 ---
 

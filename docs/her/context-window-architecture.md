@@ -443,7 +443,7 @@ const modelWithCap = { ...params.model, contextWindow: resolvedCtxTokens };
 | upstream keepRecentTokens 默认 | 20,000 | settings-manager.js |
 | `models.providers` contextWindow 优先级 | 最高 (> model catalog > default) | context-window-guard.ts |
 
-### 14.5 企业级部署配置 (200K)
+### 14.5 企业级部署配置 (240K)
 
 **当前配置** (`~/.openclaw/openclaw.json` + `docker/carher-config.json`):
 
@@ -451,6 +451,7 @@ const modelWithCap = { ...params.model, contextWindow: resolvedCtxTokens };
 {
   "agents": {
     "defaults": {
+      "contextTokens": 240000,
       "model": { "primary": "openrouter/anthropic/claude-opus-4.6" },
       "compaction": { "mode": "safeguard" }
     }
@@ -461,7 +462,7 @@ const modelWithCap = { ...params.model, contextWindow: resolvedCtxTokens };
         "baseUrl": "https://openrouter.ai/api/v1",
         "models": [{
           "id": "anthropic/claude-opus-4.6",
-          "contextWindow": 200000,
+          "contextWindow": 240000,
           "maxTokens": 128000
         }]
       }
@@ -470,39 +471,45 @@ const modelWithCap = { ...params.model, contextWindow: resolvedCtxTokens };
 }
 ```
 
+**关键**: `contextTokens` 和 `contextWindow` 必须对齐（2026-02-15 实测验证）。
+
 **效果**:
-- compaction 触发点: 200K - 16K = **184K tokens**
-- 避免 OpenRouter > 200K premium 定价
-- 工具链空间充足（184K 足够处理复杂多轮工具调用）
+- compaction 触发点: 240K - 16K = **224K tokens**
+- 避免 OpenRouter > 200K premium 定价（240K 仍在安全范围内）
+- 工具链空间充足（224K 足够处理复杂多轮工具调用）
 
-### 14.6 已知问题：两套 context 配置的混淆
+### 14.6 已解决：两套 context 配置的混淆
 
-`/status` 显示 `Context: 34k/20k (172%)` 中的 "20k" 来自 `agents.defaults.contextTokens: 20000`（OpenClaw 内部 cap），而**实际 compaction 阈值是 184K**（来自 `models.providers...contextWindow: 200000`）。
+> **已解决（2026-02-15）**: 两个值已统一为 240K，不再混淆。以下为原始问题记录。
+
+**原始问题**: `/status` 显示 `Context: 34k/20k (172%)` 中的 "20k" 来自 `agents.defaults.contextTokens: 20000`（OpenClaw 内部 cap），而**实际 compaction 阈值是 184K**（来自 `models.providers...contextWindow: 200000`）。
 
 两者是独立的系统：
 
-| 配置 | 值 | 实际控制什么 |
-|------|-----|------------|
-| `agents.defaults.contextTokens` | 20,000 | OpenClaw /status 显示的 cap + safeguard runtime 参考 |
-| `models.providers...contextWindow` | 200,000 | upstream pi-coding-agent 的 compaction 触发 |
+| 配置 | 原始值 | 当前值 | 实际控制什么 |
+|------|-------|-------|------------|
+| `agents.defaults.contextTokens` | 20,000 | **240,000** | OpenClaw /status 显示的 cap + safeguard runtime 参考 |
+| `models.providers...contextWindow` | 200,000 | **240,000** | upstream pi-coding-agent 的 compaction 触发 |
 
-这是**架构断层**的表现：OpenClaw 的 `contextTokens` 不传递给 upstream compaction 逻辑。
+这是**架构断层**的表现：OpenClaw 的 `contextTokens` 不传递给 upstream compaction 逻辑。**解决方案**: 将两个值手动对齐为 240K。
 
 ### 14.7 已完成工作
 
 - [x] ~~contextWindow 配置方案验证~~ — `models.providers` 配置有效，已在 minimax + Opus 测试验证
-- [x] ~~企业级 200K 部署配置~~ — 已配置并同步 Docker carher-4
+- [x] ~~企业级 240K 部署配置~~ — 已配置并同步本地 + Docker carher-4
 - [x] ~~Docker Browser Use 修复~~ — 根因: stale SingletonLock，已修复 entrypoint + 手动清理
 - [x] ~~Skills 统一到 repo~~ — 删除 workspace skills，强制 repo-only 管理
-- [x] ~~`/status` 显示修复~~ — 本地: `contextTokens` 已设为 200000 对齐；Docker: 同步
+- [x] ~~`/status` 显示修复~~ — 本地 + Docker: `contextTokens` 和 `contextWindow` 对齐为 240K
 - [x] ~~Docker 配置同步~~ — `carher-config.json` 已包含 contextTokens + compaction + 双模型定义
+- [x] ~~CardKit 状态 footer~~ — 每条飞书 AI 回复底部显示 `🧠 **模型名** · 📊 Xk/240k (Y%) · 🧹 N次压缩`
+- [x] ~~compaction 架构断层实测确认~~ — contextTokens (cap) 与 contextWindow (compaction 阈值) 必须对齐，否则 compaction 永远不触发
 
-**第一阶段总结（2025-02-15 完成）**：
+**第一阶段总结（2026-02-15 完成）**：
 
-| 环境 | 模型 | contextWindow | compaction | browser | 状态 |
-|------|------|--------------|-----------|---------|------|
-| 本地 Her | Opus 4.6 | 200K | safeguard | 未验证 | 配置完成 |
-| Docker carher-4 | Opus 4.6 (可 CSV 覆盖) | 200K | safeguard | Chrome 运行中 | 配置完成 + 验证 |
+| 环境 | 模型 | contextTokens | contextWindow | compaction | browser | 状态 |
+|------|------|--------------|--------------|-----------|---------|------|
+| 本地 Her | Opus 4.6 | 240K | 240K | safeguard | 未验证 | 配置完成 |
+| Docker carher-4 | Sonnet 4 / Opus 4.6 | 240K | 240K | safeguard | Chrome 运行中 | 配置完成 + 验证 |
 
 ### 14.8 待解决问题 (TODO)
 
@@ -519,9 +526,8 @@ const modelWithCap = { ...params.model, contextWindow: resolvedCtxTokens };
   - 200K 下影响较小（compaction 极少触发），但触发时 summary 仍为空
 - [ ] **P1: 向 OpenClaw 上游提 issue** — safeguard extension wiring bug
 - [ ] **P1: 本地 Her browser use 验证** — Docker 已确认工作，本地 Mac 环境未验证
-- [ ] **P2: 验证 200K 配置下 compaction 正确性** — 需要长对话测试（超过 200K 才触发）
-- [ ] **P2: entrypoint 永久修复上线** — `carher-entrypoint.sh` 已修改但需重建镜像才生效
-  - 当前容器靠手动删锁文件修复，下次 `start-user.sh` 重建后永久生效
+- [ ] **P2: 验证 240K 配置下 compaction 正确性** — 需要长对话测试（超过 240K 才触发）
+- [x] ~~**P2: entrypoint 永久修复上线**~~ — `carher-entrypoint.sh` 修改已烤入 Docker 镜像（2026-02-15 重建确认）
 
 ### 14.8 Docker Browser Use 故障根因与修复 (2025-02-15)
 
@@ -557,18 +563,31 @@ find /data/.openclaw/browser -name "SingletonLock" -o -name "SingletonSocket" -o
 - Chrome lazy launch：service "ready" 不等于 Chrome 运行，首次 browser action 才启动
 - `ensureProfileCleanExit()` 只清理 Preferences 中的 exit_type，不清理 SingletonLock
 
-### 14.10 当前配置快照 (2025-02-15)
+### 14.10 当前配置快照 (2026-02-15)
 
 **本地 Her** (`~/.openclaw/openclaw.json`):
-- `agents.defaults.contextTokens`: 200,000
+- `agents.defaults.contextTokens`: 240,000
 - `agents.defaults.compaction.mode`: safeguard
 - `agents.defaults.model.primary`: openrouter/anthropic/claude-opus-4.6
-- `models.providers`: minimax-m2.5 (contextWindow=204800) + opus-4.6 (contextWindow=200000)
+- `models.providers`: minimax-m2.5 (contextWindow=240000) + opus-4.6 (contextWindow=240000)
 
 **Docker carher-4** (`/data/.openclaw/openclaw.json`, 基于 `docker/carher-config.json`):
-- `agents.defaults.contextTokens`: 200,000
+- `agents.defaults.contextTokens`: 240,000
 - `agents.defaults.compaction.mode`: safeguard
-- `agents.defaults.model.primary`: openrouter/anthropic/claude-opus-4.6
-- `models.providers`: sonnet-4 (contextWindow=200000) + opus-4.6 (contextWindow=200000)
+- `agents.defaults.model.primary`: openrouter/anthropic/claude-sonnet-4
+- `models.providers`: sonnet-4 (contextWindow=240000) + opus-4.6 (contextWindow=240000)
 - `browser`: enabled + headless + noSandbox
-- Chrome 状态: 运行中 (PID 90, CDP on 18800)
+
+### 14.11 CardKit 状态 Footer (2026-02-15)
+
+每条飞书 AI 回复的 CardKit 卡片底部自动追加状态行，数据源复用 `/status` 的 session store。
+
+**格式**：
+- 正常: `🧠 **Opus 4.6** · 📊 42k/240k (18%) · 🧹 0次压缩`
+- 警告 (>=70%): `⚠️ **Opus 4.6** · 📊 170k/240k (71%) · 🧹 2次压缩`
+
+**实现**: `extensions/feishu/src/gateway.ts`
+- `buildCardStatusFooter()`: dispatch 完成后读 session store，格式化 model + totalTokens/contextTokens + compactionCount
+- 追加到 `cardStreamFinalText`，在 `stopCardStream()` 之前写入卡片
+
+**关键发现（实测）**: `contextTokens` (OpenClaw cap) 和 `contextWindow` (模型定义) 必须对齐。如果只改 `contextTokens` 而不改 `contextWindow`，pi-coding-agent 仍然用 `contextWindow` 做 compaction 判断，导致 compaction 永远不触发。
