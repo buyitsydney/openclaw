@@ -14,6 +14,10 @@ mkdir -p /data/.openclaw/workspace
 # causing Chromium to refuse starting ("profile in use by another computer").
 find /data/.openclaw/browser -name "SingletonLock" -o -name "SingletonSocket" -o -name "SingletonCookie" 2>/dev/null | xargs rm -f 2>/dev/null || true
 
+# Clean stale session write locks — previous container may have been killed
+# before releasing locks; PID reuse in containers causes false "alive" detection.
+find /data/.openclaw -name "*.jsonl.lock" -delete 2>/dev/null || true
+
 # Start Live Frontend Proxy in background
 echo "▶ Starting Live Frontend Proxy..."
 cd /app/extensions/realtime/live-frontend

@@ -887,6 +887,12 @@ Her 是专属私人秘书，**绝对不可以对外和主人以外的任何人�
 - 只有 `docker volume rm` 才会删除
 - 200 人企业部署：每人独立 named volume，互不干扰
 
+> **已知问题（2026-02-15 已修复）：容器重启后 session write lock 死锁**
+>
+> 容器被 kill 时进程来不及释放 `.jsonl.lock` 文件，残留在 named volume 上。新容器启动后，主进程 PID 与旧容器相同（容器内永远是低号 PID），`isAlive(pid)` 误判为有效锁，导致 agent 无法写入 session 文件（10 秒超时报错 `session file locked`）。
+>
+> **修复**：`scripts/carher-entrypoint.sh` 在 gateway 启动前清理所有残留 `.jsonl.lock` 文件。容器刚启动时不可能有合法的 session write 在进行，清理零风险。
+
 #### 数据量估算
 
 - 每条消息约 200 bytes
