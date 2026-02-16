@@ -5,6 +5,7 @@
 #   ./start-user.sh --id=1                    # 启动 user1 容器（默认 Sonnet）
 #   ./start-user.sh --id=1 --model=opus       # user1 + Opus 4.6
 #   ./start-user.sh --id=1 --random           # user1 + 临时随机隧道（一次性演示用）
+#   ./start-user.sh --id=1 --reset             # 重置语音 token（不重启容器）
 #   ./start-user.sh --id=1 --down             # 停止 user1
 #   ./start-user.sh --down                    # 停止所有用户容器
 #   ./start-user.sh --id=1 --logs             # 查看 user1 日志
@@ -57,6 +58,7 @@ for arg in "$@"; do
     --host=*) HOST_ARG="${arg#--host=}" ;;
     --random) MODE="random" ;;
     --local) ;; # 向后兼容，现在是默认行为
+    --reset) ACTION="voice-reset" ;;
     --down) ACTION="down" ;;
     --logs) ACTION="logs" ;;
     --list) ACTION="list" ;;
@@ -69,6 +71,7 @@ for arg in "$@"; do
       echo "  --model=MODEL 指定 AI 模型（覆盖 users.csv 中的设置）"
       echo "  --host=IP     Webchat 访问地址（默认 localhost，企业部署用内网 IP）"
       echo "  --random      附加临时随机隧道（一次性演示，关终端就消失）"
+      echo "  --reset       重置语音 token（不重启容器，立即生效）"
       echo "  --down        停止容器（不指定 --id 则停止所有）"
       echo "  --logs        查看容器日志"
       echo "  --list        列出所有注册用户和容器状态"
@@ -202,6 +205,44 @@ if [ "$ACTION" = "sync-workspace" ]; then
   fi
   echo -e "${YELLOW}同步 workspace 到 ${CONTAINER_NAME}...${NC}"
   sync_workspace "$CONTAINER_NAME"
+  exit 0
+fi
+
+# --- Voice token reset (no restart, immediate effect) ---
+if [ "$ACTION" = "voice-reset" ]; then
+  if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+    echo -e "${RED}✗ 容器 ${CONTAINER_NAME} 未运行${NC}"
+    echo -e "  先启动: ${YELLOW}./start-user.sh --id=${USER_ID}${NC}"
+    exit 1
+  fi
+  NEW_TOKEN=$(docker exec "$CONTAINER_NAME" python3 -c "import uuid; print(uuid.uuid4().hex)")
+  docker exec "$CONTAINER_NAME" bash -c "echo '${NEW_TOKEN}' > /data/.openclaw/.voice-token"
+  echo ""
+  echo -e "${GREEN}✓ Voice token 已重置${NC}"
+  echo -e "  容器: ${CONTAINER_NAME}"
+  echo -e "  新 Token: ${YELLOW}${NEW_TOKEN}${NC}"
+  echo ""
+  # Print updated vendor URLs with real token
+  case "$USER_ID" in
+    2) NAMED_PROXY_HOST="vendor-proxy.carher.net"; NAMED_FE_HOST="vendor-fe.carher.net" ;;
+    *) NAMED_PROXY_HOST="u${USER_ID}-proxy.carher.net"; NAMED_FE_HOST="u${USER_ID}-fe.carher.net" ;;
+  esac
+  echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+  echo -e "${CYAN}  厂商对接信息（直接复制发给厂商）${NC}"
+  echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+  echo ""
+  echo "  BOOTSTRAP_URL (App 启动时 HTTP GET 调用一次):"
+  echo "    https://${NAMED_FE_HOST}/api/realtime/bootstrap?token=${NEW_TOKEN}"
+  echo ""
+  echo "  PROXY_URL (WS 连接 1 — 音频双向流):"
+  echo "    wss://${NAMED_PROXY_HOST}"
+  echo ""
+  echo "  OPENCLAW_URL (WS 连接 2 — 后台 AI):"
+  echo "    wss://${NAMED_FE_HOST}/ws?token=${NEW_TOKEN}"
+  echo ""
+  echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+  echo ""
+  echo -e "${YELLOW}旧 token 已立即失效，厂商需更新 App 配置${NC}"
   exit 0
 fi
 
@@ -435,8 +476,14 @@ if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
   docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1
 fi
 
+# --- Resolve domain names (needed for VOICE env vars and URL display) ---
+case "$USER_ID" in
+  2) NAMED_RT_HOST="vendor.carher.net"; NAMED_PROXY_HOST="vendor-proxy.carher.net"; NAMED_FE_HOST="vendor-fe.carher.net" ;;
+  *) NAMED_RT_HOST="u${USER_ID}.carher.net"; NAMED_PROXY_HOST="u${USER_ID}-proxy.carher.net"; NAMED_FE_HOST="u${USER_ID}-fe.carher.net" ;;
+esac
+
 echo -e "${YELLOW}启动容器 ${CONTAINER_NAME}...${NC}"
-echo -e "  端口映射: GW=${PORT_GW} RT=${PORT_RT} FE=${PORT_FE} WS=${PORT_WS}"
+echo -e "  端口映射: GW=${PORT_GW} FE=${PORT_FE} WS=${PORT_WS} (RT=内部，不暴露)"
 docker run -d \
   --name "$CONTAINER_NAME" \
   --init \
@@ -445,8 +492,9 @@ docker run -d \
   -e OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
   -e GOOGLE_APPLICATION_CREDENTIALS=/gcloud/application_default_credentials.json \
   ${WEBCHAT_URL:+-e WEBCHAT_URL="$WEBCHAT_URL"} \
+  -e VOICE_FE_HOST="${NAMED_FE_HOST}" \
+  -e VOICE_PROXY_HOST="${NAMED_PROXY_HOST}" \
   -p "${PORT_GW}:18789" \
-  -p "${PORT_RT}:18790" \
   -p "${PORT_FE}:8000" \
   -p "${PORT_WS}:8080" \
   -v "carher-${USER_ID}-data:/data/.openclaw" \
@@ -477,6 +525,23 @@ fi
 # Auto-sync workspace templates on startup
 sync_workspace "$CONTAINER_NAME"
 
+# --- Auto-generate voice token if not exists (idempotent; preserves token across restarts) ---
+VOICE_TOKEN=$(docker exec "$CONTAINER_NAME" bash -c '
+  TOKEN_FILE="/data/.openclaw/.voice-token"
+  if [ -f "$TOKEN_FILE" ] && [ -s "$TOKEN_FILE" ]; then
+    cat "$TOKEN_FILE"
+  else
+    mkdir -p "$(dirname "$TOKEN_FILE")"
+    python3 -c "import uuid; print(uuid.uuid4().hex)" | tee "$TOKEN_FILE"
+  fi
+' 2>/dev/null || echo "")
+
+if [ -n "$VOICE_TOKEN" ]; then
+  echo -e "${GREEN}  ✓ Voice token 就绪${NC}"
+else
+  echo -e "${YELLOW}  ⚠ Voice token 生成失败（语音功能需要手动生成）${NC}"
+fi
+
 echo ""
 
 # --- Print local URLs ---
@@ -489,31 +554,50 @@ fi
 echo -e "  Mobile UI: ${GREEN}http://localhost:${PORT_FE}/mobile.html${NC}"
 echo -e "  Desktop:   ${GREEN}http://localhost:${PORT_FE}${NC}"
 echo -e "  Gateway:   ${GREEN}http://localhost:${PORT_GW}${NC}"
-echo -e "  Realtime:  ${GREEN}ws://localhost:${PORT_RT}/ws${NC}"
 echo -e "  WS Proxy:  ${GREEN}ws://localhost:${PORT_WS}${NC}"
+if [ -n "$VOICE_TOKEN" ]; then
+  echo -e "  Voice:     ${GREEN}http://localhost:${PORT_FE}/mobile.html?proxy=ws://localhost:${PORT_WS}&openclaw=ws://localhost:${PORT_FE}/ws&token=${VOICE_TOKEN}${NC}"
+else
+  echo -e "  Voice:     ${YELLOW}通过飞书 Bot 输入 /voice 获取带 token 的语音链接${NC}"
+fi
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
 
 # --- Print fixed remote URLs (based on naming convention) ---
-# 域名约定: uN.carher.net / uN-proxy.carher.net / uN-fe.carher.net
-# 特殊别名: id=2 → vendor.carher.net
-case "$USER_ID" in
-  2) NAMED_RT_HOST="vendor.carher.net"; NAMED_PROXY_HOST="vendor-proxy.carher.net"; NAMED_FE_HOST="vendor-fe.carher.net" ;;
-  *) NAMED_RT_HOST="u${USER_ID}.carher.net"; NAMED_PROXY_HOST="u${USER_ID}-proxy.carher.net"; NAMED_FE_HOST="u${USER_ID}-fe.carher.net" ;;
-esac
-
+# 域名约定: uN-fe.carher.net / uN-proxy.carher.net
+# RT 端口不暴露，语音流量通过 FE 代理；token 由 /voice 命令生成
 NAMED_PROXY_ENCODED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('wss://${NAMED_PROXY_HOST}'))")
-NAMED_OPENCLAW_ENCODED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('wss://${NAMED_RT_HOST}/ws'))")
+NAMED_OPENCLAW_ENCODED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('wss://${NAMED_FE_HOST}/ws'))")
 
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${CYAN}  User ${USER_ID} — 固定远程 URL（需 cloudflared 隧道运行）${NC}"
+TOKEN_DISPLAY="${VOICE_TOKEN:-<TOKEN>}"
+echo -e "${CYAN}  User ${USER_ID} — 固定远程 URL（需 cloudflared 隧道）${NC}"
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "  Mobile:    ${CYAN}https://${NAMED_FE_HOST}/mobile.html?proxy=${NAMED_PROXY_ENCODED}&openclaw=${NAMED_OPENCLAW_ENCODED}${NC}"
-echo -e "  Desktop:   ${CYAN}https://${NAMED_FE_HOST}?proxy=${NAMED_PROXY_ENCODED}&openclaw=${NAMED_OPENCLAW_ENCODED}${NC}"
+echo -e "  Mobile:    ${CYAN}https://${NAMED_FE_HOST}/mobile.html?proxy=${NAMED_PROXY_ENCODED}&openclaw=${NAMED_OPENCLAW_ENCODED}&token=${TOKEN_DISPLAY}${NC}"
+echo -e "  Desktop:   ${CYAN}https://${NAMED_FE_HOST}?proxy=${NAMED_PROXY_ENCODED}&openclaw=${NAMED_OPENCLAW_ENCODED}&token=${TOKEN_DISPLAY}${NC}"
 echo ""
-echo -e "  Bootstrap: https://${NAMED_RT_HOST}/api/realtime/bootstrap"
 echo -e "  Proxy:     wss://${NAMED_PROXY_HOST}"
-echo -e "  OpenClaw:  wss://${NAMED_RT_HOST}/ws"
+echo -e "  RT(内部):  通过 FE 代理访问 (${NAMED_FE_HOST}/ws)"
+if [ -z "$VOICE_TOKEN" ]; then
+  echo -e "  ${YELLOW}Token 未就绪，通过飞书 /voice 或 --reset 生成${NC}"
+fi
+echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+echo ""
+
+# --- Vendor integration info for fixed tunnels (copy-paste ready) ---
+echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+echo -e "${CYAN}  厂商对接信息（直接复制发给厂商）${NC}"
+echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+echo ""
+echo "  BOOTSTRAP_URL (App 启动时 HTTP GET 调用一次):"
+echo "    https://${NAMED_FE_HOST}/api/realtime/bootstrap?token=${TOKEN_DISPLAY}"
+echo ""
+echo "  PROXY_URL (WS 连接 1 — 音频双向流):"
+echo "    wss://${NAMED_PROXY_HOST}"
+echo ""
+echo "  OPENCLAW_URL (WS 连接 2 — 后台 AI):"
+echo "    wss://${NAMED_FE_HOST}/ws?token=${TOKEN_DISPLAY}"
+echo ""
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
 
@@ -545,9 +629,9 @@ echo ""
 cleanup() {
   echo ""
   echo -e "${YELLOW}关闭隧道...${NC}"
-  kill -9 $PID_FE $PID_WS $PID_RT 2>/dev/null || true
-  wait $PID_FE $PID_WS $PID_RT 2>/dev/null || true
-  rm -f "$TMP_FE" "$TMP_WS" "$TMP_RT" 2>/dev/null
+  kill -9 $PID_FE $PID_WS 2>/dev/null || true
+  wait $PID_FE $PID_WS 2>/dev/null || true
+  rm -f "$TMP_FE" "$TMP_WS" 2>/dev/null
   echo -e "${GREEN}隧道已关闭。容器 ${CONTAINER_NAME} 保持运行。${NC}"
   echo -e "  停止容器: ${YELLOW}./start-user.sh --id=${USER_ID} --down${NC}"
 }
@@ -555,32 +639,26 @@ trap cleanup EXIT INT TERM
 
 TMP_FE=$(mktemp)
 TMP_WS=$(mktemp)
-TMP_RT=$(mktemp)
 
-# 3 independent tunnels → container's mapped ports on host
+# 2 tunnels: FE (static + RT proxy) + WS (Gemini proxy). RT 通过 FE 代理，不单独暴露。
 cloudflared tunnel --url http://localhost:${PORT_FE} --protocol http2 --config /dev/null 2>"$TMP_FE" &
 PID_FE=$!
 
 cloudflared tunnel --url http://localhost:${PORT_WS} --protocol http2 --config /dev/null 2>"$TMP_WS" &
 PID_WS=$!
 
-cloudflared tunnel --url http://localhost:${PORT_RT} --protocol http2 --config /dev/null 2>"$TMP_RT" &
-PID_RT=$!
-
-# Wait for all 3 tunnel URLs
+# Wait for tunnel URLs
 echo "等待隧道建立..."
 MAX_WAIT=30
 WAITED=0
 URL_FE=""
 URL_WS=""
-URL_RT=""
 
 while [ $WAITED -lt $MAX_WAIT ]; do
   [ -z "$URL_FE" ] && URL_FE=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$TMP_FE" 2>/dev/null | head -1)
   [ -z "$URL_WS" ] && URL_WS=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$TMP_WS" 2>/dev/null | head -1)
-  [ -z "$URL_RT" ] && URL_RT=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$TMP_RT" 2>/dev/null | head -1)
 
-  if [ -n "$URL_FE" ] && [ -n "$URL_WS" ] && [ -n "$URL_RT" ]; then
+  if [ -n "$URL_FE" ] && [ -n "$URL_WS" ]; then
     break
   fi
 
@@ -588,20 +666,19 @@ while [ $WAITED -lt $MAX_WAIT ]; do
   WAITED=$((WAITED + 1))
 done
 
-if [ -z "$URL_FE" ] || [ -z "$URL_WS" ] || [ -z "$URL_RT" ]; then
+if [ -z "$URL_FE" ] || [ -z "$URL_WS" ]; then
   echo -e "${RED}✗ 隧道建立超时！${NC}"
   [ -z "$URL_FE" ] && echo "  - Frontend 隧道失败"
   [ -z "$URL_WS" ] && echo "  - WS Proxy 隧道失败"
-  [ -z "$URL_RT" ] && echo "  - Realtime 隧道失败"
   exit 1
 fi
 
-# Build one-click URLs with query params
+# Build one-click URLs (RT goes through FE proxy; token auto-generated at startup)
 WSS_PROXY=$(echo "$URL_WS" | sed 's|^https://|wss://|')
-WSS_RT=$(echo "$URL_RT" | sed 's|^https://|wss://|')
-QUERY="proxy=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${WSS_PROXY}'))")&openclaw=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${WSS_RT}/ws'))")"
-MOBILE_URL="${URL_FE}/mobile.html?${QUERY}"
-DESKTOP_URL="${URL_FE}?${QUERY}"
+WSS_FE=$(echo "$URL_FE" | sed 's|^https://|wss://|')
+QUERY="proxy=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${WSS_PROXY}'))")&openclaw=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${WSS_FE}/ws'))")"
+MOBILE_URL="${URL_FE}/mobile.html?${QUERY}&token=${TOKEN_DISPLAY}"
+DESKTOP_URL="${URL_FE}?${QUERY}&token=${TOKEN_DISPLAY}"
 
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
@@ -617,26 +694,24 @@ echo ""
 echo "  $DESKTOP_URL"
 echo ""
 echo -e "  ${CYAN}隧道详情：${NC}"
-echo "    Frontend:  $URL_FE"
+echo "    Frontend:  $URL_FE (含 RT 代理)"
 echo "    WS Proxy:  $URL_WS"
-echo "    Realtime:  $URL_RT"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
 
 # --- Vendor integration info (copy-paste ready) ---
-BOOTSTRAP_URL="${URL_RT}/api/realtime/bootstrap"
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${CYAN}  厂商对接信息（直接复制发给厂商）${NC}"
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
 echo "  BOOTSTRAP_URL (App 启动时 HTTP GET 调用一次):"
-echo "    $BOOTSTRAP_URL"
+echo "    ${URL_FE}/api/realtime/bootstrap?token=${TOKEN_DISPLAY}"
 echo ""
 echo "  PROXY_URL (WS 连接 1 — 音频双向流):"
 echo "    $WSS_PROXY"
 echo ""
 echo "  OPENCLAW_URL (WS 连接 2 — 后台 AI):"
-echo "    ${WSS_RT}/ws"
+echo "    ${WSS_FE}/ws?token=${TOKEN_DISPLAY}"
 echo ""
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo ""

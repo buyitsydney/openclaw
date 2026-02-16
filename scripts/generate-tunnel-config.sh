@@ -64,32 +64,27 @@ generate_config() {
 tunnel: ${TUNNEL_NAME}
 credentials-file: ${CRED_FILE}
 ingress:
-  # 个人 Her
+  # 个人 Her (RT 端口不暴露，语音通过 FE 代理)
   - hostname: carher.carher.net
     service: http://localhost:8000
   - hostname: proxy.carher.net
     service: http://localhost:8080
-  - hostname: api.carher.net
-    service: http://localhost:18790
-  # 厂商别名 (user 2)
+  # 厂商别名 (user 2) — vendor.carher.net 指向 FE 代理（RT 内部转发，不直接暴露）
   - hostname: vendor-fe.carher.net
     service: http://localhost:29013
   - hostname: vendor.carher.net
-    service: http://localhost:29012
+    service: http://localhost:29013
   - hostname: vendor-proxy.carher.net
     service: http://localhost:29014
 EOF
 
   for i in $(seq 1 "$MAX_USERS"); do
     BASE=$((29000 + (i - 1) * 10))
-    PORT_RT=$((BASE + 2))
     PORT_FE=$((BASE + 3))
     PORT_WS=$((BASE + 4))
-    # 紧凑格式：每 user 3 行，无空行
+    # 每 user 2 行（RT 端口不暴露，语音通过 FE 代理）
     echo "  - hostname: u${i}-fe.carher.net"
     echo "    service: http://localhost:${PORT_FE}"
-    echo "  - hostname: u${i}.carher.net"
-    echo "    service: http://localhost:${PORT_RT}"
     echo "  - hostname: u${i}-proxy.carher.net"
     echo "    service: http://localhost:${PORT_WS}"
   done
@@ -99,7 +94,7 @@ EOF
 EOF
 }
 
-TOTAL_RULES=$((3 + 3 + MAX_USERS * 3 + 1))
+TOTAL_RULES=$((2 + 3 + MAX_USERS * 2 + 1))
 
 if [ -n "$DRY_RUN" ]; then
   echo -e "${YELLOW}预览模式（不写入文件）${NC}"
@@ -108,9 +103,9 @@ if [ -n "$DRY_RUN" ]; then
   echo "────────────────────────────────────────────"
   echo ""
   echo -e "${GREEN}总计: ${TOTAL_RULES} 条 ingress 规则${NC}"
-  echo "  个人 Her: 3 条"
-  echo "  厂商别名: 3 条"
-  echo "  用户容器: ${MAX_USERS} × 3 = $((MAX_USERS * 3)) 条"
+  echo "  个人 Her: 2 条 (FE + Gemini proxy; RT 通过 FE 代理)"
+  echo "  厂商别名: 3 条 (FE + vendor.carher.net→FE + Gemini proxy)"
+  echo "  用户容器: ${MAX_USERS} × 2 = $((MAX_USERS * 2)) 条"
   echo "  兜底:     1 条"
 else
   # 备份
@@ -122,9 +117,9 @@ else
   echo -e "${GREEN}✓ 已生成: ${CONFIG_FILE}${NC}"
   echo ""
   echo -e "  总计: ${GREEN}${TOTAL_RULES}${NC} 条 ingress 规则"
-  echo "  个人 Her: 3 条"
-  echo "  厂商别名: 3 条"
-  echo "  用户容器: ${MAX_USERS} × 3 = $((MAX_USERS * 3)) 条"
+  echo "  个人 Her: 2 条 (FE + Gemini proxy; RT 通过 FE 代理)"
+  echo "  厂商别名: 3 条 (FE + vendor.carher.net→FE + Gemini proxy)"
+  echo "  用户容器: ${MAX_USERS} × 2 = $((MAX_USERS * 2)) 条"
   echo "  兜底:     1 条"
   echo ""
   echo -e "${YELLOW}重启隧道生效:${NC} ./start-tunnel.sh --restart"

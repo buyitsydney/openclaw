@@ -362,9 +362,9 @@ outbound: {
 
 ---
 
-## 安全架构：两层防护模型（2026-02-15 设计）
+## 安全架构：两层防护模型（2026-02-15 设计，2026-02-16 实现完成）
 
-> **P0 安全风险：realtime 语音端口当前零认证，企业部署前必须修复。**
+> **已实现。** 语音 realtime 通道已具备与飞书文字通道对齐的两层防护。
 
 ### 飞书文字通道的安全模型（已实现，参考标准）
 
@@ -381,44 +381,31 @@ outbound: {
 董事长   → 搜索自己的 Bot  → 正常对话 ✓
 ```
 
-### 语音 realtime 通道的安全模型（待实现）
+### 语音 realtime 通道的安全模型（已实现）
 
-当前问题：realtime WebSocket 服务（端口 18790）**零认证**。任何能访问该端口的人可以直接建立语音连接，读取用户全部记忆（MEMORY.md、USER.md）、对话历史，甚至冒充用户与 Her 对话。
-
-**在 200 人企业部署中，这意味着任何员工可以连接董事长的语音端口，与董事长的 Her 对话。**
-
-```
-extensions/realtime/src/server.ts 第 395-411 行：
-  const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
-  wss.on("connection", (ws, req) => {
-    // 直接创建 session，没有任何 auth 检查
-    sendToClient(ws, { type: "connected", sessionId });
-  });
-```
-
-### 目标：与飞书文字通道完全对齐的两层防护
-
-| 层 | 飞书文字 | 语音 realtime（目标方案） |
-|----|---------|------------------------|
-| **Layer 1：找不到** | 可用范围 = 一人，搜不到 Bot | 端口不暴露（Docker 不 -p、cloudflared 不隧道），外部完全看不到入口 |
-| **Layer 2：被拒绝** | `dm.allowFrom` 白名单 | per-container 唯一 token 认证，即使找到也被拒绝 |
-| **授权途径** | 飞书平台自动配对 | 飞书 Bot 私聊发送语音链接（只有主人能看到 Bot → 只有主人能拿到链接） |
+| 层 | 飞书文字 | 语音 realtime |
+|----|---------|--------------|
+| **Layer 1：找不到** | 可用范围 = 一人，搜不到 Bot | 端口不暴露（Docker 不 -p 18790、cloudflared 不隧道），外部完全看不到入口 |
+| **Layer 2：被拒绝** | `dm.allowFrom` 白名单 | per-container 唯一 token 认证（双层校验：server.py + server.ts），无效返回 401 |
+| **授权途径** | 飞书平台自动配对 | 飞书 Bot `/voice` 私聊发送带 token 的语音 URL；管理员通过 `start-user.sh --reset` 生成/重置 |
 
 ```
 普通员工 → 端口扫描董事长容器 → 18790 未暴露，找不到（Layer 1）
 普通员工 → 猜到内部 URL → token 不对，401 拒绝（Layer 2）
 董事长   → 飞书 Bot 输入 /voice → Bot 私聊回复语音链接 → 正常语音 ✓
+厂商     → 管理员提供 token → 写入 App 配置 → 正常对接 ✓
 ```
 
-### 实现方案概要
+### 实现详情
 
-1. **不暴露 realtime 端口**：Docker 去掉 `-p 18790` 映射，cloudflared 不隧道该端口
-2. **Frontend proxy 内部转发**：Python 前端代理（我们的代码，8000/8080）在容器内部代理 bootstrap API 和 WebSocket 到 localhost:18790
-3. **Per-container 唯一 token**：`start-user.sh` 为每个容器生成 UUID token，写入 gateway.auth.token + realtime.config.token
-4. **Token 认证**：realtime server 检查 token（bootstrap + WebSocket upgrade），无效返回 401
-5. **飞书 Bot 投递**：`/voice` 命令通过飞书 Bot 私聊发送带 token 的语音 URL（复用飞书可用范围隔离）
+1. **不暴露 realtime 端口**：`start-user.sh` 不映射 `-p 18790`，`generate-tunnel-config.sh` 不隧道该端口
+2. **Frontend proxy 内部转发**：`server.py`（端口 8000）代理 `/api/realtime/bootstrap` 和 `/ws` 到容器内部 `localhost:18790`
+3. **Per-container 唯一 token**：`start-user.sh` 启动时自动生成（如不存在），存储在 Docker volume `/data/.openclaw/.voice-token`
+4. **双层 token 校验**：server.py（Layer 2a）和 server.ts（Layer 2b）各自独立校验同一个 token，纵深防御
+5. **飞书 Bot `/voice`**：通过私聊发送带 token 的完整语音 URL；`/voice reset` 重置 token 并发送新 URL
+6. **管理员 `--reset`**：`./start-user.sh --id=N --reset` 重置 token，不重启容器，立即生效，打印厂商可用的完整 URL
 
-> **修改范围**：全部在可修改代码内（`extensions/realtime/`、`start-user.sh`、`scripts/`、`docker/`），不触碰上游 `src/` 代码。
+> **修改范围**：全部在可修改代码内（`extensions/realtime/`、`extensions/feishu/`、`start-user.sh`、`scripts/`），不触碰上游 `src/` 代码。
 
 ---
 
@@ -458,6 +445,47 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 - 跨通道共享记忆（飞书聊的内容，Webchat 里也知道）
 - 只要避免同时在多个通道聊天，不会遇到并发冲突
 - 如果未来需要同时多通道独立聊天，可改为 `per-channel-peer`，代价是失去跨通道记忆
+
+---
+
+## 已知问题（未修复）
+
+### [P0] Agent Run 超时后飞书用户无错误通知 (2026-02-16 定位)
+
+**问题**：agent 回复到一半出错（如 compaction 重试挂死、LLM 超时等），飞书用户看到 typing 停止后再无任何反馈——没有错误消息、没有提示重试。
+
+**完整时间线（2026-02-15 06:41-06:51 CST 实际案例）**：
+
+1. 06:41:34 — agent run 启动（opus-4.6, thinking=low）
+2. 06:42:39 — agent 完成回复，Pi SDK 自动触发 context compaction
+3. 06:43:20 — 第一次 compaction 失败，SDK 发出 `willRetry=true` 开始重试
+4. 06:44:39 — typing indicator TTL 2 分钟到期，停止显示
+5. 06:51:34 — 10 分钟 timeout 触发 `abortRun(true)`
+6. 06:51:34 之后 — **永久死锁**，无任何日志，进程挂起
+
+**根因分析（两个独立问题叠加）**：
+
+**问题 A — OpenClaw 核心 Bug #16331：compaction retry 死锁**
+
+`src/agents/pi-embedded-runner/run/attempt.ts` 第 990 行 `await waitForCompactionRetry()` **没有**用 `abortable()` 包装。当 timeout 触发 abort 时，如果 Pi SDK 在 abort 期间不发出 `auto_compaction_end` 事件，这个 Promise 永远不 resolve，导致整个调用链死锁。
+
+- GitHub Issue: https://github.com/openclaw/openclaw/issues/16331
+- 修复 PR: https://github.com/openclaw/openclaw/pull/16533（2026-02-14 合并到 upstream main）
+- **本地状态**：我们的 `dev` 分支尚未包含此修复（需要 `git fetch origin && git merge origin/main`）
+
+**问题 B — 飞书插件缺少 error→用户通知机制**
+
+即使核心 bug 修复后 run 能正常返回错误结果，飞书 gateway 也不会通知用户：
+
+- `gateway.ts` L1256 `onError` 只处理 delivery 错误（飞书 API 发送失败），不处理 agent run 错误
+- `gateway.ts` L439 顶层 `.catch()` 只 log 不通知用户
+- `agent-runner-execution.ts` L578 有 `"⚠️ Agent failed before reply: ..."` 错误文本，但 run 挂死时这行代码永远不会执行
+- Telegram/Discord 等其他 channel 也有同样的问题——这是 OpenClaw 核心架构层面的缺失
+
+**修复方案**：
+
+1. **拉取 upstream**：合并 `origin/main` 获取 PR #16533 的 compaction timeout 修复（防死锁）
+2. **飞书 error notification**：在 `handleInboundMessage` 的 `.catch()` 中给用户发一条错误消息（如 "⚠️ 处理消息时出错，请稍后重试"）
 
 ---
 
@@ -1141,7 +1169,8 @@ npm 上至少有 4 个飞书相关包：
 | 9 | **Emoji 表情回应** | ✅ 已验证 | 两个机制：(1) 自动 ACK reaction — 收到消息时加 `Get` emoji，AI 回复后移除（typing indicator）；(2) AI 主动 react — 通过 `message` tool 的 `action="react"` 对消息加任意 emoji（已验证 THUMBSUP）。需要 `im:message.reaction:create` 权限 |
 | 10 | **回复样式（quote-reply）** | ✅ 已验证 | CardKit 流式卡片通过 `im.message.reply` + `msg_type=interactive` 发送，AI 回复自动关联用户原消息，显示 `回复 Bob: xxx` 引用样式。私聊和群聊均生效 |
 | 11 | **聊天文件附件读取（PPT/PDF/...）** | ✅ 已实现 | **完整实现**（2026-02-15）：(1) `extractTextContent()` 提取 `file_key` + `file_name`；(2) `downloadFeishuFile()` 通过 `im.messageResource.get({ type: "file" })` 下载文件（无大小限制）；(3) 文件保存到本地磁盘；(4) **Office 文件自动提取文本**：飞书插件层集成 `officeparser`（纯 JS npm 包，支持 PPTX/DOCX/XLSX/ODT/ODP/ODS/RTF），自定义 AST 遍历提取 slide 分页 + 图表数据（含标签和数值）+ 表格内容 + 全部文本，注入 `<file>` 标签传给 AI；(5) PDF 走核心 `extractFileBlocks` 管线（pdfjs-dist）；(6) 图片作为文件发送时自动检测 image MIME 走 vision；(7) 下载失败时 AI 收到清晰错误信息（如"文件太大"），而非空占位符。Docker 部署零配置（officeparser 随 npm install 自动安装）。**已验证**：PPT 含图表数据+分页+表格全部正确提取，效果追平 python-pptx |
-| 12 | **文档写入安全性（版本恢复）** | ⚠️ 平台限制 | **严重问题**：`feishu_doc` 的 `write` action 是全量替换（`clearDocumentContent()` 清空 → `insertBlocks()` 写入），不支持 Markdown 表格（block type 31/32 被跳过）、bullet list 顺序可能被飞书 API 打乱、无 undo。**飞书 `drive.fileVersion` API 只有 list/get/create/delete 四个方法，没有 restore——无法通过 API 恢复到历史版本**（SDK 源码已确认）。`drive:drive:version` 权限仅用于查看/创建版本快照，不含恢复。唯一恢复途径：飞书 Web 端手动「版本历史 → 恢复」。**改进方案**：(1) `write` 前自动调用 `fileVersion.create()` 创建版本快照；(2) 在 skill/prompt 中标记"重要文档只读，新内容创建新文档"策略；(3) 长期：改用增量编辑（逐 block 更新）替代全量替换（2026-02-15） |
+| 12 | **[P0] 文档写入安全性（版本恢复）** | ⚠️ 平台限制 | **严重问题**：`feishu_doc` 的 `write` action 是全量替换（`clearDocumentContent()` 清空 → `insertBlocks()` 写入），不支持 Markdown 表格（block type 31/32 被跳过）、bullet list 顺序可能被飞书 API 打乱、无 undo。**飞书 `drive.fileVersion` API 只有 list/get/create/delete 四个方法，没有 restore——无法通过 API 恢复到历史版本**（SDK 源码已确认）。`drive:drive:version` 权限仅用于查看/创建版本快照，不含恢复。唯一恢复途径：飞书 Web 端手动「版本历史 → 恢复」。**改进方案**：(1) `write` 前自动调用 `fileVersion.create()` 创建版本快照；(2) 在 skill/prompt 中标记"重要文档只读，新内容创建新文档"策略；(3) 长期：改用增量编辑（逐 block 更新）替代全量替换（2026-02-15） |
+| 13 | **[P0] 聊天视频附件读取** | ❌ 未实现 | **董事长需求**（2026-02-16）：用户在飞书聊天中发送视频附件，Her 无法接收和理解视频内容，回复"视频没有传过来"。**现状**：`extractTextContent()` 未处理 `msg_type=media`（视频消息类型），飞书 `im.messageResource.get()` 理论上支持下载视频文件（`type: "file"` 或 `type: "image"` 类似机制），但当前代码未实现视频下载和内容提取。**需要调研**：(1) 飞书视频消息的 `msg_type` 和 `content` 结构（`file_key` / `image_key` / `media_id`）；(2) 视频下载 API（`im.messageResource.get` 或 `im.message.resources`）；(3) 视频内容理解方案——抽帧 + vision（逐帧截图送 AI 识别）或直接传给支持视频的多模态模型（如 Gemini）；(4) 视频文件大小限制和处理时长 |
 
 注：**Markdown 卡片/表格渲染**已由 CardKit 流式卡片天然支持（schema 2.0 + `tag: "markdown"`），无需额外实现。实测 car her 表格渲染完美，社区版 post 模式反而渲染异常。
 

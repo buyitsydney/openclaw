@@ -5,6 +5,8 @@
  * with OpenClaw as the intelligent backend for complex tasks.
  */
 
+import os from "node:os";
+import path from "node:path";
 import type {
   OpenClawPluginApi,
   OpenClawPluginDefinition,
@@ -70,11 +72,15 @@ const realtimePlugin: OpenClawPluginDefinition = {
       const defaultAgentId = coreDeps.resolveDefaultAgentId(api.config as CoreConfig);
       api.logger.info(`[realtime] Default agent ID: ${defaultAgentId}`);
 
+      // Voice token file path (Layer 2 auth — same mechanism for local and Docker)
+      const tokenFile = path.join(process.env.HOME || os.homedir(), ".openclaw", ".voice-token");
+
       // Start WebSocket server
       server = await startRealtimeServer({
         port,
         api,
         defaultAgentId,
+        tokenFile,
       });
 
       // Setup file watcher for USER.md and MEMORY.md

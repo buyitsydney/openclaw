@@ -26,8 +26,10 @@ import {
 } from "./outbound.js";
 import { resolveGroupOwnerIds } from "./accounts.js";
 import { getFeishuRuntime } from "./runtime.js";
+import crypto from "node:crypto";
 import { existsSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import os from "node:os";
+import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 
 // ── CardKit status footer helpers ────────────────────────────────────────
@@ -295,6 +297,44 @@ function resolveWebchatUrl(config: OpenClawConfig): string | undefined {
   const token = config.gateway?.auth?.token;
   const base = `http://localhost:${port}`;
   return token ? `${base}?token=${token}` : base;
+}
+
+// ---------------------------------------------------------------------------
+// Voice URL + token management (Layer 2 auth — same logic for local & Docker)
+// Token file: ~/.openclaw/.voice-token (persistent across restarts)
+// ---------------------------------------------------------------------------
+const VOICE_TOKEN_PATH = join(process.env.HOME || os.homedir(), ".openclaw", ".voice-token");
+
+/** Read or generate voice token. reset=true forces regeneration. */
+function ensureVoiceToken(reset = false): string {
+  if (!reset) {
+    try {
+      const existing = readFileSync(VOICE_TOKEN_PATH, "utf-8").trim();
+      if (existing) return existing;
+    } catch { /* file doesn't exist, generate */ }
+  }
+  const token = crypto.randomUUID().replace(/-/g, "");
+  mkdirSync(dirname(VOICE_TOKEN_PATH), { recursive: true });
+  writeFileSync(VOICE_TOKEN_PATH, token);
+  return token;
+}
+
+/** Construct voice URL. Same logic for local and Docker. */
+function resolveVoiceUrl(config: OpenClawConfig, token: string): string {
+  const feHost = process.env.VOICE_FE_HOST;
+  const proxyHost = process.env.VOICE_PROXY_HOST;
+  if (feHost && proxyHost) {
+    // Docker: use tunnel domains (FE proxy handles RT proxying internally)
+    return `https://${feHost}/mobile.html`
+      + `?proxy=wss://${proxyHost}`
+      + `&openclaw=wss://${feHost}/ws`
+      + `&token=${token}`;
+  }
+  // Local: localhost
+  return `http://localhost:8000/mobile.html`
+    + `?proxy=ws://localhost:8080`
+    + `&openclaw=ws://localhost:18790/ws`
+    + `&token=${token}`;
 }
 
 function trackMessageId(messageId: string): boolean {
@@ -976,6 +1016,23 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         log?.error(`[${account.accountId}] welcome send failed: ${String(err)}`);
       }
     }
+  }
+
+  // /voice — deliver authenticated voice URL; /voice reset — regenerate token
+  if (cleanText === "/voice" || cleanText === "/voice reset") {
+    const isReset = cleanText === "/voice reset";
+    const token = ensureVoiceToken(isReset);
+    const voiceUrl = resolveVoiceUrl(config, token);
+    const msg = isReset
+      ? `语音链接已重置\n\n新链接：\n${voiceUrl}\n\n旧链接已失效。此链接仅限你本人使用。`
+      : `语音模式\n\n点击链接打开语音对话：\n${voiceUrl}\n\n此链接仅限你本人使用，请勿分享。`;
+    try {
+      await sendFeishuRichText({ account, chatId, text: msg });
+      log?.info(`[${account.accountId}] voice URL ${isReset ? "reset and " : ""}sent to ${senderId}`);
+    } catch (err) {
+      log?.error(`[${account.accountId}] voice URL send failed: ${String(err)}`);
+    }
+    return; // /voice is a command, don't forward to AI
   }
 
   // ── Resolve sender display name (best-effort, non-blocking) ──

@@ -3,6 +3,9 @@
  * Handles UI interactions, media streaming, and communication with Gemini API
  */
 
+// Voice token from URL params (Layer 2 auth)
+const voiceToken = new URLSearchParams(window.location.search).get("token") || "";
+
 // Global state
 const state = {
   client: null,
@@ -207,9 +210,10 @@ async function connectOpenClaw() {
     
     // MUST fetch bootstrap data (Live memory capsule) before connecting Gemini.
     // This call blocks until the server has generated/loaded the capsule.
-    const bootstrapUrl = agentId
+    let bootstrapUrl = agentId
       ? appendQueryParam(`${httpUrl}/api/realtime/bootstrap`, "agentId", agentId)
       : `${httpUrl}/api/realtime/bootstrap`;
+    if (voiceToken) bootstrapUrl = appendQueryParam(bootstrapUrl, "token", voiceToken);
     const bootstrapResp = await fetch(bootstrapUrl);
     if (!bootstrapResp.ok) {
       throw new Error(`Bootstrap failed: HTTP ${bootstrapResp.status}`);
@@ -240,8 +244,10 @@ async function connectOpenClaw() {
       agentId: agentId || "(default)",
     });
     
-    // Connect WebSocket (pass agentId for multi-agent routing)
-    await openclawConnection.connect(url, agentId);
+    // Connect WebSocket (pass agentId for multi-agent routing; append token for Layer 2 auth)
+    let wsUrl = url;
+    if (voiceToken) wsUrl = appendQueryParam(wsUrl, "token", voiceToken);
+    await openclawConnection.connect(wsUrl, agentId);
     state.openclaw.connected = true;
     updateStatus("openclawStatus", "Connected ✓");
     

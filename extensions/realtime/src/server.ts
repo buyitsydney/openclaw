@@ -350,13 +350,28 @@ function resolveAgentIdFromUrl(
   }
 }
 
+/**
+ * Read the voice token from the on-disk file (hot-reload safe).
+ * Returns undefined when the file is missing or empty.
+ */
+function readTokenFile(tokenFile: string | undefined): string | undefined {
+  if (!tokenFile) return undefined;
+  try {
+    return fsSync.readFileSync(tokenFile, "utf-8").trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function startRealtimeServer(params: {
   port: number;
   api: OpenClawPluginApi;
   defaultAgentId?: string;
+  tokenFile?: string; // Path to voice token file (Layer 2 auth)
 }): Promise<RealtimeServer> {
   const { port, api } = params;
   const defaultAgentId = params.defaultAgentId ?? "main";
+  const tokenFile = params.tokenFile;
   const clients = new Map<string, RealtimeClient>();
 
   // Create HTTP server
@@ -382,6 +397,16 @@ export async function startRealtimeServer(params: {
 
     // Bootstrap endpoint (support query params like ?agentId=xxx)
     if (req.url?.startsWith("/api/realtime/bootstrap") && req.method === "GET") {
+      // Layer 2 token validation (defense-in-depth; FE proxy also checks)
+      if (tokenFile) {
+        const expected = readTokenFile(tokenFile);
+        const actual = new URL(req.url, "http://x").searchParams.get("token");
+        if (!expected || actual !== expected) {
+          res.writeHead(401, { "Content-Type": "text/plain" });
+          res.end("Unauthorized");
+          return;
+        }
+      }
       handleBootstrap(req, res, api, defaultAgentId);
       return;
     }
@@ -391,8 +416,19 @@ export async function startRealtimeServer(params: {
     res.end("Not Found");
   });
 
-  // Create WebSocket server
-  const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
+  // Create WebSocket server (with optional Layer 2 token validation)
+  const wss = new WebSocketServer({
+    server: httpServer,
+    path: "/ws",
+    verifyClient: tokenFile
+      ? ({ req }, cb) => {
+          const expected = readTokenFile(tokenFile);
+          const actual = new URL(req.url!, "http://x").searchParams.get("token");
+          const ok = !!expected && actual === expected;
+          cb(ok, ok ? undefined : 401, ok ? undefined : "Unauthorized");
+        }
+      : undefined,
+  });
 
   wss.on("connection", (ws, req) => {
     const agentId = resolveAgentIdFromUrl(req.url, defaultAgentId);

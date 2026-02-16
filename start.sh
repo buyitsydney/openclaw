@@ -66,6 +66,10 @@ echo -e "${GREEN}  Live UI:  http://localhost:8000 (Proxy WS: ws://localhost:808
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
 
+# 个人 Her 的 Cloudflare 隧道域名（/voice 命令用这些生成远程 URL）
+export VOICE_FE_HOST="carher.carher.net"
+export VOICE_PROXY_HOST="proxy.carher.net"
+
 # 启动 Gateway（后台运行）
 pnpm openclaw gateway run --port 18789 --force &
 GATEWAY_PID=$!
@@ -99,6 +103,14 @@ if [ -z "$TOKEN" ]; then
   TOKEN="my-local-token-12345"
 fi
 
+# Generate voice token if not exists (same file that /voice command reads/writes)
+VOICE_TOKEN_FILE="$HOME/.openclaw/.voice-token"
+if [ ! -f "$VOICE_TOKEN_FILE" ]; then
+  mkdir -p "$(dirname "$VOICE_TOKEN_FILE")"
+  python3 -c "import uuid; print(uuid.uuid4().hex)" > "$VOICE_TOKEN_FILE"
+fi
+VOICE_TOKEN=$(cat "$VOICE_TOKEN_FILE")
+
 # 打印所有 URL（不弹浏览器）
 echo -e "${GREEN}[5/5] 个人 Her 已就绪${NC}"
 echo ""
@@ -108,15 +120,17 @@ echo -e "${GREEN}═════════════════════
 echo -e "  Webchat:    ${GREEN}http://localhost:18789/?token=${TOKEN}${NC}"
 echo -e "  Desktop UI: ${GREEN}http://localhost:8000${NC}"
 echo -e "  Mobile UI:  ${GREEN}http://localhost:8000/mobile.html${NC}"
+echo -e "  Voice:      ${GREEN}http://localhost:8000/mobile.html?proxy=ws://localhost:8080&openclaw=ws://localhost:18790/ws&token=${VOICE_TOKEN}${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
 # 固定远程 URL（需 cloudflared 隧道运行）
+# RT 端口不暴露，语音通过 FE 代理 (carher.carher.net)
 CYAN='\033[0;36m'
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${CYAN}  个人 Her — 固定远程 URL（需 cloudflared 隧道运行）${NC}"
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "  Mobile:  ${CYAN}https://carher.carher.net/mobile.html?proxy=wss%3A%2F%2Fproxy.carher.net&openclaw=wss%3A%2F%2Fapi.carher.net%2Fws${NC}"
-echo -e "  Desktop: ${CYAN}https://carher.carher.net?proxy=wss%3A%2F%2Fproxy.carher.net&openclaw=wss%3A%2F%2Fapi.carher.net%2Fws${NC}"
+echo -e "  Mobile:  ${CYAN}https://carher.carher.net/mobile.html?proxy=wss%3A%2F%2Fproxy.carher.net&openclaw=wss%3A%2F%2Fcarher.carher.net%2Fws&token=${VOICE_TOKEN}${NC}"
+echo -e "  Desktop: ${CYAN}https://carher.carher.net?proxy=wss%3A%2F%2Fproxy.carher.net&openclaw=wss%3A%2F%2Fcarher.carher.net%2Fws&token=${VOICE_TOKEN}${NC}"
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
 # 隧道状态检测

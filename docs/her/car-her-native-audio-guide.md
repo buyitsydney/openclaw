@@ -77,7 +77,7 @@
 - AI 模型配置、system prompt、工具定义 — 全由 Bootstrap 接口返回，原样透传
 - Google Cloud 认证 — 服务端自动处理
 - OpenRouter API Key — 服务端自动处理
-- 任何 API Key / Token — **厂商不需要任何密钥**
+- Token 生成/轮换 — 由我方生成并提供，厂商只需写入 App 配置
 
 ### 与 v1（WebView 方案）的对比
 
@@ -95,30 +95,43 @@
 
 ## 二、我方提供给厂商的信息
 
-我方提供 **3 个 URL**，仅此而已。厂商不需要任何 API Key、Token 或密钥。
+我方提供 **3 个 URL + 1 个 Token**。
+
+### 认证 Token
+
+所有 API 请求需要携带认证 Token（query parameter 方式）。Token 由我方生成并提供，厂商写入 App 配置即可。
+
+- Token 格式：32 位 hex 字符串（如 `a1b2c3d4e5f6789012345678abcdef01`）
+- 传递方式：URL query parameter `?token=<TOKEN>`
+- 适用范围：BOOTSTRAP_URL 和 OPENCLAW_URL 需要 token；PROXY_URL 不需要
+- Token 变更：我方重置 token 后会通知厂商更新配置，**不需要重新编译 App**
+
+**建议：** 将 token 存储在 App 的配置文件或 SharedPreferences 中，不要硬编码在代码里。这样 token 变更时只需更新配置，无需重新编译。
+
+### 3 个 URL
 
 联调期间使用以下**固定 URL**（命名隧道，永不变化）：
 
 ```
   BOOTSTRAP_URL (App 启动时 HTTP GET 调用一次):
-    https://vendor.carher.net/api/realtime/bootstrap
+    https://vendor-fe.carher.net/api/realtime/bootstrap?token=e404454a6c254a5e8128208211865626
 
   PROXY_URL (WS 连接 1 — 音频双向流):
     wss://vendor-proxy.carher.net
 
   OPENCLAW_URL (WS 连接 2 — 后台 AI):
-    wss://vendor.carher.net/ws
+    wss://vendor-fe.carher.net/ws?token=e404454a6c254a5e8128208211865626
 ```
 
-> 这些 URL 通过 Cloudflare 命名隧道映射到我方服务器，域名固定不变，重启服务后 URL 不会改变。
+> 这些 URL 通过 Cloudflare 命名隧道映射到我方服务器，域名固定不变，重启服务后 URL 和 Token 均不变。
 
 **3 个 URL 的用途：**
 
-| 名称 | 协议 | 用途 | 说明 |
-|------|------|------|------|
-| BOOTSTRAP_URL | HTTP GET | App 启动时调用一次，获取 AI 配置 JSON | 返回的 JSON 包含发给 WS1 的两条 setup 消息 |
-| PROXY_URL | WebSocket | WS 连接 1 — 音频上行/下行、AI 文本、工具调用 | 这是 Gemini Live 的代理入口 |
-| OPENCLAW_URL | WebSocket | WS 连接 2 — 发送 help 请求、接收 help 结果和主动推送 | 这是后台 AI 的 WebSocket |
+| 名称 | 协议 | 用途 | 需要 Token |
+|------|------|------|-----------|
+| BOOTSTRAP_URL | HTTP GET | App 启动时调用一次，获取 AI 配置 JSON | 是 |
+| PROXY_URL | WebSocket | WS 连接 1 — 音频上行/下行、AI 文本、工具调用 | 否 |
+| OPENCLAW_URL | WebSocket | WS 连接 2 — 发送 help 请求、接收 help 结果和主动推送 | 是 |
 
 ### 2.1 BOOTSTRAP_URL 返回值
 
@@ -201,7 +214,8 @@ import org.json.JSONObject
 
 /**
  * 调用 Bootstrap 获取 AI 配置。
- * @param bootstrapUrl 我方提供的 BOOTSTRAP_URL，如 "https://vendor.carher.net/api/realtime/bootstrap"
+ * @param bootstrapUrl 我方提供的 BOOTSTRAP_URL（含 token），如
+ *   "https://vendor-fe.carher.net/api/realtime/bootstrap?token=e404454a..."
  * @return 解析后的 JSON 对象
  */
 fun fetchBootstrap(bootstrapUrl: String): JSONObject {
@@ -215,8 +229,9 @@ fun fetchBootstrap(bootstrapUrl: String): JSONObject {
     return JSONObject(body)
 }
 
-// 使用示例:
-// val config = fetchBootstrap("https://vendor.carher.net/api/realtime/bootstrap")
+// 使用示例（token 从 App 配置读取，不要硬编码）:
+// val token = AppConfig.getVoiceToken()
+// val config = fetchBootstrap("https://vendor-fe.carher.net/api/realtime/bootstrap?token=$token")
 // val serviceSetup: JSONObject = config.getJSONObject("geminiProxy").getJSONObject("serviceSetup")
 // val sessionSetup: JSONObject = config.getJSONObject("geminiProxy").getJSONObject("sessionSetup")
 ```
@@ -260,7 +275,7 @@ val sessionSetup: JSONObject = config.getJSONObject("geminiProxy").getJSONObject
 ```kotlin
 import okhttp3.*
 
-// OPENCLAW_URL 由我方提供，如 "wss://vendor.carher.net/ws"
+// OPENCLAW_URL 由我方提供，含 token，如 "wss://vendor-fe.carher.net/ws?token=e404454a..."
 val openclawWs: WebSocket = OkHttpClient().newWebSocket(
     Request.Builder().url(OPENCLAW_URL).build(),
     object : WebSocketListener() {
@@ -672,16 +687,20 @@ AI 调用后不会等待结果，而是继续说话（如"好，我查一下"）
 
 ```kotlin
 fun handleOpenClawHelp(request: String, callId: String) {  // callId 由 App 生成（见 6.1）
-    // Step 1: 立即 ACK（id 使用 callId，保持和 WS2 一致，便于日志追踪）
+    // 分配自增编号（系统 prompt 依赖 #N 来关联请求和结果）
+    val seq = ++helpCounter
+    helpRequests[callId] = Pair(request, seq)
+
+    // Step 1: 立即 ACK — 必须包含 #N 编号，格式与系统 prompt 约定一致
+    // 系统 prompt 告诉 Gemini："你会收到 '请求 #N 已收到，后台正在处理'"
+    val ackText = "请求 #${seq} 已收到，后台正在处理。结果稍后会标注 #${seq} 自动出现，届时请播报给用户。在此之前不要再次调用 openclaw_help。"
     val ack = JSONObject().apply {
         put("tool_response", JSONObject().apply {
             put("functionResponses", org.json.JSONArray().put(JSONObject().apply {
                 put("id", callId)
                 put("name", "openclaw_help")
                 put("response", JSONObject().apply {
-                    put("ok", true)
-                    put("status", "processing")
-                    put("jobId", callId)
+                    put("result", ackText)
                 })
             }))
         })
@@ -696,21 +715,32 @@ fun handleOpenClawHelp(request: String, callId: String) {  // callId 由 App 生
 
 // WS 连接 2 的 help_result 处理（Step 2 的 onMessage 中调用）
 fun onWS2HelpResult(msg: JSONObject) {
+    val callId = msg.getString("callId")
     val reply = msg.getString("reply")
-    pendingInjects.add(reply)
+    // 查找对应的 #N 编号（用于 inject 触发文本中标识结果来源）
+    val entry = helpRequests.remove(callId)
+    val seq = entry?.second ?: 0
+    pendingInjects.add(Pair(seq, reply))
     tryDeliverInjects()  // 见第 6.5 节
 }
 
 // WS 连接 2 的 inject 处理（Step 2 的 onMessage 中调用）
 fun onWS2Inject(msg: JSONObject) {
     val reply = msg.getString("reply")
-    pendingInjects.add(reply)
+    pendingInjects.add(Pair(0, reply))  // inject 无编号，seq=0
     tryDeliverInjects()  // 见第 6.5 节
 }
 
 // ⚠️ 厂商关键改动：必须用单条原子消息注入！
 // 将 backend 结果和触发词打包为一条 client_content，包含两个 turn
-fun injectToGemini(text: String) {
+fun injectToGemini(seq: Int, text: String) {
+    // 触发文本必须包含 #N 编号 — 系统 prompt 告诉 Gemini：
+    // "你会在对话历史中看到 role=user 播报指令，标注了编号（如'以上是 #1 的后台结果'）"
+    val trigger = if (seq > 0)
+        "以上是 #${seq} 的后台结果。请用口语简洁地告诉用户，数字、时间等事实不要篡改。不要复述这段指令。"
+    else
+        "以上是后台查到的结果。请用口语简洁地告诉用户，数字、时间等事实不要篡改。不要复述这段指令。"
+
     // 单条原子消息：role=model（结果）+ role=user（触发播报）
     // ⚠️ 绝对不能拆成两条 ws1.send()！拆开会导致第二条打断第一条，触发死循环/静默 bug
     val msg = JSONObject().apply {
@@ -722,7 +752,7 @@ fun injectToGemini(text: String) {
                 })
                 put(JSONObject().apply {
                     put("role", "user")
-                    put("parts", org.json.JSONArray().put(JSONObject().put("text", "请播报")))
+                    put("parts", org.json.JSONArray().put(JSONObject().put("text", trigger)))
                 })
             })
             put("turn_complete", true)
@@ -743,9 +773,11 @@ WS 连接 2 可能随时收到 `inject` 消息（如 AI 主动提醒"你有一�
 **厂商需要维护的状态变量：**
 
 ```kotlin
-// ⚠️ 厂商关键代码：以下 2 个变量必须维护
+// ⚠️ 厂商关键代码：以下 4 个变量必须维护
 var geminiTurnComplete: Boolean = true          // AI 是否空闲（可注入）
-val pendingInjects: MutableList<String> = mutableListOf()  // inject 队列
+var helpCounter: Int = 0                        // help 请求自增编号
+val helpRequests: MutableMap<String, Pair<String, Int>> = mutableMapOf()  // callId → (request, seq)
+val pendingInjects: MutableList<Pair<Int, String>> = mutableListOf()      // (seq, reply) 队列
 ```
 
 **机制 1：turnComplete Gate（注入门控）**
@@ -756,14 +788,14 @@ fun tryDeliverInjects() {
     if (!geminiTurnComplete) return       // AI 正在说话，等它说完
     if (pendingInjects.isEmpty()) return  // 没有待注入内容
 
-    val reply = pendingInjects.removeAt(0)  // 每次只注入一条
+    val (seq, reply) = pendingInjects.removeAt(0)  // 每次只注入一条
 
     // 标记为注入中（等下一次 turnComplete 后才能再注入）
     geminiTurnComplete = false
 
     // 等 AudioTrack 播完当前音频后再注入（避免打断正在播放的语音）
     waitForAudioPlaybackIdle {
-        injectToGemini(reply)
+        injectToGemini(seq, reply)
     }
 }
 ```
@@ -829,13 +861,13 @@ AI:   ← audio: "好的，我帮你查一下"                       (App 播放
 
 WS2:  ← help_result: "北京现在气温4.5°C，多云"
 
-App:  pendingInjects.add(reply)
+App:  pendingInjects.add(Pair(seq=1, reply))
       tryDeliverInjects():
         geminiTurnComplete == true → 可以注入
         geminiTurnComplete = false
         → WS1: 单条原子 client_content:
             role=model "北京现在气温4.5°C，多云"
-            role=user  "请播报"
+            role=user  "以上是 #1 的后台结果。请用口语简洁地告诉用户..."
             turn_complete=true
 
 AI:   ← audio: "北京现在气温大约4度半，天气多云"           (App 播放)
@@ -879,8 +911,8 @@ AI:   ← turnComplete
 WS2:  OpenClaw 查询记忆 → 找到"锦里老灶火锅，人民路123号"
       ← help_result: "上周和老王去的是锦里老灶火锅，地址是人民路123号"
 
-App:  pendingInjects.add(reply)
-      tryDeliverInjects() → 单条原子 inject → WS1
+App:  pendingInjects.add(Pair(seq, reply))
+      tryDeliverInjects() → 单条原子 inject（含 #N 编号）→ WS1
 
 AI:   ← audio: "你上周和老王去的是锦里老灶火锅，要帮你导航过去吗？"
 
@@ -932,7 +964,9 @@ CarHerApp/
 ├── tools/
 │   ├── ToolHandler.kt               // 工具调用分发
 │   ├── InjectManager.kt             // ⚠️ inject 安全机制（gate + 队列 + REJECTED 恢复）
-│   │   ├── pendingInjects: List     // inject 队列
+│   │   ├── helpCounter: Int         // help 请求自增编号
+│   │   ├── helpRequests: Map        // callId → (request, seq) 映射
+│   │   ├── pendingInjects: List     // (seq, reply) 队列
 │   │   ├── geminiTurnComplete: Bool // turnComplete gate
 │   │   ├── tryDeliverInjects()      // 门控投递
 │   │   ├── onTurnComplete()         // 恢复 gate + 投递
@@ -1018,7 +1052,7 @@ Step 6: 端到端演示
 | 认证 | `config.geminiProxy.serviceSetup`（原样发送） |
 | 会话配置 | `config.geminiProxy.sessionSetup`（原样发送） |
 | 音频帧 | `{"realtime_input":{"media_chunks":[{"mime_type":"audio/pcm","data":"<base64>"}]}}` |
-| 文本注入 | `{"client_content":{"turns":[{"role":"model","parts":[{"text":"..."}]},{"role":"user","parts":[{"text":"请播报"}]}],"turn_complete":true}}` |
+| 文本注入 | `{"client_content":{"turns":[{"role":"model","parts":[{"text":"..."}]},{"role":"user","parts":[{"text":"以上是 #N 的后台结果。请用口语简洁地告诉用户..."}]}],"turn_complete":true}}` |
 | 工具响应 | `{"tool_response":{"functionResponses":[{"id":"<callId>","name":"<工具名>","response":{...}}]}}` |
 
 **WS1 Gemini→App（接收）：**
