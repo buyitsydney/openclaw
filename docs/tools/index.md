@@ -166,7 +166,7 @@ Example (allow only file tools + browser):
 ## Plugins + tools
 
 Plugins can register **additional tools** (and CLI commands) beyond the core set.
-See [Plugins](/plugin) for install + config, and [Skills](/tools/skills) for how
+See [Plugins](/tools/plugin) for install + config, and [Skills](/tools/skills) for how
 tool usage guidance is injected into prompts. Some plugins ship their own skills
 alongside tools (for example, the voice-call plugin).
 
@@ -181,6 +181,7 @@ Optional plugin tools:
 
 Apply structured patches across one or more files. Use for multi-hunk edits.
 Experimental: enable via `tools.exec.applyPatch.enabled` (OpenAI models only).
+`tools.exec.applyPatch.workspaceOnly` defaults to `true` (workspace-contained). Set it to `false` only if you intentionally want `apply_patch` to write/delete outside the workspace directory.
 
 ### `exec`
 
@@ -252,6 +253,7 @@ Core parameters:
 Notes:
 
 - Enable via `tools.web.fetch.enabled`.
+- `maxChars` is clamped by `tools.web.fetch.maxCharsCap` (default 50000).
 - Responses are cached (default 15 min).
 - For JS-heavy sites, prefer the browser tool.
 - See [Web tools](/tools/web) for setup.
@@ -405,7 +407,7 @@ Core actions:
 Notes:
 
 - `add` expects a full cron job object (same schema as `cron.add` RPC).
-- `update` uses `{ id, patch }`.
+- `update` uses `{ jobId, patch }` (`id` accepted for compatibility).
 
 ### `gateway`
 
@@ -463,6 +465,9 @@ Gateway-backed tools (`canvas`, `nodes`, `cron`):
 - `gatewayUrl` (default `ws://127.0.0.1:18789`)
 - `gatewayToken` (if auth enabled)
 - `timeoutMs`
+
+Note: when `gatewayUrl` is set, include `gatewayToken` explicitly. Tools do not inherit config
+or environment credentials for overrides, and missing explicit credentials is an error.
 
 Browser tool:
 

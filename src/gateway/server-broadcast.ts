@@ -1,6 +1,6 @@
 import type { GatewayWsClient } from "./server/ws-types.js";
 import { MAX_BUFFERED_BYTES } from "./server-constants.js";
-import { logWs, summarizeAgentEventForWsLog } from "./ws-log.js";
+import { logWs, shouldLogWs, summarizeAgentEventForWsLog } from "./ws-log.js";
 
 const ADMIN_SCOPE = "operator.admin";
 const APPROVALS_SCOPE = "operator.approvals";
@@ -33,15 +33,21 @@ function hasEventScope(client: GatewayWsClient, event: string): boolean {
 
 export function createGatewayBroadcaster(params: { clients: Set<GatewayWsClient> }) {
   let seq = 0;
-  const broadcast = (
+
+  const broadcastInternal = (
     event: string,
     payload: unknown,
     opts?: {
       dropIfSlow?: boolean;
       stateVersion?: { presence?: number; health?: number };
     },
+    targetConnIds?: ReadonlySet<string>,
   ) => {
-    const eventSeq = ++seq;
+    if (params.clients.size === 0) {
+      return;
+    }
+    const isTargeted = Boolean(targetConnIds);
+    const eventSeq = isTargeted ? undefined : ++seq;
     const frame = JSON.stringify({
       type: "event",
       event,
@@ -49,19 +55,25 @@ export function createGatewayBroadcaster(params: { clients: Set<GatewayWsClient>
       seq: eventSeq,
       stateVersion: opts?.stateVersion,
     });
-    const logMeta: Record<string, unknown> = {
-      event,
-      seq: eventSeq,
-      clients: params.clients.size,
-      dropIfSlow: opts?.dropIfSlow,
-      presenceVersion: opts?.stateVersion?.presence,
-      healthVersion: opts?.stateVersion?.health,
-    };
-    if (event === "agent") {
-      Object.assign(logMeta, summarizeAgentEventForWsLog(payload));
+    if (shouldLogWs()) {
+      const logMeta: Record<string, unknown> = {
+        event,
+        seq: eventSeq ?? "targeted",
+        clients: params.clients.size,
+        targets: targetConnIds ? targetConnIds.size : undefined,
+        dropIfSlow: opts?.dropIfSlow,
+        presenceVersion: opts?.stateVersion?.presence,
+        healthVersion: opts?.stateVersion?.health,
+      };
+      if (event === "agent") {
+        Object.assign(logMeta, summarizeAgentEventForWsLog(payload));
+      }
+      logWs("out", "event", logMeta);
     }
-    logWs("out", "event", logMeta);
     for (const c of params.clients) {
+      if (targetConnIds && !targetConnIds.has(c.connId)) {
+        continue;
+      }
       if (!hasEventScope(c, event)) {
         continue;
       }
@@ -84,5 +96,30 @@ export function createGatewayBroadcaster(params: { clients: Set<GatewayWsClient>
       }
     }
   };
-  return { broadcast };
+
+  const broadcast = (
+    event: string,
+    payload: unknown,
+    opts?: {
+      dropIfSlow?: boolean;
+      stateVersion?: { presence?: number; health?: number };
+    },
+  ) => broadcastInternal(event, payload, opts);
+
+  const broadcastToConnIds = (
+    event: string,
+    payload: unknown,
+    connIds: ReadonlySet<string>,
+    opts?: {
+      dropIfSlow?: boolean;
+      stateVersion?: { presence?: number; health?: number };
+    },
+  ) => {
+    if (connIds.size === 0) {
+      return;
+    }
+    broadcastInternal(event, payload, opts, connIds);
+  };
+
+  return { broadcast, broadcastToConnIds };
 }

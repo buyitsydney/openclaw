@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { MsgContext } from "../templating.js";
 import { buildCommandContext, handleCommands } from "./commands.js";
@@ -94,6 +94,10 @@ function buildParams(commandBody: string, cfg: OpenClawConfig, ctxOverrides?: Pa
 }
 
 describe("handleCommands /allowlist", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("lists config + store allowFrom entries", async () => {
     readChannelAllowFromStoreMock.mockResolvedValueOnce(["456"]);
 
@@ -145,6 +149,92 @@ describe("handleCommands /allowlist", () => {
     });
     expect(result.reply?.text).toContain("DM allowlist added");
   });
+
+  it("removes Slack DM allowlist entries from canonical allowFrom and deletes legacy dm.allowFrom", async () => {
+    readConfigFileSnapshotMock.mockResolvedValueOnce({
+      valid: true,
+      parsed: {
+        channels: {
+          slack: {
+            allowFrom: ["U111", "U222"],
+            dm: { allowFrom: ["U111", "U222"] },
+            configWrites: true,
+          },
+        },
+      },
+    });
+    validateConfigObjectWithPluginsMock.mockImplementation((config: unknown) => ({
+      ok: true,
+      config,
+    }));
+
+    const cfg = {
+      commands: { text: true, config: true },
+      channels: {
+        slack: {
+          allowFrom: ["U111", "U222"],
+          dm: { allowFrom: ["U111", "U222"] },
+          configWrites: true,
+        },
+      },
+    } as OpenClawConfig;
+
+    const params = buildParams("/allowlist remove dm U111", cfg, {
+      Provider: "slack",
+      Surface: "slack",
+    });
+    const result = await handleCommands(params);
+
+    expect(result.shouldContinue).toBe(false);
+    expect(writeConfigFileMock).toHaveBeenCalledTimes(1);
+    const written = writeConfigFileMock.mock.calls[0]?.[0] as OpenClawConfig;
+    expect(written.channels?.slack?.allowFrom).toEqual(["U222"]);
+    expect(written.channels?.slack?.dm?.allowFrom).toBeUndefined();
+    expect(result.reply?.text).toContain("channels.slack.allowFrom");
+  });
+
+  it("removes Discord DM allowlist entries from canonical allowFrom and deletes legacy dm.allowFrom", async () => {
+    readConfigFileSnapshotMock.mockResolvedValueOnce({
+      valid: true,
+      parsed: {
+        channels: {
+          discord: {
+            allowFrom: ["111", "222"],
+            dm: { allowFrom: ["111", "222"] },
+            configWrites: true,
+          },
+        },
+      },
+    });
+    validateConfigObjectWithPluginsMock.mockImplementation((config: unknown) => ({
+      ok: true,
+      config,
+    }));
+
+    const cfg = {
+      commands: { text: true, config: true },
+      channels: {
+        discord: {
+          allowFrom: ["111", "222"],
+          dm: { allowFrom: ["111", "222"] },
+          configWrites: true,
+        },
+      },
+    } as OpenClawConfig;
+
+    const params = buildParams("/allowlist remove dm 111", cfg, {
+      Provider: "discord",
+      Surface: "discord",
+    });
+    const result = await handleCommands(params);
+
+    expect(result.shouldContinue).toBe(false);
+    expect(writeConfigFileMock).toHaveBeenCalledTimes(1);
+    const written = writeConfigFileMock.mock.calls[0]?.[0] as OpenClawConfig;
+    expect(written.channels?.discord?.allowFrom).toEqual(["222"]);
+    expect(written.channels?.discord?.dm?.allowFrom).toBeUndefined();
+    expect(result.reply?.text).toContain("channels.discord.allowFrom");
+  });
 });
 
 describe("/models command", () => {
@@ -153,7 +243,7 @@ describe("/models command", () => {
     agents: { defaults: { model: { primary: "anthropic/claude-opus-4-5" } } },
   } as unknown as OpenClawConfig;
 
-  it.each(["telegram", "discord", "whatsapp"])("lists providers on %s", async (surface) => {
+  it.each(["discord", "whatsapp"])("lists providers on %s (text)", async (surface) => {
     const params = buildParams("/models", cfg, { Provider: surface, Surface: surface });
     const result = await handleCommands(params);
     expect(result.shouldContinue).toBe(false);
@@ -162,8 +252,20 @@ describe("/models command", () => {
     expect(result.reply?.text).toContain("Use: /models <provider>");
   });
 
+  it("lists providers on telegram (buttons)", async () => {
+    const params = buildParams("/models", cfg, { Provider: "telegram", Surface: "telegram" });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toBe("Select a provider:");
+    const buttons = (result.reply?.channelData as { telegram?: { buttons?: unknown[][] } })
+      ?.telegram?.buttons;
+    expect(buttons).toBeDefined();
+    expect(buttons?.length).toBeGreaterThan(0);
+  });
+
   it("lists provider models with pagination hints", async () => {
-    const params = buildParams("/models anthropic", cfg);
+    // Use discord surface for text-based output tests
+    const params = buildParams("/models anthropic", cfg, { Surface: "discord" });
     const result = await handleCommands(params);
     expect(result.shouldContinue).toBe(false);
     expect(result.reply?.text).toContain("Models (anthropic)");
@@ -174,7 +276,8 @@ describe("/models command", () => {
   });
 
   it("ignores page argument when all flag is present", async () => {
-    const params = buildParams("/models anthropic 3 all", cfg);
+    // Use discord surface for text-based output tests
+    const params = buildParams("/models anthropic 3 all", cfg, { Surface: "discord" });
     const result = await handleCommands(params);
     expect(result.shouldContinue).toBe(false);
     expect(result.reply?.text).toContain("Models (anthropic)");
@@ -184,7 +287,8 @@ describe("/models command", () => {
   });
 
   it("errors on out-of-range pages", async () => {
-    const params = buildParams("/models anthropic 4", cfg);
+    // Use discord surface for text-based output tests
+    const params = buildParams("/models anthropic 4", cfg, { Surface: "discord" });
     const result = await handleCommands(params);
     expect(result.shouldContinue).toBe(false);
     expect(result.reply?.text).toContain("Page out of range");
@@ -213,11 +317,16 @@ describe("/models command", () => {
       },
     } as unknown as OpenClawConfig;
 
-    const providerList = await handleCommands(buildParams("/models", customCfg));
+    // Use discord surface for text-based output tests
+    const providerList = await handleCommands(
+      buildParams("/models", customCfg, { Surface: "discord" }),
+    );
     expect(providerList.reply?.text).toContain("localai");
     expect(providerList.reply?.text).toContain("visionpro");
 
-    const result = await handleCommands(buildParams("/models localai", customCfg));
+    const result = await handleCommands(
+      buildParams("/models localai", customCfg, { Surface: "discord" }),
+    );
     expect(result.shouldContinue).toBe(false);
     expect(result.reply?.text).toContain("Models (localai)");
     expect(result.reply?.text).toContain("localai/ultra-chat");

@@ -12,9 +12,12 @@ import {
   resolveConfiguredModelRef,
 } from "../agents/model-selection.js";
 import { formatTokenK } from "./models/shared.js";
+import { OPENAI_CODEX_DEFAULT_MODEL } from "./openai-codex-model-default.js";
+import { promptAndConfigureVllm } from "./vllm-setup.js";
 
 const KEEP_VALUE = "__keep__";
 const MANUAL_VALUE = "__manual__";
+const VLLM_VALUE = "__vllm__";
 const PROVIDER_FILTER_THRESHOLD = 30;
 
 // Models that are internal routing features and should not be shown in selection lists.
@@ -27,13 +30,14 @@ type PromptDefaultModelParams = {
   prompter: WizardPrompter;
   allowKeep?: boolean;
   includeManual?: boolean;
+  includeVllm?: boolean;
   ignoreAllowlist?: boolean;
   preferredProvider?: string;
   agentDir?: string;
   message?: string;
 };
 
-type PromptDefaultModelResult = { model?: string };
+type PromptDefaultModelResult = { model?: string; config?: OpenClawConfig };
 type PromptModelAllowlistResult = { models?: string[] };
 
 function hasAuthForProvider(
@@ -106,6 +110,7 @@ export async function promptDefaultModel(
   const cfg = params.config;
   const allowKeep = params.allowKeep ?? true;
   const includeManual = params.includeManual ?? true;
+  const includeVllm = params.includeVllm ?? false;
   const ignoreAllowlist = params.ignoreAllowlist ?? false;
   const preferredProviderRaw = params.preferredProvider?.trim();
   const preferredProvider = preferredProviderRaw
@@ -183,7 +188,8 @@ export async function promptDefaultModel(
     models = models.filter((entry) => entry.provider === preferredProvider);
   }
 
-  const authStore = ensureAuthProfileStore(params.agentDir, {
+  const agentDir = params.agentDir;
+  const authStore = ensureAuthProfileStore(agentDir, {
     allowKeychainPrompt: false,
   });
   const authCache = new Map<string, boolean>();
@@ -210,6 +216,13 @@ export async function promptDefaultModel(
   }
   if (includeManual) {
     options.push({ value: MANUAL_VALUE, label: "Enter model manually" });
+  }
+  if (includeVllm && agentDir) {
+    options.push({
+      value: VLLM_VALUE,
+      label: "vLLM (custom)",
+      hint: "Enter vLLM URL + API key + model",
+    });
   }
 
   const seen = new Set<string>();
@@ -294,6 +307,22 @@ export async function promptDefaultModel(
       initialValue: configuredRaw || resolvedKey || undefined,
     });
   }
+  if (selection === VLLM_VALUE) {
+    if (!agentDir) {
+      await params.prompter.note(
+        "vLLM setup requires an agent directory context.",
+        "vLLM not available",
+      );
+      return {};
+    }
+    const { config: nextConfig, modelRef } = await promptAndConfigureVllm({
+      cfg,
+      prompter: params.prompter,
+      agentDir,
+    });
+
+    return { model: modelRef, config: nextConfig };
+  }
   return { model: String(selection) };
 }
 
@@ -331,7 +360,7 @@ export async function promptModelAllowlist(params: {
         params.message ??
         "Allowlist models (comma-separated provider/model; blank to keep current)",
       initialValue: existingKeys.join(", "),
-      placeholder: "openai-codex/gpt-5.2, anthropic/claude-opus-4-5",
+      placeholder: `${OPENAI_CODEX_DEFAULT_MODEL}, anthropic/claude-opus-4-6`,
     });
     const parsed = String(raw ?? "")
       .split(",")
