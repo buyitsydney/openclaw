@@ -372,7 +372,11 @@ function trackMessageId(messageId: string): boolean {
 /** Flatten a post body ({ title?, content: [[{tag,text}, ...]] }) into plain text.
  *  Also collects any embedded image_key values for downstream download. */
 // oxlint-disable-next-line typescript/no-explicit-any
-function flattenPostBody(body: any, imageKeys?: string[]): string | null {
+function flattenPostBody(
+  body: any,
+  imageKeys?: string[],
+  fileInfo?: FeishuFileInfo[],
+): string | null {
   if (!body || !Array.isArray(body.content)) return null;
   const lines: string[] = [];
   for (const paragraph of body.content) {
@@ -385,8 +389,13 @@ function flattenPostBody(body: any, imageKeys?: string[]): string | null {
         // Collect image keys for download; replace with placeholder in text.
         if (el.image_key && imageKeys) imageKeys.push(el.image_key);
         line += "<media:image>";
-      } else if (el.tag === "media") line += "[media]";
-      else if (el.tag === "emotion") line += el.emoji_type ? `[${el.emoji_type}]` : "";
+      } else if (el.tag === "media") {
+        // Embedded video in rich-text: collect cover + file for download.
+        if (el.image_key && imageKeys) imageKeys.push(el.image_key);
+        if (el.file_key && fileInfo)
+          fileInfo.push({ fileKey: el.file_key, fileName: el.file_name ?? "video" });
+        line += "[video]";
+      } else if (el.tag === "emotion") line += el.emoji_type ? `[${el.emoji_type}]` : "";
     }
     lines.push(line);
   }
@@ -399,16 +408,20 @@ function flattenPostBody(body: any, imageKeys?: string[]): string | null {
  *  Send format:     { zh_cn: { title?, content: [[...]] } }  (locale-wrapped)
  *  We handle both so the parser is robust.
  *  imageKeys: collects any embedded image_key values for downstream download. */
-function extractPostText(parsed: Record<string, unknown>, imageKeys?: string[]): string | null {
+function extractPostText(
+  parsed: Record<string, unknown>,
+  imageKeys?: string[],
+  fileInfo?: FeishuFileInfo[],
+): string | null {
   // Received messages use the flat format (title + content at top level).
   if (Array.isArray(parsed.content)) {
-    return flattenPostBody(parsed, imageKeys);
+    return flattenPostBody(parsed, imageKeys, fileInfo);
   }
   // Fallback: locale-wrapped format (zh_cn / en_us / first key).
   // oxlint-disable-next-line typescript/no-explicit-any
   const locales = parsed as Record<string, any>;
   const locale = locales.zh_cn ?? locales.en_us ?? Object.values(locales)[0];
-  return flattenPostBody(locale, imageKeys);
+  return flattenPostBody(locale, imageKeys, fileInfo);
 }
 
 /** Extract text from an interactive (card) message's degraded body.
@@ -469,9 +482,9 @@ function extractTextContent(
       return (parsed.text as string) ?? null;
     }
     // Rich-text (post) messages: flatten nested paragraphs into plain text.
-    // Embedded img tags have their image_key collected for download.
+    // Embedded img/media tags have their keys collected for download.
     if (msgType === "post") {
-      return extractPostText(parsed, imageKeys);
+      return extractPostText(parsed, imageKeys, fileInfo);
     }
     // Standalone image messages: collect image_key for download.
     if (msgType === "image") {
@@ -482,6 +495,14 @@ function extractTextContent(
     if (msgType === "file") {
       if (parsed.file_key && fileInfo) {
         fileInfo.push({ fileKey: parsed.file_key, fileName: parsed.file_name ?? "unknown" });
+      }
+      return null; // Handled in handleInboundMessage.
+    }
+    // Video messages: cover image for vision + video file for download.
+    if (msgType === "media") {
+      if (parsed.image_key && imageKeys) imageKeys.push(parsed.image_key);
+      if (parsed.file_key && fileInfo) {
+        fileInfo.push({ fileKey: parsed.file_key, fileName: parsed.file_name ?? "video" });
       }
       return null; // Handled in handleInboundMessage.
     }
@@ -929,11 +950,16 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
   // For media-only messages, pick the right placeholder:
   // - Image messages (or image-as-file like jpg with msgType=file): "<media:image>" triggers vision.
+  // - Video messages (msgType=media): cover image for vision + video file path for AI context.
   // - Non-image file messages: filePlaceholder with name+path so AI can use exec to read them.
   const isImageMedia =
     imageKeys.length > 0 || (fileInfo.length > 0 && mediaType?.startsWith("image/"));
   const textFromMessage =
     rawText ??
+    // Video: combine cover image (vision) + video file path (AI can reference it).
+    (msgType === "media" && isImageMedia && mediaPath && filePlaceholder
+      ? `<media:image>\n${filePlaceholder}`
+      : null) ??
     (isImageMedia && mediaPath ? "<media:image>" : null) ??
     filePlaceholder ??
     (fileInfo.length > 0 ? `[file: ${fileInfo[0].fileName}]` : null);
