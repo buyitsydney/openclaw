@@ -15,20 +15,20 @@ Android 7.0 之后 WebView 可独立更新，版本号与 Android 版本无关�
 
 ### 最低要求
 
-| 项目 | 最低要求 | 推荐 | 原因 |
-|------|---------|------|------|
-| Android OS | 7.0 (API 24) | 10+ (API 29) | 7.0 起 WebView 可独立更新；10+ 音频 HAL 更好 |
-| WebView / Chromium | **66** | **80+** | 66 = AudioWorklet 引入版本；80+ JS 语法兼容性更好 |
+| 项目               | 最低要求     | 推荐         | 原因                                              |
+| ------------------ | ------------ | ------------ | ------------------------------------------------- |
+| Android OS         | 7.0 (API 24) | 10+ (API 29) | 7.0 起 WebView 可独立更新；10+ 音频 HAL 更好      |
+| WebView / Chromium | **66**       | **80+**      | 66 = AudioWorklet 引入版本；80+ JS 语法兼容性更好 |
 
 ### 我们用到的 Web API 与最低 Chromium 版本
 
-| Web API | 用途 | 最低 Chromium 版本 |
-|---------|------|-------------------|
-| WebSocket | 连接 Gemini Proxy 和 OpenClaw | 全版本支持 |
-| getUserMedia | 麦克风采集 | 53+ |
-| AudioContext | 音频处理 | 35+ |
-| **AudioWorklet** | **音频采集和播放核心** | **66+（硬性要求）** |
-| ES2020+ 语法 | optional chaining 等 | 80+ |
+| Web API          | 用途                          | 最低 Chromium 版本  |
+| ---------------- | ----------------------------- | ------------------- |
+| WebSocket        | 连接 Gemini Proxy 和 OpenClaw | 全版本支持          |
+| getUserMedia     | 麦克风采集                    | 53+                 |
+| AudioContext     | 音频处理                      | 35+                 |
+| **AudioWorklet** | **音频采集和播放核心**        | **66+（硬性要求）** |
+| ES2020+ 语法     | optional chaining 等          | 80+                 |
 
 **瓶颈是 AudioWorklet（Chromium 66+）。** 其余 API 要求更低。
 
@@ -37,6 +37,7 @@ Android 7.0 之后 WebView 可独立更新，版本号与 Android 版本无关�
 #### 方式一：查系统设置（最快）
 
 请厂商在域控设备上提供：
+
 1. **Android 版本**：设置 → 关于 → Android 版本号
 2. **WebView 版本**：设置 → 应用 → Android System WebView（或 Chrome）→ 版本号
 
@@ -59,6 +60,7 @@ extensions/realtime/live-frontend/frontend/car-check.html
 ```
 
 检测内容：
+
 - Android 版本（从 UserAgent 解析）
 - Chromium 内核版本
 - WebSocket / getUserMedia / AudioContext / AudioWorklet / ES2020+ 支持情况
@@ -88,12 +90,12 @@ extensions/realtime/live-frontend/frontend/car-check.html
 
 **两个检测入口的区别：**
 
-| | car-check.html（独立页面） | mobile.html 调试 tab |
-|---|---|---|
-| 需要后端服务 | 不需要 | 需要（连接 Gemini/OpenClaw） |
-| 适用场景 | 设备初筛、厂商自助验证 | 集成验证、全流程测试 |
-| 麦克风实测 | 有（点击按钮） | 有（点击"开始"后自动） |
-| JS Bridge 检测 | 有 | 有 |
+|                | car-check.html（独立页面） | mobile.html 调试 tab         |
+| -------------- | -------------------------- | ---------------------------- |
+| 需要后端服务   | 不需要                     | 需要（连接 Gemini/OpenClaw） |
+| 适用场景       | 设备初筛、厂商自助验证     | 集成验证、全流程测试         |
+| 麦克风实测     | 有（点击按钮）             | 有（点击"开始"后自动）       |
+| JS Bridge 检测 | 有                         | 有                           |
 
 ---
 
@@ -194,11 +196,11 @@ mobile-script.js handleMessage()
 
 三条连接线：
 
-| 连接 | 协议 | 起点 | 终点 | 作用 |
-|------|------|------|------|------|
-| 1 | WebSocket | WebView | Gemini Proxy | 音频双向流 + tool calls |
-| 2 | WebSocket | WebView | OpenClaw Realtime | help 请求/结果 + transcript 同步 |
-| 3 | JS Bridge | WebView JS | Android Native | 车端硬件控制（同步调用，纯本地） |
+| 连接 | 协议      | 起点       | 终点              | 作用                             |
+| ---- | --------- | ---------- | ----------------- | -------------------------------- |
+| 1    | WebSocket | WebView    | Gemini Proxy      | 音频双向流 + tool calls          |
+| 2    | WebSocket | WebView    | OpenClaw Realtime | help 请求/结果 + transcript 同步 |
+| 3    | JS Bridge | WebView JS | Android Native    | 车端硬件控制（同步调用，纯本地） |
 
 ---
 
@@ -206,22 +208,22 @@ mobile-script.js handleMessage()
 
 ### 我方提供
 
-| 交付物 | 说明 |
-|--------|------|
-| 前端文件包 | `mobile.html` + 所有 JS 文件（含新增的 `car-control.js`） |
-| 壳 App 模板代码 | `CarHerActivity.kt` + `CarBridge.kt` 空壳（可直接编译运行） |
-| JS Bridge 接口文档 | `Android.carControl(action, paramsJson)` 的完整协议定义 |
-| 后端服务 | Gemini Proxy + OpenClaw Gateway（云端部署或隧道访问） |
+| 交付物             | 说明                                                        |
+| ------------------ | ----------------------------------------------------------- |
+| 前端文件包         | `mobile.html` + 所有 JS 文件（含新增的 `car-control.js`）   |
+| 壳 App 模板代码    | `CarHerActivity.kt` + `CarBridge.kt` 空壳（可直接编译运行） |
+| JS Bridge 接口文档 | `Android.carControl(action, paramsJson)` 的完整协议定义     |
+| 后端服务           | Gemini Proxy + OpenClaw Gateway（云端部署或隧道访问）       |
 
 ### 厂商负责
 
-| 任务 | 说明 |
-|------|------|
-| 构建 Android App | 基于我方模板，创建 WebView 壳 App |
-| 对接车控 SDK | 在 `CarBridge.kt` 中接入真实的车辆控制 API |
-| 音频路由 | 确保车载麦克风 → WebView、WebView → 车载扬声器正常工作 |
-| 系统权限 | 白名单麦克风/网络权限，确保 App 开机自启 |
-| 提供测试环境 | 域控开发板或实车 |
+| 任务             | 说明                                                   |
+| ---------------- | ------------------------------------------------------ |
+| 构建 Android App | 基于我方模板，创建 WebView 壳 App                      |
+| 对接车控 SDK     | 在 `CarBridge.kt` 中接入真实的车辆控制 API             |
+| 音频路由         | 确保车载麦克风 → WebView、WebView → 车载扬声器正常工作 |
+| 系统权限         | 白名单麦克风/网络权限，确保 App 开机自启               |
+| 提供测试环境     | 域控开发板或实车                                       |
 
 ---
 
@@ -232,6 +234,7 @@ mobile-script.js handleMessage()
 **目标：确认域控设备能跑 mobile.html。**
 
 操作：
+
 1. Mac 上启动后端服务 + Cloudflare 隧道（和现有手机 demo 一样）
 2. 域控设备连 WiFi 或 4G
 3. 打开域控设备上的 **Chrome 浏览器**（不是壳 App，先用 Chrome 验证）
@@ -240,14 +243,14 @@ mobile-script.js handleMessage()
 
 验证清单：
 
-| 项目 | 预期 | 如果失败 |
-|------|------|---------|
-| 麦克风权限弹窗 | 弹出并授权 | 检查域控 Android 权限设置 |
-| getUserMedia | 成功获取音频流 | 打开 debug overlay 看错误日志 |
-| WebSocket 到 Gemini Proxy | 连接成功 | 检查网络/DNS/防火墙 |
-| WebSocket 到 OpenClaw | 连接成功 | 同上 |
-| 语音输入 → Gemini 回复 | 听到语音回复 | 检查 debug overlay 中的 Gemini 连接状态 |
-| AudioWorklet 播放 | 声音从扬声器出来 | 检查音频输出设备路由 |
+| 项目                      | 预期             | 如果失败                                |
+| ------------------------- | ---------------- | --------------------------------------- |
+| 麦克风权限弹窗            | 弹出并授权       | 检查域控 Android 权限设置               |
+| getUserMedia              | 成功获取音频流   | 打开 debug overlay 看错误日志           |
+| WebSocket 到 Gemini Proxy | 连接成功         | 检查网络/DNS/防火墙                     |
+| WebSocket 到 OpenClaw     | 连接成功         | 同上                                    |
+| 语音输入 → Gemini 回复    | 听到语音回复     | 检查 debug overlay 中的 Gemini 连接状态 |
+| AudioWorklet 播放         | 声音从扬声器出来 | 检查音频输出设备路由                    |
 
 **Chrome 验证通过 = demo 完成 80%。** 剩余工作是壳 App + 车控。
 
@@ -256,6 +259,7 @@ mobile-script.js handleMessage()
 ### Step 1：WebView 壳 App（半天）
 
 **为什么需要壳 App？**
+
 - Chrome 有地址栏，不专业
 - Chrome 无法注入 JS Bridge（车控需要）
 - Chrome 麦克风每次要手动授权
@@ -334,6 +338,7 @@ class CarBridge(private val context: Context) {
 ### Step 2：前端加车控 Tool（半天）— 已完成 ✅
 
 **已实现并验证通过。** 改动内容：
+
 - `car-control.js`：CarControlTool 类 + 非车载环境模拟响应
 - `mobile.html`：引入 car-control.js
 - `mobile-script.js`：注册 tool + 更新 SYSTEM_PROMPT + tool call 统一 UI 显示 + tool response 回传修复
@@ -341,6 +346,7 @@ class CarBridge(private val context: Context) {
 - `start-remote.sh`：自动打开本地调试页面 + 输出环境检测 URL
 
 验证结果（Mac 本地 + 手机远程）：
+
 - Gemini 正确识别车控指令并调用 `car_control` tool（UI 显示 `[Tool: car_control] {...}`）
 - 模拟响应正确返回并回传给 Gemini（`sendToolResponse`）
 - Gemini 收到 tool response 后语音播报确认结果
@@ -363,15 +369,16 @@ class CarControlTool extends FunctionCallDefinition {
         properties: {
           action: {
             type: "string",
-            description: "操作类型: set_ac_temperature | set_ac_power | set_ac_mode | set_seat_heat | set_window"
+            description:
+              "操作类型: set_ac_temperature | set_ac_power | set_ac_mode | set_seat_heat | set_window",
           },
           params: {
             type: "object",
-            description: "操作参数"
-          }
-        }
+            description: "操作参数",
+          },
+        },
       },
-      ["action"]
+      ["action"],
     );
   }
 
@@ -435,6 +442,7 @@ state.client.addFunction(carTool);
 **已实现并验证通过。** 改动内容：
 
 **Cloudflare 命名隧道（固定 URL，重启不变）：**
+
 - 购买域名 `carher.net`，Cloudflare 直接托管
 - 创建命名隧道 `carher`，配置三个子域名：
   - `carher.carher.net` → 前端页面（localhost:8000）
@@ -443,6 +451,7 @@ state.client.addFunction(carTool);
 - 配置文件：`~/.cloudflared/config.yml`
 
 **start-remote.sh 更新：**
+
 - 默认使用命名隧道（`cloudflared tunnel run carher`），URL 固定
 - 加 `--random` 回退到随机隧道模式（临时 URL，关闭即失效）
 - 修复：随机隧道加 `--config /dev/null` 避免读取命名隧道配置导致 530 错误
@@ -450,6 +459,7 @@ state.client.addFunction(carTool);
 - 自动打开本地调试页面
 
 **前端自动版本管理：**
+
 - server.py 实时计算所有前端文件的内容 hash 作为版本号
 - HTML 中的 script 标签自动注入 `?v=<hash>`（cache busting）
 - `/version` 端点返回当前版本 hash
@@ -457,6 +467,7 @@ state.client.addFunction(carTool);
 - 改任何前端文件，刷新页面即可看到新版本，无需重启 server
 
 **厂商文档（`car-her-vendor-guide.md`）：**
+
 - 环境验证移到开发前（前置工作）
 - 前端交付改为远程 URL 加载
 - URL 不再硬编码在文档中，改为"由我方单独提供"（联调期间先发随机 URL，保留主动权）
@@ -523,26 +534,26 @@ const result = JSON.parse(resultJson);
 
 ### action 定义
 
-| action | params | 说明 | 返回示例 |
-|--------|--------|------|---------|
-| `set_ac_temperature` | `{"temperature": 25}` | 设置空调温度（16-32°C） | `{"ok":true,"message":"空调已设置为25度"}` |
-| `set_ac_power` | `{"on": true}` | 开/关空调 | `{"ok":true,"message":"空调已打开"}` |
-| `set_ac_mode` | `{"mode": "cool"}` | 空调模式：`cool` / `heat` / `auto` | `{"ok":true,"message":"空调模式已切换为cool"}` |
-| `set_seat_heat` | `{"seat":"driver","level":2}` | 座椅加热，level 0-3（0=关） | `{"ok":true,"message":"driver座椅加热已设为2档"}` |
-| `set_window` | `{"position":"driver","open":true}` | 车窗开/关 | `{"ok":true,"message":"driver车窗已打开"}` |
+| action               | params                              | 说明                               | 返回示例                                          |
+| -------------------- | ----------------------------------- | ---------------------------------- | ------------------------------------------------- |
+| `set_ac_temperature` | `{"temperature": 25}`               | 设置空调温度（16-32°C）            | `{"ok":true,"message":"空调已设置为25度"}`        |
+| `set_ac_power`       | `{"on": true}`                      | 开/关空调                          | `{"ok":true,"message":"空调已打开"}`              |
+| `set_ac_mode`        | `{"mode": "cool"}`                  | 空调模式：`cool` / `heat` / `auto` | `{"ok":true,"message":"空调模式已切换为cool"}`    |
+| `set_seat_heat`      | `{"seat":"driver","level":2}`       | 座椅加热，level 0-3（0=关）        | `{"ok":true,"message":"driver座椅加热已设为2档"}` |
+| `set_window`         | `{"position":"driver","open":true}` | 车窗开/关                          | `{"ok":true,"message":"driver车窗已打开"}`        |
 
 ### 返回格式
 
 成功：
 
 ```json
-{"ok": true, "message": "空调已设置为25度"}
+{ "ok": true, "message": "空调已设置为25度" }
 ```
 
 失败：
 
 ```json
-{"ok": false, "error": "温度超出范围"}
+{ "ok": false, "error": "温度超出范围" }
 ```
 
 ### 注意事项
@@ -626,13 +637,13 @@ Day 2 下午
 
 ## 八、风险和应对
 
-| 风险 | 概率 | 影响 | 应对 |
-|------|------|------|------|
-| 域控 WebView 麦克风权限被系统拦截 | 中 | 无法录音 | 厂商在系统层白名单 App 的音频权限 |
-| 车内噪音导致语音识别差 | 中 | 体验不佳 | Gemini 内置降噪；车载麦克风阵列比手机更好 |
-| 4G 延迟导致语音卡顿 | 中 | 播放断续 | jitter buffer 已有（debug overlay 可调） |
-| 厂商 SDK 异步返回 | 低 | JS Bridge 超时 | CarBridge 内部做 blocking wait |
-| WebView AudioContext 采样率不支持 24kHz | 低 | 播放失败 | AudioContext 会自动 resample，Step 0 验证 |
+| 风险                                    | 概率 | 影响           | 应对                                      |
+| --------------------------------------- | ---- | -------------- | ----------------------------------------- |
+| 域控 WebView 麦克风权限被系统拦截       | 中   | 无法录音       | 厂商在系统层白名单 App 的音频权限         |
+| 车内噪音导致语音识别差                  | 中   | 体验不佳       | Gemini 内置降噪；车载麦克风阵列比手机更好 |
+| 4G 延迟导致语音卡顿                     | 中   | 播放断续       | jitter buffer 已有（debug overlay 可调）  |
+| 厂商 SDK 异步返回                       | 低   | JS Bridge 超时 | CarBridge 内部做 blocking wait            |
+| WebView AudioContext 采样率不支持 24kHz | 低   | 播放失败       | AudioContext 会自动 resample，Step 0 验证 |
 
 ---
 

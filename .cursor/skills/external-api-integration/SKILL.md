@@ -19,20 +19,24 @@ description: Enforces mandatory official documentation lookup before integrating
 ## Common Pitfalls
 
 ### Send vs Receive format mismatch
+
 APIs often use **different structures** for sending and receiving the same data type.
 
 Example (Feishu post message):
+
 - **Send**: `{ zh_cn: { title, content: [[...]] } }` (locale-wrapped)
 - **Receive**: `{ title, content: [[...]] }` (flat, no locale wrapper)
 
 These look similar but are structurally different. Always verify both directions independently.
 
 ### Version differences
+
 - API v1 and v2 may have completely different schemas
 - Event subscription payloads may differ from REST API responses
 - WebSocket message formats may differ from HTTP callback formats
 
 ### Platform-specific quirks
+
 - Feishu: user input with numbered lists auto-converts from `text` to `post` (rich-text) msg_type
 - Telegram: markdown formatting in messages has strict escaping rules
 - Discord: embed limits, rate limits, and intent requirements

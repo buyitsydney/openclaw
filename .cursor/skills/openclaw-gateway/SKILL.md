@@ -7,11 +7,11 @@ description: OpenClaw gateway startup conventions and scripts. Use when the user
 
 ## Scripts
 
-| Script | Purpose |
-|--------|---------|
-| `start.sh` (repo root) | **Primary dev launcher.** Rebuild + start gateway + Live Frontend Proxy. Use this. |
-| `scripts/restart-mac.sh` | macOS App full rebuild (kill, swift build, package, relaunch). Different from `start.sh`. |
-| `start-mobile.sh` (repo root) | Mobile dev launcher. |
+| Script                        | Purpose                                                                                   |
+| ----------------------------- | ----------------------------------------------------------------------------------------- |
+| `start.sh` (repo root)        | **Primary dev launcher.** Rebuild + start gateway + Live Frontend Proxy. Use this.        |
+| `scripts/restart-mac.sh`      | macOS App full rebuild (kill, swift build, package, relaunch). Different from `start.sh`. |
+| `start-mobile.sh` (repo root) | Mobile dev launcher.                                                                      |
 
 ## start.sh Details
 
@@ -34,12 +34,12 @@ The gateway command must **not** use `--verbose`. Reason:
 
 ## Gateway Log Style Options
 
-| Flag | WS Log Behavior |
-|------|----------------|
-| (none) | `logWsOptimized`: silent except errors/slow (recommended) |
-| `--verbose` | `logWsCompact` (auto): every req/res pair on one line (noisy) |
+| Flag                      | WS Log Behavior                                               |
+| ------------------------- | ------------------------------------------------------------- |
+| (none)                    | `logWsOptimized`: silent except errors/slow (recommended)     |
+| `--verbose`               | `logWsCompact` (auto): every req/res pair on one line (noisy) |
 | `--verbose --ws-log full` | `logWsFull`: every req and res on separate lines (very noisy) |
-| `--compact` | Alias for `--ws-log compact` (only with --verbose) |
+| `--compact`               | Alias for `--ws-log compact` (only with --verbose)            |
 
 ## Log Files
 
@@ -58,9 +58,9 @@ When investigating issues, **always check the log file first**, not terminal out
 
 ## Ports
 
-| Port | Service |
-|------|---------|
-| 18789 | Gateway (HTTP + WebSocket) |
+| Port  | Service                     |
+| ----- | --------------------------- |
+| 18789 | Gateway (HTTP + WebSocket)  |
 | 18790 | Realtime plugin (WebSocket) |
-| 8000 | Live Frontend UI (HTTP) |
-| 8080 | Live Frontend WS proxy |
+| 8000  | Live Frontend UI (HTTP)     |
+| 8080  | Live Frontend WS proxy      |

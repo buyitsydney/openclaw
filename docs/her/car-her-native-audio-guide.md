@@ -62,15 +62,15 @@
 
 ### 厂商需要做的事（完整清单）
 
-| 序号 | 任务 | 复杂度 |
-|------|------|--------|
-| 1 | Android App 框架 + 权限配置 | 低 |
-| 2 | AudioRecord 采集 + 讯飞降噪 | 中 |
-| 3 | AudioTrack 播放 AI 回复 | 低 |
-| 4 | WebSocket 客户端（2 条连接） | 中 |
-| 5 | 工具调用分发（openclaw_help + car_control） | 中 |
-| 6 | 车控 SDK 对接 | 厂商自有 |
-| 7 | ⚠️ inject 安全机制（turnComplete gate + 队列 + RESPONSE_REJECTED 恢复） | 中（见第 6.5 节） |
+| 序号 | 任务                                                                    | 复杂度            |
+| ---- | ----------------------------------------------------------------------- | ----------------- |
+| 1    | Android App 框架 + 权限配置                                             | 低                |
+| 2    | AudioRecord 采集 + 讯飞降噪                                             | 中                |
+| 3    | AudioTrack 播放 AI 回复                                                 | 低                |
+| 4    | WebSocket 客户端（2 条连接）                                            | 中                |
+| 5    | 工具调用分发（openclaw_help + car_control）                             | 中                |
+| 6    | 车控 SDK 对接                                                           | 厂商自有          |
+| 7    | ⚠️ inject 安全机制（turnComplete gate + 队列 + RESPONSE_REJECTED 恢复） | 中（见第 6.5 节） |
 
 ### 厂商不需要关心的事
 
@@ -81,15 +81,15 @@
 
 ### 与 v1（WebView 方案）的对比
 
-| 维度 | v1 WebView 方案 | v2 原生音频方案 |
-|------|----------------|----------------|
-| 麦克风采集 | WebView `getUserMedia` | Android `AudioRecord` 原生 API |
-| 降噪 | 浏览器内置（有限） | 讯飞 SDK 本地降噪 |
-| 麦克风选择 | `enumerateDevices`（受限） | 原生 API 直接指定设备 |
-| 扬声器选择 | `setSinkId`（不可靠） | `AudioTrack` 原生 API |
-| 音频质量 | 受 WebView 限制 | 完全可控 |
-| 协议对接 | 前端 JS 封装好 | 厂商需实现 WebSocket 客户端 |
-| UI 界面 | WebView 渲染 | 原生 UI 或 WebView 仅做展示 |
+| 维度       | v1 WebView 方案            | v2 原生音频方案                |
+| ---------- | -------------------------- | ------------------------------ |
+| 麦克风采集 | WebView `getUserMedia`     | Android `AudioRecord` 原生 API |
+| 降噪       | 浏览器内置（有限）         | 讯飞 SDK 本地降噪              |
+| 麦克风选择 | `enumerateDevices`（受限） | 原生 API 直接指定设备          |
+| 扬声器选择 | `setSinkId`（不可靠）      | `AudioTrack` 原生 API          |
+| 音频质量   | 受 WebView 限制            | 完全可控                       |
+| 协议对接   | 前端 JS 封装好             | 厂商需实现 WebSocket 客户端    |
+| UI 界面    | WebView 渲染               | 原生 UI 或 WebView 仅做展示    |
 
 ---
 
@@ -127,11 +127,11 @@
 
 **3 个 URL 的用途：**
 
-| 名称 | 协议 | 用途 | 需要 Token |
-|------|------|------|-----------|
-| BOOTSTRAP_URL | HTTP GET | App 启动时调用一次，获取 AI 配置 JSON | 是 |
-| PROXY_URL | WebSocket | WS 连接 1 — 音频上行/下行、AI 文本、工具调用 | 否 |
-| OPENCLAW_URL | WebSocket | WS 连接 2 — 发送 help 请求、接收 help 结果和主动推送 | 是 |
+| 名称          | 协议      | 用途                                                 | 需要 Token |
+| ------------- | --------- | ---------------------------------------------------- | ---------- |
+| BOOTSTRAP_URL | HTTP GET  | App 启动时调用一次，获取 AI 配置 JSON                | 是         |
+| PROXY_URL     | WebSocket | WS 连接 1 — 音频上行/下行、AI 文本、工具调用         | 否         |
+| OPENCLAW_URL  | WebSocket | WS 连接 2 — 发送 help 请求、接收 help 结果和主动推送 | 是         |
 
 ### 2.1 BOOTSTRAP_URL 返回值
 
@@ -173,12 +173,12 @@ GET <BOOTSTRAP_URL>
             {
               "name": "openclaw_help",
               "description": "...",
-              "parameters": { "..." : "..." }
+              "parameters": { "...": "..." }
             },
             {
               "name": "car_control",
               "description": "...",
-              "parameters": { "..." : "..." }
+              "parameters": { "...": "..." }
             }
           ]
         },
@@ -199,11 +199,11 @@ GET <BOOTSTRAP_URL>
 
 **厂商使用方式：**
 
-| 字段 | 怎么用 |
-|------|--------|
+| 字段                       | 怎么用                                                |
+| -------------------------- | ----------------------------------------------------- |
 | `geminiProxy.serviceSetup` | 原样 JSON 序列化，作为 WS 连接 1 的**第一条消息**发送 |
 | `geminiProxy.sessionSetup` | 原样 JSON 序列化，作为 WS 连接 1 的**第二条消息**发送 |
-| 其他字段 | 忽略 |
+| 其他字段                   | 忽略                                                  |
 
 **Kotlin 参考代码（调用 BOOTSTRAP_URL）：**
 
@@ -238,12 +238,12 @@ fun fetchBootstrap(bootstrapUrl: String): JSONObject {
 
 ### 2.2 BOOTSTRAP_URL 调用时机
 
-| 场景 | 是否需要重新调用 |
-|------|----------------|
-| App 首次启动 | 是 |
+| 场景                 | 是否需要重新调用       |
+| -------------------- | ---------------------- |
+| App 首次启动         | 是                     |
 | 每次建立新的语音会话 | 是（配置可能动态变化） |
-| WS 断开后重连 | 是 |
-| 语音对话进行中 | 不需要 |
+| WS 断开后重连        | 是                     |
+| 语音对话进行中       | 不需要                 |
 
 ---
 
@@ -334,6 +334,7 @@ val proxyWs: WebSocket = OkHttpClient().newWebSocket(
 ```
 
 **关键点：**
+
 - 发送 serviceSetup 和 sessionSetup 后，只会收到 **1 条** `{"setupComplete":{}}` 回复
 - 收到 setupComplete 表示 AI 会话就绪，可以开始发送音频
 
@@ -379,6 +380,7 @@ fun startAudioCapture() {
 ```
 
 **重要规则：**
+
 - 使用 WebSocket **text frame** 发送（OkHttp 的 `send(String)` 就是 text frame）
 - 持续发送，即使用户没有说话（静音检测由云端 AI 处理）
 - 每帧独立发送，不要攒多帧合并
@@ -423,13 +425,13 @@ fun playAudio(base64Audio: String) {
 
 ### 4.1 上行（麦克风 → 云端）
 
-| 参数 | 值 | 说明 |
-|------|----|------|
-| 采样率 | **16000 Hz** | 强制要求，不可修改 |
-| 位深 | **16 bit** | signed int16, little-endian |
-| 声道 | **单声道 (mono)** | — |
-| 编码 | **PCM → Base64** | 原始 PCM 字节转 Base64 字符串 |
-| 发送频率 | 每 **20ms** 一帧 | 320 samples = 640 bytes PCM |
+| 参数     | 值                | 说明                          |
+| -------- | ----------------- | ----------------------------- |
+| 采样率   | **16000 Hz**      | 强制要求，不可修改            |
+| 位深     | **16 bit**        | signed int16, little-endian   |
+| 声道     | **单声道 (mono)** | —                             |
+| 编码     | **PCM → Base64**  | 原始 PCM 字节转 Base64 字符串 |
+| 发送频率 | 每 **20ms** 一帧  | 320 samples = 640 bytes PCM   |
 
 > 完整实现代码见 Step 4，发送规则见 Step 4 "重要规则"。
 
@@ -437,11 +439,11 @@ fun playAudio(base64Audio: String) {
 
 AI 回复的音频在 WS 连接 1 的 JSON 消息中。**注意：下行采样率是 24kHz，和上行的 16kHz 不同。**
 
-| 参数 | 值 |
-|------|----|
-| 采样率 | **24000 Hz** |
-| 位深 | **16 bit** signed int16, little-endian |
-| 声道 | **单声道 (mono)** |
+| 参数   | 值                                     |
+| ------ | -------------------------------------- |
+| 采样率 | **24000 Hz**                           |
+| 位深   | **16 bit** signed int16, little-endian |
+| 声道   | **单声道 (mono)**                      |
 
 > 完整实现代码见 Step 5，JSON 格式见 5.2 消息示例。
 
@@ -621,14 +623,14 @@ fun handleToolCall(functionCall: JSONObject) {
 
 **action 列表：**
 
-| action | args.params 示例 | 说明 |
-|--------|-----------------|------|
-| `set_ac_temperature` | `{"temperature": 25}` | 设置空调温度（16-32） |
-| `set_ac_power` | `{"on": true}` | 开/关空调 |
-| `set_ac_mode` | `{"mode": "cool"}` | cool / heat / auto |
-| `set_seat_heat` | `{"seat": "driver", "level": 2}` | 座椅加热 0-3（0=关） |
-| `set_window` | `{"position": "driver", "open": true}` | 车窗开/关 |
-| `start_navigation` | `{"destination": "锦里老灶火锅", "address": "人民路123号"}` | 导航到目的地（address 可选） |
+| action               | args.params 示例                                            | 说明                         |
+| -------------------- | ----------------------------------------------------------- | ---------------------------- |
+| `set_ac_temperature` | `{"temperature": 25}`                                       | 设置空调温度（16-32）        |
+| `set_ac_power`       | `{"on": true}`                                              | 开/关空调                    |
+| `set_ac_mode`        | `{"mode": "cool"}`                                          | cool / heat / auto           |
+| `set_seat_heat`      | `{"seat": "driver", "level": 2}`                            | 座椅加热 0-3（0=关）         |
+| `set_window`         | `{"position": "driver", "open": true}`                      | 车窗开/关                    |
+| `start_navigation`   | `{"destination": "锦里老灶火锅", "address": "人民路123号"}` | 导航到目的地（address 可选） |
 
 **厂商实现参考（Kotlin）：**
 
@@ -828,11 +830,11 @@ fun onResponseRejected() {
 
 **为什么这三个机制缺一不可：**
 
-| 缺少的机制 | 后果 |
-|-----------|------|
-| 无 turnComplete Gate | inject 在 AI 说话中途发送，`client_content` 打断正在进行的生成，触发 `RESPONSE_REJECTED`，后续 inject 卡死 |
-| 无 inject 队列 | 多个 help_result 同时到达时互相覆盖，丢失结果 |
-| 无 RESPONSE_REJECTED 恢复 | 一旦发生 reject，`geminiTurnComplete` 永远是 `false`，所有后续 inject 卡死 |
+| 缺少的机制                | 后果                                                                                                       |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| 无 turnComplete Gate      | inject 在 AI 说话中途发送，`client_content` 打断正在进行的生成，触发 `RESPONSE_REJECTED`，后续 inject 卡死 |
+| 无 inject 队列            | 多个 help_result 同时到达时互相覆盖，丢失结果                                                              |
+| 无 RESPONSE_REJECTED 恢复 | 一旦发生 reject，`geminiTurnComplete` 永远是 `false`，所有后续 inject 卡死                                 |
 
 ---
 
@@ -1017,17 +1019,17 @@ Step 6: 端到端演示
 
 ## 十、错误处理
 
-| 场景 | 处理方式 |
-|------|---------|
-| Bootstrap 请求失败 | 重试 3 次，间隔 2 秒 |
-| WS1 断开 | 重新调用 Bootstrap → 重连 WS1 → 重发 setup → 恢复音频流 |
-| WS2 断开 | 重连 WS2，不影响基本语音对话（只是 help 不可用） |
-| setupComplete 超时（10 秒） | 断开 WS1，重新 Bootstrap + 连接 |
-| help_result 超时（120 秒） | 向 WS1 注入 "抱歉，查询超时，请稍后再试" |
-| 讯飞 SDK 初始化失败 | 跳过降噪，直接用原始 PCM 继续工作 |
-| AudioRecord 启动失败 | 提示用户检查麦克风权限 |
-| car_control 执行失败 | 返回 `{"ok":false,"error":"执行失败"}` 给 AI |
-| RESPONSE_REJECTED | 恢复 inject gate（`geminiTurnComplete = true`），尝试重新投递队列中的 inject（见 6.5 节） |
+| 场景                        | 处理方式                                                                                  |
+| --------------------------- | ----------------------------------------------------------------------------------------- |
+| Bootstrap 请求失败          | 重试 3 次，间隔 2 秒                                                                      |
+| WS1 断开                    | 重新调用 Bootstrap → 重连 WS1 → 重发 setup → 恢复音频流                                   |
+| WS2 断开                    | 重连 WS2，不影响基本语音对话（只是 help 不可用）                                          |
+| setupComplete 超时（10 秒） | 断开 WS1，重新 Bootstrap + 连接                                                           |
+| help_result 超时（120 秒）  | 向 WS1 注入 "抱歉，查询超时，请稍后再试"                                                  |
+| 讯飞 SDK 初始化失败         | 跳过降噪，直接用原始 PCM 继续工作                                                         |
+| AudioRecord 启动失败        | 提示用户检查麦克风权限                                                                    |
+| car_control 执行失败        | 返回 `{"ok":false,"error":"执行失败"}` 给 AI                                              |
+| RESPONSE_REJECTED           | 恢复 inject gate（`geminiTurnComplete = true`），尝试重新投递队列中的 inject（见 6.5 节） |
 
 ---
 
@@ -1047,44 +1049,44 @@ Step 6: 端到端演示
 
 **WS1 App→Gemini（发送）：**
 
-| 用途 | JSON |
-|------|------|
-| 认证 | `config.geminiProxy.serviceSetup`（原样发送） |
-| 会话配置 | `config.geminiProxy.sessionSetup`（原样发送） |
-| 音频帧 | `{"realtime_input":{"media_chunks":[{"mime_type":"audio/pcm","data":"<base64>"}]}}` |
+| 用途     | JSON                                                                                                                                                                                 |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 认证     | `config.geminiProxy.serviceSetup`（原样发送）                                                                                                                                        |
+| 会话配置 | `config.geminiProxy.sessionSetup`（原样发送）                                                                                                                                        |
+| 音频帧   | `{"realtime_input":{"media_chunks":[{"mime_type":"audio/pcm","data":"<base64>"}]}}`                                                                                                  |
 | 文本注入 | `{"client_content":{"turns":[{"role":"model","parts":[{"text":"..."}]},{"role":"user","parts":[{"text":"以上是 #N 的后台结果。请用口语简洁地告诉用户..."}]}],"turn_complete":true}}` |
-| 工具响应 | `{"tool_response":{"functionResponses":[{"id":"<callId>","name":"<工具名>","response":{...}}]}}` |
+| 工具响应 | `{"tool_response":{"functionResponses":[{"id":"<callId>","name":"<工具名>","response":{...}}]}}`                                                                                     |
 
 **WS1 Gemini→App（接收）：**
 
-| 类型 | JSON |
-|------|------|
-| 会话就绪 | `{"setupComplete":{}}` |
-| 音频 | `{"serverContent":{"modelTurn":{"parts":[{"inlineData":{"mimeType":"audio/pcm;rate=24000","data":"..."}}]}}}` |
-| 文本 | `{"serverContent":{"modelTurn":{"parts":[{"text":"..."}]}}}` |
-| 工具调用 | `{"toolCall":{"functionCalls":[{"name":"...","args":{...}}]}}` |
-| 用户转写 | `{"serverContent":{"inputTranscription":{"text":"...","finished":true}}}` |
-| AI 转写 | `{"serverContent":{"outputTranscription":{"text":"..."}}}` |
-| 一轮结束 | `{"serverContent":{"turnComplete":true}}` |
-| 拒绝响应 | `{"serverContent":{"turnComplete":true,"turnCompleteReason":"RESPONSE_REJECTED"}}` |
-| 打断 | `{"serverContent":{"interrupted":true}}` |
+| 类型     | JSON                                                                                                          |
+| -------- | ------------------------------------------------------------------------------------------------------------- |
+| 会话就绪 | `{"setupComplete":{}}`                                                                                        |
+| 音频     | `{"serverContent":{"modelTurn":{"parts":[{"inlineData":{"mimeType":"audio/pcm;rate=24000","data":"..."}}]}}}` |
+| 文本     | `{"serverContent":{"modelTurn":{"parts":[{"text":"..."}]}}}`                                                  |
+| 工具调用 | `{"toolCall":{"functionCalls":[{"name":"...","args":{...}}]}}`                                                |
+| 用户转写 | `{"serverContent":{"inputTranscription":{"text":"...","finished":true}}}`                                     |
+| AI 转写  | `{"serverContent":{"outputTranscription":{"text":"..."}}}`                                                    |
+| 一轮结束 | `{"serverContent":{"turnComplete":true}}`                                                                     |
+| 拒绝响应 | `{"serverContent":{"turnComplete":true,"turnCompleteReason":"RESPONSE_REJECTED"}}`                            |
+| 打断     | `{"serverContent":{"interrupted":true}}`                                                                      |
 
 **WS2 App→OpenClaw（发送）：**
 
-| 用途 | JSON |
-|------|------|
-| 请求帮助 | `{"type":"help","request":"...","callId":"..."}` |
+| 用途     | JSON                                               |
+| -------- | -------------------------------------------------- |
+| 请求帮助 | `{"type":"help","request":"...","callId":"..."}`   |
 | 用户语音 | `{"type":"transcript","role":"user","text":"..."}` |
-| AI 回复 | `{"type":"transcript","role":"live","text":"..."}` |
-| 一轮结束 | `{"type":"turn_complete"}` |
+| AI 回复  | `{"type":"transcript","role":"live","text":"..."}` |
+| 一轮结束 | `{"type":"turn_complete"}`                         |
 
 **WS2 OpenClaw→App（接收）：**
 
-| 类型 | JSON |
-|------|------|
-| 连接成功 | `{"type":"connected","sessionId":"..."}` |
-| help 结果 | `{"type":"help_result","callId":"...","reply":"..."}` |
-| 主动推送 | `{"type":"inject","reply":"..."}` |
+| 类型        | JSON                                                                 |
+| ----------- | -------------------------------------------------------------------- |
+| 连接成功    | `{"type":"connected","sessionId":"..."}`                             |
+| help 结果   | `{"type":"help_result","callId":"...","reply":"..."}`                |
+| 主动推送    | `{"type":"inject","reply":"..."}`                                    |
 | prompt 更新 | `{"type":"prompt_update","section":"...","content":"..."}`（可忽略） |
 
 ---

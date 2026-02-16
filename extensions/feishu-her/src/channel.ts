@@ -19,6 +19,7 @@ import {
   resolveFeishuAccount,
   type ResolvedFeishuAccount,
 } from "./accounts.js";
+import { startFeishuGateway } from "./gateway.js";
 import {
   sendFeishuText,
   sendFeishuRichText,
@@ -27,7 +28,6 @@ import {
   addFeishuReaction,
   removeFeishuReaction,
 } from "./outbound.js";
-import { startFeishuGateway } from "./gateway.js";
 import { getFeishuRuntime } from "./runtime.js";
 
 const meta = {
@@ -202,7 +202,9 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
         // Convention: params.messageId = the message, params.groupId = the reaction_id to remove.
         const reactionId = readStringParam(params, "groupId");
         if (!reactionId) {
-          throw new Error("Feishu reaction removal requires a reaction_id (pass via groupId param).");
+          throw new Error(
+            "Feishu reaction removal requires a reaction_id (pass via groupId param).",
+          );
         }
         const ok = await removeFeishuReaction({ account, messageId: messageIdParam, reactionId });
         return jsonResult({ ok, removed: true });
@@ -227,13 +229,18 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
       if (/^(oc_|ou_|on_)/.test(trimmed)) {
         return { ok: true as const, to: trimmed };
       }
-      return { ok: false as const, error: new Error(`Invalid Feishu target "${trimmed}". Use chat_id (oc_...), open_id (ou_...), or union_id (on_...).`) };
+      return {
+        ok: false as const,
+        error: new Error(
+          `Invalid Feishu target "${trimmed}". Use chat_id (oc_...), open_id (ou_...), or union_id (on_...).`,
+        ),
+      };
     },
     sendText: async ({ to, text, accountId, cfg }) => {
       const account = resolveFeishuAccount({ cfg, accountId });
       // Use rich-text Post format to render Markdown properly in Feishu.
       await sendFeishuRichText({ account, chatId: to, text });
-      return { channel: "feishu" };
+      return { channel: "feishu", messageId: "" };
     },
     sendMedia: async ({ to, text, mediaUrl, accountId, cfg }) => {
       const account = resolveFeishuAccount({ cfg, accountId });
@@ -254,7 +261,7 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
       if (text) {
         await sendFeishuRichText({ account, chatId: to, text });
       }
-      return { channel: "feishu" };
+      return { channel: "feishu", messageId: "" };
     },
   },
   status: {

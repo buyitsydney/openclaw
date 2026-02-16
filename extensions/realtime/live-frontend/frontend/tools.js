@@ -35,11 +35,11 @@ class OpenClawHelpTool extends FunctionCallDefinition {
         properties: {
           request: {
             type: "string",
-            description: "需要后台处理的请求描述，用自然语言说明你需要什么帮助"
-          }
-        }
+            description: "需要后台处理的请求描述，用自然语言说明你需要什么帮助",
+          },
+        },
       },
-      ["request"]
+      ["request"],
       // behavior: "NON_BLOCKING" — Vertex AI 不支持，会导致连接被拒绝（2026-02-13 验证）
     );
     this.openclawConnection = openclawConnection;
@@ -49,8 +49,10 @@ class OpenClawHelpTool extends FunctionCallDefinition {
   functionToCall(parameters, functionCallId) {
     const request = parameters.request || "";
     const ts = new Date().toISOString().slice(11, 23);
-    console.log(`[${ts}] LIVE→OPENCLAW     | HELP_REQUEST       | callId=${functionCallId} | request=${request}`);
-    
+    console.log(
+      `[${ts}] LIVE→OPENCLAW     | HELP_REQUEST       | callId=${functionCallId} | request=${request}`,
+    );
+
     if (this.openclawConnection && this.openclawConnection.isConnected()) {
       // Send help request to OpenClaw
       this.openclawConnection.sendHelp(request, functionCallId);
@@ -82,12 +84,12 @@ class OpenClawConnection {
       const wsUrl = agentId ? appendQueryParam(url, "agentId", agentId) : url;
       console.log(`🦞 Connecting to OpenClaw: ${wsUrl}`);
       this.ws = new WebSocket(wsUrl);
-      
+
       this.ws.onopen = () => {
         console.log("✅ OpenClaw connected");
         resolve();
       };
-      
+
       this.ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
@@ -96,12 +98,12 @@ class OpenClawConnection {
           console.error("Failed to parse OpenClaw message:", e);
         }
       };
-      
+
       this.ws.onerror = (err) => {
         console.error("❌ OpenClaw error:", err);
         reject(err);
       };
-      
+
       this.ws.onclose = () => {
         console.log("🔌 OpenClaw disconnected");
         this.sessionId = null;
@@ -111,13 +113,13 @@ class OpenClawConnection {
 
   handleMessage(msg) {
     console.log("🦞 OpenClaw message:", msg.type);
-    
+
     switch (msg.type) {
       case "connected":
         this.sessionId = msg.sessionId;
         console.log(`🦞 Session: ${this.sessionId}`);
         break;
-        
+
       case "help_result":
         // Resolve pending call
         const pending = this.pendingCalls.get(msg.callId);
@@ -130,14 +132,14 @@ class OpenClawConnection {
           this.onHelpResult(msg.callId, msg.reply);
         }
         break;
-        
+
       case "inject":
         // OpenClaw wants to inject a message
         if (this.onInject) {
           this.onInject(msg.reply);
         }
         break;
-        
+
       case "prompt_update":
         // System prompt section updated
         if (this.onPromptUpdate) {
@@ -153,27 +155,31 @@ class OpenClawConnection {
 
   sendTranscript(role, text) {
     if (!this.isConnected()) return;
-    this.ws.send(JSON.stringify({
-      type: "transcript",
-      role: role,
-      text: text
-    }));
+    this.ws.send(
+      JSON.stringify({
+        type: "transcript",
+        role: role,
+        text: text,
+      }),
+    );
   }
 
   sendTurnComplete() {
     if (!this.isConnected()) return;
-    this.ws.send(JSON.stringify({
-      type: "turn_complete"
-    }));
+    this.ws.send(
+      JSON.stringify({
+        type: "turn_complete",
+      }),
+    );
   }
 
   sendHelp(request, callId) {
     if (!this.isConnected()) return;
-    
+
     // Create a promise for this call
     const promise = new Promise((resolve, reject) => {
       this.pendingCalls.set(callId, { resolve, reject });
-      
+
       // Timeout after 2 minutes
       setTimeout(() => {
         if (this.pendingCalls.has(callId)) {
@@ -182,13 +188,15 @@ class OpenClawConnection {
         }
       }, 120000);
     });
-    
-    this.ws.send(JSON.stringify({
-      type: "help",
-      request: request,
-      callId: callId
-    }));
-    
+
+    this.ws.send(
+      JSON.stringify({
+        type: "help",
+        request: request,
+        callId: callId,
+      }),
+    );
+
     return promise;
   }
 
@@ -217,15 +225,15 @@ class ShowAlertTool extends FunctionCallDefinition {
         properties: {
           message: {
             type: "string",
-            description: "The message to display in the alert box"
+            description: "The message to display in the alert box",
           },
           title: {
             type: "string",
-            description: "Optional title prefix for the alert message"
-          }
-        }
+            description: "Optional title prefix for the alert message",
+          },
+        },
       },
-      ["message"]
+      ["message"],
     );
   }
 
@@ -256,23 +264,23 @@ class AddCSSStyleTool extends FunctionCallDefinition {
         properties: {
           selector: {
             type: "string",
-            description: "CSS selector to target elements (e.g., 'body', '.class', '#id')"
+            description: "CSS selector to target elements (e.g., 'body', '.class', '#id')",
           },
           property: {
             type: "string",
-            description: "CSS property to set (e.g., 'background-color', 'font-size', 'display')"
+            description: "CSS property to set (e.g., 'background-color', 'font-size', 'display')",
           },
           value: {
             type: "string",
-            description: "Value for the CSS property (e.g., 'red', '20px', 'none')"
+            description: "Value for the CSS property (e.g., 'red', '20px', 'none')",
           },
           styleId: {
             type: "string",
-            description: "Optional ID for the style element (for updating existing styles)"
-          }
-        }
+            description: "Optional ID for the style element (for updating existing styles)",
+          },
+        },
       },
-      ["selector", "property", "value"]
+      ["selector", "property", "value"],
     );
   }
 
@@ -284,12 +292,12 @@ class AddCSSStyleTool extends FunctionCallDefinition {
     if (styleId) {
       styleElement = document.getElementById(styleId);
       if (!styleElement) {
-        styleElement = document.createElement('style');
+        styleElement = document.createElement("style");
         styleElement.id = styleId;
         document.head.appendChild(styleElement);
       }
     } else {
-      styleElement = document.createElement('style');
+      styleElement = document.createElement("style");
       document.head.appendChild(styleElement);
     }
 

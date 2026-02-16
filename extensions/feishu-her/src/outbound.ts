@@ -204,7 +204,9 @@ function parseInlineElements(text: string, forceBold = false): PostElement[][] {
       const before = text.slice(lastIndex, match.index);
       if (before) {
         elements.push(
-          forceBold ? { tag: "text", text: before, style: ["bold"] } : { tag: "text", text: before },
+          forceBold
+            ? { tag: "text", text: before, style: ["bold"] }
+            : { tag: "text", text: before },
         );
       }
     }
@@ -246,9 +248,7 @@ function parseInlineElements(text: string, forceBold = false): PostElement[][] {
 
   // If no matches at all, return the whole text as a single element.
   if (elements.length === 0) {
-    elements.push(
-      forceBold ? { tag: "text", text, style: ["bold"] } : { tag: "text", text },
-    );
+    elements.push(forceBold ? { tag: "text", text, style: ["bold"] } : { tag: "text", text });
   }
 
   return [elements];
@@ -355,7 +355,7 @@ export async function uploadFeishuImage(params: {
   const token = await (client as any).tokenManager.getTenantAccessToken({});
   if (!token) throw new Error("Feishu: failed to obtain tenant access token");
 
-  const blob = new Blob([params.buffer]);
+  const blob = new Blob([new Uint8Array(params.buffer)]);
   const form = new FormData();
   form.append("image_type", "message");
   form.append("image", blob, "image.jpg");
@@ -397,8 +397,9 @@ export async function downloadFeishuImage(params: {
   // oxlint-disable-next-line typescript/no-explicit-any
   const headers = resp.headers as any;
   const contentType =
-    (typeof headers?.get === "function" ? headers.get("content-type") : headers?.["content-type"]) ??
-    "image/jpeg";
+    (typeof headers?.get === "function"
+      ? headers.get("content-type")
+      : headers?.["content-type"]) ?? "image/jpeg";
   return { buffer, contentType: typeof contentType === "string" ? contentType : "image/jpeg" };
 }
 
@@ -427,9 +428,13 @@ export async function downloadFeishuFile(params: {
   // oxlint-disable-next-line typescript/no-explicit-any
   const headers = resp.headers as any;
   const contentType =
-    (typeof headers?.get === "function" ? headers.get("content-type") : headers?.["content-type"]) ??
-    "application/octet-stream";
-  return { buffer, contentType: typeof contentType === "string" ? contentType : "application/octet-stream" };
+    (typeof headers?.get === "function"
+      ? headers.get("content-type")
+      : headers?.["content-type"]) ?? "application/octet-stream";
+  return {
+    buffer,
+    contentType: typeof contentType === "string" ? contentType : "application/octet-stream",
+  };
 }
 
 /** Send an image message to a Feishu chat or user. */
@@ -579,11 +584,25 @@ export async function createFeishuCardStream(params: {
     cardId = createResp?.data?.card_id;
     if (!cardId) {
       params.warn?.("Feishu card stream: card.create returned no card_id");
-      return { update: () => {}, flush: async () => {}, stop: () => {}, sendFinal: async () => {}, finalize: async (_t: string) => {}, started: false };
+      return {
+        update: () => {},
+        flush: async () => {},
+        stop: () => {},
+        sendFinal: async () => {},
+        finalize: async (_t: string) => {},
+        started: false,
+      };
     }
   } catch (err) {
     params.warn?.(`Feishu card stream: card.create failed: ${String(err)}`);
-    return { update: () => {}, flush: async () => {}, stop: () => {}, sendFinal: async () => {}, finalize: async (_t: string) => {}, started: false };
+    return {
+      update: () => {},
+      flush: async () => {},
+      stop: () => {},
+      sendFinal: async () => {},
+      finalize: async (_t: string) => {},
+      started: false,
+    };
   }
 
   // ── Step 2: Send the card as a message (reply style when replyToMessageId is set) ──
@@ -606,11 +625,25 @@ export async function createFeishuCardStream(params: {
     messageId = sendResp?.data?.message_id;
     if (!messageId) {
       params.warn?.("Feishu card stream: message send returned no message_id");
-      return { update: () => {}, flush: async () => {}, stop: () => {}, sendFinal: async () => {}, finalize: async (_t: string) => {}, started: false };
+      return {
+        update: () => {},
+        flush: async () => {},
+        stop: () => {},
+        sendFinal: async () => {},
+        finalize: async (_t: string) => {},
+        started: false,
+      };
     }
   } catch (err) {
     params.warn?.(`Feishu card stream: message send failed: ${String(err)}`);
-    return { update: () => {}, flush: async () => {}, stop: () => {}, sendFinal: async () => {}, finalize: async (_t: string) => {}, started: false };
+    return {
+      update: () => {},
+      flush: async () => {},
+      stop: () => {},
+      sendFinal: async () => {},
+      finalize: async (_t: string) => {},
+      started: false,
+    };
   }
 
   params.log?.(

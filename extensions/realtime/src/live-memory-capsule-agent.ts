@@ -71,7 +71,8 @@ ${memoryMd || "（空）"}`;
     | { defaults?: { model?: { primary?: string } } }
     | undefined;
   const modelRef =
-    agentDefaults?.defaults?.model?.primary || `${coreDeps.DEFAULT_PROVIDER}/${coreDeps.DEFAULT_MODEL}`;
+    agentDefaults?.defaults?.model?.primary ||
+    `${coreDeps.DEFAULT_PROVIDER}/${coreDeps.DEFAULT_MODEL}`;
 
   const parts = modelRef.split("/");
   const provider = parts[0] || coreDeps.DEFAULT_PROVIDER;

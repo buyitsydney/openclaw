@@ -8,19 +8,19 @@
 
 **你是一个 CEO，Pi（OpenClaw Agent）是你的私人助理。**
 
-| OpenClaw 概念 | 类比 | 一句话解释 |
-|---|---|---|
-| **Agent（Pi）** | 私人助理 | 真正干活、思考、回复的大脑 |
-| **Gateway** | Pi 的办公桌（总机台） | 所有事情都经过这里调度 |
-| **Channel（通道）** | 联系方式：座机、微信、对讲机 | 消息的入口和出口 |
-| **Plugin（插件）** | 安装在办公桌上的设备 | 让 Gateway 支持某种通道的代码模块 |
-| **Session（会话）** | Pi 的工作笔记本 | 一段对话上下文，存为 `.jsonl` 文件 |
-| **Session Key** | 笔记本的编号标签 | 会话的唯一标识，如 `agent:main:main` |
-| **Session Entry** | 笔记本封面上的便签条 | 会话的元数据：上次谁来的、发给谁 |
-| **lastChannel + lastTo** | 便签上的"上次联系方式" | Pi 主动找你时看这里决定用哪种方式 |
-| **Lane（车道）** | 排队规则 | 控制同一笔记本上的任务串行/并行 |
-| **Heartbeat** | Pi 每半小时主动巡查 | 定时检查邮箱/日历，有事主动联系你 |
-| **Cron** | 日历上标注的定时提醒 | 到点触发，交给 agent 处理后投递 |
+| OpenClaw 概念            | 类比                         | 一句话解释                           |
+| ------------------------ | ---------------------------- | ------------------------------------ |
+| **Agent（Pi）**          | 私人助理                     | 真正干活、思考、回复的大脑           |
+| **Gateway**              | Pi 的办公桌（总机台）        | 所有事情都经过这里调度               |
+| **Channel（通道）**      | 联系方式：座机、微信、对讲机 | 消息的入口和出口                     |
+| **Plugin（插件）**       | 安装在办公桌上的设备         | 让 Gateway 支持某种通道的代码模块    |
+| **Session（会话）**      | Pi 的工作笔记本              | 一段对话上下文，存为 `.jsonl` 文件   |
+| **Session Key**          | 笔记本的编号标签             | 会话的唯一标识，如 `agent:main:main` |
+| **Session Entry**        | 笔记本封面上的便签条         | 会话的元数据：上次谁来的、发给谁     |
+| **lastChannel + lastTo** | 便签上的"上次联系方式"       | Pi 主动找你时看这里决定用哪种方式    |
+| **Lane（车道）**         | 排队规则                     | 控制同一笔记本上的任务串行/并行      |
+| **Heartbeat**            | Pi 每半小时主动巡查          | 定时检查邮箱/日历，有事主动联系你    |
+| **Cron**                 | 日历上标注的定时提醒         | 到点触发，交给 agent 处理后投递      |
 
 ---
 
@@ -88,13 +88,13 @@ Session 是 OpenClaw 中最核心的概念。它是一段对话的完整上下�
 
 **Session Key 的命名规则：**
 
-| 场景 | Session Key | 说明 |
-|------|------------|------|
-| DM（默认） | `agent:main:main` | 所有 DM 共享一个主 session |
-| DM（per-peer） | `agent:main:dm:+1234` | 每个聊天对象独立 session |
-| Telegram 群组 | `agent:main:telegram:group:-100999` | 每个群独立 session |
-| Cron 任务 | `cron:job-id` | 每个 cron job 独立 session |
-| Her（当前旁路） | `realtime:timestamp-random` | 独立于 main 的临时 session |
+| 场景            | Session Key                         | 说明                       |
+| --------------- | ----------------------------------- | -------------------------- |
+| DM（默认）      | `agent:main:main`                   | 所有 DM 共享一个主 session |
+| DM（per-peer）  | `agent:main:dm:+1234`               | 每个聊天对象独立 session   |
+| Telegram 群组   | `agent:main:telegram:group:-100999` | 每个群独立 session         |
+| Cron 任务       | `cron:job-id`                       | 每个 cron job 独立 session |
+| Her（当前旁路） | `realtime:timestamp-random`         | 独立于 main 的临时 session |
 
 **关键理解：** 默认配置下（`dmScope: "main"`），Telegram DM、webchat、CLI 全部共用 `agent:main:main` 这一个 session。这就是为什么不同通道能看到彼此的对话历史。
 
@@ -127,6 +127,7 @@ Channel 是用户和 Pi 之间的消息传输通道。每个 Channel 由一个 P
 扩展通道（Plugin）：`msteams`、`matrix`、`zalo`、`voice-call`、`realtime`（Her）
 
 **每个 Channel 做三件事：**
+
 1. **接收消息** → 调用 Gateway 的 `agent` 方法
 2. **更新 lastChannel** → 记录"最后一次联系来自哪里"
 3. **投递回复** → 把 agent 的回复发送给用户
@@ -276,12 +277,12 @@ Global Lane "main" [并发=4]
 
 ### 并发配置总结
 
-| Lane 类型 | 并发上限 | 是否可配置 | 作用 |
-|-----------|---------|-----------|------|
-| Session Lane（`session:*`） | **1** | **不可配** | 保证同一 session 串行 |
-| Global Lane `main` | 4 | 可配 `agents.defaults.maxConcurrent` | 控制总体 agent 并行度 |
-| Global Lane `cron` | 1 | 可配 `cron.maxConcurrentRuns` | 控制 cron 并行度 |
-| Global Lane `subagent` | 8 | 可配 `agents.defaults.subagents.maxConcurrent` | 控制子 agent 并行度 |
+| Lane 类型                   | 并发上限 | 是否可配置                                     | 作用                  |
+| --------------------------- | -------- | ---------------------------------------------- | --------------------- |
+| Session Lane（`session:*`） | **1**    | **不可配**                                     | 保证同一 session 串行 |
+| Global Lane `main`          | 4        | 可配 `agents.defaults.maxConcurrent`           | 控制总体 agent 并行度 |
+| Global Lane `cron`          | 1        | 可配 `cron.maxConcurrentRuns`                  | 控制 cron 并行度      |
+| Global Lane `subagent`      | 8        | 可配 `agents.defaults.subagents.maxConcurrent` | 控制子 agent 并行度   |
 
 ---
 

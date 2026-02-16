@@ -189,6 +189,7 @@ await wsClient.start({ eventDispatcher });
 ```
 
 核心 pipeline 集成方式（与 Google Chat 扩展相同）：
+
 - `core.channel.routing.resolveAgentRoute()` -- 解析 agent 路由
 - `core.channel.reply.finalizeInboundContext()` -- 构建标准 inbound context
 - `core.channel.reply.dispatchReplyWithBufferedBlockDispatcher()` -- 进入 auto-reply pipeline
@@ -202,7 +203,7 @@ await wsClient.start({ eventDispatcher });
 // 根据 ID 前缀自动推断 receive_id_type：
 //   oc_ -> chat_id（群聊）, ou_ -> open_id（用户）, on_ -> union_id
 // 同时自动 strip routeReply 可能添加的 "feishu:" 前缀
-function resolveReceiveId(raw: string): { receiveId, receiveIdType }
+function resolveReceiveId(raw: string): { receiveId; receiveIdType };
 
 export async function sendFeishuText(params: {
   account: ResolvedFeishuAccount;
@@ -296,6 +297,7 @@ outbound: {
 ### 5. 权限需求
 
 在飞书开放平台配置以下 7 个权限：
+
 - `im:message` -- 获取与发送单聊、群组消息
 - `im:message:send_as_bot` -- 以应用身份发消息
 - `im:resource` -- 获取与上传图片或文件资源（图片收发所需）
@@ -305,6 +307,7 @@ outbound: {
 - `cardkit:card:write` -- 创建与更新卡片（AI 流式回复打字机效果）
 
 事件订阅：
+
 - `im.message.receive_v1` -- 接收消息事件，使用长连接模式
 
 ---
@@ -330,17 +333,17 @@ outbound: {
 
 ### 实际代码量
 
-| 文件 | 行数 | 说明 |
-|------|------|------|
-| `openclaw.plugin.json` | 9 | 插件清单 |
-| `package.json` | 39 | 依赖 + 通道元数据 |
-| `index.ts` | 17 | 入口注册 |
-| `src/channel.ts` | 254 | ChannelPlugin 主体 + sendMedia 图片上传 + 目标解析 |
-| `src/runtime.ts` | 14 | Runtime 单例 |
-| `src/gateway.ts` | 733 | WSClient + pipeline 集成 + 富文本解析 + 回复投递 + 图片下载/接收 + CardKit 流式卡片 + 群聊归档 + CardKit 状态 footer |
-| `src/outbound.ts` | 667 | Lark SDK 消息发送 + ID 类型识别 + 图片上传/发送/下载 + Markdown→Post 转换 + CardKit API |
-| `src/accounts.ts` | 133 | 账户 / 凭证解析 + 群聊主人 ID 解析 |
-| **总计** | **~1800** | 全部在 `extensions/feishu-her/` 内 |
+| 文件                   | 行数      | 说明                                                                                                                 |
+| ---------------------- | --------- | -------------------------------------------------------------------------------------------------------------------- |
+| `openclaw.plugin.json` | 9         | 插件清单                                                                                                             |
+| `package.json`         | 39        | 依赖 + 通道元数据                                                                                                    |
+| `index.ts`             | 17        | 入口注册                                                                                                             |
+| `src/channel.ts`       | 254       | ChannelPlugin 主体 + sendMedia 图片上传 + 目标解析                                                                   |
+| `src/runtime.ts`       | 14        | Runtime 单例                                                                                                         |
+| `src/gateway.ts`       | 733       | WSClient + pipeline 集成 + 富文本解析 + 回复投递 + 图片下载/接收 + CardKit 流式卡片 + 群聊归档 + CardKit 状态 footer |
+| `src/outbound.ts`      | 667       | Lark SDK 消息发送 + ID 类型识别 + 图片上传/发送/下载 + Markdown→Post 转换 + CardKit API                              |
+| `src/accounts.ts`      | 133       | 账户 / 凭证解析 + 群聊主人 ID 解析                                                                                   |
+| **总计**               | **~1800** | 全部在 `extensions/feishu-her/` 内                                                                                   |
 
 ---
 
@@ -370,10 +373,10 @@ outbound: {
 
 飞书文字聊天之所以安全，靠的是**两层防护**：
 
-| 层 | 机制 | 效果 | 实现位置 |
-|----|------|------|---------|
-| **Layer 1：找不到** | 飞书可用范围 = 只选一人 | 其他员工在飞书客户端搜不到这个 Bot | 飞书开放平台（平台级隔离） |
-| **Layer 2：被拒绝** | `dm.allowFrom = [ou_xxx]` 白名单 | 即使找到 Bot，发消息也被忽略 | `extensions/feishu-her/src/channel.ts` resolveAllowFrom |
+| 层                  | 机制                             | 效果                               | 实现位置                                                |
+| ------------------- | -------------------------------- | ---------------------------------- | ------------------------------------------------------- |
+| **Layer 1：找不到** | 飞书可用范围 = 只选一人          | 其他员工在飞书客户端搜不到这个 Bot | 飞书开放平台（平台级隔离）                              |
+| **Layer 2：被拒绝** | `dm.allowFrom = [ou_xxx]` 白名单 | 即使找到 Bot，发消息也被忽略       | `extensions/feishu-her/src/channel.ts` resolveAllowFrom |
 
 ```
 普通员工 → 搜索董事长的 Bot → 搜不到（Layer 1）
@@ -383,11 +386,11 @@ outbound: {
 
 ### 语音 realtime 通道的安全模型（已实现）
 
-| 层 | 飞书文字 | 语音 realtime |
-|----|---------|--------------|
-| **Layer 1：找不到** | 可用范围 = 一人，搜不到 Bot | 端口不暴露（Docker 不 -p 18790、cloudflared 不隧道），外部完全看不到入口 |
-| **Layer 2：被拒绝** | `dm.allowFrom` 白名单 | per-container 唯一 token 认证（双层校验：server.py + server.ts），无效返回 401 |
-| **授权途径** | 飞书平台自动配对 | 飞书 Bot `/voice` 私聊发送带 token 的语音 URL；管理员通过 `start-user.sh --reset` 生成/重置 |
+| 层                  | 飞书文字                    | 语音 realtime                                                                               |
+| ------------------- | --------------------------- | ------------------------------------------------------------------------------------------- |
+| **Layer 1：找不到** | 可用范围 = 一人，搜不到 Bot | 端口不暴露（Docker 不 -p 18790、cloudflared 不隧道），外部完全看不到入口                    |
+| **Layer 2：被拒绝** | `dm.allowFrom` 白名单       | per-container 唯一 token 认证（双层校验：server.py + server.ts），无效返回 401              |
+| **授权途径**        | 飞书平台自动配对            | 飞书 Bot `/voice` 私聊发送带 token 的语音 URL；管理员通过 `start-user.sh --reset` 生成/重置 |
 
 ```
 普通员工 → 端口扫描董事长容器 → 18790 未暴露，找不到（Layer 1）
@@ -426,11 +429,11 @@ OpenClaw 支持 4 种 `dmScope` 模式：
 
 Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("agent", ...)` 无条件接收 gateway 上所有 agent 活动。外部通道是独立的消息管道，不订阅 webchat 广播。
 
-| 行为 | 结果 |
-|------|------|
-| 飞书发消息、收到回复 | 飞书能看到，**Webchat 也能看到**（广播机制） |
-| Telegram 发消息、收到回复 | Telegram 能看到，**Webchat 也能看到** |
-| Webchat 发消息、收到回复 | 只有 Webchat 能看到，飞书/Telegram **看不到** |
+| 行为                      | 结果                                          |
+| ------------------------- | --------------------------------------------- |
+| 飞书发消息、收到回复      | 飞书能看到，**Webchat 也能看到**（广播机制）  |
+| Telegram 发消息、收到回复 | Telegram 能看到，**Webchat 也能看到**         |
+| Webchat 发消息、收到回复  | 只有 Webchat 能看到，飞书/Telegram **看不到** |
 
 ### 并发行为
 
@@ -465,15 +468,15 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 
 **根因分析（两个独立问题叠加）**：
 
-**问题 A — OpenClaw 核心 Bug #16331：compaction retry 死锁**
+**问题 A — OpenClaw 核心 Bug #16331：compaction retry 死锁** ✅ 已修复
 
 `src/agents/pi-embedded-runner/run/attempt.ts` 第 990 行 `await waitForCompactionRetry()` **没有**用 `abortable()` 包装。当 timeout 触发 abort 时，如果 Pi SDK 在 abort 期间不发出 `auto_compaction_end` 事件，这个 Promise 永远不 resolve，导致整个调用链死锁。
 
 - GitHub Issue: https://github.com/openclaw/openclaw/issues/16331
 - 修复 PR: https://github.com/openclaw/openclaw/pull/16533（2026-02-14 合并到 upstream main）
-- **本地状态**：我们的 `dev` 分支尚未包含此修复（需要 `git fetch origin && git merge origin/main`）
+- **本地状态**：✅ 已通过 upstream v2026.2.14 合并修复（2026-02-16）
 
-**问题 B — 飞书插件缺少 error→用户通知机制**
+**问题 B — 飞书插件缺少 error→用户通知机制** ⏳ 待修复
 
 即使核心 bug 修复后 run 能正常返回错误结果，飞书 gateway 也不会通知用户：
 
@@ -484,7 +487,7 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 
 **修复方案**：
 
-1. **拉取 upstream**：合并 `origin/main` 获取 PR #16533 的 compaction timeout 修复（防死锁）
+1. ~~**拉取 upstream**：合并 `origin/main` 获取 PR #16533 的 compaction timeout 修复（防死锁）~~ ✅ 已完成
 2. **飞书 error notification**：在 `handleInboundMessage` 的 `.catch()` 中给用户发一条错误消息（如 "⚠️ 处理消息时出错，请稍后重试"）
 
 ---
@@ -506,21 +509,59 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 3. **`start-user.sh` SOURCE_DIRS**：补全 Docker 自动重建监控列表，新增 `docker/`、`pnpm-workspace.yaml`、`.npmrc`、`patches/`、`tsconfig.json`，并将 `scripts/carher-entrypoint.sh` 扩展为 `scripts/`。确保 Dockerfile COPY 进镜像的每个文件/目录都在监控范围内。
 
 **架构原则**：
+
 - 插件启用配置放在 `docker/carher-config.json`（与代码同仓库、同版本控制）
 - `start-user.sh` 只管 per-user 数据（飞书凭证、模型选择），不涉及插件 ID
 - 以后改插件名只需改 `docker/carher-config.json` 一处，不影响部署脚本和 200 企业用户
 
 **验证**：本地 Her + Docker 1 双路语音并发测试通过，飞书消息收发正常，语音对话正常，所有隧道端点 200。
 
+### Upstream v2026.2.14 升级完成 (2026-02-16)
+
+**目标**：合并 upstream `v2026.2.14`（38 个 commits），获取 compaction timeout 修复、新 plugin-auto-enable 等核心能力。
+
+**合并冲突处理**：
+
+- `pnpm-lock.yaml`：取 upstream 版本，`pnpm install --no-frozen-lockfile` 重新生成
+- `.gitignore`：手动合并，保留两边条目，去重
+
+**类型适配（只改类型声明，不改逻辑）**：
+
+- `feishu-her/src/channel.ts`：`sendText`/`sendMedia` 返回值新增 `messageId` 字段
+- `feishu-her/src/gateway.ts`：`peer.kind` 从 `"dm"` 改为 `"direct"`（`ChatType` 枚举变更）
+- `feishu-her/src/outbound.ts`：`Buffer` → `new Uint8Array()` 解决 `BlobPart` 类型不兼容
+- `feishu-her/src/tools/chat.ts`：`page_size` 从 `String` 改为 `number`
+- `feishu-her/src/tools/directory.ts`：`user_id_type` 添加联合类型断言
+- `feishu-her/src/tools/bitable.ts`：`fields` 添加 `as any` 适配 Lark SDK 更严格的类型
+- `realtime/index.ts`：移除不再公开导出的 `OpenClawPluginDefinition` 等类型
+- `realtime/src/core-bridge.ts`：改为从 `dist/extensionAPI.js` 导入（新构建系统 flat output）
+- `src/extensionAPI.ts`：新增 `resolveDefaultAgentId` 导出
+
+**新版本关键行为变更**：
+
+1. **plugin-auto-enable**：bundled 插件在 `channels.*` 有对应配置时自动启用 → 需要 `plugins.deny: ["feishu"]` 阻止上游 feishu 插件与 feishu-her 冲突
+2. **scope-based WebSocket API**：Control UI 需要设备身份来获取 scopes → `dangerouslyDisableDeviceAuth` 会清空 scopes 导致 Web UI 失败
+3. **构建系统变更**：`tsdown` + `rolldown` 产生 flat `dist/` 输出（带 hash 文件名），不再是嵌套目录
+
+**Web UI 认证配置**：
+
+- 本地 Her：不需要 `controlUi` 配置，localhost 设备配对自动批准（`isLocalClient → silent: true`）
+- Docker 容器：`gateway.controlUi.allowInsecureAuth: true`（token auth + 设备身份，跳过配对审批）
+- **永远不要使用** `dangerouslyDisableDeviceAuth: true`（会清空 scopes）
+
+**验证**：本地 Her + Docker 1/3/4 全部重启验证通过。飞书消息收发、语音链路、Web UI 全部正常。零 missing-scope 错误，零 error/fatal/crash。
+
 ### Cron 定时任务投递修复 (2026-02-06)
 
 **问题**：通过 cron 工具设置的飞书定时提醒无法投递，报 `Outbound not configured for channel: feishu`。
 
 **根因**：
+
 1. `deliverOutboundPayloads`（cron 直投路径）要求通道同时实现 `sendText` + `sendMedia`，飞书插件缺少 `sendMedia`
 2. `sendFeishuText` 硬编码 `receive_id_type: "chat_id"`，但 cron payload 使用的是 `open_id`（`ou_` 前缀）
 
 **修复**：
+
 1. 在 `channel.ts` 添加 `sendMedia` 方法（文本投递，媒体暂不支持）
 2. 在 `outbound.ts` 新增 `resolveReceiveId()` 函数，根据 ID 前缀自动识别类型
 
@@ -531,6 +572,7 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 **问题**：用户在飞书中发送包含序号列表的消息（如 `1. xxx`）时，AI 完全收不到消息，被静默丢弃。
 
 **根因**：
+
 1. 飞书客户端会自动将包含序号/列表的文本从 `text` 类型转换为 `post`（富文本）类型
 2. `extractTextContent` 只处理了 `text`/`image`/`file`/`audio`/`sticker`，未处理 `post` 类型
 3. 初版修复错误地按**发送格式**（`{ zh_cn: { title, content } }` 带 locale 包裹）解析，但飞书**接收到的** `post` 消息结构是扁平的 `{ title, content: [[...]] }`，没有 locale 包裹
@@ -538,6 +580,7 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 **教训**：发送和接收使用不同的 JSON 结构是外部 API 的常见陷阱。必须查阅官方文档确认接收格式，不能凭记忆或发送格式推断。
 
 **修复**：
+
 1. 新增 `flattenPostBody()` 函数解析 `{ title?, content: [[{tag,text}, ...]] }` 结构
 2. `extractPostText()` 优先检查扁平格式（接收场景），兜底支持 locale 包裹格式
 3. 支持 `text`、`a`（链接）、`at`（@提及）、`img`（图片）、`media`（视频）、`emotion`（表情）标签
@@ -603,6 +646,7 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 ## 多用户飞书部署（Docker 容器 + 独立 Bot）
 
 > **完整的企业部署方案（200 Bot + 200 Docker）、IT 操作流程、用户管理、费用估算**，详见：
+>
 > - [Her 飞书 Bot 企业部署](her-feishu-bot-enterprise-deploy.md) — 方案全貌 + IT 操作清单
 >
 > 以下仅保留本文档特有的隐私分析和开发记录。
@@ -611,33 +655,33 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 
 #### 当前个人飞书 Bot 的安全状态
 
-| 配置项 | 当前值 | 风险 | 建议 |
-|--------|--------|------|------|
-| dm.policy | open（默认） | 如果在公司组织，同事可搜到 Bot 并进入你的 main session | 个人组织无风险；公司组织应设 allowlist |
-| dmScope | main（默认） | 所有飞书用户共享同一个 session 和记忆 | 个人组织无风险；多人场景需改 per-peer |
-| 可用范围 | 取决于开放平台设置 | "全部员工"意味着全公司可见 | 限制为仅自己 |
+| 配置项    | 当前值             | 风险                                                   | 建议                                   |
+| --------- | ------------------ | ------------------------------------------------------ | -------------------------------------- |
+| dm.policy | open（默认）       | 如果在公司组织，同事可搜到 Bot 并进入你的 main session | 个人组织无风险；公司组织应设 allowlist |
+| dmScope   | main（默认）       | 所有飞书用户共享同一个 session 和记忆                  | 个人组织无风险；多人场景需改 per-peer  |
+| 可用范围  | 取决于开放平台设置 | "全部员工"意味着全公司可见                             | 限制为仅自己                           |
 
 **已确认（2026-02-09）**：Bot 创建在**飞书个人版**组织，成员仅 Bob（所有者），无其他人。当前配置安全，不需要加 allowlist。
 
 #### Docker 容器飞书 Bot 的安全保证
 
-| 维度 | 保证 | 残留风险 |
-|------|------|---------|
-| 数据隔离 | 容器内独立文件系统，记忆互不可见 | 容器运行在你的 Mac 上，你有 root 权限可 docker exec 读取 |
-| 飞书消息隔离 | 每个容器一个独立 Bot，消息管道完全分离 | 你作为 Bot 创建者可在开放平台查审计日志 |
-| 访问控制 | dm.policy=allowlist 限制只有目标用户能使用 | 需要提前获取目标用户的飞书 open_id |
-| 凭证安全 | 每个 Bot 的 appId/appSecret 只在对应容器内 | Bot 凭证由你保管和分发 |
-| Google Cloud | 所有容器共享你的 gcloud 凭证 | 语音用量计在你的账户上 |
+| 维度         | 保证                                       | 残留风险                                                 |
+| ------------ | ------------------------------------------ | -------------------------------------------------------- |
+| 数据隔离     | 容器内独立文件系统，记忆互不可见           | 容器运行在你的 Mac 上，你有 root 权限可 docker exec 读取 |
+| 飞书消息隔离 | 每个容器一个独立 Bot，消息管道完全分离     | 你作为 Bot 创建者可在开放平台查审计日志                  |
+| 访问控制     | dm.policy=allowlist 限制只有目标用户能使用 | 需要提前获取目标用户的飞书 open_id                       |
+| 凭证安全     | 每个 Bot 的 appId/appSecret 只在对应容器内 | Bot 凭证由你保管和分发                                   |
+| Google Cloud | 所有容器共享你的 gcloud 凭证               | 语音用量计在你的账户上                                   |
 
 #### 各角色能做什么
 
-| 操作 | 你（管理员） | 老板（使用者） | 其他人 |
-|------|------------|--------------|--------|
-| 跟老板的 Bot 对话 | 被 allowlist 拒绝 | 正常使用 | 被 allowlist 拒绝 |
-| 读老板的对话记忆 | 技术上能（docker exec） | 自然产生 | 不能 |
-| 读你的对话记忆 | 自然产生 | 不能 | 不能 |
-| 停止/重启容器 | 能 | 不能 | 不能 |
-| 查看 Bot 审计日志 | 能（开放平台） | 不能 | 不能 |
+| 操作              | 你（管理员）            | 老板（使用者） | 其他人            |
+| ----------------- | ----------------------- | -------------- | ----------------- |
+| 跟老板的 Bot 对话 | 被 allowlist 拒绝       | 正常使用       | 被 allowlist 拒绝 |
+| 读老板的对话记忆  | 技术上能（docker exec） | 自然产生       | 不能              |
+| 读你的对话记忆    | 自然产生                | 不能           | 不能              |
+| 停止/重启容器     | 能                      | 不能           | 不能              |
+| 查看 Bot 审计日志 | 能（开放平台）          | 不能           | 不能              |
 
 ### 开发 TODO
 
@@ -654,28 +698,29 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 **修复**：新增 `markdownToPost()` 转换函数 + `sendFeishuRichText()` 发送函数。检测文本是否包含 Markdown，有则转为飞书 Post 富文本消息（`msg_type: "post"`），无则保持纯文本（`msg_type: "text"`）。
 
 **修改文件**：
+
 - `outbound.ts` — 新增 `markdownToPost`、`parseInlineElements`、`hasMarkdown`、`sendFeishuRichText`（~140 行）
 - `channel.ts` — `outbound.sendText` 和 `sendMedia` caption 改用 `sendFeishuRichText`
 - `gateway.ts` — welcome 消息和 AI 回复 chunks 改用 `sendFeishuRichText`
 
 **飞书 Post 富文本支持矩阵**（实测 2026-02-09）：
 
-| 格式 | 支持 | 渲染效果 |
-|------|------|---------|
-| **粗体** `**text**` | 完美 | bold style |
-| *斜体* `*text*` | 完美 | italic style |
-| ***粗斜体*** `***text***` | 完美 | bold+italic style |
-| 无序列表 `- item` | 完美 | bullet 前缀，支持嵌套 |
-| 有序列表 `1. item` | 完美 | 数字前缀，支持嵌套 |
-| 行内代码 `` `code` `` | 完美 | bold+反引号 |
-| 代码块 ` ```lang ``` ` | 很棒 | code_block 标签，语法高亮+行号 |
-| 链接 `[text](url)` | 完美 | a 标签，可点击 |
-| 分隔线 `---` | 完美 | hr 标签 |
-| Emoji | 完美 | 原生渲染 |
-| ~~删除线~~ `~~text~~` | 不支持 | 原样显示 |
-| 引用块 `> text` | 不支持 | 原样显示 |
-| 表格 | 不支持 | 原样显示 |
-| 标题层级 `## ###` | 降级 | 统一渲染为粗体（无大小区分） |
+| 格式                      | 支持   | 渲染效果                       |
+| ------------------------- | ------ | ------------------------------ |
+| **粗体** `**text**`       | 完美   | bold style                     |
+| _斜体_ `*text*`           | 完美   | italic style                   |
+| **_粗斜体_** `***text***` | 完美   | bold+italic style              |
+| 无序列表 `- item`         | 完美   | bullet 前缀，支持嵌套          |
+| 有序列表 `1. item`        | 完美   | 数字前缀，支持嵌套             |
+| 行内代码 `` `code` ``     | 完美   | bold+反引号                    |
+| 代码块 ` ```lang ``` `    | 很棒   | code_block 标签，语法高亮+行号 |
+| 链接 `[text](url)`        | 完美   | a 标签，可点击                 |
+| 分隔线 `---`              | 完美   | hr 标签                        |
+| Emoji                     | 完美   | 原生渲染                       |
+| ~~删除线~~ `~~text~~`     | 不支持 | 原样显示                       |
+| 引用块 `> text`           | 不支持 | 原样显示                       |
+| 表格                      | 不支持 | 原样显示                       |
+| 标题层级 `## ###`         | 降级   | 统一渲染为粗体（无大小区分）   |
 
 ---
 
@@ -699,16 +744,17 @@ handleEventData():
 
 ### 修复前诊断数据（2026-02-10 本地实测）
 
-| 消息内容 | handler 耗时 | 飞书是否重推 | 重推间隔 |
-|---------|-------------|------------|---------|
-| "在吗"（简单对话） | **9,013ms** | 是 | +19s（首次重试） |
-| "/new"（新会话） | **6,537ms** | 是 | +19s（首次重试） |
-| "帮我查一下上海天气"（工具调用） | **27,107ms** | 是 | +19s（首次重试） |
-| "在吗" 重试（trackMessageId 拦截） | **10ms** | 否 | - |
-| "/new" 重试（trackMessageId 拦截） | **7ms** | 否 | - |
-| "查天气" 重试（trackMessageId 拦截） | **7ms** | 否 | - |
+| 消息内容                             | handler 耗时 | 飞书是否重推 | 重推间隔         |
+| ------------------------------------ | ------------ | ------------ | ---------------- |
+| "在吗"（简单对话）                   | **9,013ms**  | 是           | +19s（首次重试） |
+| "/new"（新会话）                     | **6,537ms**  | 是           | +19s（首次重试） |
+| "帮我查一下上海天气"（工具调用）     | **27,107ms** | 是           | +19s（首次重试） |
+| "在吗" 重试（trackMessageId 拦截）   | **10ms**     | 否           | -                |
+| "/new" 重试（trackMessageId 拦截）   | **7ms**      | 否           | -                |
+| "查天气" 重试（trackMessageId 拦截） | **7ms**      | 否           | -                |
 
 **关键发现**：
+
 - 飞书 WebSocket 的 ACK 超时窗口约 **3-5 秒**
 - 所有正常消息的 handler 耗时均 **6-27 秒**，远超超时窗口 → ACK 永远迟到
 - 内存去重 `trackMessageId` 能拦截重试消息（10ms 内返回），ACK 及时发出 → 重试链中断
@@ -716,12 +762,12 @@ handleEventData():
 
 ### 飞书事件重试间隔
 
-| 重试次序 | 间隔 | 累计 |
-|---------|------|------|
-| 第 1 次 | +15 秒 | 15s |
-| 第 2 次 | +5 分钟 | 5m15s |
-| 第 3 次 | +1 小时 | 1h5m15s |
-| 第 4 次 | +6 小时 | 7h5m15s |
+| 重试次序 | 间隔    | 累计    |
+| -------- | ------- | ------- |
+| 第 1 次  | +15 秒  | 15s     |
+| 第 2 次  | +5 分钟 | 5m15s   |
+| 第 3 次  | +1 小时 | 1h5m15s |
+| 第 4 次  | +6 小时 | 7h5m15s |
 
 ### 修复方案
 
@@ -744,13 +790,13 @@ handleEventData():
 
 修复后发送 5 条消息（含断电重启场景），**零重试**：
 
-| 消息内容 | msgId（后4位） | 是否被飞书重推 |
-|---------|--------------|--------------|
-| "/new" | f87c | 否 |
-| "帮我看一下北京天气吧" | 4566 | 否 |
-| "看一下无锡天气"（断电重启后） | e14b | 否 |
-| "/reset" | 1612 | 否 |
-| "/new" | 9416 | 否 |
+| 消息内容                       | msgId（后4位） | 是否被飞书重推 |
+| ------------------------------ | -------------- | -------------- |
+| "/new"                         | f87c           | 否             |
+| "帮我看一下北京天气吧"         | 4566           | 否             |
+| "看一下无锡天气"（断电重启后） | e14b           | 否             |
+| "/reset"                       | 1612           | 否             |
+| "/new"                         | 9416           | 否             |
 
 **断电测试**：发送"北京天气"后立即断电重启。ACK 已及时发出（飞书不重推），但 AI 回复因进程被 kill 而丢失。这是 `void` 方案的已知代价——trade-off：**消除重复推送 vs 极端断电时可能丢一条回复**。
 
@@ -783,11 +829,11 @@ handleEventData():
 
 **技术确认（三层全部通过）**：
 
-| 层 | 确认项 | 结果 |
-|----|--------|------|
-| OpenClaw 框架 | `onPartialReply` 回调（AI 每输出一个 token 就回调） | 已有，Telegram draft stream 用的就是这个 |
-| 飞书 SDK | `cardkit.v1.card.create()` + `cardkit.v1.cardElement.content()` | SDK 1.58.0 已支持，类型定义完整 |
-| 飞书 SDK | `im.message.create({ msg_type: "interactive" })` 发送卡片消息 | 已支持 |
+| 层            | 确认项                                                          | 结果                                     |
+| ------------- | --------------------------------------------------------------- | ---------------------------------------- |
+| OpenClaw 框架 | `onPartialReply` 回调（AI 每输出一个 token 就回调）             | 已有，Telegram draft stream 用的就是这个 |
+| 飞书 SDK      | `cardkit.v1.card.create()` + `cardkit.v1.cardElement.content()` | SDK 1.58.0 已支持，类型定义完整          |
+| 飞书 SDK      | `im.message.create({ msg_type: "interactive" })` 发送卡片消息   | 已支持                                   |
 
 **数据流（多段落场景）**：
 
@@ -832,13 +878,13 @@ AI 的一次回复可能包含多个 assistant message（中间穿插 tool call�
 
 **已发现的 bug 及修复（2026-02-10）**：
 
-| Bug | 根因 | 修复 |
-|-----|------|------|
-| 多段落时后一段覆盖前一段，中间内容丢失 | `onPartialReply` 的 text 是段落内累积（每个 assistant message 开始时 deltaBuffer reset），直接写入卡片会覆盖前面段落 | `updateCardStream` 内检测段落边界（新 text 不以上一次 text 为前缀 → 新段落），将前一段冻结到 `cardStreamPrefix`，写入 `prefix + 当前段落` |
-| 最后所有段落又从头到尾 stream 一遍 | `deliver` 在整个 turn 结束后才批量调用（不是每段之间），每次都调 `cardStream.update()` + `flush()`，重复写入已经流式展示过的内容 | `deliver` 不再调用 `cardStream.update()`，只累积 `cardStreamFinalText` 给 finalize 用 |
-| 聊天列表预览卡在"正在回复中..."不消失 | 创建卡片时设置了自定义 `summary.content: "正在回复中..."`，这是独立持久化字段，关闭 streaming_mode 不会自动清除 | 创建卡片时**不设** `summary.content`。飞书默认的"[生成中...]"由 `streaming_mode` 控制，关闭后平台自动移除，自动回落到卡片内容的摘要 |
-| 回复末尾内容截断（最后几个 token 丢失） | `onPartialReply` 可能未收到最后一小段文本（AI 最后的 token 直接通过 `deliver` 发出），而 `deliver` 只累积不更新 card | `stopCardStream` 中 `stop()` 后用 `sendFinal(cardStreamFinalText)` 直接推送完整文本，绕过 throttle/inFlight 机制 |
-| "[生成中...]"偶发不消失（竞争条件） | `flush()` 在 `inFlight=true` 时 schedule 延迟 flush 然后立即 return，导致 `finalize(streaming_mode=false)` 先于延迟的 content update 到达飞书，飞书收到更高 sequence 的 content update 后可能重新激活 streaming 状态 | `stopCardStream` 先调 `stop()`（取消 timer + 阻止新 update），再用 `sendFinal` 直接 await 推送完整文本（无竞争），最后 `finalize`。保证 sequence 顺序：`sendFinal(N)` → `finalize(N+1)` |
+| Bug                                     | 根因                                                                                                                                                                                                                 | 修复                                                                                                                                                                                    |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 多段落时后一段覆盖前一段，中间内容丢失  | `onPartialReply` 的 text 是段落内累积（每个 assistant message 开始时 deltaBuffer reset），直接写入卡片会覆盖前面段落                                                                                                 | `updateCardStream` 内检测段落边界（新 text 不以上一次 text 为前缀 → 新段落），将前一段冻结到 `cardStreamPrefix`，写入 `prefix + 当前段落`                                               |
+| 最后所有段落又从头到尾 stream 一遍      | `deliver` 在整个 turn 结束后才批量调用（不是每段之间），每次都调 `cardStream.update()` + `flush()`，重复写入已经流式展示过的内容                                                                                     | `deliver` 不再调用 `cardStream.update()`，只累积 `cardStreamFinalText` 给 finalize 用                                                                                                   |
+| 聊天列表预览卡在"正在回复中..."不消失   | 创建卡片时设置了自定义 `summary.content: "正在回复中..."`，这是独立持久化字段，关闭 streaming_mode 不会自动清除                                                                                                      | 创建卡片时**不设** `summary.content`。飞书默认的"[生成中...]"由 `streaming_mode` 控制，关闭后平台自动移除，自动回落到卡片内容的摘要                                                     |
+| 回复末尾内容截断（最后几个 token 丢失） | `onPartialReply` 可能未收到最后一小段文本（AI 最后的 token 直接通过 `deliver` 发出），而 `deliver` 只累积不更新 card                                                                                                 | `stopCardStream` 中 `stop()` 后用 `sendFinal(cardStreamFinalText)` 直接推送完整文本，绕过 throttle/inFlight 机制                                                                        |
+| "[生成中...]"偶发不消失（竞争条件）     | `flush()` 在 `inFlight=true` 时 schedule 延迟 flush 然后立即 return，导致 `finalize(streaming_mode=false)` 先于延迟的 content update 到达飞书，飞书收到更高 sequence 的 content update 后可能重新激活 streaming 状态 | `stopCardStream` 先调 `stop()`（取消 timer + 阻止新 update），再用 `sendFinal` 直接 await 推送完整文本（无竞争），最后 `finalize`。保证 sequence 顺序：`sendFinal(N)` → `finalize(N+1)` |
 
 **修复后的变量协作**：
 
@@ -870,6 +916,7 @@ stopCardStream():
 **关键：必须设置 `disableBlockStreaming: true`**
 
 对齐 Telegram 模式。如果不设置，agent 配置 `blockStreamingDefault: "on"` 时，`onBlockReply` 和 `onPartialReply` 会同时驱动 card stream，导致文本重复/闪烁。设置后：
+
 - `onBlockReply` 不会被调用（block pipeline 不创建）
 - `onPartialReply` 正常调用，独占驱动打字机
 - `deliver` 只收到 `kind="final"` payload
@@ -894,14 +941,14 @@ cardkit.v1.card.settings({
 
 **与 Telegram 的对比**：
 
-| 维度 | Telegram | 飞书 |
-|------|----------|------|
-| 原生 typing API | `sendChatAction("typing")`（顶部状态栏） | 无 |
-| 流式文本 | `sendMessageDraft()`（OpenClaw 自实现的 hack，私聊+topics 限定） | `cardkit.cardElement.content()`（官方 API，原生打字机动画） |
-| 效果 | draft 消息逐步更新（非官方） | 卡片内容逐字出现（官方打字机效果） |
-| 最终样式 | 普通文本气泡 | 卡片样式（有边框） |
-| 流式结束 | draftStream.stop() | card.settings(streaming_mode=false) |
-| 禁用 block streaming | `disableBlockStreaming: Boolean(draftStream)` | `disableBlockStreaming: !isCommand` |
+| 维度                 | Telegram                                                         | 飞书                                                        |
+| -------------------- | ---------------------------------------------------------------- | ----------------------------------------------------------- |
+| 原生 typing API      | `sendChatAction("typing")`（顶部状态栏）                         | 无                                                          |
+| 流式文本             | `sendMessageDraft()`（OpenClaw 自实现的 hack，私聊+topics 限定） | `cardkit.cardElement.content()`（官方 API，原生打字机动画） |
+| 效果                 | draft 消息逐步更新（非官方）                                     | 卡片内容逐字出现（官方打字机效果）                          |
+| 最终样式             | 普通文本气泡                                                     | 卡片样式（有边框）                                          |
+| 流式结束             | draftStream.stop()                                               | card.settings(streaming_mode=false)                         |
+| 禁用 block streaming | `disableBlockStreaming: Boolean(draftStream)`                    | `disableBlockStreaming: !isCommand`                         |
 
 **接入 TypingController**：走 OpenClaw 内置的 `ReplyDispatcherWithTypingOptions.onReplyStart` 回调。typing 由 `TypingSignaler.signalRunStart()` 触发——在 `runReplyAgent` 内部（已进入 session lane 之后）才触发，不会为排队中的消息发 typing。解决了 v1 的"多 placeholder"问题。
 
@@ -1023,6 +1070,7 @@ Her 是专属私人秘书，**绝对不可以对外和主人以外的任何人�
 > 用户提到群名时，先查索引找到 chatId，再读对应的消息文件。
 
 主人在私聊中的典型用法：
+
 - "帮我看看产品群今天聊了什么"
 - "技术群里有人提到数据库迁移的事吗"
 - "总结一下今天所有群的重要消息"
@@ -1059,10 +1107,10 @@ channels:
     appId: "cli_xxx"
     appSecret: "xxx"
     dm:
-      allowFrom: ["ou_主人的openid"]   # 单聊白名单 = 主人身份
+      allowFrom: ["ou_主人的openid"] # 单聊白名单 = 主人身份
     groups:
-      enabled: true                     # 启用群聊支持（默认 false）
-      archive: true                     # 归档群消息（默认 true）
+      enabled: true # 启用群聊支持（默认 false）
+      archive: true # 归档群消息（默认 true）
       # ownerIds: ["ou_xxx"]            # 可选：显式指定群聊主人 ID（默认复用 dm.allowFrom）
 ```
 
@@ -1072,10 +1120,10 @@ channels:
 
 IT 创建 Bot 时在权限管理中额外开通：
 
-| 权限 | 用途 |
-|------|------|
-| `im:message.group_msg` | 接收群聊所有消息（归档用） |
-| `im:chat:readonly` | 获取群信息（群名，用于 index.json） |
+| 权限                   | 用途                                |
+| ---------------------- | ----------------------------------- |
+| `im:message.group_msg` | 接收群聊所有消息（归档用）          |
+| `im:chat:readonly`     | 获取群信息（群名，用于 index.json） |
 
 ### 不在首期范围
 
@@ -1094,6 +1142,7 @@ IT 创建 Bot 时在权限管理中额外开通：
 OpenClaw 官方已收录社区飞书插件 `@openclaw/feishu`（npm），由 @m1heng 维护。官方文档 docs.openclaw.ai/channels 已列入飞书为 supported channel（plugin, installed separately）。
 
 npm 上至少有 4 个飞书相关包：
+
 - `@openclaw/feishu` v2026.2.9 — 官方命名空间，"community maintained by @m1heng"，maintainer 是 steipete（OpenClaw 作者）
 - `@m1heng-clawd/feishu` v0.1.9 — m1heng 个人早期版本
 - `@openclaw-cn/feishu` v2026.2.2 — 中文社区版
@@ -1103,49 +1152,49 @@ npm 上至少有 4 个飞书相关包：
 
 ### 代码规模对比
 
-| 维度 | 我们的版本 | @openclaw/feishu (m1heng) |
-|------|-----------|--------------------------|
-| 源文件数 | 5 个 | 30 个 |
-| 总代码量 | ~1,800 行 | ~6,025 行 |
-| Lark SDK 版本 | ^1.50.0 | ^1.58.0 |
-| 附带 Skills | 0 | 4 个（doc/wiki/drive/perm） |
+| 维度          | 我们的版本 | @openclaw/feishu (m1heng)   |
+| ------------- | ---------- | --------------------------- |
+| 源文件数      | 5 个       | 30 个                       |
+| 总代码量      | ~1,800 行  | ~6,025 行                   |
+| Lark SDK 版本 | ^1.50.0    | ^1.58.0                     |
+| 附带 Skills   | 0          | 4 个（doc/wiki/drive/perm） |
 
 ### 功能对比
 
-| 功能 | 我们的版本 | m1heng 版 | 说明 |
-|------|-----------|-----------|------|
-| **核心消息收发** | ✅ | ✅ | 均完整 |
-| **CardKit 流式卡片（打字机效果）** | ✅ 官方 API | ❌ 无 | **我们的核心差异化能力**，~250 行核心逻辑，踩了 4 个竞争条件坑 |
-| **群聊 JSONL 归档** | ✅ | ❌ 无 | **我们的核心差异化能力**，~60 行，企业场景刚需 |
-| **ACK 超时修复** | ✅ `void` 异步 | ❌ `await` 阻塞 | m1heng 版有此 bug：handler 6-27s 阻塞 ACK → 飞书 3-5s 超时重推，且无 trackMessageId 去重 |
-| **Markdown 渲染** | 自研 `markdownToPost()` 140 行 | 飞书卡片原生 `tag: "md"` | m1heng 更简洁，且**支持表格**（我们的 Post 格式不支持） |
-| **图片收发 + Vision** | ✅ | ✅ | 均完整 |
-| **飞书文档读写 (docx)** | ❌ | ✅ 521 行 | Markdown↔Block 双向转换，支持 20+ 种 Block 类型 |
-| **知识库 Wiki** | ❌ | ✅ 232 行 | 空间/节点导航 + 创建/移动/重命名 |
-| **云盘 Drive** | ❌ | ✅ 227 行 | 文件夹 CRUD + 文件管理 |
-| **多维表格 Bitable** | ❌ | ✅ 461 行 | 20+ 字段类型，筛选/排序/分页 |
-| **权限管理 Perm** | ❌ | ✅ 173 行 | 协作者 CRUD |
-| **通讯录 Directory** | ❌ | ✅ 177 行 | 列出企业用户/群组 |
-| **@mention 转发** | ❌ | ✅ 126 行 | 群里 @bot+@张三 → 回复自动 @张三 |
-| **引用消息获取** | ❌ | ✅ | `getMessageFeishu` 获取被引用的原消息内容 |
-| **Emoji 表情回应** | ✅ 已实现 | ✅ 160 行 | 消息 reaction，我们支持双机制（自动 ACK + AI 主动 react） |
-| **Typing 提示** | CardKit 流式卡片 + Get emoji ACK | Emoji reaction 加/移除 | 双重方案：CardKit 流式打字 + Get emoji 收到即反馈 |
-| **输入状态 (typing indicator)** | CardKit streaming + Get emoji | emoji reaction | 我们双管齐下 |
-| **权限错误自动诊断** | ❌ | ✅ | 缺权限时提取 grant URL 通知 agent，200 bot 部署排障利器 |
-| **Config Schema 验证** | 空 schema | ✅ Typebox 完整校验 | 减少配置错误 |
-| **Onboarding 引导** | ❌ | ✅ 359 行 | CLI 交互式配置 |
-| **多账户并行** | 支持（单账户使用） | 完善的并行启动 | — |
-| **Markdown 表格渲染** | ❌ 不支持 | ✅ 支持 | 卡片原生 md 支持表格 |
-| **Render Mode 可配** | 固定 Post 格式 | auto/raw/card 三种 | 按内容自动选择卡片或文本 |
+| 功能                               | 我们的版本                       | m1heng 版                | 说明                                                                                     |
+| ---------------------------------- | -------------------------------- | ------------------------ | ---------------------------------------------------------------------------------------- |
+| **核心消息收发**                   | ✅                               | ✅                       | 均完整                                                                                   |
+| **CardKit 流式卡片（打字机效果）** | ✅ 官方 API                      | ❌ 无                    | **我们的核心差异化能力**，~250 行核心逻辑，踩了 4 个竞争条件坑                           |
+| **群聊 JSONL 归档**                | ✅                               | ❌ 无                    | **我们的核心差异化能力**，~60 行，企业场景刚需                                           |
+| **ACK 超时修复**                   | ✅ `void` 异步                   | ❌ `await` 阻塞          | m1heng 版有此 bug：handler 6-27s 阻塞 ACK → 飞书 3-5s 超时重推，且无 trackMessageId 去重 |
+| **Markdown 渲染**                  | 自研 `markdownToPost()` 140 行   | 飞书卡片原生 `tag: "md"` | m1heng 更简洁，且**支持表格**（我们的 Post 格式不支持）                                  |
+| **图片收发 + Vision**              | ✅                               | ✅                       | 均完整                                                                                   |
+| **飞书文档读写 (docx)**            | ❌                               | ✅ 521 行                | Markdown↔Block 双向转换，支持 20+ 种 Block 类型                                          |
+| **知识库 Wiki**                    | ❌                               | ✅ 232 行                | 空间/节点导航 + 创建/移动/重命名                                                         |
+| **云盘 Drive**                     | ❌                               | ✅ 227 行                | 文件夹 CRUD + 文件管理                                                                   |
+| **多维表格 Bitable**               | ❌                               | ✅ 461 行                | 20+ 字段类型，筛选/排序/分页                                                             |
+| **权限管理 Perm**                  | ❌                               | ✅ 173 行                | 协作者 CRUD                                                                              |
+| **通讯录 Directory**               | ❌                               | ✅ 177 行                | 列出企业用户/群组                                                                        |
+| **@mention 转发**                  | ❌                               | ✅ 126 行                | 群里 @bot+@张三 → 回复自动 @张三                                                         |
+| **引用消息获取**                   | ❌                               | ✅                       | `getMessageFeishu` 获取被引用的原消息内容                                                |
+| **Emoji 表情回应**                 | ✅ 已实现                        | ✅ 160 行                | 消息 reaction，我们支持双机制（自动 ACK + AI 主动 react）                                |
+| **Typing 提示**                    | CardKit 流式卡片 + Get emoji ACK | Emoji reaction 加/移除   | 双重方案：CardKit 流式打字 + Get emoji 收到即反馈                                        |
+| **输入状态 (typing indicator)**    | CardKit streaming + Get emoji    | emoji reaction           | 我们双管齐下                                                                             |
+| **权限错误自动诊断**               | ❌                               | ✅                       | 缺权限时提取 grant URL 通知 agent，200 bot 部署排障利器                                  |
+| **Config Schema 验证**             | 空 schema                        | ✅ Typebox 完整校验      | 减少配置错误                                                                             |
+| **Onboarding 引导**                | ❌                               | ✅ 359 行                | CLI 交互式配置                                                                           |
+| **多账户并行**                     | 支持（单账户使用）               | 完善的并行启动           | —                                                                                        |
+| **Markdown 表格渲染**              | ❌ 不支持                        | ✅ 支持                  | 卡片原生 md 支持表格                                                                     |
+| **Render Mode 可配**               | 固定 Post 格式                   | auto/raw/card 三种       | 按内容自动选择卡片或文本                                                                 |
 
 ### 架构差异
 
-| 维度 | 我们的版本 | m1heng 版 |
-|------|-----------|-----------|
-| 入口 | `gateway.ts` 单文件 733 行大函数 | `bot.ts` 871 行 + `monitor.ts` 190 行，职责分离 |
+| 维度     | 我们的版本                                                          | m1heng 版                                                                                  |
+| -------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| 入口     | `gateway.ts` 单文件 733 行大函数                                    | `bot.ts` 871 行 + `monitor.ts` 190 行，职责分离                                            |
 | 回复派发 | `dispatchReplyWithBufferedBlockDispatcher`（自研 card stream 驱动） | `dispatchReplyFromConfig` + `createReplyDispatcherWithTyping`（OpenClaw 标准 typing 框架） |
-| SDK 封装 | 直接操作 Lark SDK + 手写 HTTP（绕 SDK bug） | 封装了 `createFeishuClient` + `createEventDispatcher` |
-| 发送层 | `outbound.ts` 667 行（含 CardKit streaming 全部逻辑） | `send.ts` 358 行 + `outbound.ts` 55 行 + `reply-dispatcher.ts` 179 行 |
+| SDK 封装 | 直接操作 Lark SDK + 手写 HTTP（绕 SDK bug）                         | 封装了 `createFeishuClient` + `createEventDispatcher`                                      |
+| 发送层   | `outbound.ts` 667 行（含 CardKit streaming 全部逻辑）               | `send.ts` 358 行 + `outbound.ts` 55 行 + `reply-dispatcher.ts` 179 行                      |
 
 ### m1heng 版已知问题（我们已解决）
 
@@ -1177,21 +1226,21 @@ npm 上至少有 4 个飞书相关包：
 
 ### P1 — 短期必做（核心体验 + 飞书生态工具）
 
-| # | 任务 | 状态 | 说明 |
-|---|------|------|------|
-| 1 | **飞书文档读写** | ✅ 已验证 | `feishu_doc` 工具，读取/写入/追加/创建文档。日志 11:32 确认 wiki→doc 链路零报错，800 字总结 |
-| 2 | **知识库 Wiki 导航** | ✅ 已验证 | `feishu_wiki` 工具，空间列表/节点导航。`listNodes` 自动附带 hint 引导 AI 用 `feishu_doc` 读取正文。日志 11:32 确认 wiki→doc 全链路正常 |
-| 3 | **云盘文件管理** | ✅ 已验证 | `feishu_drive` 工具，文件夹列表/创建/移动/删除 |
-| 4 | **多维表格 Bitable** | ✅ 已验证 | `feishu_bitable` 工具，读取/创建/更新多维表格记录。权限已升级为 `bitable:app`（读写），19 项全量测试 18 项通过（2026-02-15） |
-| 5 | **引用消息内容获取** | ✅ 已验证 | `getQuotedMessageContent()` 自动获取被引用消息内容。增强：CardKit 流式卡片引用通过本地缓存解析实际文字（而非降级占位符）；引用图片消息自动下载图片供 AI vision 识别；引用 post 消息修复 flat format 兼容（2026-02-14） |
-| 6 | **权限错误自动诊断** | ✅ 已验证 | `extractPermissionError()` 正确检测 code=99991672 并提取 grant URL |
-| 7 | **发送者姓名解析** | ❌ 个人版不可用 | `resolveFeishuSenderName()` 代码正常，权限已开通，API 返回 `code=0` 但 user 对象只有 `open_id,union_id,mobile_visible`，无 `name` 字段。**飞书个人版通讯录 API 不返回用户姓名（平台限制）**，需企业版/旗舰版 |
-| 8 | **画板/白板内容读取** | ✅ 已验证 | `feishu_doc` 的 `read` 自动检测 block type_43，Board API 导出 PNG + vision image block 返回。日志 11:35/12:18/12:19 确认图片自动 resize 后 AI 成功理解画板内容（2063 字总结）。需要 `board:whiteboard:node:read` 权限（已开通）。**独家能力** |
-| 9 | **Emoji 表情回应** | ✅ 已验证 | 两个机制：(1) 自动 ACK reaction — 收到消息时加 `Get` emoji，AI 回复后移除（typing indicator）；(2) AI 主动 react — 通过 `message` tool 的 `action="react"` 对消息加任意 emoji（已验证 THUMBSUP）。需要 `im:message.reaction:create` 权限 |
-| 10 | **回复样式（quote-reply）** | ✅ 已验证 | CardKit 流式卡片通过 `im.message.reply` + `msg_type=interactive` 发送，AI 回复自动关联用户原消息，显示 `回复 Bob: xxx` 引用样式。私聊和群聊均生效 |
-| 11 | **聊天文件附件读取（PPT/PDF/...）** | ✅ 已实现 | **完整实现**（2026-02-15）：(1) `extractTextContent()` 提取 `file_key` + `file_name`；(2) `downloadFeishuFile()` 通过 `im.messageResource.get({ type: "file" })` 下载文件（无大小限制）；(3) 文件保存到本地磁盘；(4) **Office 文件自动提取文本**：飞书插件层集成 `officeparser`（纯 JS npm 包，支持 PPTX/DOCX/XLSX/ODT/ODP/ODS/RTF），自定义 AST 遍历提取 slide 分页 + 图表数据（含标签和数值）+ 表格内容 + 全部文本，注入 `<file>` 标签传给 AI；(5) PDF 走核心 `extractFileBlocks` 管线（pdfjs-dist）；(6) 图片作为文件发送时自动检测 image MIME 走 vision；(7) 下载失败时 AI 收到清晰错误信息（如"文件太大"），而非空占位符。Docker 部署零配置（officeparser 随 npm install 自动安装）。**已验证**：PPT 含图表数据+分页+表格全部正确提取，效果追平 python-pptx |
-| 12 | **[P0] 文档写入安全性（版本恢复）** | ⚠️ 平台限制 | **严重问题**：`feishu_doc` 的 `write` action 是全量替换（`clearDocumentContent()` 清空 → `insertBlocks()` 写入），不支持 Markdown 表格（block type 31/32 被跳过）、bullet list 顺序可能被飞书 API 打乱、无 undo。**飞书 `drive.fileVersion` API 只有 list/get/create/delete 四个方法，没有 restore——无法通过 API 恢复到历史版本**（SDK 源码已确认）。`drive:drive:version` 权限仅用于查看/创建版本快照，不含恢复。唯一恢复途径：飞书 Web 端手动「版本历史 → 恢复」。**改进方案**：(1) `write` 前自动调用 `fileVersion.create()` 创建版本快照；(2) 在 skill/prompt 中标记"重要文档只读，新内容创建新文档"策略；(3) 长期：改用增量编辑（逐 block 更新）替代全量替换（2026-02-15） |
-| 13 | **[P0] 聊天视频附件读取** | ❌ 未实现 | **董事长需求**（2026-02-16）：用户在飞书聊天中发送视频附件，Her 无法接收和理解视频内容，回复"视频没有传过来"。**现状**：`extractTextContent()` 未处理 `msg_type=media`（视频消息类型），飞书 `im.messageResource.get()` 理论上支持下载视频文件（`type: "file"` 或 `type: "image"` 类似机制），但当前代码未实现视频下载和内容提取。**需要调研**：(1) 飞书视频消息的 `msg_type` 和 `content` 结构（`file_key` / `image_key` / `media_id`）；(2) 视频下载 API（`im.messageResource.get` 或 `im.message.resources`）；(3) 视频内容理解方案——抽帧 + vision（逐帧截图送 AI 识别）或直接传给支持视频的多模态模型（如 Gemini）；(4) 视频文件大小限制和处理时长 |
+| #   | 任务                                | 状态            | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| --- | ----------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | **飞书文档读写**                    | ✅ 已验证       | `feishu_doc` 工具，读取/写入/追加/创建文档。日志 11:32 确认 wiki→doc 链路零报错，800 字总结                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| 2   | **知识库 Wiki 导航**                | ✅ 已验证       | `feishu_wiki` 工具，空间列表/节点导航。`listNodes` 自动附带 hint 引导 AI 用 `feishu_doc` 读取正文。日志 11:32 确认 wiki→doc 全链路正常                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| 3   | **云盘文件管理**                    | ✅ 已验证       | `feishu_drive` 工具，文件夹列表/创建/移动/删除                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| 4   | **多维表格 Bitable**                | ✅ 已验证       | `feishu_bitable` 工具，读取/创建/更新多维表格记录。权限已升级为 `bitable:app`（读写），19 项全量测试 18 项通过（2026-02-15）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| 5   | **引用消息内容获取**                | ✅ 已验证       | `getQuotedMessageContent()` 自动获取被引用消息内容。增强：CardKit 流式卡片引用通过本地缓存解析实际文字（而非降级占位符）；引用图片消息自动下载图片供 AI vision 识别；引用 post 消息修复 flat format 兼容（2026-02-14）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| 6   | **权限错误自动诊断**                | ✅ 已验证       | `extractPermissionError()` 正确检测 code=99991672 并提取 grant URL                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| 7   | **发送者姓名解析**                  | ❌ 个人版不可用 | `resolveFeishuSenderName()` 代码正常，权限已开通，API 返回 `code=0` 但 user 对象只有 `open_id,union_id,mobile_visible`，无 `name` 字段。**飞书个人版通讯录 API 不返回用户姓名（平台限制）**，需企业版/旗舰版                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| 8   | **画板/白板内容读取**               | ✅ 已验证       | `feishu_doc` 的 `read` 自动检测 block type_43，Board API 导出 PNG + vision image block 返回。日志 11:35/12:18/12:19 确认图片自动 resize 后 AI 成功理解画板内容（2063 字总结）。需要 `board:whiteboard:node:read` 权限（已开通）。**独家能力**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| 9   | **Emoji 表情回应**                  | ✅ 已验证       | 两个机制：(1) 自动 ACK reaction — 收到消息时加 `Get` emoji，AI 回复后移除（typing indicator）；(2) AI 主动 react — 通过 `message` tool 的 `action="react"` 对消息加任意 emoji（已验证 THUMBSUP）。需要 `im:message.reaction:create` 权限                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| 10  | **回复样式（quote-reply）**         | ✅ 已验证       | CardKit 流式卡片通过 `im.message.reply` + `msg_type=interactive` 发送，AI 回复自动关联用户原消息，显示 `回复 Bob: xxx` 引用样式。私聊和群聊均生效                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| 11  | **聊天文件附件读取（PPT/PDF/...）** | ✅ 已实现       | **完整实现**（2026-02-15）：(1) `extractTextContent()` 提取 `file_key` + `file_name`；(2) `downloadFeishuFile()` 通过 `im.messageResource.get({ type: "file" })` 下载文件（无大小限制）；(3) 文件保存到本地磁盘；(4) **Office 文件自动提取文本**：飞书插件层集成 `officeparser`（纯 JS npm 包，支持 PPTX/DOCX/XLSX/ODT/ODP/ODS/RTF），自定义 AST 遍历提取 slide 分页 + 图表数据（含标签和数值）+ 表格内容 + 全部文本，注入 `<file>` 标签传给 AI；(5) PDF 走核心 `extractFileBlocks` 管线（pdfjs-dist）；(6) 图片作为文件发送时自动检测 image MIME 走 vision；(7) 下载失败时 AI 收到清晰错误信息（如"文件太大"），而非空占位符。Docker 部署零配置（officeparser 随 npm install 自动安装）。**已验证**：PPT 含图表数据+分页+表格全部正确提取，效果追平 python-pptx |
+| 12  | **[P0] 文档写入安全性（版本恢复）** | ⚠️ 平台限制     | **严重问题**：`feishu_doc` 的 `write` action 是全量替换（`clearDocumentContent()` 清空 → `insertBlocks()` 写入），不支持 Markdown 表格（block type 31/32 被跳过）、bullet list 顺序可能被飞书 API 打乱、无 undo。**飞书 `drive.fileVersion` API 只有 list/get/create/delete 四个方法，没有 restore——无法通过 API 恢复到历史版本**（SDK 源码已确认）。`drive:drive:version` 权限仅用于查看/创建版本快照，不含恢复。唯一恢复途径：飞书 Web 端手动「版本历史 → 恢复」。**改进方案**：(1) `write` 前自动调用 `fileVersion.create()` 创建版本快照；(2) 在 skill/prompt 中标记"重要文档只读，新内容创建新文档"策略；(3) 长期：改用增量编辑（逐 block 更新）替代全量替换（2026-02-15）                                                                                  |
+| 13  | **[P0] 聊天视频附件读取**           | ❌ 未实现       | **董事长需求**（2026-02-16）：用户在飞书聊天中发送视频附件，Her 无法接收和理解视频内容，回复"视频没有传过来"。**现状**：`extractTextContent()` 未处理 `msg_type=media`（视频消息类型），飞书 `im.messageResource.get()` 理论上支持下载视频文件（`type: "file"` 或 `type: "image"` 类似机制），但当前代码未实现视频下载和内容提取。**需要调研**：(1) 飞书视频消息的 `msg_type` 和 `content` 结构（`file_key` / `image_key` / `media_id`）；(2) 视频下载 API（`im.messageResource.get` 或 `im.message.resources`）；(3) 视频内容理解方案——抽帧 + vision（逐帧截图送 AI 识别）或直接传给支持视频的多模态模型（如 Gemini）；(4) 视频文件大小限制和处理时长                                                                                                           |
 
 注：**Markdown 卡片/表格渲染**已由 CardKit 流式卡片天然支持（schema 2.0 + `tag: "markdown"`），无需额外实现。实测 car her 表格渲染完美，社区版 post 模式反而渲染异常。
 
@@ -1199,85 +1248,86 @@ npm 上至少有 4 个飞书相关包：
 
 **已开通（2026-02-15 更新，共 25 个 tenant 级别权限）：**
 
-| 权限 scope | 用途 | 需要的功能 |
-|------------|------|-----------|
-| `im:message` | 发送消息 | 基础消息收发 |
-| `im:message:send_as_bot` | Bot 发送消息 | 基础消息收发 |
-| `im:message.group_msg` | 群消息 | 群聊 |
-| `im:message.p2p_msg:readonly` | 单聊消息 | 私聊 |
-| `im:chat:readonly` | 读取群信息 | 群名获取 |
-| `im:resource` | 消息资源 | 图片下载 |
-| `cardkit:card:write` | 卡片写入 | CardKit 流式卡片 |
-| `contact:contact.base:readonly` | 通讯录读取 | 发送者姓名解析（已开通，API 调用成功但个人版不返回 name 字段——平台限制，需企业版） |
-| `docs:doc` | 旧版文档 | 兼容 |
-| `docx:document` | 新版文档完整 | 文档读写 |
-| `docx:document:readonly` | 文档只读 | 文档读取 |
-| `docx:document:write_only` | 文档写入 | 文档追加/写入 |
-| `docx:document:create` | 创建文档 | 新建文档 |
-| `docx:document.block:convert` | Block 转换 | Markdown→Block |
-| `drive:drive` | 云盘读写 | 云盘文件列表/创建文件夹（2026-02-15 升级） |
-| `drive:drive.metadata:readonly` | 文件元数据 | 云空间文件元数据查看（2026-02-15 新增） |
-| `drive:drive.search:readonly` | 搜索云文档 | 云文档搜索（2026-02-15 新增） |
-| `drive:drive:version:readonly` | 文档版本查看 | 查看文档版本信息（2026-02-15 新增） |
-| `wiki:wiki` | 知识库完整 | Wiki 读写 |
-| `wiki:wiki:readonly` | 知识库只读 | Wiki 导航/读取 |
-| `board:whiteboard:node:create` | 画板节点创建 | 画板内容创建 |
-| `board:whiteboard:node:read` | 画板节点读取 | 画板导出为 PNG 图片（P1 #8，已验证） |
-| `bitable:app` | 多维表格读写 | 多维表格记录读取/创建/更新（P1 #4，2026-02-15 升级并验证） |
-| `im:message.reactions:read` | 表情回应读取 | 读取消息上的 emoji 回应列表 |
-| `im:message.reactions:write_only` | 表情回应写入 | Emoji reaction 自动 ACK + AI 主动 react（P1 #9） |
+| 权限 scope                        | 用途         | 需要的功能                                                                         |
+| --------------------------------- | ------------ | ---------------------------------------------------------------------------------- |
+| `im:message`                      | 发送消息     | 基础消息收发                                                                       |
+| `im:message:send_as_bot`          | Bot 发送消息 | 基础消息收发                                                                       |
+| `im:message.group_msg`            | 群消息       | 群聊                                                                               |
+| `im:message.p2p_msg:readonly`     | 单聊消息     | 私聊                                                                               |
+| `im:chat:readonly`                | 读取群信息   | 群名获取                                                                           |
+| `im:resource`                     | 消息资源     | 图片下载                                                                           |
+| `cardkit:card:write`              | 卡片写入     | CardKit 流式卡片                                                                   |
+| `contact:contact.base:readonly`   | 通讯录读取   | 发送者姓名解析（已开通，API 调用成功但个人版不返回 name 字段——平台限制，需企业版） |
+| `docs:doc`                        | 旧版文档     | 兼容                                                                               |
+| `docx:document`                   | 新版文档完整 | 文档读写                                                                           |
+| `docx:document:readonly`          | 文档只读     | 文档读取                                                                           |
+| `docx:document:write_only`        | 文档写入     | 文档追加/写入                                                                      |
+| `docx:document:create`            | 创建文档     | 新建文档                                                                           |
+| `docx:document.block:convert`     | Block 转换   | Markdown→Block                                                                     |
+| `drive:drive`                     | 云盘读写     | 云盘文件列表/创建文件夹（2026-02-15 升级）                                         |
+| `drive:drive.metadata:readonly`   | 文件元数据   | 云空间文件元数据查看（2026-02-15 新增）                                            |
+| `drive:drive.search:readonly`     | 搜索云文档   | 云文档搜索（2026-02-15 新增）                                                      |
+| `drive:drive:version:readonly`    | 文档版本查看 | 查看文档版本信息（2026-02-15 新增）                                                |
+| `wiki:wiki`                       | 知识库完整   | Wiki 读写                                                                          |
+| `wiki:wiki:readonly`              | 知识库只读   | Wiki 导航/读取                                                                     |
+| `board:whiteboard:node:create`    | 画板节点创建 | 画板内容创建                                                                       |
+| `board:whiteboard:node:read`      | 画板节点读取 | 画板导出为 PNG 图片（P1 #8，已验证）                                               |
+| `bitable:app`                     | 多维表格读写 | 多维表格记录读取/创建/更新（P1 #4，2026-02-15 升级并验证）                         |
+| `im:message.reactions:read`       | 表情回应读取 | 读取消息上的 emoji 回应列表                                                        |
+| `im:message.reactions:write_only` | 表情回应写入 | Emoji reaction 自动 ACK + AI 主动 react（P1 #9）                                   |
 
 **尚未开通（需要时申请）：**
 
 （当前所有已知需要的权限均已开通）
 
 **资源级权限（非 API scope，在飞书 UI 中配置）：**
+
 - 知识库空间权限：需将 bot 添加为空间成员，或设置"飞书个人版所有人可见"，或通过包含 bot 的群组间接授权
 
 ### P2 — 中期（企业功能扩展）
 
-| # | 任务 | 参考文件 | 工作量 | 说明 |
-|---|------|---------|--------|------|
-| 9 | **权限管理工具** | `perm.ts` ~170 行 + skill | 0.5 天 | `feishu_perm` 工具，协作者 CRUD |
-| 10 | **通讯录查询** | ✅ 已完成 | — | `feishu_directory` 工具（`directory.ts` 162 行），用户列表/用户详情/部门列表。个人版限制：不返回用户姓名（仅 open_id/status），企业版正常（2026-02-15） |
-| 10b | **群聊管理** | ✅ 已完成 | — | `feishu_chat` 工具（`chat.ts` 142 行），Bot 已加入的群列表/群详情/群成员列表。SDK 方法名修复：`chatMembers.get`（非 `.list`）（2026-02-15） |
-| 11 | **Config Schema 验证** | `config-schema.ts` ~172 行 | 1 天 | Typebox 完整配置校验，减少 200 bot 部署时的配置错误 |
-| 12 | **Onboarding CLI** | `onboarding.ts` ~359 行 | 1.5 天 | `openclaw setup` 交互式引导配置飞书凭证 |
-| 13 | **状态探测** | `probe.ts` ~44 行 | 0.5 天 | `openclaw channels status` 显示飞书连接状态 |
+| #   | 任务                   | 参考文件                   | 工作量 | 说明                                                                                                                                                    |
+| --- | ---------------------- | -------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 9   | **权限管理工具**       | `perm.ts` ~170 行 + skill  | 0.5 天 | `feishu_perm` 工具，协作者 CRUD                                                                                                                         |
+| 10  | **通讯录查询**         | ✅ 已完成                  | —      | `feishu_directory` 工具（`directory.ts` 162 行），用户列表/用户详情/部门列表。个人版限制：不返回用户姓名（仅 open_id/status），企业版正常（2026-02-15） |
+| 10b | **群聊管理**           | ✅ 已完成                  | —      | `feishu_chat` 工具（`chat.ts` 142 行），Bot 已加入的群列表/群详情/群成员列表。SDK 方法名修复：`chatMembers.get`（非 `.list`）（2026-02-15）             |
+| 11  | **Config Schema 验证** | `config-schema.ts` ~172 行 | 1 天   | Typebox 完整配置校验，减少 200 bot 部署时的配置错误                                                                                                     |
+| 12  | **Onboarding CLI**     | `onboarding.ts` ~359 行    | 1.5 天 | `openclaw setup` 交互式引导配置飞书凭证                                                                                                                 |
+| 13  | **状态探测**           | `probe.ts` ~44 行          | 0.5 天 | `openclaw channels status` 显示飞书连接状态                                                                                                             |
 
 ### P3 — 按需
 
-| # | 任务 | 参考文件 | 工作量 | 说明 |
-|---|------|---------|--------|------|
-| 14 | **@mention 转发** | `mention.ts` ~126 行 | 1 天 | 群里 @bot + @人类同事 -> bot 回复自动 @张三。场景较少，优先级低 |
+| #   | 任务              | 参考文件             | 工作量 | 说明                                                            |
+| --- | ----------------- | -------------------- | ------ | --------------------------------------------------------------- |
+| 14  | **@mention 转发** | `mention.ts` ~126 行 | 1 天   | 群里 @bot + @人类同事 -> bot 回复自动 @张三。场景较少，优先级低 |
 
 ### 自研独有，不在开源版本中（持续维护）
 
-| 能力 | 状态 | 说明 |
-|------|------|------|
-| CardKit 流式卡片 | ✅ 已验证 | 官方打字机动画，~250 行核心，竞争条件已全部修复。天然支持 Markdown 表格渲染（社区版 post 模式反而异常） |
-| 群聊 JSONL 归档 | ✅ 已验证 | 本地归档 + index.json + skill 读取，~60 行。社区版完全没有此能力，群聊总结场景远远领先 |
-| ACK 超时修复 | ✅ 已验证 | `void` 异步 + `trackMessageId` 去重。社区版 WebSocket 模式仍有此 bug |
-| 企业 200 Bot 部署 | ✅ 已验证 | Docker 容器隔离 + CSV 用户管理 + 滚动升级 |
-| 纯 @mention 回复 | ✅ 已验证 | 群聊中纯 @bot（不带文字）不再被丢弃，正常触发回复（2026-02-12） |
-| 群聊管理 + 通讯录查询 | ✅ 已验证 | `feishu_chat`（群列表/群详情/群成员）+ `feishu_directory`（用户/部门查询）。19 项全量测试 18 项通过，唯一失败项为云盘 create_folder 工具层 bug（2026-02-15） |
-| Wiki→Doc 全链路 | ✅ 已验证 | `feishu_wiki` 返回 hint 引导 AI 用 `feishu_doc` 读取正文。日志 11:32 确认 wiki(2次)→doc(3次) 全链路零报错、800 字总结（2026-02-12） |
+| 能力                  | 状态      | 说明                                                                                                                                                                                                   |
+| --------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| CardKit 流式卡片      | ✅ 已验证 | 官方打字机动画，~250 行核心，竞争条件已全部修复。天然支持 Markdown 表格渲染（社区版 post 模式反而异常）                                                                                                |
+| 群聊 JSONL 归档       | ✅ 已验证 | 本地归档 + index.json + skill 读取，~60 行。社区版完全没有此能力，群聊总结场景远远领先                                                                                                                 |
+| ACK 超时修复          | ✅ 已验证 | `void` 异步 + `trackMessageId` 去重。社区版 WebSocket 模式仍有此 bug                                                                                                                                   |
+| 企业 200 Bot 部署     | ✅ 已验证 | Docker 容器隔离 + CSV 用户管理 + 滚动升级                                                                                                                                                              |
+| 纯 @mention 回复      | ✅ 已验证 | 群聊中纯 @bot（不带文字）不再被丢弃，正常触发回复（2026-02-12）                                                                                                                                        |
+| 群聊管理 + 通讯录查询 | ✅ 已验证 | `feishu_chat`（群列表/群详情/群成员）+ `feishu_directory`（用户/部门查询）。19 项全量测试 18 项通过，唯一失败项为云盘 create_folder 工具层 bug（2026-02-15）                                           |
+| Wiki→Doc 全链路       | ✅ 已验证 | `feishu_wiki` 返回 hint 引导 AI 用 `feishu_doc` 读取正文。日志 11:32 确认 wiki(2次)→doc(3次) 全链路零报错、800 字总结（2026-02-12）                                                                    |
 | **画板/白板内容读取** | ✅ 已验证 | `feishu_doc` 的 `read` 自动检测 block type_43，Board API 导出 PNG + vision。日志 11:35/12:18/12:19 三次确认图片 resize + AI 2063 字总结。**社区版和所有已知飞书 bot 均未实现——独家优势**（2026-02-12） |
 
 #### 实测对比：本地 car her vs Docker 社区版（2026-02-12 12:45-12:49）
 
 测试文档："usb 拓扑"，包含 1 个表格（日期/任务/状态/备注）+ 3 个画板（3c 拓扑图、road test→fdi→cdi 流程图、RK3399 USB 完整拓扑大图）。
 
-| 维度 | 本地 car her（自研） | Docker her（社区版） |
-|------|---------------------|---------------------|
-| 文档定位 | 直接成功 | 第 1 次失败（"没找到 USB 拓扑文档"），第 2 次才成功 |
-| 表格内容 | 读到（2685 字总结含表格细节） | 读到（"包含表格的文档"） |
-| 画板内容（3 个） | 全部读到（`Image exceeds→resized`，AI 通过 vision 看到画板 PNG 并描述了拓扑细节） | 完全没读到（日志无任何 Image 处理） |
-| 输出方式 | 1 条 CardKit 流式卡片 | 5 条碎片消息逐条发送 |
-| 输出字数 | 2685 字完整总结 | 碎片式（每次 tool 中间结果都发一条消息） |
-| 加载体验 | 流式卡片打字机动画 | typing emoji reaction（闪烁） |
-| 群消息 | 正常处理+归档 | "我无法主动搜索或读取群组的历史聊天记录" |
-| 插件健康度 | 无警告 | 大量 `duplicate plugin id detected` 警告 |
+| 维度             | 本地 car her（自研）                                                              | Docker her（社区版）                                |
+| ---------------- | --------------------------------------------------------------------------------- | --------------------------------------------------- |
+| 文档定位         | 直接成功                                                                          | 第 1 次失败（"没找到 USB 拓扑文档"），第 2 次才成功 |
+| 表格内容         | 读到（2685 字总结含表格细节）                                                     | 读到（"包含表格的文档"）                            |
+| 画板内容（3 个） | 全部读到（`Image exceeds→resized`，AI 通过 vision 看到画板 PNG 并描述了拓扑细节） | 完全没读到（日志无任何 Image 处理）                 |
+| 输出方式         | 1 条 CardKit 流式卡片                                                             | 5 条碎片消息逐条发送                                |
+| 输出字数         | 2685 字完整总结                                                                   | 碎片式（每次 tool 中间结果都发一条消息）            |
+| 加载体验         | 流式卡片打字机动画                                                                | typing emoji reaction（闪烁）                       |
+| 群消息           | 正常处理+归档                                                                     | "我无法主动搜索或读取群组的历史聊天记录"            |
+| 插件健康度       | 无警告                                                                            | 大量 `duplicate plugin id detected` 警告            |
 
 ---
 

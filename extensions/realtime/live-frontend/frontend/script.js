@@ -46,8 +46,8 @@ const state = {
 function debugLog(direction, eventType, data = {}) {
   const ts = new Date().toISOString().slice(11, 23);
   const dataStr = Object.entries(data)
-    .map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`)
-    .join(' | ');
+    .map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`)
+    .join(" | ");
   console.log(`[${ts}] ${direction.padEnd(15)} | ${eventType.padEnd(18)} | ${dataStr}`);
 }
 
@@ -136,7 +136,8 @@ function initDOM() {
   const jitterVal = savedJitter != null ? parseInt(savedJitter, 10) : 0;
   if (elements.jitterBufferMs) {
     elements.jitterBufferMs.value = jitterVal;
-    if (elements.jitterBufferLabel) elements.jitterBufferLabel.textContent = jitterVal === 0 ? "off" : jitterVal;
+    if (elements.jitterBufferLabel)
+      elements.jitterBufferLabel.textContent = jitterVal === 0 ? "off" : jitterVal;
     elements.jitterBufferMs.addEventListener("input", () => {
       const v = parseInt(elements.jitterBufferMs.value, 10);
       elements.jitterBufferLabel.textContent = v === 0 ? "off" : v;
@@ -152,10 +153,8 @@ async function populateMediaDevices() {
     const devices = await navigator.mediaDevices.enumerateDevices();
 
     // Clear existing options
-    elements.micSelect.innerHTML =
-      '<option value="">Default Microphone</option>';
-    elements.cameraSelect.innerHTML =
-      '<option value="">Default Camera</option>';
+    elements.micSelect.innerHTML = '<option value="">Default Microphone</option>';
+    elements.cameraSelect.innerHTML = '<option value="">Default Camera</option>';
 
     // Add audio input devices
     devices
@@ -163,8 +162,7 @@ async function populateMediaDevices() {
       .forEach((device) => {
         const option = document.createElement("option");
         option.value = device.deviceId;
-        option.textContent =
-          device.label || `Microphone ${device.deviceId.substr(0, 8)}`;
+        option.textContent = device.label || `Microphone ${device.deviceId.substr(0, 8)}`;
         elements.micSelect.appendChild(option);
       });
 
@@ -174,8 +172,7 @@ async function populateMediaDevices() {
       .forEach((device) => {
         const option = document.createElement("option");
         option.value = device.deviceId;
-        option.textContent =
-          device.label || `Camera ${device.deviceId.substr(0, 8)}`;
+        option.textContent = device.label || `Camera ${device.deviceId.substr(0, 8)}`;
         elements.cameraSelect.appendChild(option);
       });
   } catch (error) {
@@ -202,12 +199,15 @@ function updateStatus(elementId, text) {
 async function connectOpenClaw() {
   const url = elements.openclawUrl?.value || "ws://localhost:18790/ws";
   // Convert ws(s):// to http(s):// for the bootstrap REST call.
-  const httpUrl = url.replace(/^wss:\/\//, "https://").replace(/^ws:\/\//, "http://").replace(/\/ws$/, "");
+  const httpUrl = url
+    .replace(/^wss:\/\//, "https://")
+    .replace(/^ws:\/\//, "http://")
+    .replace(/\/ws$/, "");
   const agentId = getAgentIdFromPageUrl();
-  
+
   try {
     updateStatus("openclawStatus", "Connecting...");
-    
+
     // MUST fetch bootstrap data (Live memory capsule) before connecting Gemini.
     // This call blocks until the server has generated/loaded the capsule.
     let bootstrapUrl = agentId
@@ -236,33 +236,40 @@ async function connectOpenClaw() {
     const bootstrapTools = bootstrapSetup?.tools?.function_declarations;
     if (bootstrapTools && Array.isArray(bootstrapTools) && bootstrapTools.length > 0) {
       state.openclaw.toolDeclarations = bootstrapTools;
-      console.log(`🦞 Bootstrap tools: ${bootstrapTools.length} (${bootstrapTools.map(t => t.name).join(", ")})`);
+      console.log(
+        `🦞 Bootstrap tools: ${bootstrapTools.length} (${bootstrapTools.map((t) => t.name).join(", ")})`,
+      );
     }
 
     console.log("🦞 Bootstrap loaded:", {
       liveMemoryCapsule: state.openclaw.liveMemoryCapsule.slice(0, 120) + "...",
       agentId: agentId || "(default)",
     });
-    
+
     // Connect WebSocket (pass agentId for multi-agent routing; append token for Layer 2 auth)
     let wsUrl = url;
     if (voiceToken) wsUrl = appendQueryParam(wsUrl, "token", voiceToken);
     await openclawConnection.connect(wsUrl, agentId);
     state.openclaw.connected = true;
     updateStatus("openclawStatus", "Connected ✓");
-    
+
     // Set up callbacks
     openclawConnection.onHelpResult = (callId, reply) => {
       const entry = state.helpRequests.get(callId) || { request: "", seq: 0 };
       state.helpRequests.delete(callId);
       console.log(`🦞 Help result #${entry.seq} (${entry.request}) for ${callId}:`, reply);
-      debugLog("OPENCLAW→LIVE", "HELP_RESULT", { callId, seq: entry.seq, request: entry.request, reply: reply.slice(0, 50) + "..." });
+      debugLog("OPENCLAW→LIVE", "HELP_RESULT", {
+        callId,
+        seq: entry.seq,
+        request: entry.request,
+        reply: reply.slice(0, 50) + "...",
+      });
       // Deliver as labeled inject so Gemini can match result to query.
       addMessage(`[OpenClaw] ${reply}`, "system");
       state.pendingInjects.push({ seq: entry.seq, reply });
       tryDeliverInjects();
     };
-    
+
     openclawConnection.onPromptUpdate = (section, content) => {
       console.log(`🦞 Prompt update [${section}]:`, content.slice(0, 100) + "...");
       if (section === "live_memory_capsule") {
@@ -272,7 +279,7 @@ async function connectOpenClaw() {
         // Ignore legacy sections to avoid leaking full USER.md / MEMORY.md to the browser.
       }
     };
-    
+
     openclawConnection.onInject = (reply) => {
       console.log("🦞 Inject:", reply);
       // Make inject visible in the chat UI for deterministic verification.
@@ -283,7 +290,6 @@ async function connectOpenClaw() {
       state.pendingInjects.push(reply);
       tryDeliverInjects();
     };
-    
   } catch (error) {
     console.error("OpenClaw connection failed:", error);
     updateStatus("openclawStatus", "Failed: " + error.message);
@@ -335,10 +341,8 @@ async function connectGemini() {
 
     // Configure settings - use enhanced instructions if OpenClaw connected
     state.client.systemInstructions = buildSystemInstructions();
-    state.client.inputAudioTranscription =
-      elements.enableInputTranscription.checked;
-    state.client.outputAudioTranscription =
-      elements.enableOutputTranscription.checked;
+    state.client.inputAudioTranscription = elements.enableInputTranscription.checked;
+    state.client.outputAudioTranscription = elements.enableOutputTranscription.checked;
     // Hard-disable Google grounding: it disables custom tools and causes racey setups.
     state.client.googleGrounding = false;
     state.client.enableAffectiveDialog = elements.enableAffectiveDialog.checked;
@@ -405,7 +409,6 @@ async function connectGemini() {
     if (savedJitter) state.audio.player.setJitterBufferMs(parseInt(savedJitter, 10));
     await state.audio.player.init();
     console.log(`🔊 AudioPlayer ready (jitter buffer: ${state.audio.player.jitterBufferMs}ms)`);
-
 
     updateStatus("debugInfo", "Connected successfully");
   } catch (error) {
@@ -510,9 +513,11 @@ function handleMessage(message) {
         // finished=true, send accumulated transcript to OpenClaw
         if (state.openclaw.connected && state.pendingUserTranscript) {
           openclawConnection.sendTranscript("user", state.pendingUserTranscript);
-          debugLog("LIVE→OPENCLAW", "TRANSCRIPT_USER", { text: state.pendingUserTranscript.slice(0, 50) });
+          debugLog("LIVE→OPENCLAW", "TRANSCRIPT_USER", {
+            text: state.pendingUserTranscript.slice(0, 50),
+          });
         }
-        state.pendingUserTranscript = "";  // Reset
+        state.pendingUserTranscript = ""; // Reset
       }
       break;
 
@@ -526,9 +531,11 @@ function handleMessage(message) {
         // finished=true, send accumulated transcript to OpenClaw
         if (state.openclaw.connected && state.pendingLiveTranscript) {
           openclawConnection.sendTranscript("live", state.pendingLiveTranscript);
-          debugLog("LIVE→OPENCLAW", "TRANSCRIPT_LIVE", { text: state.pendingLiveTranscript.slice(0, 50) });
+          debugLog("LIVE→OPENCLAW", "TRANSCRIPT_LIVE", {
+            text: state.pendingLiveTranscript.slice(0, 50),
+          });
         }
-        state.pendingLiveTranscript = "";  // Reset
+        state.pendingLiveTranscript = ""; // Reset
       }
       break;
 
@@ -543,7 +550,7 @@ function handleMessage(message) {
         elements.setupJsonDisplay.textContent = JSON.stringify(
           state.client.lastSetupMessage,
           null,
-          2
+          2,
         );
         elements.setupJsonSection.style.display = "block";
       }
@@ -558,9 +565,14 @@ function handleMessage(message) {
         // Generate UUID if Gemini doesn't provide id
         const functionCallId = functionCall.id || crypto.randomUUID();
         const parameters = functionCall.args;
-        
-        debugLog("GEMINI→LIVE", "TOOL_CALL", { geminiId: functionCall.id, usedId: functionCallId, name: functionName, args: parameters });
-        
+
+        debugLog("GEMINI→LIVE", "TOOL_CALL", {
+          geminiId: functionCall.id,
+          usedId: functionCallId,
+          name: functionName,
+          args: parameters,
+        });
+
         // Special handling for OpenClaw help tool (async)
         if (functionName === "openclaw_help") {
           const request = parameters.request || "";
@@ -570,7 +582,11 @@ function handleMessage(message) {
           state.helpRequests.set(functionCallId, { request, seq });
 
           if (state.client) {
-            debugLog("LIVE→GEMINI", "TOOL_RESPONSE_ACK", { id: functionCallId, name: functionName, seq });
+            debugLog("LIVE→GEMINI", "TOOL_RESPONSE_ACK", {
+              id: functionCallId,
+              name: functionName,
+              seq,
+            });
             state.client.sendToolResponse(functionCallId, "openclaw_help", {
               result: `请求 #${seq} 已收到，后台正在处理。结果稍后会标注 #${seq} 自动出现，届时请播报给用户。在此之前不要再次调用 openclaw_help。`,
             });
@@ -620,7 +636,7 @@ function handleMessage(message) {
           parts.push(
             `drainGapMax=${Math.round(playerObs.drainGapMaxMs)}ms`,
             `drainGapAvg=${Math.round(playerObs.drainGapAvgMs)}ms`,
-            `drainGap>=200ms=${playerObs.drainGapOver200Ms}`
+            `drainGap>=200ms=${playerObs.drainGapOver200Ms}`,
           );
         }
 

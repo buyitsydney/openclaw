@@ -5,9 +5,20 @@
  * to Feishu servers. Received messages are forwarded to OpenClaw's auto-reply pipeline.
  */
 
+import type {
+  ChannelAccountSnapshot,
+  ChannelLogSink,
+  OpenClawConfig,
+  RuntimeEnv,
+} from "openclaw/plugin-sdk";
 import * as Lark from "@larksuiteoapi/node-sdk";
-import type { ChannelAccountSnapshot, ChannelLogSink, OpenClawConfig, RuntimeEnv } from "openclaw/plugin-sdk";
+import crypto from "node:crypto";
+import { existsSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import { homedir } from "node:os";
+import { join, dirname } from "node:path";
 import type { ResolvedFeishuAccount } from "./accounts.js";
+import { resolveGroupOwnerIds } from "./accounts.js";
 import {
   getFeishuClient,
   sendFeishuText,
@@ -24,13 +35,7 @@ import {
   removeFeishuReaction,
   type FeishuCardStream,
 } from "./outbound.js";
-import { resolveGroupOwnerIds } from "./accounts.js";
 import { getFeishuRuntime } from "./runtime.js";
-import crypto from "node:crypto";
-import { existsSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } from "node:fs";
-import os from "node:os";
-import { join, dirname } from "node:path";
-import { homedir } from "node:os";
 
 // ── CardKit status footer helpers ────────────────────────────────────────
 // Appended to every AI reply card to show model + context usage at a glance.
@@ -70,7 +75,7 @@ function buildCardStatusFooter(params: {
     if (!entry) return "";
 
     const model = entry.modelOverride ?? entry.model;
-    const totalTokens = entry.totalTokens ?? ((entry.inputTokens ?? 0) + (entry.outputTokens ?? 0));
+    const totalTokens = entry.totalTokens ?? (entry.inputTokens ?? 0) + (entry.outputTokens ?? 0);
     const contextTokens =
       entry.contextTokens ?? params.config?.agents?.defaults?.contextTokens ?? null;
 
@@ -146,10 +151,7 @@ async function resolveFeishuSenderName(params: {
     });
     const user = res?.data?.user;
     const name: string | undefined =
-      user?.name ||
-      user?.display_name ||
-      user?.nickname ||
-      user?.en_name;
+      user?.name || user?.display_name || user?.nickname || user?.en_name;
     if (name && typeof name === "string") {
       senderNameCache.set(senderOpenId, { name, expireAt: now + SENDER_NAME_TTL_MS });
       return { name };
@@ -163,10 +165,14 @@ async function resolveFeishuSenderName(params: {
   } catch (err) {
     const permErr = extractPermissionError(err);
     if (permErr) {
-      log?.info(`[${account.accountId}] permission error resolving sender name: code=${permErr.code}`);
+      log?.info(
+        `[${account.accountId}] permission error resolving sender name: code=${permErr.code}`,
+      );
       return { permissionError: permErr };
     }
-    log?.info(`[${account.accountId}] failed to resolve sender name for ${senderOpenId}: ${String(err)}`);
+    log?.info(
+      `[${account.accountId}] failed to resolve sender name for ${senderOpenId}: ${String(err)}`,
+    );
     return {};
   }
 }
@@ -185,7 +191,9 @@ function cacheCardText(messageId: string, text: string): void {
   if (cardTextCache.size >= CARD_CACHE_MAX) {
     const now = Date.now();
     for (const [k, v] of cardTextCache) {
-      if (now - v.ts > CARD_CACHE_TTL_MS) { cardTextCache.delete(k); }
+      if (now - v.ts > CARD_CACHE_TTL_MS) {
+        cardTextCache.delete(k);
+      }
     }
   }
   cardTextCache.set(messageId, { text, ts: Date.now() });
@@ -243,7 +251,9 @@ async function getQuotedMessageContent(params: {
         }
       } else if (item.msg_type === "image") {
         // Standalone image message: collect key for downstream download.
-        if (parsed.image_key) { quotedImageKeys.push(parsed.image_key); }
+        if (parsed.image_key) {
+          quotedImageKeys.push(parsed.image_key);
+        }
         content = "[image]";
       }
     } catch {
@@ -260,9 +270,13 @@ async function getQuotedMessageContent(params: {
   } catch (err) {
     const permErr = extractPermissionError(err);
     if (permErr) {
-      log?.info(`[${account.accountId}] permission error fetching quoted msg: code=${permErr.code}`);
+      log?.info(
+        `[${account.accountId}] permission error fetching quoted msg: code=${permErr.code}`,
+      );
     } else {
-      log?.info(`[${account.accountId}] failed to fetch quoted msg ${parentMessageId}: ${String(err)}`);
+      log?.info(
+        `[${account.accountId}] failed to fetch quoted msg ${parentMessageId}: ${String(err)}`,
+      );
     }
     return null;
   }
@@ -311,7 +325,9 @@ function ensureVoiceToken(reset = false): string {
     try {
       const existing = readFileSync(VOICE_TOKEN_PATH, "utf-8").trim();
       if (existing) return existing;
-    } catch { /* file doesn't exist, generate */ }
+    } catch {
+      /* file doesn't exist, generate */
+    }
   }
   const token = crypto.randomUUID().replace(/-/g, "");
   mkdirSync(dirname(VOICE_TOKEN_PATH), { recursive: true });
@@ -325,16 +341,20 @@ function resolveVoiceUrl(config: OpenClawConfig, token: string): string {
   const proxyHost = process.env.VOICE_PROXY_HOST;
   if (feHost && proxyHost) {
     // Docker: use tunnel domains (FE proxy handles RT proxying internally)
-    return `https://${feHost}/mobile.html`
-      + `?proxy=wss://${proxyHost}`
-      + `&openclaw=wss://${feHost}/ws`
-      + `&token=${token}`;
+    return (
+      `https://${feHost}/mobile.html` +
+      `?proxy=wss://${proxyHost}` +
+      `&openclaw=wss://${feHost}/ws` +
+      `&token=${token}`
+    );
   }
   // Local: localhost
-  return `http://localhost:8000/mobile.html`
-    + `?proxy=ws://localhost:8080`
-    + `&openclaw=ws://localhost:18790/ws`
-    + `&token=${token}`;
+  return (
+    `http://localhost:8000/mobile.html` +
+    `?proxy=ws://localhost:8080` +
+    `&openclaw=ws://localhost:18790/ws` +
+    `&token=${token}`
+  );
 }
 
 function trackMessageId(messageId: string): boolean {
@@ -398,10 +418,14 @@ function extractPostText(parsed: Record<string, unknown>, imageKeys?: string[]):
  *  Returns null if the structure is unrecognisable (caller falls back to raw content). */
 // oxlint-disable-next-line typescript/no-explicit-any
 function flattenInteractiveBody(parsed: any, imageKeys?: string[]): string | null {
-  if (!parsed?.elements || !Array.isArray(parsed.elements)) { return null; }
+  if (!parsed?.elements || !Array.isArray(parsed.elements)) {
+    return null;
+  }
   const lines: string[] = [];
   for (const row of parsed.elements) {
-    if (!Array.isArray(row)) { continue; }
+    if (!Array.isArray(row)) {
+      continue;
+    }
     let line = "";
     for (const el of row) {
       if (el.tag === "text" || el.tag === "a") {
@@ -409,12 +433,16 @@ function flattenInteractiveBody(parsed: any, imageKeys?: string[]): string | nul
       } else if (el.tag === "at") {
         line += el.user_name ?? "";
       } else if (el.tag === "img" && el.image_key) {
-        if (imageKeys) { imageKeys.push(el.image_key); }
+        if (imageKeys) {
+          imageKeys.push(el.image_key);
+        }
         line += "<media:image>";
       }
       // Skip buttons, hr, select, date_picker, overflow, note — UI-only elements.
     }
-    if (line.trim()) { lines.push(line); }
+    if (line.trim()) {
+      lines.push(line);
+    }
   }
   const title = typeof parsed.title === "string" && parsed.title ? `${parsed.title}\n` : "";
   return `${title}${lines.join("\n")}`.trim() || null;
@@ -476,11 +504,9 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
       // Return immediately so the SDK sends the ACK frame within milliseconds.
       // Without this, Feishu's ~3-5s ACK timeout expires before the AI finishes
       // processing (6-27s observed), causing Feishu to retry at +15s/+5m/+1h/+6h.
-      void handleInboundMessage(data, { account, config, log, setStatus, core }).catch(
-        (err) => {
-          log?.error(`[${account.accountId}] error handling message: ${String(err)}`);
-        },
-      );
+      void handleInboundMessage(data, { account, config, log, setStatus, core }).catch((err) => {
+        log?.error(`[${account.accountId}] error handling message: ${String(err)}`);
+      });
     },
   });
 
@@ -580,31 +606,26 @@ type FeishuMention = { key: string; id: string; name?: string };
 function parseMentions(message: any): FeishuMention[] {
   const raw = message?.mentions;
   if (!Array.isArray(raw)) return [];
-  return raw
-    // oxlint-disable-next-line typescript/no-explicit-any
-    .filter((m: any) => m.key && m.id)
-    // oxlint-disable-next-line typescript/no-explicit-any
-    .map((m: any) => ({
-      key: m.key as string,
-      // SDK gives id as { open_id, union_id, user_id } object — extract open_id.
-      id:
-        typeof m.id === "object" && m.id?.open_id
-          ? (m.id.open_id as string)
-          : String(m.id ?? ""),
-      name: m.name as string | undefined,
-    }));
+  return (
+    raw
+      // oxlint-disable-next-line typescript/no-explicit-any
+      .filter((m: any) => m.key && m.id)
+      // oxlint-disable-next-line typescript/no-explicit-any
+      .map((m: any) => ({
+        key: m.key as string,
+        // SDK gives id as { open_id, union_id, user_id } object — extract open_id.
+        id:
+          typeof m.id === "object" && m.id?.open_id ? (m.id.open_id as string) : String(m.id ?? ""),
+        name: m.name as string | undefined,
+      }))
+  );
 }
 
 /** Extract sender name from Feishu event.
  *  Tries various SDK fields; falls back to senderId. */
 // oxlint-disable-next-line typescript/no-explicit-any
 function extractSenderName(sender: any): string {
-  return (
-    sender?.sender_id?.name ??
-    sender?.sender_id?.id ??
-    sender?.sender_id?.open_id ??
-    ""
-  );
+  return sender?.sender_id?.name ?? sender?.sender_id?.id ?? sender?.sender_id?.open_id ?? "";
 }
 
 // ── Inbound message processing ──────────────────────────────────────────
@@ -788,7 +809,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           log?.info(`[${account.accountId}] image saved: ${saved.path}`);
         }
       } catch (err) {
-        log?.error(`[${account.accountId}] image download failed (key=${imageKey}): ${String(err)}`);
+        log?.error(
+          `[${account.accountId}] image download failed (key=${imageKey}): ${String(err)}`,
+        );
       }
     }
     // Primary media fields use the first image.
@@ -804,7 +827,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   if (fileInfo.length > 0 && messageId) {
     for (const fi of fileInfo) {
       try {
-        log?.info(`[${account.accountId}] downloading file: key=${fi.fileKey} name=${fi.fileName} msg=${messageId}`);
+        log?.info(
+          `[${account.accountId}] downloading file: key=${fi.fileKey} name=${fi.fileName} msg=${messageId}`,
+        );
         const fileData = await downloadFeishuFile({ account, messageId, fileKey: fi.fileKey });
         if (fileData) {
           // No size limit — Feishu already caps uploads; buffer is already in memory.
@@ -823,7 +848,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         }
       } catch (err) {
         const msg = String(err);
-        log?.error(`[${account.accountId}] file download failed (key=${fi.fileKey} name=${fi.fileName}): ${msg}`);
+        log?.error(
+          `[${account.accountId}] file download failed (key=${fi.fileKey} name=${fi.fileName}): ${msg}`,
+        );
         // Extract a human-readable reason for the AI.
         const reason = msg.includes("exceeds") ? msg.replace(/^Error:\s*/, "") : "download failed";
         fileErrors.push({ name: fi.fileName, reason });
@@ -905,13 +932,16 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // - Non-image file messages: filePlaceholder with name+path so AI can use exec to read them.
   const isImageMedia =
     imageKeys.length > 0 || (fileInfo.length > 0 && mediaType?.startsWith("image/"));
-  const textFromMessage = rawText
-    ?? (isImageMedia && mediaPath ? "<media:image>" : null)
-    ?? filePlaceholder
-    ?? (fileInfo.length > 0 ? `[file: ${fileInfo[0].fileName}]` : null);
+  const textFromMessage =
+    rawText ??
+    (isImageMedia && mediaPath ? "<media:image>" : null) ??
+    filePlaceholder ??
+    (fileInfo.length > 0 ? `[file: ${fileInfo[0].fileName}]` : null);
   if (!textFromMessage) {
     // Debug: log unrecognized message types so we can add support.
-    log?.info(`[${account.accountId}] skipped msg: msgType=${msgType} content=${content.slice(0, 200)}`);
+    log?.info(
+      `[${account.accountId}] skipped msg: msgType=${msgType} content=${content.slice(0, 200)}`,
+    );
     return;
   }
 
@@ -924,7 +954,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // Only drop truly empty non-reply, non-mention messages.
   if (!cleanText && !parentId && !isGroup) return;
 
-  log?.info(`[${account.accountId}] inbound: chat=${chatId} from=${senderId} type=${chatType}${mediaPath ? " +image" : ""}`);
+  log?.info(
+    `[${account.accountId}] inbound: chat=${chatId} from=${senderId} type=${chatType}${mediaPath ? " +image" : ""}`,
+  );
   setStatus({ lastInboundAt: Date.now() });
 
   // ── Group chat handling: archive + owner-only reply gating ──
@@ -1028,7 +1060,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       : `语音模式\n\n点击链接打开语音对话：\n${voiceUrl}\n\n此链接仅限你本人使用，请勿分享。`;
     try {
       await sendFeishuRichText({ account, chatId, text: msg });
-      log?.info(`[${account.accountId}] voice URL ${isReset ? "reset and " : ""}sent to ${senderId}`);
+      log?.info(
+        `[${account.accountId}] voice URL ${isReset ? "reset and " : ""}sent to ${senderId}`,
+      );
     } catch (err) {
       log?.error(`[${account.accountId}] voice URL send failed: ${String(err)}`);
     }
@@ -1048,7 +1082,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         permissionErrorNotifiedAt.set(cooldownKey, Date.now());
         log?.error(
           `[${account.accountId}] Feishu permission error (sender name): ${nameResult.permissionError.message}` +
-            (nameResult.permissionError.grantUrl ? ` Grant: ${nameResult.permissionError.grantUrl}` : ""),
+            (nameResult.permissionError.grantUrl
+              ? ` Grant: ${nameResult.permissionError.grantUrl}`
+              : ""),
         );
       }
     }
@@ -1066,22 +1102,36 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       const quoted = await getQuotedMessageContent({ account, parentMessageId: parentId, log });
       if (quoted?.content) {
         quotedContext = `\n[Quoted message: "${quoted.content.slice(0, 500)}"]`;
-        log?.info(`[${account.accountId}] quoted msg fetched: ${parentId} -> ${quoted.content.slice(0, 80)}`);
+        log?.info(
+          `[${account.accountId}] quoted msg fetched: ${parentId} -> ${quoted.content.slice(0, 80)}`,
+        );
       }
       // Download images embedded in the quoted message (standalone image, post img, card degraded img).
       if (quoted?.imageKeys?.length && quoted.messageId) {
         for (const imgKey of quoted.imageKeys) {
           try {
-            log?.info(`[${account.accountId}] downloading quoted image: key=${imgKey} msg=${quoted.messageId}`);
-            const imgData = await downloadFeishuImage({ account, messageId: quoted.messageId, imageKey: imgKey });
+            log?.info(
+              `[${account.accountId}] downloading quoted image: key=${imgKey} msg=${quoted.messageId}`,
+            );
+            const imgData = await downloadFeishuImage({
+              account,
+              messageId: quoted.messageId,
+              imageKey: imgKey,
+            });
             if (imgData) {
-              const saved = await core.channel.media.saveMediaBuffer(imgData.buffer, imgData.contentType, "inbound");
+              const saved = await core.channel.media.saveMediaBuffer(
+                imgData.buffer,
+                imgData.contentType,
+                "inbound",
+              );
               mediaPaths.push(saved.path);
               mediaTypes.push(saved.contentType ?? imgData.contentType ?? "image/jpeg");
               log?.info(`[${account.accountId}] quoted image saved: ${saved.path}`);
             }
           } catch (err) {
-            log?.info(`[${account.accountId}] quoted image download failed (key=${imgKey}): ${String(err)}`);
+            log?.info(
+              `[${account.accountId}] quoted image download failed (key=${imgKey}): ${String(err)}`,
+            );
           }
         }
         // Set primary media if not already set by the current message's own images.
@@ -1100,7 +1150,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     cfg: config,
     channel: "feishu",
     accountId: account.accountId,
-    peer: { kind: isGroup ? "group" : "dm", id: chatId },
+    peer: { kind: isGroup ? "group" : "direct", id: chatId },
   });
 
   // Build envelope for the agent.
@@ -1277,7 +1327,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           cardStreamFinalText = cardStreamFinalText
             ? cardStreamFinalText + "\n\n" + payload.text
             : payload.text;
-          log?.info(`[${account.accountId}] deliver: text accumulated for finalize (${cardStreamFinalText.length} chars total)`);
+          log?.info(
+            `[${account.accountId}] deliver: text accumulated for finalize (${cardStreamFinalText.length} chars total)`,
+          );
           setStatus({ lastOutboundAt: Date.now() });
 
           // Media attachments still need separate delivery.
@@ -1322,9 +1374,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       // Disable block streaming when card stream is active (non-command messages).
       // onPartialReply exclusively drives the card typewriter effect.
       disableBlockStreaming: !isCommand,
-      onPartialReply: !isCommand
-        ? (payload) => updateCardStream(payload.text)
-        : undefined,
+      onPartialReply: !isCommand ? (payload) => updateCardStream(payload.text) : undefined,
     },
   });
   // Append status footer (model + context usage) to the card before closing.
@@ -1360,7 +1410,8 @@ async function deliverFeishuReply(params: {
   config: OpenClawConfig;
   core: ReturnType<typeof getFeishuRuntime>;
 }): Promise<void> {
-  const { payload, account, chatId, isGroup, replyToMessageId, log, setStatus, config, core } = params;
+  const { payload, account, chatId, isGroup, replyToMessageId, log, setStatus, config, core } =
+    params;
 
   // Handle media (images) if present.
   const mediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
@@ -1387,7 +1438,9 @@ async function deliverFeishuReply(params: {
       // Fallback: send URL as text.
       try {
         await sendFeishuText({ account, chatId, text: `[media] ${url}` });
-      } catch { /* ignore fallback error */ }
+      } catch {
+        /* ignore fallback error */
+      }
     }
   }
 

@@ -6,21 +6,29 @@
  * Enterprise edition returns full user info including name, department, etc.
  */
 
-import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { stringEnum } from "openclaw/plugin-sdk";
-import { getFeishuClient } from "../outbound.js";
-import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import type * as Lark from "@larksuiteoapi/node-sdk";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import { Type } from "@sinclair/typebox";
+import { stringEnum } from "openclaw/plugin-sdk";
+import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
+import { getFeishuClient } from "../outbound.js";
 
 function json(data: unknown) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }], details: data };
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+    details: data,
+  };
 }
 
 // ── Actions ──
 
 /** List users in a department (or root department "0" for all users). */
-async function listUsers(client: Lark.Client, departmentId?: string, pageSize?: number, pageToken?: string) {
+async function listUsers(
+  client: Lark.Client,
+  departmentId?: string,
+  pageSize?: number,
+  pageToken?: string,
+) {
   // oxlint-disable-next-line typescript/no-explicit-any
   const res: any = await client.contact.user.findByDepartment({
     params: {
@@ -53,11 +61,13 @@ async function listUsers(client: Lark.Client, departmentId?: string, pageSize?: 
 /** Get info for a single user by open_id, union_id, or user_id. */
 async function getUser(client: Lark.Client, userId: string, userIdType?: string) {
   // Auto-detect ID type from prefix
-  const idType = userIdType ?? (userId.startsWith("ou_") ? "open_id" : userId.startsWith("on_") ? "union_id" : "user_id");
+  const idType =
+    userIdType ??
+    (userId.startsWith("ou_") ? "open_id" : userId.startsWith("on_") ? "union_id" : "user_id");
   // oxlint-disable-next-line typescript/no-explicit-any
   const res: any = await client.contact.user.get({
     path: { user_id: userId },
-    params: { user_id_type: idType },
+    params: { user_id_type: idType as "open_id" | "union_id" | "user_id" },
   });
   if (res.code !== 0) throw new Error(res.msg);
   const u = res.data?.user;
@@ -77,7 +87,12 @@ async function getUser(client: Lark.Client, userId: string, userIdType?: string)
 }
 
 /** List departments. */
-async function listDepartments(client: Lark.Client, parentDepartmentId?: string, pageSize?: number, pageToken?: string) {
+async function listDepartments(
+  client: Lark.Client,
+  parentDepartmentId?: string,
+  pageSize?: number,
+  pageToken?: string,
+) {
   // oxlint-disable-next-line typescript/no-explicit-any
   const res: any = await client.contact.department.list({
     params: {
@@ -110,11 +125,20 @@ const DIRECTORY_ACTIONS = ["list_users", "get_user", "list_departments"] as cons
 
 const FeishuDirectorySchema = Type.Object({
   action: stringEnum(DIRECTORY_ACTIONS, {
-    description: "Directory operation: list_users (by department), get_user (single user info), list_departments",
+    description:
+      "Directory operation: list_users (by department), get_user (single user info), list_departments",
   }),
   user_id: Type.Optional(Type.String({ description: "User ID (ou_/on_/user_id) for get_user" })),
-  user_id_type: Type.Optional(Type.String({ description: "ID type: open_id, union_id, or user_id. Auto-detected from prefix if omitted" })),
-  department_id: Type.Optional(Type.String({ description: "Department ID for list_users/list_departments. Use '0' for root (default)" })),
+  user_id_type: Type.Optional(
+    Type.String({
+      description: "ID type: open_id, union_id, or user_id. Auto-detected from prefix if omitted",
+    }),
+  ),
+  department_id: Type.Optional(
+    Type.String({
+      description: "Department ID for list_users/list_departments. Use '0' for root (default)",
+    }),
+  ),
   page_size: Type.Optional(Type.Number({ description: "Results per page (default 50)" })),
   page_token: Type.Optional(Type.String({ description: "Pagination token for next page" })),
 });
@@ -140,13 +164,23 @@ export function registerFeishuDirectoryTools(api: OpenClawPluginApi) {
           const client = getClient();
           switch (params.action) {
             case "list_users":
-              return json(await listUsers(client, params.department_id, params.page_size, params.page_token));
+              return json(
+                await listUsers(client, params.department_id, params.page_size, params.page_token),
+              );
             case "get_user": {
-              if (!params.user_id) return json({ error: "user_id is required for get_user action" });
+              if (!params.user_id)
+                return json({ error: "user_id is required for get_user action" });
               return json(await getUser(client, params.user_id, params.user_id_type));
             }
             case "list_departments":
-              return json(await listDepartments(client, params.department_id, params.page_size, params.page_token));
+              return json(
+                await listDepartments(
+                  client,
+                  params.department_id,
+                  params.page_size,
+                  params.page_token,
+                ),
+              );
             default:
               return json({ error: `Unknown action: ${params.action}` });
           }

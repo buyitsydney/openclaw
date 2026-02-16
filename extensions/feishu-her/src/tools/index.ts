@@ -4,12 +4,12 @@
  */
 
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { registerFeishuDocTools } from "./docx.js";
-import { registerFeishuWikiTools } from "./wiki.js";
-import { registerFeishuDriveTools } from "./drive.js";
 import { registerFeishuBitableTools } from "./bitable.js";
 import { registerFeishuChatTools } from "./chat.js";
 import { registerFeishuDirectoryTools } from "./directory.js";
+import { registerFeishuDocTools } from "./docx.js";
+import { registerFeishuDriveTools } from "./drive.js";
+import { registerFeishuWikiTools } from "./wiki.js";
 
 /** Register all feishu ecosystem tools (doc, wiki, drive, bitable, chat, directory). */
 export function registerAllFeishuTools(api: OpenClawPluginApi): void {

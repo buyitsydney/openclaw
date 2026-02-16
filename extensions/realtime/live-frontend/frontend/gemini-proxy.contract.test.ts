@@ -1,9 +1,9 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 
 function sleep(ms: number) {
@@ -162,8 +162,7 @@ describe("Gemini proxy contract (hits Google)", () => {
           system_instruction: {
             parts: [
               {
-                text:
-                  "You are a voice assistant. Reply briefly. If you see internal control lines, do not repeat them.",
+                text: "You are a voice assistant. Reply briefly. If you see internal control lines, do not repeat them.",
               },
             ],
           },
@@ -216,15 +215,13 @@ describe("Gemini proxy contract (hits Google)", () => {
     return parsed;
   }
 
-  async function collectOnce(params: {
-    ws: WebSocket;
-    events: ServerEvent[];
-    timeoutMs: number;
-  }) {
+  async function collectOnce(params: { ws: WebSocket; events: ServerEvent[]; timeoutMs: number }) {
     const { events, timeoutMs } = params;
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
-      const reason = events.find((e) => typeof e.turnCompleteReason === "string")?.turnCompleteReason;
+      const reason = events.find(
+        (e) => typeof e.turnCompleteReason === "string",
+      )?.turnCompleteReason;
       const hasAudio = events.some((e) => e.hasAudio);
       const hasText = events.some((e) => typeof e.outputText === "string" && e.outputText);
       const outputFinished = events.some((e) => e.outputFinished === true);
@@ -233,7 +230,11 @@ describe("Gemini proxy contract (hits Google)", () => {
     }
   }
 
-  async function waitForAny(events: ServerEvent[], pred: (e: ServerEvent) => boolean, timeoutMs: number) {
+  async function waitForAny(
+    events: ServerEvent[],
+    pred: (e: ServerEvent) => boolean,
+    timeoutMs: number,
+  ) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       if (events.some(pred)) return true;
@@ -242,146 +243,180 @@ describe("Gemini proxy contract (hits Google)", () => {
     return false;
   }
 
-  it.runIf(shouldRun)("baseline: proxy+Gemini reachable", async () => {
-    const ws = await openWs();
-    const events: ServerEvent[] = [];
-    ws.on("message", (buf) => {
-      try {
-        events.push(extractServerEvent(JSON.parse(buf.toString())));
-      } catch {}
-    });
-    sendSetup(ws);
-    ws.send(
-      JSON.stringify({
-        client_content: { turns: [{ role: "user", parts: [{ text: "hello" }] }], turn_complete: true },
-      }),
-    );
-    const ok = await waitForAny(events, (e) => e.hasAudio || typeof e.outputText === "string", 15_000);
-    ws.close();
-    expect(ok).toBe(true);
-  }, 60_000);
+  it.runIf(shouldRun)(
+    "baseline: proxy+Gemini reachable",
+    async () => {
+      const ws = await openWs();
+      const events: ServerEvent[] = [];
+      ws.on("message", (buf) => {
+        try {
+          events.push(extractServerEvent(JSON.parse(buf.toString())));
+        } catch {}
+      });
+      sendSetup(ws);
+      ws.send(
+        JSON.stringify({
+          client_content: {
+            turns: [{ role: "user", parts: [{ text: "hello" }] }],
+            turn_complete: true,
+          },
+        }),
+      );
+      const ok = await waitForAny(
+        events,
+        (e) => e.hasAudio || typeof e.outputText === "string",
+        15_000,
+      );
+      ws.close();
+      expect(ok).toBe(true);
+    },
+    60_000,
+  );
 
-  it.runIf(shouldRun)("strategy A: model-inject + user control line (current production pattern) produces some response", async () => {
-    const ws = await openWs();
-    const events: ServerEvent[] = [];
-    ws.on("message", (buf) => {
-      try {
-        events.push(extractServerEvent(JSON.parse(buf.toString())));
-      } catch {}
-    });
-    sendSetup(ws);
-    ws.send(
-      JSON.stringify({
-        client_content: {
-          turns: [{ role: "model", parts: [{ text: "Shanghai is cloudy today. 14°C." }] }],
-          turn_complete: true,
-        },
-      }),
-    );
-    ws.send(
-      JSON.stringify({
-        client_content: {
-          turns: [
-            { role: "user", parts: [{ text: "以上信息来自 backend ai，请你根据实际情况回复用户信息！" }] },
-          ],
-          turn_complete: true,
-        },
-      }),
-    );
+  it.runIf(shouldRun)(
+    "strategy A: model-inject + user control line (current production pattern) produces some response",
+    async () => {
+      const ws = await openWs();
+      const events: ServerEvent[] = [];
+      ws.on("message", (buf) => {
+        try {
+          events.push(extractServerEvent(JSON.parse(buf.toString())));
+        } catch {}
+      });
+      sendSetup(ws);
+      ws.send(
+        JSON.stringify({
+          client_content: {
+            turns: [{ role: "model", parts: [{ text: "Shanghai is cloudy today. 14°C." }] }],
+            turn_complete: true,
+          },
+        }),
+      );
+      ws.send(
+        JSON.stringify({
+          client_content: {
+            turns: [
+              {
+                role: "user",
+                parts: [{ text: "以上信息来自 backend ai，请你根据实际情况回复用户信息！" }],
+              },
+            ],
+            turn_complete: true,
+          },
+        }),
+      );
 
-    const ok = await waitForAny(events, (e) => e.hasAudio || typeof e.turnCompleteReason === "string", 20_000);
-    ws.close();
-    expect(ok).toBe(true);
-  }, 60_000);
+      const ok = await waitForAny(
+        events,
+        (e) => e.hasAudio || typeof e.turnCompleteReason === "string",
+        20_000,
+      );
+      ws.close();
+      expect(ok).toBe(true);
+    },
+    60_000,
+  );
 
   it.runIf(shouldRun)(
     "strategy B: measure control-line reject rate (stats)",
     async () => {
-    const candidates = [
-      // Current production control line (known to sometimes trigger RESPONSE_REJECTED in prod logs).
-      "以上信息来自 backend ai，请你根据实际情况回复用户信息！",
-      // Variants that keep intent but reduce "command-y" / "internal system" vibes.
-      "以上信息来自 backend ai。请基于以上信息回复用户。",
-      "请基于以上信息回复用户。",
-      "请根据以上信息回答。",
-    ];
+      const candidates = [
+        // Current production control line (known to sometimes trigger RESPONSE_REJECTED in prod logs).
+        "以上信息来自 backend ai，请你根据实际情况回复用户信息！",
+        // Variants that keep intent but reduce "command-y" / "internal system" vibes.
+        "以上信息来自 backend ai。请基于以上信息回复用户。",
+        "请基于以上信息回复用户。",
+        "请根据以上信息回答。",
+      ];
 
-    // Try each candidate multiple times and print stats.
-    // This is an automated, Google-backed check (no manual browser/e2e).
-    const trialsPerCandidate = Number.parseInt(process.env.OPENCLAW_GEMINI_TRIALS ?? "5", 10);
-    const outcomes: Array<{ line: string; trial: number; reason?: string; hadAudio?: boolean }> = [];
+      // Try each candidate multiple times and print stats.
+      // This is an automated, Google-backed check (no manual browser/e2e).
+      const trialsPerCandidate = Number.parseInt(process.env.OPENCLAW_GEMINI_TRIALS ?? "5", 10);
+      const outcomes: Array<{ line: string; trial: number; reason?: string; hadAudio?: boolean }> =
+        [];
 
-    for (const line of candidates) {
-      for (let t = 1; t <= trialsPerCandidate; t++) {
-        const ws = await openWs();
-        const events: ServerEvent[] = [];
-        ws.on("message", (buf) => {
-          try {
-            events.push(extractServerEvent(JSON.parse(buf.toString())));
-          } catch {}
-        });
+      for (const line of candidates) {
+        for (let t = 1; t <= trialsPerCandidate; t++) {
+          const ws = await openWs();
+          const events: ServerEvent[] = [];
+          ws.on("message", (buf) => {
+            try {
+              events.push(extractServerEvent(JSON.parse(buf.toString())));
+            } catch {}
+          });
 
-        sendSetup(ws);
-        ws.send(
-          JSON.stringify({
-            client_content: {
-              turns: [{ role: "model", parts: [{ text: "Shanghai is cloudy today. 14°C." }] }],
-              turn_complete: true,
-            },
-          }),
-        );
-        ws.send(
-          JSON.stringify({
-            client_content: { turns: [{ role: "user", parts: [{ text: line }] }], turn_complete: true },
-          }),
-        );
+          sendSetup(ws);
+          ws.send(
+            JSON.stringify({
+              client_content: {
+                turns: [{ role: "model", parts: [{ text: "Shanghai is cloudy today. 14°C." }] }],
+                turn_complete: true,
+              },
+            }),
+          );
+          ws.send(
+            JSON.stringify({
+              client_content: {
+                turns: [{ role: "user", parts: [{ text: line }] }],
+                turn_complete: true,
+              },
+            }),
+          );
 
-        await waitForAny(events, (e) => e.hasAudio || typeof e.turnCompleteReason === "string", 15_000);
-        const reason = events.find((e) => typeof e.turnCompleteReason === "string")?.turnCompleteReason;
-        const hadAudio = events.some((e) => e.hasAudio);
-        outcomes.push({ line, trial: t, reason, hadAudio });
+          await waitForAny(
+            events,
+            (e) => e.hasAudio || typeof e.turnCompleteReason === "string",
+            15_000,
+          );
+          const reason = events.find(
+            (e) => typeof e.turnCompleteReason === "string",
+          )?.turnCompleteReason;
+          const hadAudio = events.some((e) => e.hasAudio);
+          outcomes.push({ line, trial: t, reason, hadAudio });
 
-        ws.close();
-
+          ws.close();
+        }
       }
-    }
 
-    expect(outcomes.length).toBeGreaterThan(0);
+      expect(outcomes.length).toBeGreaterThan(0);
 
-    // Aggregate + print stats.
-    const byLine = new Map<
-      string,
-      { trials: number; rejected: number; hadAudio: number; reasons: Record<string, number> }
-    >();
-    for (const o of outcomes) {
-      const row =
-        byLine.get(o.line) ??
-        { trials: 0, rejected: 0, hadAudio: 0, reasons: Object.create(null) as Record<string, number> };
-      row.trials += 1;
-      if (o.reason === "RESPONSE_REJECTED") row.rejected += 1;
-      if (o.hadAudio) row.hadAudio += 1;
-      const key = o.reason ?? "(none)";
-      row.reasons[key] = (row.reasons[key] ?? 0) + 1;
-      byLine.set(o.line, row);
-    }
+      // Aggregate + print stats.
+      const byLine = new Map<
+        string,
+        { trials: number; rejected: number; hadAudio: number; reasons: Record<string, number> }
+      >();
+      for (const o of outcomes) {
+        const row = byLine.get(o.line) ?? {
+          trials: 0,
+          rejected: 0,
+          hadAudio: 0,
+          reasons: Object.create(null) as Record<string, number>,
+        };
+        row.trials += 1;
+        if (o.reason === "RESPONSE_REJECTED") row.rejected += 1;
+        if (o.hadAudio) row.hadAudio += 1;
+        const key = o.reason ?? "(none)";
+        row.reasons[key] = (row.reasons[key] ?? 0) + 1;
+        byLine.set(o.line, row);
+      }
 
-    const summary = [...byLine.entries()].map(([line, s]) => ({
-      line,
-      trials: s.trials,
-      rejected: s.rejected,
-      rejectedRate: s.trials ? s.rejected / s.trials : 0,
-      hadAudio: s.hadAudio,
-      audioRate: s.trials ? s.hadAudio / s.trials : 0,
-      reasons: s.reasons,
-    }));
+      const summary = [...byLine.entries()].map(([line, s]) => ({
+        line,
+        trials: s.trials,
+        rejected: s.rejected,
+        rejectedRate: s.trials ? s.rejected / s.trials : 0,
+        hadAudio: s.hadAudio,
+        audioRate: s.trials ? s.hadAudio / s.trials : 0,
+        reasons: s.reasons,
+      }));
 
-    summary.sort((a, b) => a.rejectedRate - b.rejectedRate || b.audioRate - a.audioRate);
+      summary.sort((a, b) => a.rejectedRate - b.rejectedRate || b.audioRate - a.audioRate);
 
-    // eslint-disable-next-line no-console
-    console.log("[contract] control_line_stats:", JSON.stringify(summary, null, 2));
+      // eslint-disable-next-line no-console
+      console.log("[contract] control_line_stats:", JSON.stringify(summary, null, 2));
 
-    // Hard assertion: at least one candidate should NOT be rejected in all trials.
-    expect(summary.some((s) => s.rejected < s.trials)).toBe(true);
+      // Hard assertion: at least one candidate should NOT be rejected in all trials.
+      expect(summary.some((s) => s.rejected < s.trials)).toBe(true);
     },
     240_000,
   );
@@ -426,10 +461,13 @@ describe("Gemini proxy contract (hits Google)", () => {
 
       await collectOnce({ ws, events, timeoutMs: 15_000 });
 
-      const reason = events.find((e) => typeof e.turnCompleteReason === "string")?.turnCompleteReason;
+      const reason = events.find(
+        (e) => typeof e.turnCompleteReason === "string",
+      )?.turnCompleteReason;
       const hadAudio = events.some((e) => e.hasAudio);
       const outputFinished = events.some((e) => e.outputFinished === true);
-      const sampleText = events.find((e) => typeof e.outputText === "string" && e.outputText)?.outputText ?? null;
+      const sampleText =
+        events.find((e) => typeof e.outputText === "string" && e.outputText)?.outputText ?? null;
 
       // eslint-disable-next-line no-console
       console.log(
@@ -541,9 +579,15 @@ describe("Gemini proxy contract (hits Google)", () => {
       ws.send(JSON.stringify({ realtime_input: { activity_end: {} } }));
 
       // Wait for response
-      await waitForAny(events, (e) => typeof e.turnCompleteReason === "string" || e.hasAudio, 30_000);
+      await waitForAny(
+        events,
+        (e) => typeof e.turnCompleteReason === "string" || e.hasAudio,
+        30_000,
+      );
 
-      const reason = events.find((e) => typeof e.turnCompleteReason === "string")?.turnCompleteReason;
+      const reason = events.find(
+        (e) => typeof e.turnCompleteReason === "string",
+      )?.turnCompleteReason;
       const hadAudio = events.some((e) => e.hasAudio);
       const outputFinished = events.some((e) => e.outputFinished === true);
       const allText = events
@@ -623,7 +667,9 @@ describe("Gemini proxy contract (hits Google)", () => {
         ws.send(
           JSON.stringify({
             client_content: {
-              turns: [{ role: "model", parts: [{ text: "天哥，您的名字是天哥。我已经记得您了。" }] }],
+              turns: [
+                { role: "model", parts: [{ text: "天哥，您的名字是天哥。我已经记得您了。" }] },
+              ],
               turn_complete: true,
             },
           }),
@@ -633,9 +679,15 @@ describe("Gemini proxy contract (hits Google)", () => {
         ws.send(JSON.stringify({ realtime_input: { activity_end: {} } }));
 
         // Wait for response
-        await waitForAny(events, (e) => typeof e.turnCompleteReason === "string" || e.hasAudio, 30_000);
+        await waitForAny(
+          events,
+          (e) => typeof e.turnCompleteReason === "string" || e.hasAudio,
+          30_000,
+        );
 
-        const reason = events.find((e) => typeof e.turnCompleteReason === "string")?.turnCompleteReason;
+        const reason = events.find(
+          (e) => typeof e.turnCompleteReason === "string",
+        )?.turnCompleteReason;
         const hadAudio = events.some((e) => e.hasAudio);
         const allText = events
           .filter((e) => typeof e.outputText === "string" && e.outputText)
@@ -650,7 +702,9 @@ describe("Gemini proxy contract (hits Google)", () => {
         });
 
         // eslint-disable-next-line no-console
-        console.log(`[stats] ${t}/${trials}: ${reason === "RESPONSE_REJECTED" ? "REJECTED" : "ok"} audio=${hadAudio} text=${allText.slice(0, 20) || "-"}`);
+        console.log(
+          `[stats] ${t}/${trials}: ${reason === "RESPONSE_REJECTED" ? "REJECTED" : "ok"} audio=${hadAudio} text=${allText.slice(0, 20) || "-"}`,
+        );
 
         ws.close();
         await sleep(200);
@@ -665,7 +719,7 @@ describe("Gemini proxy contract (hits Google)", () => {
         JSON.stringify({
           trials,
           rejected: rejectedCount,
-          rejectedRate: `${(100 * rejectedCount / trials).toFixed(1)}%`,
+          rejectedRate: `${((100 * rejectedCount) / trials).toFixed(1)}%`,
           hadAudio: audioCount,
         }),
       );
@@ -675,4 +729,3 @@ describe("Gemini proxy contract (hits Google)", () => {
     300_000,
   );
 });
-

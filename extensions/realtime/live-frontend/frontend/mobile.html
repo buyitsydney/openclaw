@@ -1,8 +1,11 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>CarHer</title>
@@ -22,9 +25,14 @@
         --toolbar-bg: rgba(250, 249, 246, 0.88);
       }
 
-      * { margin: 0; padding: 0; box-sizing: border-box; }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
 
-      html, body {
+      html,
+      body {
         height: 100%;
         overflow: hidden;
         background: var(--bg-dark);
@@ -38,7 +46,8 @@
         flex-direction: column;
         height: 100%;
         /* safe area for notch devices */
-        padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+        padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+          env(safe-area-inset-left);
       }
 
       /* === Transcript area === */
@@ -66,12 +75,28 @@
         vertical-align: middle;
       }
 
-      .msg.user .tag { background: var(--user-color); color: #fff; }
-      .msg.assistant .tag { background: var(--her-color); color: #fff; }
-      .msg.system .tag { background: #e5e5ea; color: #636366; }
-      .msg.user { color: #1c7a34; }
-      .msg.assistant { color: var(--text); }
-      .msg.system { color: var(--text-dim); font-size: 12px; }
+      .msg.user .tag {
+        background: var(--user-color);
+        color: #fff;
+      }
+      .msg.assistant .tag {
+        background: var(--her-color);
+        color: #fff;
+      }
+      .msg.system .tag {
+        background: #e5e5ea;
+        color: #636366;
+      }
+      .msg.user {
+        color: #1c7a34;
+      }
+      .msg.assistant {
+        color: var(--text);
+      }
+      .msg.system {
+        color: var(--text-dim);
+        font-size: 12px;
+      }
 
       /* === Center button area === */
       .center {
@@ -94,11 +119,15 @@
         font-weight: 600;
         cursor: pointer;
         position: relative;
-        transition: transform 0.2s, box-shadow 0.3s;
+        transition:
+          transform 0.2s,
+          box-shadow 0.3s;
         -webkit-tap-highlight-color: transparent;
       }
 
-      .main-btn:active { transform: scale(0.95); }
+      .main-btn:active {
+        transform: scale(0.95);
+      }
 
       .main-btn.idle {
         box-shadow: 0 0 0 0 var(--accent-glow);
@@ -135,7 +164,9 @@
         flex-shrink: 0;
       }
 
-      .video-container.active { display: block; }
+      .video-container.active {
+        display: block;
+      }
 
       .video-container video {
         width: 100%;
@@ -155,7 +186,7 @@
         background: var(--toolbar-bg);
         backdrop-filter: blur(12px);
         -webkit-backdrop-filter: blur(12px);
-        border-top: 1px solid rgba(0,0,0,0.08);
+        border-top: 1px solid rgba(0, 0, 0, 0.08);
         flex-shrink: 0;
       }
 
@@ -171,13 +202,24 @@
         -webkit-tap-highlight-color: transparent;
         padding: 4px 8px;
         border-radius: 8px;
-        transition: color 0.2s, background 0.2s;
+        transition:
+          color 0.2s,
+          background 0.2s;
       }
 
-      .tool-btn .icon { font-size: 22px; margin-bottom: 2px; }
-      .tool-btn.active { color: var(--accent); }
-      .tool-btn.active.danger { color: var(--danger); }
-      .tool-btn:active { background: rgba(0,0,0,0.05); }
+      .tool-btn .icon {
+        font-size: 22px;
+        margin-bottom: 2px;
+      }
+      .tool-btn.active {
+        color: var(--accent);
+      }
+      .tool-btn.active.danger {
+        color: var(--danger);
+      }
+      .tool-btn:active {
+        background: rgba(0, 0, 0, 0.05);
+      }
 
       /* === Debug overlay === */
       .debug-overlay {
@@ -194,7 +236,9 @@
         z-index: 10;
       }
 
-      .debug-overlay.visible { display: block; }
+      .debug-overlay.visible {
+        display: block;
+      }
 
       .debug-overlay h3 {
         font-size: 14px;
@@ -216,13 +260,22 @@
         justify-content: space-between;
         padding: 4px 0;
         font-size: 12px;
-        border-bottom: 1px solid rgba(0,0,0,0.06);
+        border-bottom: 1px solid rgba(0, 0, 0, 0.06);
       }
 
-      .debug-overlay .status-label { color: var(--text-dim); }
-      .debug-overlay .status-value { color: var(--text); font-weight: 500; }
-      .debug-overlay .status-value.ok { color: var(--success); }
-      .debug-overlay .status-value.err { color: var(--danger); }
+      .debug-overlay .status-label {
+        color: var(--text-dim);
+      }
+      .debug-overlay .status-value {
+        color: var(--text);
+        font-weight: 500;
+      }
+      .debug-overlay .status-value.ok {
+        color: var(--success);
+      }
+      .debug-overlay .status-value.err {
+        color: var(--danger);
+      }
 
       /* === Volume popup === */
       .volume-popup {
@@ -232,16 +285,18 @@
         left: 50%;
         transform: translateX(-50%);
         background: var(--bg-card);
-        border: 1px solid rgba(0,0,0,0.1);
+        border: 1px solid rgba(0, 0, 0, 0.1);
         border-radius: 12px;
         padding: 12px 20px;
         z-index: 5;
         align-items: center;
         gap: 10px;
-        box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
       }
 
-      .volume-popup.visible { display: flex; }
+      .volume-popup.visible {
+        display: flex;
+      }
 
       .volume-popup input[type="range"] {
         width: 140px;
@@ -257,18 +312,34 @@
 
       /* === Animations === */
       @keyframes pulse {
-        0%, 100% { box-shadow: 0 0 0 0 var(--accent-glow); }
-        50% { box-shadow: 0 0 0 20px transparent; }
+        0%,
+        100% {
+          box-shadow: 0 0 0 0 var(--accent-glow);
+        }
+        50% {
+          box-shadow: 0 0 0 20px transparent;
+        }
       }
 
       @keyframes liveGlow {
-        0%, 100% { box-shadow: 0 0 15px rgba(255, 59, 48, 0.2); }
-        50% { box-shadow: 0 0 30px rgba(255, 59, 48, 0.4); }
+        0%,
+        100% {
+          box-shadow: 0 0 15px rgba(255, 59, 48, 0.2);
+        }
+        50% {
+          box-shadow: 0 0 30px rgba(255, 59, 48, 0.4);
+        }
       }
 
       @keyframes fadeIn {
-        from { opacity: 0; transform: translateY(4px); }
-        to { opacity: 1; transform: translateY(0); }
+        from {
+          opacity: 0;
+          transform: translateY(4px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
       }
     </style>
   </head>
@@ -345,34 +416,76 @@
         <h3 style="margin-top: 12px">音频设备</h3>
         <div class="status-row" style="align-items: center">
           <span class="status-label">麦克风</span>
-          <select id="micDeviceSelect" style="flex:1; max-width:180px; font-size:12px; padding:3px; border-radius:4px; border:1px solid #ccc">
+          <select
+            id="micDeviceSelect"
+            style="
+              flex: 1;
+              max-width: 180px;
+              font-size: 12px;
+              padding: 3px;
+              border-radius: 4px;
+              border: 1px solid #ccc;
+            "
+          >
             <option value="">系统默认</option>
           </select>
         </div>
         <div class="status-row" id="speakerRow" style="align-items: center">
           <span class="status-label">扬声器</span>
-          <select id="speakerDeviceSelect" style="flex:1; max-width:180px; font-size:12px; padding:3px; border-radius:4px; border:1px solid #ccc">
+          <select
+            id="speakerDeviceSelect"
+            style="
+              flex: 1;
+              max-width: 180px;
+              font-size: 12px;
+              padding: 3px;
+              border-radius: 4px;
+              border: 1px solid #ccc;
+            "
+          >
             <option value="">系统默认</option>
           </select>
         </div>
-        <div style="margin-top:6px; display:flex; align-items:center; gap:8px">
-          <button id="refreshDevicesBtn" style="font-size:11px; padding:4px 10px; border-radius:4px; border:1px solid var(--accent); background:transparent; color:var(--accent); cursor:pointer">
+        <div style="margin-top: 6px; display: flex; align-items: center; gap: 8px">
+          <button
+            id="refreshDevicesBtn"
+            style="
+              font-size: 11px;
+              padding: 4px 10px;
+              border-radius: 4px;
+              border: 1px solid var(--accent);
+              background: transparent;
+              color: var(--accent);
+              cursor: pointer;
+            "
+          >
             刷新设备列表
           </button>
-          <span id="deviceHint" style="font-size:11px; color:var(--text-dim)">
+          <span id="deviceHint" style="font-size: 11px; color: var(--text-dim)">
             首次需授权麦克风才能显示设备名
           </span>
         </div>
-        <div style="margin-top:4px; font-size:11px; color:var(--text-dim)">
+        <div style="margin-top: 4px; font-size: 11px; color: var(--text-dim)">
           切换设备后需重新连接生效
         </div>
         <h3 style="margin-top: 12px">Jitter Buffer</h3>
         <div class="status-row" style="align-items: center">
           <span class="status-label">缓冲 (ms)</span>
           <span style="display: flex; align-items: center; gap: 8px">
-            <input type="range" id="jitterSlider" min="0" max="1000" step="50" value="400"
-              style="width: 120px; accent-color: var(--accent)" />
-            <span id="jitterLabel" style="font-size: 12px; font-weight: 600; min-width: 40px; text-align: right">400ms</span>
+            <input
+              type="range"
+              id="jitterSlider"
+              min="0"
+              max="1000"
+              step="50"
+              value="400"
+              style="width: 120px; accent-color: var(--accent)"
+            />
+            <span
+              id="jitterLabel"
+              style="font-size: 12px; font-weight: 600; min-width: 40px; text-align: right"
+              >400ms</span
+            >
           </span>
         </div>
         <h3 style="margin-top: 12px">Audio Latency</h3>

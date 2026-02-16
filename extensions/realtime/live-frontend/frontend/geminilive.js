@@ -49,20 +49,14 @@ class MultimodalLiveResponseMessage {
         console.log("🗣️ INTERRUPTED response");
         this.type = MultimodalLiveResponseType.INTERRUPTED;
       } else if (data?.serverContent?.inputTranscription) {
-        console.log(
-          "📝 INPUT TRANSCRIPTION:",
-          data.serverContent.inputTranscription
-        );
+        console.log("📝 INPUT TRANSCRIPTION:", data.serverContent.inputTranscription);
         this.type = MultimodalLiveResponseType.INPUT_TRANSCRIPTION;
         this.data = {
           text: data.serverContent.inputTranscription.text || "",
           finished: data.serverContent.inputTranscription.finished || false,
         };
       } else if (data?.serverContent?.outputTranscription) {
-        console.log(
-          "📝 OUTPUT TRANSCRIPTION:",
-          data.serverContent.outputTranscription
-        );
+        console.log("📝 OUTPUT TRANSCRIPTION:", data.serverContent.outputTranscription);
         this.type = MultimodalLiveResponseType.OUTPUT_TRANSCRIPTION;
         this.data = {
           text: data.serverContent.outputTranscription.text || "",
@@ -116,22 +110,18 @@ class FunctionCallDefinition {
       description: this.description,
       parameters: { required: this.requiredParameters, ...this.parameters },
     };
-    
+
     // Add behavior for async (NON_BLOCKING) tools
     if (this.behavior) {
       definition.behavior = this.behavior;
     }
-    
+
     console.log("created FunctionDefinition: ", definition);
     return definition;
   }
 
   runFunction(parameters) {
-    console.log(
-      `⚡ Running ${this.name} function with parameters: ${JSON.stringify(
-        parameters
-      )}`
-    );
+    console.log(`⚡ Running ${this.name} function with parameters: ${JSON.stringify(parameters)}`);
     this.functionToCall(parameters);
   }
 }
@@ -365,9 +355,7 @@ class GeminiLiveAPI {
     if (this.googleGrounding) {
       sessionSetupMessage.setup.tools.google_search = {};
       // Currently can't have both Google Search with custom tools.
-      console.log(
-        "Google Grounding enabled, removing custom function calls if any."
-      );
+      console.log("Google Grounding enabled, removing custom function calls if any.");
       delete sessionSetupMessage.setup.tools.function_declarations;
     }
 
@@ -415,15 +403,17 @@ class GeminiLiveAPI {
    */
   sendToolResponse(toolCallId, functionName, response) {
     const message = {
-      tool_response: {                   // snake_case (from SDK source)
-        functionResponses: [             // camelCase (from SDK source: convert_keys=True)
+      tool_response: {
+        // snake_case (from SDK source)
+        functionResponses: [
+          // camelCase (from SDK source: convert_keys=True)
           {
-            id: toolCallId,              // Required per SDK validation
+            id: toolCallId, // Required per SDK validation
             name: functionName,
-            response: response
-          }
-        ]
-      }
+            response: response,
+          },
+        ],
+      },
     };
     console.log("🔧 Sending tool response:", JSON.stringify(message, null, 2));
     this.sendMessage(message);

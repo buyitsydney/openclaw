@@ -5,18 +5,13 @@
  * with OpenClaw as the intelligent backend for complex tasks.
  */
 
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import os from "node:os";
 import path from "node:path";
-import type {
-  OpenClawPluginApi,
-  OpenClawPluginDefinition,
-  PluginHookBeforeAgentStartEvent,
-  PluginHookAgentContext,
-} from "openclaw/plugin-sdk";
-import { startRealtimeServer, type RealtimeServer } from "./src/server.js";
-import { setupFileWatcher, type FileWatcher } from "./src/file-watcher.js";
 import { loadCoreAgentDeps, type CoreConfig } from "./src/core-bridge.js";
+import { setupFileWatcher, type FileWatcher } from "./src/file-watcher.js";
 import { buildBackendModePrompt } from "./src/prompt.js";
+import { startRealtimeServer, type RealtimeServer } from "./src/server.js";
 
 export interface RealtimeConfig {
   enabled?: boolean;
@@ -33,7 +28,7 @@ let server: RealtimeServer | null = null;
 let fileWatcher: FileWatcher | null = null;
 let serverStarting = false;
 
-const realtimePlugin: OpenClawPluginDefinition = {
+const realtimePlugin = {
   id: "realtime",
   name: "Realtime Voice",
   description: "Gemini Live + OpenClaw realtime voice integration",
@@ -91,25 +86,25 @@ const realtimePlugin: OpenClawPluginDefinition = {
       });
 
       // Register before_agent_start hook for backend mode
-      api.on("before_agent_start", async (
-        event: PluginHookBeforeAgentStartEvent,
-        ctx: PluginHookAgentContext,
-      ) => {
-        // Check if this request is from realtime
-        // We'll use sessionKey to identify realtime sessions
-        if (!ctx.sessionKey?.startsWith("realtime:")) {
-          return {}; // Not a realtime request, don't modify
-        }
+      api.on(
+        "before_agent_start",
+        async (event: { prompt: string; messages?: unknown[] }, ctx: { sessionKey?: string }) => {
+          // Check if this request is from realtime
+          // We'll use sessionKey to identify realtime sessions
+          if (!ctx.sessionKey?.startsWith("realtime:")) {
+            return {}; // Not a realtime request, don't modify
+          }
 
-        api.logger.info("[realtime] Injecting backend mode system prompt");
+          api.logger.info("[realtime] Injecting backend mode system prompt");
 
-        // Get current conversation from server
-        const conversation = server?.getConversation(ctx.sessionKey) ?? "";
+          // Get current conversation from server
+          const conversation = server?.getConversation(ctx.sessionKey) ?? "";
 
-        return {
-          systemPrompt: buildBackendModePrompt(conversation),
-        };
-      });
+          return {
+            systemPrompt: buildBackendModePrompt(conversation),
+          };
+        },
+      );
 
       api.logger.info(`[realtime] Realtime plugin activated on port ${port}`);
       api.logger.info(`[realtime] WebSocket: ws://localhost:${port}/ws`);

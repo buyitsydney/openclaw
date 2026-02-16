@@ -37,17 +37,12 @@ class CarControlTool extends FunctionCallDefinition {
   functionToCall(parameters) {
     const { action, params } = parameters;
     const ts = new Date().toISOString().slice(11, 23);
-    console.log(
-      `[${ts}] CAR_CONTROL | action=${action} | params=${JSON.stringify(params)}`,
-    );
+    console.log(`[${ts}] CAR_CONTROL | action=${action} | params=${JSON.stringify(params)}`);
 
     // 通过 JS Bridge 调用 Android 原生层
     if (typeof Android !== "undefined" && Android.carControl) {
       try {
-        const resultJson = Android.carControl(
-          action,
-          JSON.stringify(params || {}),
-        );
+        const resultJson = Android.carControl(action, JSON.stringify(params || {}));
         const result = JSON.parse(resultJson);
         console.log(`[${ts}] CAR_CONTROL | result=${JSON.stringify(result)}`);
         return result;
@@ -103,9 +98,7 @@ function simulateCarControl(action, params) {
     case "start_navigation": {
       const dest = params?.destination ?? "未知目的地";
       const addr = params?.address ?? "";
-      const msg = addr
-        ? `[模拟] 已开始导航到${dest}（${addr}）`
-        : `[模拟] 已开始导航到${dest}`;
+      const msg = addr ? `[模拟] 已开始导航到${dest}（${addr}）` : `[模拟] 已开始导航到${dest}`;
       console.log(`🧭 NAV | destination=${dest} address=${addr}`);
       return { ok: true, message: msg };
     }

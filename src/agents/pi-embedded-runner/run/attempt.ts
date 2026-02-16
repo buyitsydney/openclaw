@@ -100,28 +100,6 @@ import { detectAndLoadPromptImages } from "./images.js";
 
 let openclawRepoRootCache: string | null = null;
 
-function safeJsonStringify(value: unknown): string {
-  const seen = new WeakSet<object>();
-  return JSON.stringify(value, (_key, v) => {
-    if (typeof v === "bigint") {
-      return v.toString();
-    }
-    if (typeof v === "function") {
-      return `[Function${v.name ? ` ${v.name}` : ""}]`;
-    }
-    if (typeof v === "symbol") {
-      return v.toString();
-    }
-    if (v && typeof v === "object") {
-      if (seen.has(v)) {
-        return "[Circular]";
-      }
-      seen.add(v);
-    }
-    return v;
-  });
-}
-
 function safeJsonStringifyPretty(value: unknown): string {
   const seen = new WeakSet<object>();
   return JSON.stringify(

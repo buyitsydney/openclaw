@@ -3,15 +3,18 @@
  * Uses GET /im/v1/chats (requires im:chat:readonly scope, already granted).
  */
 
-import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { stringEnum } from "openclaw/plugin-sdk";
-import { getFeishuClient } from "../outbound.js";
-import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import type * as Lark from "@larksuiteoapi/node-sdk";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import { Type } from "@sinclair/typebox";
+import { stringEnum } from "openclaw/plugin-sdk";
+import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
+import { getFeishuClient } from "../outbound.js";
 
 function json(data: unknown) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }], details: data };
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+    details: data,
+  };
 }
 
 // ── Actions ──
@@ -21,7 +24,7 @@ async function listChats(client: Lark.Client, pageSize?: number, pageToken?: str
   // oxlint-disable-next-line typescript/no-explicit-any
   const res: any = await client.im.chat.list({
     params: {
-      page_size: String(pageSize ?? 100),
+      page_size: pageSize ?? 100,
       ...(pageToken && { page_token: pageToken }),
     },
   });
@@ -60,7 +63,12 @@ async function getChatInfo(client: Lark.Client, chatId: string) {
 }
 
 /** List members of a specific group. SDK method is chatMembers.get (not .list). */
-async function listChatMembers(client: Lark.Client, chatId: string, pageSize?: number, pageToken?: string) {
+async function listChatMembers(
+  client: Lark.Client,
+  chatId: string,
+  pageSize?: number,
+  pageToken?: string,
+) {
   // oxlint-disable-next-line typescript/no-explicit-any
   const res: any = await client.im.chatMembers.get({
     path: { chat_id: chatId },
@@ -90,9 +98,12 @@ const CHAT_ACTIONS = ["list", "get", "members"] as const;
 
 const FeishuChatSchema = Type.Object({
   action: stringEnum(CHAT_ACTIONS, {
-    description: "Chat operation: list (all bot groups), get (single group info), members (list group members)",
+    description:
+      "Chat operation: list (all bot groups), get (single group info), members (list group members)",
   }),
-  chat_id: Type.Optional(Type.String({ description: "Group chat_id (oc_xxx), required for get/members" })),
+  chat_id: Type.Optional(
+    Type.String({ description: "Group chat_id (oc_xxx), required for get/members" }),
+  ),
   page_size: Type.Optional(Type.Number({ description: "Results per page 1-100 (default 100)" })),
   page_token: Type.Optional(Type.String({ description: "Pagination token for next page" })),
 });
@@ -125,7 +136,9 @@ export function registerFeishuChatTools(api: OpenClawPluginApi) {
             }
             case "members": {
               if (!params.chat_id) return json({ error: "chat_id is required for members action" });
-              return json(await listChatMembers(client, params.chat_id, params.page_size, params.page_token));
+              return json(
+                await listChatMembers(client, params.chat_id, params.page_size, params.page_token),
+              );
             }
             default:
               return json({ error: `Unknown action: ${params.action}` });

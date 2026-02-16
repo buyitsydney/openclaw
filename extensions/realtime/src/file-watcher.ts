@@ -5,10 +5,10 @@
  * then broadcasts prompt_update to Live clients.
  */
 
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { watch, type FSWatcher } from "chokidar";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { RealtimeServer } from "./server.js";
 import { loadCoreAgentDeps, type CoreAgentDeps, type CoreConfig } from "./core-bridge.js";
 import { generateLiveMemoryCapsule } from "./live-memory-capsule-agent.js";
@@ -34,10 +34,7 @@ export function setupFileWatcher(params: {
     return { close: async () => {} };
   }
 
-  const watchPaths = [
-    join(workspaceDir, "USER.md"),
-    join(workspaceDir, "MEMORY.md"),
-  ];
+  const watchPaths = [join(workspaceDir, "USER.md"), join(workspaceDir, "MEMORY.md")];
 
   api.logger.info(`[realtime] Watching files: ${watchPaths.join(", ")}`);
 

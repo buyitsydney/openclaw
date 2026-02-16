@@ -41,12 +41,12 @@ OpenClaw Agent（在独立 session 中运行）
 
 ### 对比：其他通道如何集成
 
-| 通道 | 调用方式 | Session Key | 享受 cron/heartbeat |
-|------|---------|-------------|-------------------|
-| Telegram | auto-reply pipeline | `agent:main:main`（DM 默认） | 是 |
-| webchat | Gateway `chat.send` | `agent:main:main` | 是 |
-| CLI | Gateway `agent` method | `agent:main:main` | 是 |
-| **Her（当前）** | **直接调 `runEmbeddedPiAgent`** | **`realtime:xxx`** | **否** |
+| 通道            | 调用方式                        | Session Key                  | 享受 cron/heartbeat |
+| --------------- | ------------------------------- | ---------------------------- | ------------------- |
+| Telegram        | auto-reply pipeline             | `agent:main:main`（DM 默认） | 是                  |
+| webchat         | Gateway `chat.send`             | `agent:main:main`            | 是                  |
+| CLI             | Gateway `agent` method          | `agent:main:main`            | 是                  |
+| **Her（当前）** | **直接调 `runEmbeddedPiAgent`** | **`realtime:xxx`**           | **否**              |
 
 ---
 
@@ -199,6 +199,7 @@ Her 的对话在 main session 中
 **改动范围**：`handleHelpRequest` 函数（~120 行 → ~30 行）
 
 **删除**（约 90 行）：
+
 - 手动加载 `coreDeps`（第 258-262 行）
 - 手动解析 config 中的 agentId、storePath、agentDir、workspaceDir（第 264-273 行）
 - 手动管理 session store：loadSessionStore、创建 sessionEntry、saveSessionStore（第 275-293 行）
@@ -245,10 +246,12 @@ async function handleHelpRequest(
 **改动范围**：整个文件（195 行 → ~40 行）
 
 **删除**（约 155 行）：
+
 - `CoreAgentDeps` 类型定义中的绝大部分字段：`runEmbeddedPiAgent`、`resolveStorePath`、`loadSessionStore`、`saveSessionStore`、`resolveSessionFilePath`、`resolveAgentDir`、`resolveAgentWorkspaceDir`、`resolveThinkingDefault`、`resolveAgentTimeoutMs`、`DEFAULT_MODEL`、`DEFAULT_PROVIDER`
 - `loadCoreAgentDeps` 中对应的 7 个 `importCoreModule` 调用（减少到 1-2 个）
 
 **保留**：
+
 - `resolveOpenClawRoot`、`importCoreModule` 基础设施（bootstrap/capsule 仍需）
 - capsule 生成所需的最少依赖（如果 capsule 也改用 Gateway 调用，可以全部删除）
 
@@ -274,7 +277,7 @@ async function handleHelpRequest(
 - 使用 cron tool 的 add action
 - schedule.kind 为 "at"（一次性）或 "cron"（周期性）
 - 回复要口语化、确认时间，适合语音播报
-`
+`;
 ```
 
 #### 5. `extensions/realtime/index.ts` — 无需改动或极小改动
@@ -310,14 +313,14 @@ api.on("before_agent_start", async (event, ctx) => {
 
 ### 完整文件改动清单
 
-| 文件 | 改动类型 | 改动量 | 说明 |
-|------|---------|-------|------|
-| `src/server.ts` | 重写 handleHelpRequest | 删 ~90 行，加 ~20 行 | 核心改动：callGateway 替代 runEmbeddedPiAgent |
-| `src/core-bridge.ts` | 大幅精简 | 删 ~155 行 | 移除不再需要的 core module imports |
-| `src/prompt.ts` | 增强 | 加 ~15 行 | 新增提醒设置规范段落 |
-| `index.ts` | 精简 | 删 ~15 行 | 移除 before_agent_start hook |
-| `src/live-memory-capsule-agent.ts` | 可选精简 | 删 ~85 行，加 ~15 行 | 如果也改用 callGateway |
-| **前端所有文件** | **零改动** | **0** | 前端完全无感 |
+| 文件                               | 改动类型               | 改动量               | 说明                                          |
+| ---------------------------------- | ---------------------- | -------------------- | --------------------------------------------- |
+| `src/server.ts`                    | 重写 handleHelpRequest | 删 ~90 行，加 ~20 行 | 核心改动：callGateway 替代 runEmbeddedPiAgent |
+| `src/core-bridge.ts`               | 大幅精简               | 删 ~155 行           | 移除不再需要的 core module imports            |
+| `src/prompt.ts`                    | 增强                   | 加 ~15 行            | 新增提醒设置规范段落                          |
+| `index.ts`                         | 精简                   | 删 ~15 行            | 移除 before_agent_start hook                  |
+| `src/live-memory-capsule-agent.ts` | 可选精简               | 删 ~85 行，加 ~15 行 | 如果也改用 callGateway                        |
+| **前端所有文件**                   | **零改动**             | **0**                | 前端完全无感                                  |
 
 **净效果**：删除约 250-350 行代码，新增约 50 行代码。**代码量减少 200-300 行。**
 
@@ -441,6 +444,7 @@ Gateway 的 `agent` method 在收到请求时，会根据 `channel` 参数更新
 #### S5. 延时增加 — 确认存在
 
 **当前路径**（旁路，0 网络开销）：
+
 ```
 handleHelpRequest()
   → loadCoreAgentDeps()（首次 ~50ms，后续缓存 0ms）
@@ -452,6 +456,7 @@ handleHelpRequest()
 ```
 
 **重构后路径**（经 Gateway，有网络开销）：
+
 ```
 handleHelpRequest()
   → callGateway()
@@ -472,6 +477,7 @@ handleHelpRequest()
 ```
 
 **评估**：
+
 - agent 执行本身 2-30 秒，额外 50-150ms 开销占比 0.5%-7.5%
 - 对于语音场景，用户已经在等 "正在查，稍等一下"，额外 100ms 无感知
 - **但**：`callGateway` 每次调用都**新建+关闭** WebSocket 连接（看 call.ts 第 207-253 行），没有连接池
@@ -488,12 +494,14 @@ handleHelpRequest()
 ```
 
 **风险**：
+
 - main session 文件变大
 - agent 的上下文窗口被 Her 的频繁请求占满
 - 可能影响其他通道（Telegram）的对话质量
 - **结论：这是最大的实质风险**
 
 **缓解**：
+
 - Her 的 prompt 已经是精简的（只带 conversation context），不会特别长
 - OpenClaw agent 有自动的 session truncation 机制
 - 但需要监控 main session 文件大小
@@ -509,6 +517,7 @@ handleHelpRequest()
 ```
 
 **评估**：
+
 - Gateway 的 lane 机制用 `lane: "realtime"` 可以和默认 lane 并行
 - 但 agent 写 session 文件是串行的（同一 session 不能并行写）
 - **结论：低风险，lane 机制设计上就是为此场景准备的**
@@ -525,6 +534,7 @@ handleHelpRequest()
 ```
 
 **评估**：
+
 - 实际上当前 Her 也依赖 Gateway 运行（cron tool 通过 callGatewayTool 调用 Gateway）
 - 但当前 Her 的"基本对话"不依赖 Gateway（直接调 runEmbeddedPiAgent）
 - **结论：轻微退化，但实际影响不大（Gateway 很少挂）**
@@ -570,14 +580,14 @@ handleHelpRequest()
 
 ### 对比
 
-| 指标 | 当前 | 重构后 | 差异 |
-|------|------|-------|------|
-| 网络开销 | 0ms（直接函数调用） | 30-80ms（loopback WS） | +30-80ms |
-| config 解析 | ~15ms（手动解析 model） | 0ms（Gateway 内部处理） | -15ms |
-| session 管理 | ~5ms（手动读写 JSON） | ~10ms（Gateway 管理） | +5ms |
-| **净增延时** | — | — | **+20-70ms** |
-| LLM 推理时间 | 2,000-30,000ms | 2,000-30,000ms | 0ms |
-| **对用户感知** | — | — | **无感知** |
+| 指标           | 当前                    | 重构后                  | 差异         |
+| -------------- | ----------------------- | ----------------------- | ------------ |
+| 网络开销       | 0ms（直接函数调用）     | 30-80ms（loopback WS）  | +30-80ms     |
+| config 解析    | ~15ms（手动解析 model） | 0ms（Gateway 内部处理） | -15ms        |
+| session 管理   | ~5ms（手动读写 JSON）   | ~10ms（Gateway 管理）   | +5ms         |
+| **净增延时**   | —                       | —                       | **+20-70ms** |
+| LLM 推理时间   | 2,000-30,000ms          | 2,000-30,000ms          | 0ms          |
+| **对用户感知** | —                       | —                       | **无感知**   |
 
 **结论：延时增加约 20-70ms，相对于 LLM 推理的 2-30 秒，完全无感知。**
 
@@ -587,14 +597,14 @@ handleHelpRequest()
 
 ### 代码量变化
 
-| 文件 | 重构前 | 重构后 | 变化 |
-|------|-------|-------|------|
-| `server.ts` | 458 行 | ~370 行 | -88 行 |
-| `core-bridge.ts` | 195 行 | ~40 行（或删除） | -155 行 |
-| `live-memory-capsule-agent.ts` | 110 行 | 不变（或 ~25 行） | 0 或 -85 行 |
-| `prompt.ts` | 26 行 | ~45 行 | +19 行 |
-| `index.ts` | 108 行 | ~93 行 | -15 行 |
-| **总计** | **897 行** | **~548 行（或 ~473 行）** | **-349 行（或 -424 行）** |
+| 文件                           | 重构前     | 重构后                    | 变化                      |
+| ------------------------------ | ---------- | ------------------------- | ------------------------- |
+| `server.ts`                    | 458 行     | ~370 行                   | -88 行                    |
+| `core-bridge.ts`               | 195 行     | ~40 行（或删除）          | -155 行                   |
+| `live-memory-capsule-agent.ts` | 110 行     | 不变（或 ~25 行）         | 0 或 -85 行               |
+| `prompt.ts`                    | 26 行      | ~45 行                    | +19 行                    |
+| `index.ts`                     | 108 行     | ~93 行                    | -15 行                    |
+| **总计**                       | **897 行** | **~548 行（或 ~473 行）** | **-349 行（或 -424 行）** |
 
 ### 可维护性提升
 
@@ -641,7 +651,7 @@ realtime 插件 **只耦合** OpenClaw 的 **1 个公开接口**：
 
 ```typescript
 // 只需要一个 import
-callGateway({ method: "agent", params: { message, idempotencyKey, lane, extraSystemPrompt } })
+callGateway({ method: "agent", params: { message, idempotencyKey, lane, extraSystemPrompt } });
 ```
 
 Gateway 的 `agent` method 是 OpenClaw 的**公开协议**（WebSocket API），被 webchat、CLI、移动端、第三方集成共同使用。upstream 会谨慎维护其兼容性。
@@ -650,13 +660,13 @@ Gateway 的 `agent` method 是 OpenClaw 的**公开协议**（WebSocket API）�
 
 ### 耦合对比
 
-| 维度 | 旁路方式 | 主干道方式 |
-|------|---------|----------|
-| 耦合的模块数 | 7 个内部模块 | 1 个公开 API |
-| API 稳定性 | 内部实现，随时可变 | 公开协议，向后兼容 |
-| upstream 重构影响 | 高（任何内部模块变化都可能断） | 低（只有协议变化才影响） |
-| 适配工作量 | 每次 upstream 更新都要检查 7 个模块 | 几乎不需要适配 |
-| core-bridge.ts | 195 行 hack shim | ~40 行或删除 |
+| 维度              | 旁路方式                            | 主干道方式               |
+| ----------------- | ----------------------------------- | ------------------------ |
+| 耦合的模块数      | 7 个内部模块                        | 1 个公开 API             |
+| API 稳定性        | 内部实现，随时可变                  | 公开协议，向后兼容       |
+| upstream 重构影响 | 高（任何内部模块变化都可能断）      | 低（只有协议变化才影响） |
+| 适配工作量        | 每次 upstream 更新都要检查 7 个模块 | 几乎不需要适配           |
+| core-bridge.ts    | 195 行 hack shim                    | ~40 行或删除             |
 
 **结论：与 upstream 的耦合显著降低，不是加深。**
 
@@ -736,12 +746,12 @@ Frontend                    RealtimePlugin                  OpenClawAgent
 
 ### 隔离保证
 
-| 维度 | 隔离方式 |
-|------|---------|
-| 工作区 | `resolveAgentWorkspaceDir(cfg, agentId)` → 每个 agent 独立目录 |
-| Session | `resolveStorePath(cfg, { agentId })` → 每个 agent 独立 session store |
-| Memory Capsule | `cachedCapsules` Map，per-agent 缓存，不会串 |
-| 前端 Prompt | SYSTEM_PROMPT 不含用户特定信息，用户画像仅来自 capsule |
+| 维度           | 隔离方式                                                             |
+| -------------- | -------------------------------------------------------------------- |
+| 工作区         | `resolveAgentWorkspaceDir(cfg, agentId)` → 每个 agent 独立目录       |
+| Session        | `resolveStorePath(cfg, { agentId })` → 每个 agent 独立 session store |
+| Memory Capsule | `cachedCapsules` Map，per-agent 缓存，不会串                         |
+| 前端 Prompt    | SYSTEM_PROMPT 不含用户特定信息，用户画像仅来自 capsule               |
 
 ### 已修复的泄漏
 
@@ -768,14 +778,14 @@ Frontend                    RealtimePlugin                  OpenClawAgent
 
 ### 已验证的测试结果（2026-02-08）
 
-| 测试 | 问题 | 回答 | 隔离状态 |
-|------|------|------|---------|
-| user1 首次 | "你是谁，我是谁？" | "还不能确定你的名字" | 正确隔离 |
-| user2 首次 | "你是谁，我是谁？" | "暂时还没有保存你的名字" | 正确隔离 |
-| user1 再次 | "我是谁？" | "你好 test1" | 正确记忆 |
-| user1 | "我喜欢喝什么？" | "没有记录过 test1 喜欢喝什么" | 正确隔离（不知道拿铁） |
-| main（个人） | "我是谁？" | "你是天哥" | 个人 Her 完好 |
-| main（个人） | "我喜欢喝什么？" | "拿铁，也爱喝龙井茶" | 个人 Her 完好 |
+| 测试         | 问题               | 回答                          | 隔离状态               |
+| ------------ | ------------------ | ----------------------------- | ---------------------- |
+| user1 首次   | "你是谁，我是谁？" | "还不能确定你的名字"          | 正确隔离               |
+| user2 首次   | "你是谁，我是谁？" | "暂时还没有保存你的名字"      | 正确隔离               |
+| user1 再次   | "我是谁？"         | "你好 test1"                  | 正确记忆               |
+| user1        | "我喜欢喝什么？"   | "没有记录过 test1 喜欢喝什么" | 正确隔离（不知道拿铁） |
+| main（个人） | "我是谁？"         | "你是天哥"                    | 个人 Her 完好          |
+| main（个人） | "我喜欢喝什么？"   | "拿铁，也爱喝龙井茶"          | 个人 Her 完好          |
 
 ---
 
@@ -801,13 +811,13 @@ Frontend                    RealtimePlugin                  OpenClawAgent
 
 ### 端口分配方案
 
-每个用户 N 使用 4 个连续端口，基址 = 29000 + (N-1) * 10：
+每个用户 N 使用 4 个连续端口，基址 = 29000 + (N-1) \* 10：
 
-| 用户 | Gateway | Realtime | Frontend | WS Proxy |
-|------|---------|----------|----------|----------|
-| User 1 | 29001 | 29002 | 29003 | 29004 |
-| User 2 | 29011 | 29012 | 29013 | 29014 |
-| User 3 | 29021 | 29022 | 29023 | 29024 |
+| 用户   | Gateway | Realtime | Frontend | WS Proxy |
+| ------ | ------- | -------- | -------- | -------- |
+| User 1 | 29001   | 29002    | 29003    | 29004    |
+| User 2 | 29011   | 29012    | 29013    | 29014    |
+| User 3 | 29021   | 29022    | 29023    | 29024    |
 
 个人 Her 的端口（18789/18790/8000/8080）完全不冲突。
 
@@ -839,6 +849,7 @@ Frontend                    RealtimePlugin                  OpenClawAgent
 ```
 
 执行流程：
+
 1. 检查镜像是否存在（不存在则提示先 `start-docker.sh`）
 2. 计算端口分配
 3. **清理旧容器**（同 ID 自动 stop + rm，确保 `--model` 等参数生效）
@@ -852,13 +863,13 @@ Frontend                    RealtimePlugin                  OpenClawAgent
 
 ### 隔离保证
 
-| 维度 | 保证 |
-|------|------|
-| 文件系统 | 每个容器独立文件系统，无法访问宿主机或其他容器的文件 |
-| 记忆 | 容器内没有宿主的 USER.md / MEMORY.md |
-| 配置 | 使用 `docker/carher-config.json`（Sonnet 模型），与个人配置无关 |
-| 网络 | 各容器端口独立映射，互不冲突 |
-| 数据持久化 | Docker volume `carher-{id}-data` 独立存储 |
+| 维度       | 保证                                                            |
+| ---------- | --------------------------------------------------------------- |
+| 文件系统   | 每个容器独立文件系统，无法访问宿主机或其他容器的文件            |
+| 记忆       | 容器内没有宿主的 USER.md / MEMORY.md                            |
+| 配置       | 使用 `docker/carher-config.json`（Sonnet 模型），与个人配置无关 |
+| 网络       | 各容器端口独立映射，互不冲突                                    |
+| 数据持久化 | Docker volume `carher-{id}-data` 独立存储                       |
 
 **不需要进程内多 Agent 方案的 prompt hack**，因为容器内没有其他用户的文件可泄漏。
 
@@ -890,14 +901,14 @@ Frontend                    RealtimePlugin                  OpenClawAgent
 
 容器 user1 通过 `start-user.sh --id=1 --random` 启动，使用 Sonnet 模型，通过手机远程隧道访问。
 
-| 轮次 | 问题 | 回答 | 隔离状态 |
-|------|------|------|---------|
-| 第 1 轮 | "你是谁，我是谁？" | "我是 Her...你是谁呢？" | 正确隔离（不认识任何人） |
-| 第 1 轮 | "你知道我是谁吗？" | "抱歉，还不知道你的名字" | 正确隔离 |
-| 第 1 轮 | 自我介绍"林森"，要求后台记住 | Sonnet 写入 MEMORY.md | 正确（用 Sonnet 而非 Opus） |
-| 第 2 轮 | "你知道我是谁吗？" | "你好林森！" | 正确记忆 |
-| 第 2 轮 | "我即将加入 Autolink" | Sonnet 记录到 MEMORY.md | 正确 |
-| 第 3 轮 | "你知道我是谁，我要去哪里？" | "你好林森，请问您需要前往 Autolink 吗？" | 正确（名字+公司都记住） |
+| 轮次    | 问题                         | 回答                                     | 隔离状态                    |
+| ------- | ---------------------------- | ---------------------------------------- | --------------------------- |
+| 第 1 轮 | "你是谁，我是谁？"           | "我是 Her...你是谁呢？"                  | 正确隔离（不认识任何人）    |
+| 第 1 轮 | "你知道我是谁吗？"           | "抱歉，还不知道你的名字"                 | 正确隔离                    |
+| 第 1 轮 | 自我介绍"林森"，要求后台记住 | Sonnet 写入 MEMORY.md                    | 正确（用 Sonnet 而非 Opus） |
+| 第 2 轮 | "你知道我是谁吗？"           | "你好林森！"                             | 正确记忆                    |
+| 第 2 轮 | "我即将加入 Autolink"        | Sonnet 记录到 MEMORY.md                  | 正确                        |
+| 第 3 轮 | "你知道我是谁，我要去哪里？" | "你好林森，请问您需要前往 Autolink 吗？" | 正确（名字+公司都记住）     |
 
 容器内数据：USER.md 不存在（全新用户），MEMORY.md 仅有林森+Autolink 两条记录，零个人数据泄漏。个人 Her（天哥、拿铁、小胖子）数据完好无损。
 
@@ -905,14 +916,15 @@ Frontend                    RealtimePlugin                  OpenClawAgent
 
 同时运行 4 个 Docker 容器（carher-1 ~ carher-4）+ 个人 Her，3 位同事通过手机远程隧道实际使用。
 
-| 用户 | 容器 | 姓名 | 使用内容 | 隔离验证 |
-|------|------|------|---------|---------|
-| User 1 | carher-1 | 林森 | 打招呼、自我介绍、确认身份 | MEMORY.md 仅记录林森+Autolink |
-| User 2 | carher-2 (Opus) | Andy | 多轮天气查询（北京）、询问系统架构 | USER.md 记录 Andy/北京/Autolink |
-| User 3 | carher-3 | 曹明 | 身份确认、**车控测试**（座椅加热 → 要求4档 → Her 回复最高3档 → 设为3档） | USER.md 仅记录曹明/Autolink |
-| User 4 | carher-4 | — | 容器已启动，暂无交互 | 空白状态 |
+| 用户   | 容器            | 姓名 | 使用内容                                                                 | 隔离验证                        |
+| ------ | --------------- | ---- | ------------------------------------------------------------------------ | ------------------------------- |
+| User 1 | carher-1        | 林森 | 打招呼、自我介绍、确认身份                                               | MEMORY.md 仅记录林森+Autolink   |
+| User 2 | carher-2 (Opus) | Andy | 多轮天气查询（北京）、询问系统架构                                       | USER.md 记录 Andy/北京/Autolink |
+| User 3 | carher-3        | 曹明 | 身份确认、**车控测试**（座椅加热 → 要求4档 → Her 回复最高3档 → 设为3档） | USER.md 仅记录曹明/Autolink     |
+| User 4 | carher-4        | —    | 容器已启动，暂无交互                                                     | 空白状态                        |
 
 **关键验证结果：**
+
 - 3 位用户各自的 USER.md / MEMORY.md 完全独立，互不包含对方信息
 - 用户 2 的天气查询能力正常（调用 help request → 后台 agent 查天气 → 返回结果）
 - 用户 3 的车控功能正常（座椅加热、档位选择，含边界校验）
@@ -923,13 +935,13 @@ Frontend                    RealtimePlugin                  OpenClawAgent
 
 容器内 agent workspace（`/data/.openclaw/workspace/`）使用的是通用 OpenClaw 模板：
 
-| 文件 | 内容 | 问题 |
-|------|------|------|
-| AGENTS.md | 通用 agent 行为指南 | 不知道自己是 Car Her |
-| SOUL.md | 通用人格描述 | 无车载助手身份 |
-| USER.md | 空模板（对话中逐步填充） | 正常 |
-| IDENTITY.md | 空模板 | 无 Car Her 品牌定义 |
-| TOOLS.md | 空模板 | 不了解车控能力范围 |
+| 文件        | 内容                     | 问题                 |
+| ----------- | ------------------------ | -------------------- |
+| AGENTS.md   | 通用 agent 行为指南      | 不知道自己是 Car Her |
+| SOUL.md     | 通用人格描述             | 无车载助手身份       |
+| USER.md     | 空模板（对话中逐步填充） | 正常                 |
+| IDENTITY.md | 空模板                   | 无 Car Her 品牌定义  |
+| TOOLS.md    | 空模板                   | 不了解车控能力范围   |
 
 虽然 `docs/her/` 的架构文档物理存在于容器内（`/app/docs/her/`），但 agent 不知道这些文件的存在，不会主动读取。
 
@@ -1034,8 +1046,8 @@ sequenceDiagram
 
 ```javascript
 // 旧代码（有竞争条件）：
-client.sendTextMessage(reply, { role: "model" });      // turnComplete: true → 触发生成
-client.sendTextMessage(controlLine, { role: "user" });  // turnComplete: true → 打断 + 重触发
+client.sendTextMessage(reply, { role: "model" }); // turnComplete: true → 触发生成
+client.sendTextMessage(controlLine, { role: "user" }); // turnComplete: true → 打断 + 重触发
 
 // 新代码（单条原子消息，匹配官方 incremental content updates 模式）：
 client.sendMessage({
@@ -1134,10 +1146,10 @@ sequenceDiagram
 
 **唯一信源：`extensions/realtime/src/server.ts`**
 
-| 组件 | 信源 | 变量名 |
-|------|------|--------|
-| System Prompt | `server.ts` | `HER_SYSTEM_PROMPT` |
-| Tool Schema | `server.ts` | `TOOL_DECLARATIONS` |
+| 组件           | 信源                   | 变量名              |
+| -------------- | ---------------------- | ------------------- |
+| System Prompt  | `server.ts`            | `HER_SYSTEM_PROMPT` |
+| Tool Schema    | `server.ts`            | `TOOL_DECLARATIONS` |
 | Memory Capsule | Bootstrap API 动态生成 | `liveMemoryCapsule` |
 
 ### 数据流
@@ -1185,23 +1197,26 @@ Her 支持 `car_control` 工具（空调、座椅、车窗、导航等）。其�
 ### 架构设计（弹性，不绑定具体事件类型）
 
 **Live 端（Gemini）：**
+
 - 导航成功后调 `openclaw_help`，request 以 `"请写入用户memory记录："` 开头
 - 传递对话中所有已知上下文（谁、和谁、时间、地点、目的等），格式自由
 - 静默执行：不对用户提及"记录"，不播报返回结果
 
 **OpenClaw 后端（Claude）：**
+
 - 统一 prompt，不按请求类型做 if/else 分支
 - `prompt.ts` extraSystemPrompt 定义"执行者+记忆写入者"通用身份
 - 收到记录请求 → 用 edit 工具写入 memory → 返回确认或 NO_REPLY
 - 收到查询请求 → 正常查询返回结果
 
 **NO_REPLY 处理：**
+
 - `server.ts` 中 agent 返回空 payloads（含 NO_REPLY 被过滤）时，返回 `"已处理"` 而非错误
 - 真正的异常走 catch 分支，返回明确的错误信息
 
 ### 当前状态（2026-02-11 已验证）
 
-- **memory 记录链路全通**：Live 正确传递上下文 → OpenClaw 写入 memory/*.md ✅
+- **memory 记录链路全通**：Live 正确传递上下文 → OpenClaw 写入 memory/\*.md ✅
 - **导航预检（含先查后导 + 日程冲突检测）**：已合并为统一的 Step 1 预检，见下方"导航日程冲突检测"章节 ✅
 - **NO_REPLY 静默处理**：不再显示错误 fallback ✅
 - **USER.md 自动沉淀**：OpenClaw 主动将家庭地址等关键信息提取到 USER.md ✅
@@ -1253,15 +1268,16 @@ OpenClaw → edit memory → 返回"已记录"或 NO_REPLY
 
 **导航三步流程：**
 
-| 步骤 | 动作 | Live 工具调用 | 用户感知 |
-|------|------|-------------|---------|
-| Step 1: 预检 | 查地名 + 查日程冲突 | `openclaw_help("导航预检：...")` | "好的，我先帮您确认一下" |
-| Step 2: 导航 | 执行导航 | `car_control(start_navigation)` | "好的，开始导航" |
-| Step 3: 记录 | 写入 memory | `openclaw_help("请写入用户memory记录：...")` | 无感知（静默） |
+| 步骤         | 动作                | Live 工具调用                                | 用户感知                 |
+| ------------ | ------------------- | -------------------------------------------- | ------------------------ |
+| Step 1: 预检 | 查地名 + 查日程冲突 | `openclaw_help("导航预检：...")`             | "好的，我先帮您确认一下" |
+| Step 2: 导航 | 执行导航            | `car_control(start_navigation)`              | "好的，开始导航"         |
+| Step 3: 记录 | 写入 memory         | `openclaw_help("请写入用户memory记录：...")` | 无感知（静默）           |
 
 ### OpenClaw 预检逻辑
 
 收到"导航预检"请求时，OpenClaw 执行：
+
 1. 如果目的地模糊（代词、指代、记忆引用）→ 查 memory 确认具体地名
 2. 查 cron jobs，找出近期（当天 + 次日）有效提醒
 3. 用推理能力判断：导航目的地/预计耗时是否与提醒存在时间冲突
@@ -1270,12 +1286,14 @@ OpenClaw → edit memory → 返回"已记录"或 NO_REPLY
 ### 实现方式
 
 纯 prompt 驱动，零代码修改：
+
 - `HER_SYSTEM_PROMPT`（`server.ts`）：定义三步流程，要求 Live 在导航前必须预检
 - `extraSystemPrompt`（`prompt.ts`）：告诉 OpenClaw 收到"导航预检"时主动查 cron 和 memory
 
 ### 冲突处理策略
 
 Her 不替用户做决定，只提供信息让用户判断：
+
 - "天哥，去北京比较远，我看您今天7点还有和老王的晚餐约会，可能来不及。您确定现在出发吗？"
 - 用户说"没事，出发吧" → 正常导航
 - 用户说"那取消吧" → 不导航
@@ -1287,6 +1305,7 @@ Her 不替用户做决定，只提供信息让用户判断：
 ### 当前状态（2026-02-11 已验证）
 
 实测场景：用户说"导航去北京"，系统已有"今晚7点和老王吃饭"提醒。
+
 - Step 1: Live 触发导航预检，OpenClaw 查到 cron 提醒，报告冲突 ✅
 - Live 告知用户"您今晚7点和老王有晚餐约会，开车去北京时间会冲突" ✅
 - 用户决定取消晚餐继续去北京 → 取消 cron + 导航 + memory 全部正确执行 ✅

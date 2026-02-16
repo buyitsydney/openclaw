@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -84,9 +84,7 @@
   </head>
   <body>
     <h1>🚗 CarHer - 车载 AI 助手</h1>
-    <p>
-      Gemini Live 实时语音 + OpenClaw 智能后台
-    </p>
+    <p>Gemini Live 实时语音 + OpenClaw 智能后台</p>
 
     <div class="container">
       <!-- Left Column: API Configuration -->
@@ -104,7 +102,8 @@
                 type="text"
                 id="proxyUrl"
                 placeholder="ws://localhost:8080"
-                value="ws://localhost:8080" />
+                value="ws://localhost:8080"
+              />
             </div>
 
             <div>
@@ -118,7 +117,8 @@
                 type="text"
                 id="model"
                 value="gemini-live-2.5-flash-native-audio"
-                placeholder="Enter model ID" />
+                placeholder="Enter model ID"
+              />
             </div>
           </details>
 
@@ -207,36 +207,27 @@
             </div>
 
             <div>
-              <label for="temperature"
-                >Temperature: <span id="temperatureValue">1.0</span></label
+              <label for="temperature">Temperature: <span id="temperatureValue">1.0</span></label
               ><br />
-              <input
-                type="range"
-                id="temperature"
-                min="0.1"
-                max="2.0"
-                step="0.1"
-                value="1.0" />
+              <input type="range" id="temperature" min="0.1" max="2.0" step="0.1" value="1.0" />
               <br />
               <small
-                >Controls randomness (0.0-2.0]. Higher = more creative/diverse,
-                Lower = more predictable/focused</small
+                >Controls randomness (0.0-2.0]. Higher = more creative/diverse, Lower = more
+                predictable/focused</small
               >
             </div>
 
             <div>
               <input type="checkbox" id="enableProactiveAudio" checked />
               <label for="enableProactiveAudio"
-                >Enable proactive audio (Gemini will ignore speech based on
-                instructions)</label
+                >Enable proactive audio (Gemini will ignore speech based on instructions)</label
               >
             </div>
 
             <div>
               <input type="checkbox" id="enableAffectiveDialog" checked />
               <label for="enableAffectiveDialog"
-                >Enable affective dialog (emotion detection and empathetic
-                responses)</label
+                >Enable affective dialog (emotion detection and empathetic responses)</label
               >
             </div>
           </details>
@@ -251,12 +242,13 @@
                 type="text"
                 id="openclawUrl"
                 value="ws://localhost:18790/ws"
-                style="width: 250px" />
+                style="width: 250px"
+              />
             </div>
             <br />
             <div>
               <button id="startBtn">一键启动（先连 OpenClaw → 等胶囊 → 自动连 Gemini）</button>
-              <span id="openclawStatus" style="margin-left: 10px; color: gray;">未连接</span>
+              <span id="openclawStatus" style="margin-left: 10px; color: gray">未连接</span>
             </div>
           </details>
 
@@ -284,9 +276,7 @@
             <summary>Transcription Settings</summary>
             <div>
               <input type="checkbox" id="enableInputTranscription" checked />
-              <label for="enableInputTranscription"
-                >Enable input transcription (your speech)</label
-              >
+              <label for="enableInputTranscription">Enable input transcription (your speech)</label>
             </div>
 
             <div>
@@ -306,7 +296,15 @@
             <br />
             <div>
               <label for="jitterBufferMs">Jitter buffer (ms, 0=off):</label>
-              <input type="range" id="jitterBufferMs" min="0" max="1000" step="50" value="0" style="vertical-align: middle" />
+              <input
+                type="range"
+                id="jitterBufferMs"
+                min="0"
+                max="1000"
+                step="50"
+                value="0"
+                style="vertical-align: middle"
+              />
               <span id="jitterBufferLabel">0</span>
             </div>
           </details>
@@ -317,9 +315,7 @@
             <summary>Activity Detection Settings</summary>
             <div>
               <input type="checkbox" id="disableActivityDetection" />
-              <label for="disableActivityDetection"
-                >Disable automatic activity detection</label
-              >
+              <label for="disableActivityDetection">Disable automatic activity detection</label>
             </div>
 
             <div>
@@ -330,61 +326,38 @@
                 value="500"
                 min="500"
                 max="10000"
-                step="100" />
+                step="100"
+              />
             </div>
 
             <div>
               <label for="prefixPadding">Prefix padding (ms):</label><br />
-              <input
-                type="number"
-                id="prefixPadding"
-                value="500"
-                min="0"
-                max="2000"
-                step="100" />
+              <input type="number" id="prefixPadding" value="500" min="0" max="2000" step="100" />
             </div>
 
             <div>
-              <label for="endSpeechSensitivity"
-                >End of speech sensitivity:</label
-              ><br />
+              <label for="endSpeechSensitivity">End of speech sensitivity:</label><br />
               <select id="endSpeechSensitivity">
-                <option value="END_SENSITIVITY_UNSPECIFIED" selected>
-                  Default
-                </option>
-                <option value="END_SENSITIVITY_HIGH">
-                  High (quicker cutoff)
-                </option>
+                <option value="END_SENSITIVITY_UNSPECIFIED" selected>Default</option>
+                <option value="END_SENSITIVITY_HIGH">High (quicker cutoff)</option>
                 <option value="END_SENSITIVITY_LOW">Low (longer wait)</option>
               </select>
             </div>
 
             <div>
-              <label for="startSpeechSensitivity"
-                >Start of speech sensitivity:</label
-              ><br />
+              <label for="startSpeechSensitivity">Start of speech sensitivity:</label><br />
               <select id="startSpeechSensitivity">
-                <option value="START_SENSITIVITY_UNSPECIFIED" selected>
-                  Default
-                </option>
-                <option value="START_SENSITIVITY_HIGH">
-                  High (quicker detection)
-                </option>
-                <option value="START_SENSITIVITY_LOW">
-                  Low (more filtering)
-                </option>
+                <option value="START_SENSITIVITY_UNSPECIFIED" selected>Default</option>
+                <option value="START_SENSITIVITY_HIGH">High (quicker detection)</option>
+                <option value="START_SENSITIVITY_LOW">Low (more filtering)</option>
               </select>
             </div>
 
             <div>
               <label for="activityHandling">Activity Handling:</label><br />
               <select id="activityHandling">
-                <option value="ACTIVITY_HANDLING_UNSPECIFIED" selected>
-                  Default (Interrupts)
-                </option>
-                <option value="START_OF_ACTIVITY_INTERRUPTS">
-                  Interrupt (Barge-in)
-                </option>
+                <option value="ACTIVITY_HANDLING_UNSPECIFIED" selected>Default (Interrupts)</option>
+                <option value="START_OF_ACTIVITY_INTERRUPTS">Interrupt (Barge-in)</option>
                 <option value="NO_INTERRUPTION">No Interruption</option>
               </select>
             </div>
@@ -398,9 +371,7 @@
 
           <!-- Setup Message JSON Display -->
           <details id="setupJsonSection" style="display: none">
-            <summary>
-              Setup Message JSON (raw config sent to Gemini API)
-            </summary>
+            <summary>Setup Message JSON (raw config sent to Gemini API)</summary>
             <pre id="setupJsonDisplay"></pre>
           </details>
         </section>
@@ -425,9 +396,7 @@
 
                 <div style="margin-bottom: 10px">
                   <label for="cameraSelect">Camera:</label><br />
-                  <select
-                    id="cameraSelect"
-                    style="width: 100%; max-width: 300px">
+                  <select id="cameraSelect" style="width: 100%; max-width: 300px">
                     <option value="">Default Camera</option>
                   </select>
                 </div>
@@ -448,13 +417,7 @@
             </div>
 
             <div class="right-column">
-              <video
-                id="videoPreview"
-                autoplay
-                playsinline
-                muted
-                hidden
-                width="400"></video>
+              <video id="videoPreview" autoplay playsinline muted hidden width="400"></video>
             </div>
           </div>
         </section>
@@ -465,21 +428,13 @@
 
           <div
             id="chatContainer"
-            style="
-              border: 1px solid;
-              height: 300px;
-              overflow-y: auto;
-              padding: 10px;
-            ">
+            style="border: 1px solid; height: 300px; overflow-y: auto; padding: 10px"
+          >
             <div>Connect to Gemini to start chatting</div>
           </div>
           <br />
           <div>
-            <input
-              type="text"
-              id="chatInput"
-              placeholder="Type a message..."
-              autocomplete="off" />
+            <input type="text" id="chatInput" placeholder="Type a message..." autocomplete="off" />
             <button id="sendBtn">Send</button>
           </div>
         </section>

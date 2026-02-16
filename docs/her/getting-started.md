@@ -3,6 +3,7 @@
 从零开始，在你自己的 Mac 上搭建完整的 Car Her 系统。
 
 本文档覆盖三个能力：
+
 1. **个人 Her** — 本地运行的实时语音 AI 助手
 2. **飞书机器人** — 在飞书客户端里跟 Her 文字聊天
 3. **Docker 多用户** — 为厂商演示启动多个隔离的 Her 实例
@@ -288,6 +289,7 @@ pnpm openclaw config set env.vars.OPENROUTER_API_KEY "$OPENROUTER_API_KEY"
 ```
 
 脚本会自动：
+
 1. 进入 tmux 会话 `her`（终端/Cursor 重启后进程不丢失，`tmux attach -t her` 可重新进入）
 2. 编译最新代码
 3. 启动 Gateway（后端服务）
@@ -358,6 +360,7 @@ cd ~/Documents/openclaw    # 进入项目目录
 ### 4.2 获取凭证
 
 在应用设置页面，点左侧 "凭证与基础信息"：
+
 - 复制 **App ID**（以 `cli_` 开头）
 - 复制 **App Secret**
 
@@ -521,14 +524,14 @@ pnpm openclaw config set channels.feishu.appSecret "你的AppSecret"
 
 ### 5.4 可用的模型快捷名
 
-| 快捷名 | 模型 | 特点 |
-|--------|------|------|
-| `sonnet` | Claude Sonnet 4（默认） | 性价比最高 |
-| `sonnet-4.5` | Claude Sonnet 4.5 | 同价更强 |
-| `opus` | Claude Opus 4.6 | 最聪明，价格高 |
-| `haiku` | Claude 3.5 Haiku | 最便宜 |
-| `gemini-2.5` | Gemini 2.5 Pro | Google 模型 |
-| `gpt-4o` | GPT-4o | OpenAI 模型 |
+| 快捷名       | 模型                    | 特点           |
+| ------------ | ----------------------- | -------------- |
+| `sonnet`     | Claude Sonnet 4（默认） | 性价比最高     |
+| `sonnet-4.5` | Claude Sonnet 4.5       | 同价更强       |
+| `opus`       | Claude Opus 4.6         | 最聪明，价格高 |
+| `haiku`      | Claude 3.5 Haiku        | 最便宜         |
+| `gemini-2.5` | Gemini 2.5 Pro          | Google 模型    |
+| `gpt-4o`     | GPT-4o                  | OpenAI 模型    |
 
 ### 5.5 管理容器
 
@@ -637,16 +640,16 @@ npm install -g pnpm@latest
 
 ## 快速命令速查表
 
-| 目标 | 命令 |
-|------|------|
-| 启动个人 Her | `./start.sh` |
-| 手机远程访问个人 Her | `./start-mobile.sh --random` |
-| 构建 Docker 镜像 | `./start-docker.sh` |
-| 启动厂商用户 1 | `./start-user.sh --id=1` |
-| 启动用户 2（Opus 模型） | `./start-user.sh --id=2 --model=opus` |
-| 查看用户 1 日志 | `./start-user.sh --id=1 --logs` |
-| 停止用户 1 | `./start-user.sh --id=1 --down` |
-| 停止所有用户容器 | `./start-user.sh --down` |
-| 重建 Docker 镜像（代码更新后） | `./start-docker.sh --rebuild` |
-| 刷新 Google Cloud 凭证 | `gcloud auth application-default login` |
-| 停止个人 Her | 在 start.sh 终端按 `Ctrl+C` |
+| 目标                           | 命令                                    |
+| ------------------------------ | --------------------------------------- |
+| 启动个人 Her                   | `./start.sh`                            |
+| 手机远程访问个人 Her           | `./start-mobile.sh --random`            |
+| 构建 Docker 镜像               | `./start-docker.sh`                     |
+| 启动厂商用户 1                 | `./start-user.sh --id=1`                |
+| 启动用户 2（Opus 模型）        | `./start-user.sh --id=2 --model=opus`   |
+| 查看用户 1 日志                | `./start-user.sh --id=1 --logs`         |
+| 停止用户 1                     | `./start-user.sh --id=1 --down`         |
+| 停止所有用户容器               | `./start-user.sh --down`                |
+| 重建 Docker 镜像（代码更新后） | `./start-docker.sh --rebuild`           |
+| 刷新 Google Cloud 凭证         | `gcloud auth application-default login` |
+| 停止个人 Her                   | 在 start.sh 终端按 `Ctrl+C`             |

@@ -7,19 +7,19 @@
  * - Broadcasts prompt updates
  */
 
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import crypto from "node:crypto";
-import fs from "node:fs/promises";
 import fsSync from "node:fs";
+import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { URL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { loadCoreAgentDeps, type CoreAgentDeps, type CoreConfig } from "./core-bridge.js";
-import { buildBackendModePrompt } from "./prompt.js";
 // TurnAssembler removed - Supervisor architecture replaced by Help-only model
 import { generateLiveMemoryCapsule } from "./live-memory-capsule-agent.js";
+import { buildBackendModePrompt } from "./prompt.js";
 
 // Message types from Live
 export type LiveMessage =
@@ -288,10 +288,7 @@ function buildBootstrapResponse(capsuleText: string, gemini: GeminiConfig) {
 
   // Bake capsule into system prompt so native app gets a ready-to-send blob
   const fullSystemPrompt = capsuleText
-    ? HER_SYSTEM_PROMPT.replace(
-        "（由系统自动注入 liveMemoryCapsule）",
-        capsuleText,
-      )
+    ? HER_SYSTEM_PROMPT.replace("（由系统自动注入 liveMemoryCapsule）", capsuleText)
     : HER_SYSTEM_PROMPT;
 
   return {
@@ -337,10 +334,7 @@ function buildBootstrapResponse(capsuleText: string, gemini: GeminiConfig) {
 }
 
 /** Extract agentId from a URL query string, falling back to the default agent. */
-function resolveAgentIdFromUrl(
-  urlStr: string | undefined,
-  defaultAgentId: string,
-): string {
+function resolveAgentIdFromUrl(urlStr: string | undefined, defaultAgentId: string): string {
   if (!urlStr) return defaultAgentId;
   try {
     const parsed = new URL(urlStr, "http://localhost");
@@ -514,11 +508,7 @@ function sendToClient(ws: WebSocket, msg: OpenClawMessage) {
   }
 }
 
-async function handleMessage(
-  client: RealtimeClient,
-  msg: LiveMessage,
-  api: OpenClawPluginApi,
-) {
+async function handleMessage(client: RealtimeClient, msg: LiveMessage, api: OpenClawPluginApi) {
   switch (msg.type) {
     case "transcript": {
       // Record conversation for Help context
@@ -562,7 +552,7 @@ async function handleMessage(
         data: msg.data,
       });
       api.logger.info(`[realtime] ${client.sessionId} | Gemini: ${msg.event}`);
-      
+
       // Append to session log file
       const logFile = `/tmp/realtime-${client.sessionId}.jsonl`;
       await fs.appendFile(logFile, logLine + "\n");
@@ -636,11 +626,9 @@ async function handleHelpRequest(
     }
 
     // Resolve session file path
-    const sessionFile = coreDeps.resolveSessionFilePath(
-      sessionEntry.sessionId,
-      sessionEntry,
-      { agentId },
-    );
+    const sessionFile = coreDeps.resolveSessionFilePath(sessionEntry.sessionId, sessionEntry, {
+      agentId,
+    });
 
     // Build prompt with conversation context (unified — no per-request-type branching)
     const conversationContext = client.conversation.join("\n");
@@ -662,8 +650,9 @@ ${request}
     const agentDefaults = (cfg as Record<string, unknown>).agents as
       | { defaults?: { model?: { primary?: string } } }
       | undefined;
-    const modelRef = agentDefaults?.defaults?.model?.primary
-      || `${coreDeps.DEFAULT_PROVIDER}/${coreDeps.DEFAULT_MODEL}`;
+    const modelRef =
+      agentDefaults?.defaults?.model?.primary ||
+      `${coreDeps.DEFAULT_PROVIDER}/${coreDeps.DEFAULT_MODEL}`;
 
     // Parse provider/model (handle both "provider/model" and "provider/vendor/model")
     const parts = modelRef.split("/");
@@ -673,7 +662,9 @@ ${request}
     const thinkLevel = coreDeps.resolveThinkingDefault({ cfg, provider, model });
     const timeoutMs = coreDeps.resolveAgentTimeoutMs({ cfg });
 
-    api.logger.info(`[realtime] Calling agent with session ${sessionEntry.sessionId}, model: ${provider}/${model}`);
+    api.logger.info(
+      `[realtime] Calling agent with session ${sessionEntry.sessionId}, model: ${provider}/${model}`,
+    );
 
     // Call the agent
     const result = await coreDeps.runEmbeddedPiAgent({

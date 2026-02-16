@@ -3,15 +3,18 @@
  * Adapted from @m1heng-clawd/feishu with schema guardrails (no Type.Union).
  */
 
-import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { stringEnum } from "openclaw/plugin-sdk";
-import { getFeishuClient } from "../outbound.js";
-import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import type * as Lark from "@larksuiteoapi/node-sdk";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import { Type } from "@sinclair/typebox";
+import { stringEnum } from "openclaw/plugin-sdk";
+import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
+import { getFeishuClient } from "../outbound.js";
 
 function json(data: unknown) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }], details: data };
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+    details: data,
+  };
 }
 
 // ── Actions ──
@@ -26,8 +29,13 @@ async function listFolder(client: Lark.Client, folderToken?: string) {
   return {
     // oxlint-disable-next-line typescript/no-explicit-any
     files: (res.data?.files ?? []).map((f: any) => ({
-      token: f.token, name: f.name, type: f.type, url: f.url,
-      created_time: f.created_time, modified_time: f.modified_time, owner_id: f.owner_id,
+      token: f.token,
+      name: f.name,
+      type: f.type,
+      url: f.url,
+      created_time: f.created_time,
+      modified_time: f.modified_time,
+      owner_id: f.owner_id,
     })),
     next_page_token: res.data?.next_page_token,
   };
@@ -43,7 +51,12 @@ async function createFolder(client: Lark.Client, name: string, folderToken?: str
   return { token: res.data?.token, url: res.data?.url };
 }
 
-async function moveFile(client: Lark.Client, fileToken: string, fileType: string, folderToken: string) {
+async function moveFile(
+  client: Lark.Client,
+  fileToken: string,
+  fileType: string,
+  folderToken: string,
+) {
   // oxlint-disable-next-line typescript/no-explicit-any
   const res: any = await client.drive.file.move({
     path: { file_token: fileToken },
@@ -71,10 +84,17 @@ const DRIVE_ACTIONS = ["list", "create_folder", "move", "delete"] as const;
 
 const FeishuDriveSchema = Type.Object({
   action: stringEnum(DRIVE_ACTIONS, { description: "Drive operation to perform" }),
-  folder_token: Type.Optional(Type.String({ description: "Folder token (for list/create_folder/move target)" })),
+  folder_token: Type.Optional(
+    Type.String({ description: "Folder token (for list/create_folder/move target)" }),
+  ),
   name: Type.Optional(Type.String({ description: "Folder name (for create_folder)" })),
   file_token: Type.Optional(Type.String({ description: "File token (for move/delete)" })),
-  file_type: Type.Optional(Type.String({ description: "File type: doc, docx, sheet, bitable, folder, file, mindnote, shortcut (for move/delete)" })),
+  file_type: Type.Optional(
+    Type.String({
+      description:
+        "File type: doc, docx, sheet, bitable, folder, file, mindnote, shortcut (for move/delete)",
+    }),
+  ),
 });
 
 // ── Registration ──
@@ -96,11 +116,18 @@ export function registerFeishuDriveTools(api: OpenClawPluginApi) {
         try {
           const client = getClient();
           switch (params.action) {
-            case "list": return json(await listFolder(client, params.folder_token));
-            case "create_folder": return json(await createFolder(client, params.name, params.folder_token));
-            case "move": return json(await moveFile(client, params.file_token, params.file_type, params.folder_token));
-            case "delete": return json(await deleteFile(client, params.file_token, params.file_type));
-            default: return json({ error: `Unknown action: ${params.action}` });
+            case "list":
+              return json(await listFolder(client, params.folder_token));
+            case "create_folder":
+              return json(await createFolder(client, params.name, params.folder_token));
+            case "move":
+              return json(
+                await moveFile(client, params.file_token, params.file_type, params.folder_token),
+              );
+            case "delete":
+              return json(await deleteFile(client, params.file_token, params.file_type));
+            default:
+              return json({ error: `Unknown action: ${params.action}` });
           }
         } catch (err) {
           return json({ error: err instanceof Error ? err.message : String(err) });

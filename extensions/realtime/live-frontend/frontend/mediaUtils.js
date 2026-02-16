@@ -41,21 +41,15 @@ class AudioStreamer {
       });
 
       // Create audio context at 16kHz
-      this.audioContext = new (window.AudioContext ||
-        window.webkitAudioContext)({
+      this.audioContext = new (window.AudioContext || window.webkitAudioContext)({
         sampleRate: this.sampleRate,
       });
 
       // Load the audio worklet module
-      await this.audioContext.audioWorklet.addModule(
-        "audio-processors/capture.worklet.js"
-      );
+      await this.audioContext.audioWorklet.addModule("audio-processors/capture.worklet.js");
 
       // Create the audio worklet node
-      this.audioWorklet = new AudioWorkletNode(
-        this.audioContext,
-        "audio-capture-processor"
-      );
+      this.audioWorklet = new AudioWorkletNode(this.audioContext, "audio-capture-processor");
 
       // Set up message handling from the worklet
       this.audioWorklet.port.onmessage = (event) => {
@@ -74,9 +68,7 @@ class AudioStreamer {
       };
 
       // Connect the audio graph
-      const source = this.audioContext.createMediaStreamSource(
-        this.mediaStream
-      );
+      const source = this.audioContext.createMediaStreamSource(this.mediaStream);
       source.connect(this.audioWorklet);
 
       this.isStreaming = true;
@@ -190,13 +182,7 @@ class BaseVideoCapture {
       if (!this.isStreaming) return;
 
       // Draw current frame to canvas
-      this.ctx.drawImage(
-        this.video,
-        0,
-        0,
-        this.canvas.width,
-        this.canvas.height
-      );
+      this.ctx.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
 
       // Convert to JPEG and send
       this.canvas.toBlob(
@@ -213,7 +199,7 @@ class BaseVideoCapture {
           reader.readAsDataURL(blob);
         },
         "image/jpeg",
-        this.quality
+        this.quality,
       );
     };
 
@@ -254,13 +240,7 @@ class BaseVideoCapture {
       throw new Error("Video not initialized");
     }
 
-    this.ctx.drawImage(
-      this.video,
-      0,
-      0,
-      this.canvas.width,
-      this.canvas.height
-    );
+    this.ctx.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
     return this.canvas.toDataURL("image/jpeg", this.quality);
   }
 
@@ -346,12 +326,7 @@ class ScreenCapture extends BaseVideoCapture {
    */
   async start(options = {}) {
     try {
-      const {
-        fps = 1,
-        width = 1280,
-        height = 720,
-        quality = 0.7
-      } = options;
+      const { fps = 1, width = 1280, height = 720, quality = 0.7 } = options;
 
       this.fps = fps;
       this.quality = quality;
@@ -440,21 +415,15 @@ class AudioPlayer {
 
     try {
       // Create audio context at 24kHz to match Gemini
-      this.audioContext = new (window.AudioContext ||
-        window.webkitAudioContext)({
+      this.audioContext = new (window.AudioContext || window.webkitAudioContext)({
         sampleRate: this.sampleRate,
       });
 
       // Load the audio worklet from external file
-      await this.audioContext.audioWorklet.addModule(
-        "audio-processors/playback.worklet.js"
-      );
+      await this.audioContext.audioWorklet.addModule("audio-processors/playback.worklet.js");
 
       // Create worklet node
-      this.workletNode = new AudioWorkletNode(
-        this.audioContext,
-        "pcm-processor"
-      );
+      this.workletNode = new AudioWorkletNode(this.audioContext, "pcm-processor");
 
       // Create gain node for volume control
       this.gainNode = this.audioContext.createGain();
@@ -662,9 +631,7 @@ class AudioPlayer {
    */
   getObsSnapshot() {
     const avgGapMs =
-      this.obs.drainGapCount > 0
-        ? this.obs.drainGapTotalMs / this.obs.drainGapCount
-        : 0;
+      this.obs.drainGapCount > 0 ? this.obs.drainGapTotalMs / this.obs.drainGapCount : 0;
     return {
       drainGapCount: this.obs.drainGapCount,
       drainGapAvgMs: avgGapMs,

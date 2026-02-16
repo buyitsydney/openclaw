@@ -19,12 +19,12 @@ description: Create or add new OpenClaw agent skills (bundled or workspace). Use
 
 ## Skill Types and Where to Put Them
 
-| Type | Path | Scope | Use When |
-|------|------|-------|----------|
-| **Bundled (唯一推荐)** | `skills/<name>/SKILL.md` (source repo) | All users, all Docker containers | 所有 skill 都放这里 |
-| ~~Workspace~~ | ~~`~/.openclaw/workspace/skills/`~~ | ~~Single user~~ | **禁止使用！不同步 Docker！** |
-| **Managed** | `~/.openclaw/skills/<name>/SKILL.md` | Single machine | 仅限 `openclaw skill install` 安装的第三方 skill |
-| **Plugin** | `extensions/<plugin>/skills/<name>/SKILL.md` | Users who enable the plugin | Skill tied to a specific plugin |
+| Type                   | Path                                         | Scope                            | Use When                                         |
+| ---------------------- | -------------------------------------------- | -------------------------------- | ------------------------------------------------ |
+| **Bundled (唯一推荐)** | `skills/<name>/SKILL.md` (source repo)       | All users, all Docker containers | 所有 skill 都放这里                              |
+| ~~Workspace~~          | ~~`~/.openclaw/workspace/skills/`~~          | ~~Single user~~                  | **禁止使用！不同步 Docker！**                    |
+| **Managed**            | `~/.openclaw/skills/<name>/SKILL.md`         | Single machine                   | 仅限 `openclaw skill install` 安装的第三方 skill |
+| **Plugin**             | `extensions/<plugin>/skills/<name>/SKILL.md` | Users who enable the plugin      | Skill tied to a specific plugin                  |
 
 **For Docker deployments**: only **bundled** skills are automatically included in the image.
 
@@ -56,7 +56,7 @@ metadata: { "openclaw": { "emoji": "🔧", "requires": { "bins": ["jq"] } } }
 - `metadata.openclaw.requires.envs`: Optional. Skill hidden if listed env vars not set.
 - `metadata.openclaw.os`: Optional. Restrict to `["macos"]`, `["linux"]`, etc.
 
-Body: Concise instructions the agent reads *after* deciding to use the skill. Keep under 500 lines. Use `references/` for large docs.
+Body: Concise instructions the agent reads _after_ deciding to use the skill. Keep under 500 lines. Use `references/` for large docs.
 
 ### 3. Style Guidelines
 

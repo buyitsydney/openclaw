@@ -67,6 +67,7 @@ if (capTokens && capTokens < baseInfo.tokens) {
 ```
 
 **这个解析结果用于**:
+
 - Context window guard（warn < 32K, block < 16K）
 - Compaction safeguard extension runtime（影响 compact 如何执行，不影响何时触发）
 - Context pruning runtime
@@ -83,7 +84,7 @@ const contextWindow = this.model?.contextWindow ?? 0;
 // agent-session.js:1262-1264
 const contextTokens = calculateContextTokens(assistantMessage.usage);
 if (shouldCompact(contextTokens, contextWindow, settings)) {
-    await this._runAutoCompaction("threshold", false);
+  await this._runAutoCompaction("threshold", false);
 }
 ```
 
@@ -92,8 +93,8 @@ if (shouldCompact(contextTokens, contextWindow, settings)) {
 ```javascript
 // compaction.js:142-146
 function shouldCompact(contextTokens, contextWindow, settings) {
-    if (!settings.enabled) return false;
-    return contextTokens > contextWindow - settings.reserveTokens;
+  if (!settings.enabled) return false;
+  return contextTokens > contextWindow - settings.reserveTokens;
 }
 ```
 
@@ -120,13 +121,13 @@ function shouldCompact(contextTokens, contextWindow, settings) {
 
 ### 实际 contextWindow 值
 
-| 来源 | 值 | 说明 |
-|------|------|------|
-| pi-ai 模型目录 (Opus 4.6 anthropic) | **200,000** | `models.generated.js` 中写死 |
-| pi-ai 模型目录 (Opus 4.6 openrouter) | **200,000** | 同上 |
-| minimax-m2.5 (openclaw.json inline) | **204,800** | 用户自定义的 inline model |
-| DEFAULT_CONTEXT_TOKENS | **200,000** | OpenClaw 默认值 |
-| agents.defaults.contextTokens | **20,000** | 用户设置的 cap |
+| 来源                                 | 值          | 说明                         |
+| ------------------------------------ | ----------- | ---------------------------- |
+| pi-ai 模型目录 (Opus 4.6 anthropic)  | **200,000** | `models.generated.js` 中写死 |
+| pi-ai 模型目录 (Opus 4.6 openrouter) | **200,000** | 同上                         |
+| minimax-m2.5 (openclaw.json inline)  | **204,800** | 用户自定义的 inline model    |
+| DEFAULT_CONTEXT_TOKENS               | **200,000** | OpenClaw 默认值              |
+| agents.defaults.contextTokens        | **20,000**  | 用户设置的 cap               |
 
 ### Compaction 触发阈值计算
 
@@ -145,14 +146,14 @@ reserveTokens = max(16384, 20000) = 20,000 (OpenClaw floor)
 
 ## 5. `agents.defaults.contextTokens` 实际影响范围
 
-| 功能 | 是否使用 OpenClaw cap | 是否影响 compact 触发 |
-|------|----------------------|---------------------|
-| Context Window Guard (warn/block) | 是 | 否 |
-| Compaction Safeguard Extension (compact 执行方式) | 是 | 否 |
-| Context Pruning (in-memory 裁剪) | 是 | 否 |
-| Memory Flush 阈值 | 是（但基于错误的 contextWindow） | 否 |
-| **上游 _checkCompaction() (compact 触发)** | **否** | **否** |
-| **上游 shouldCompact() (阈值判断)** | **否** | **否** |
+| 功能                                              | 是否使用 OpenClaw cap            | 是否影响 compact 触发 |
+| ------------------------------------------------- | -------------------------------- | --------------------- |
+| Context Window Guard (warn/block)                 | 是                               | 否                    |
+| Compaction Safeguard Extension (compact 执行方式) | 是                               | 否                    |
+| Context Pruning (in-memory 裁剪)                  | 是                               | 否                    |
+| Memory Flush 阈值                                 | 是（但基于错误的 contextWindow） | 否                    |
+| **上游 \_checkCompaction() (compact 触发)**       | **否**                           | **否**                |
+| **上游 shouldCompact() (阈值判断)**               | **否**                           | **否**                |
 
 ---
 
@@ -241,17 +242,17 @@ if (isContextOverflowError(errorText)) {
 
 ## 8. Compaction 设置参数汇总
 
-| 参数 | 默认值 | 来源 | 说明 |
-|------|--------|------|------|
-| `compaction.enabled` | `true` | Pi settings | 启用/禁用 auto-compaction |
-| `compaction.reserveTokens` | `16384` (Pi) / `20000` floor (OpenClaw) | Pi settings + OpenClaw override | compact 触发的预留空间 |
-| `compaction.keepRecentTokens` | `20000` | Pi settings | compact 后保留的最近消息 tokens |
-| `compaction.reserveTokensFloor` | `20000` | OpenClaw | OpenClaw 对 reserveTokens 的最低保障 |
-| `compaction.mode` | `"default"` | OpenClaw | `"safeguard"` 启用增强 compact 扩展 |
-| `compaction.maxHistoryShare` | `0.5` | OpenClaw | safeguard 模式下历史占 context 的最大比例 |
-| `compaction.memoryFlush.enabled` | `true` | OpenClaw | 启用预 compact 记忆写入 |
-| `compaction.memoryFlush.softThresholdTokens` | `4000` | OpenClaw | compact 阈值前多少 tokens 触发 flush |
-| `agents.defaults.contextTokens` | 未设置 | OpenClaw | context window 上限 cap（**不影响 compact 触发**） |
+| 参数                                         | 默认值                                  | 来源                            | 说明                                               |
+| -------------------------------------------- | --------------------------------------- | ------------------------------- | -------------------------------------------------- |
+| `compaction.enabled`                         | `true`                                  | Pi settings                     | 启用/禁用 auto-compaction                          |
+| `compaction.reserveTokens`                   | `16384` (Pi) / `20000` floor (OpenClaw) | Pi settings + OpenClaw override | compact 触发的预留空间                             |
+| `compaction.keepRecentTokens`                | `20000`                                 | Pi settings                     | compact 后保留的最近消息 tokens                    |
+| `compaction.reserveTokensFloor`              | `20000`                                 | OpenClaw                        | OpenClaw 对 reserveTokens 的最低保障               |
+| `compaction.mode`                            | `"default"`                             | OpenClaw                        | `"safeguard"` 启用增强 compact 扩展                |
+| `compaction.maxHistoryShare`                 | `0.5`                                   | OpenClaw                        | safeguard 模式下历史占 context 的最大比例          |
+| `compaction.memoryFlush.enabled`             | `true`                                  | OpenClaw                        | 启用预 compact 记忆写入                            |
+| `compaction.memoryFlush.softThresholdTokens` | `4000`                                  | OpenClaw                        | compact 阈值前多少 tokens 触发 flush               |
+| `agents.defaults.contextTokens`              | 未设置                                  | OpenClaw                        | context window 上限 cap（**不影响 compact 触发**） |
 
 ---
 
@@ -316,9 +317,7 @@ const modelWithCap = { ...params.model, contextWindow: resolvedCtxTokens };
   "models": {
     "providers": {
       "anthropic": {
-        "models": [
-          { "id": "claude-opus-4-6", "contextWindow": 20000 }
-        ]
+        "models": [{ "id": "claude-opus-4-6", "contextWindow": 20000 }]
       }
     }
   }
@@ -357,21 +356,21 @@ const modelWithCap = { ...params.model, contextWindow: resolvedCtxTokens };
 
 ## 12. 相关代码文件索引
 
-| 文件 | 作用 |
-|------|------|
-| `src/agents/context-window-guard.ts` | OpenClaw context window 解析 + guard |
-| `src/agents/defaults.ts` | `DEFAULT_CONTEXT_TOKENS = 200,000` |
-| `src/agents/compaction.ts` | OpenClaw compaction 辅助函数 |
-| `src/agents/pi-settings.ts` | `ensurePiCompactionReserveTokens()` |
-| `src/agents/pi-embedded-runner/run.ts` | 嵌入式 agent 运行 + overflow recovery |
-| `src/agents/pi-embedded-runner/run/attempt.ts` | `createAgentSession()` 调用点 |
-| `src/agents/pi-embedded-runner/extensions.ts` | 构建扩展路径 + runtime 设置 |
-| `src/agents/pi-extensions/compaction-safeguard.ts` | Safeguard compaction 扩展 |
-| `src/agents/models-config.ts` | `ensureOpenClawModelsJson()` |
-| `pi-coding-agent/.../agent-session.js` | 上游 `_checkCompaction()` |
-| `pi-coding-agent/.../compaction/compaction.js` | 上游 `shouldCompact()` |
-| `pi-coding-agent/.../settings-manager.js` | 上游 compaction settings |
-| `pi-ai/.../models.generated.js` | 模型目录（contextWindow 定义） |
+| 文件                                               | 作用                                  |
+| -------------------------------------------------- | ------------------------------------- |
+| `src/agents/context-window-guard.ts`               | OpenClaw context window 解析 + guard  |
+| `src/agents/defaults.ts`                           | `DEFAULT_CONTEXT_TOKENS = 200,000`    |
+| `src/agents/compaction.ts`                         | OpenClaw compaction 辅助函数          |
+| `src/agents/pi-settings.ts`                        | `ensurePiCompactionReserveTokens()`   |
+| `src/agents/pi-embedded-runner/run.ts`             | 嵌入式 agent 运行 + overflow recovery |
+| `src/agents/pi-embedded-runner/run/attempt.ts`     | `createAgentSession()` 调用点         |
+| `src/agents/pi-embedded-runner/extensions.ts`      | 构建扩展路径 + runtime 设置           |
+| `src/agents/pi-extensions/compaction-safeguard.ts` | Safeguard compaction 扩展             |
+| `src/agents/models-config.ts`                      | `ensureOpenClawModelsJson()`          |
+| `pi-coding-agent/.../agent-session.js`             | 上游 `_checkCompaction()`             |
+| `pi-coding-agent/.../compaction/compaction.js`     | 上游 `shouldCompact()`                |
+| `pi-coding-agent/.../settings-manager.js`          | 上游 compaction settings              |
+| `pi-ai/.../models.generated.js`                    | 模型目录（contextWindow 定义）        |
 
 ## 13. 相关文档
 
@@ -387,8 +386,8 @@ const modelWithCap = { ...params.model, contextWindow: resolvedCtxTokens };
 
 ### 14.1 已做的改动
 
-| 改动 | 文件 | 内容 | 状态 |
-|------|------|------|------|
+| 改动               | 文件                        | 内容                                                  | 状态                   |
+| ------------------ | --------------------------- | ----------------------------------------------------- | ---------------------- |
 | contextWindow 降低 | `~/.openclaw/openclaw.json` | minimax-m2.5 的 `contextWindow` 从 **204800 → 40000** | **已生效，未提交 git** |
 
 原始值备份：`"contextWindow": 204800`，回退只需改回这一行。
@@ -397,14 +396,14 @@ const modelWithCap = { ...params.model, contextWindow: resolvedCtxTokens };
 
 **测试 session**: `458b90bd-3a3c-4ad9-b708-0f13ae64866b`
 
-| 轮次 | 内容 | totalTokens | 触发 compact | compact 结果 |
-|------|------|-------------|-------------|-------------|
-| L6 问候 | Hey天哥 | 17,635 | 否 (< 20K) | - |
-| L10 5000字化学文 | 化学学科五千年发展史 | 23,381 | 是 (> 20K) | summary 为空 (firstKept=L2, 实际未丢弃任何消息) |
-| L13 短回复 | 哈哈天哥你说啥 | 23,769 | 是 (> 20K) | summary 为空 (**7条消息被丢弃，包括5000字文**) |
-| L16 500字AI史 | AI发展简史 | 18,025 | 否 (< 20K) | - |
-| L22 回忆测试 | 通过 sessions_history 工具回忆 | 27,154 | 是 | summary 为空 |
-| L35 prompt输出 | 完整输出prompt内容 | 35,653 | 是 | summary 为空 |
+| 轮次             | 内容                           | totalTokens | 触发 compact | compact 结果                                    |
+| ---------------- | ------------------------------ | ----------- | ------------ | ----------------------------------------------- |
+| L6 问候          | Hey天哥                        | 17,635      | 否 (< 20K)   | -                                               |
+| L10 5000字化学文 | 化学学科五千年发展史           | 23,381      | 是 (> 20K)   | summary 为空 (firstKept=L2, 实际未丢弃任何消息) |
+| L13 短回复       | 哈哈天哥你说啥                 | 23,769      | 是 (> 20K)   | summary 为空 (**7条消息被丢弃，包括5000字文**)  |
+| L16 500字AI史    | AI发展简史                     | 18,025      | 否 (< 20K)   | -                                               |
+| L22 回忆测试     | 通过 sessions_history 工具回忆 | 27,154      | 是           | summary 为空                                    |
+| L35 prompt输出   | 完整输出prompt内容             | 35,653      | 是           | summary 为空                                    |
 
 **关键发现**:
 
@@ -419,28 +418,28 @@ const modelWithCap = { ...params.model, contextWindow: resolvedCtxTokens };
 
 **配置**: Opus 4.6 主模型 + contextWindow: 40000（快速测试值）
 
-| 事件 | tokens | 结果 |
-|------|--------|------|
-| L51 第一轮回复 | 22,124 | 正常，未触发 compact |
-| L53 工具链完成 | 35,041 | 触发 compact (fromHook=false, 空 summary) |
+| 事件                 | tokens    | 结果                                        |
+| -------------------- | --------- | ------------------------------------------- |
+| L51 第一轮回复       | 22,124    | 正常，未触发 compact                        |
+| L53 工具链完成       | 35,041    | 触发 compact (fromHook=false, 空 summary)   |
 | L56-L63 工具链 (4轮) | 35K → 64K | **远超 40K 上限**，工具链期间不触发 compact |
-| L64 compact | 64,199 | 空 summary，session 进入异常状态 |
-| 用户消息 | - | **2 分钟超时，AI 无响应** |
-| /new 后 cron session | 21,852 | 又触发 compact，又超时 |
+| L64 compact          | 64,199    | 空 summary，session 进入异常状态            |
+| 用户消息             | -         | **2 分钟超时，AI 无响应**                   |
+| /new 后 cron session | 21,852    | 又触发 compact，又超时                      |
 
 **关键教训**: 40K 对 Opus 4.6 完全不可用。Opus 的 system prompt + 工具定义 ≈ 18K，加一轮对话就到阈值。工具链期间 token 可以无限增长（compaction 只在 agent_end 后触发）。
 
 ### 14.4 已确认的事实
 
-| 项目 | 确认值 | 来源 |
-|------|--------|------|
-| OpenRouter Opus 4.6 context_length | **1,000,000** (1M) | OpenRouter API |
-| Anthropic 官方 context window | 200K (默认) / 1M (beta) | docs.anthropic.com |
-| pi-ai 模型目录 contextWindow | 200,000 | models.generated.js |
-| OpenRouter > 200K 定价 | premium ($10/$37.5 per MTok) | OpenRouter docs |
-| Opus 4.6 max output | 128,000 | Anthropic 官方 |
-| upstream reserveTokens 默认 | 16,384 | settings-manager.js |
-| upstream keepRecentTokens 默认 | 20,000 | settings-manager.js |
+| 项目                                    | 确认值                           | 来源                    |
+| --------------------------------------- | -------------------------------- | ----------------------- |
+| OpenRouter Opus 4.6 context_length      | **1,000,000** (1M)               | OpenRouter API          |
+| Anthropic 官方 context window           | 200K (默认) / 1M (beta)          | docs.anthropic.com      |
+| pi-ai 模型目录 contextWindow            | 200,000                          | models.generated.js     |
+| OpenRouter > 200K 定价                  | premium ($10/$37.5 per MTok)     | OpenRouter docs         |
+| Opus 4.6 max output                     | 128,000                          | Anthropic 官方          |
+| upstream reserveTokens 默认             | 16,384                           | settings-manager.js     |
+| upstream keepRecentTokens 默认          | 20,000                           | settings-manager.js     |
 | `models.providers` contextWindow 优先级 | 最高 (> model catalog > default) | context-window-guard.ts |
 
 ### 14.5 企业级部署配置 (240K)
@@ -460,11 +459,13 @@ const modelWithCap = { ...params.model, contextWindow: resolvedCtxTokens };
     "providers": {
       "openrouter": {
         "baseUrl": "https://openrouter.ai/api/v1",
-        "models": [{
-          "id": "anthropic/claude-opus-4.6",
-          "contextWindow": 240000,
-          "maxTokens": 128000
-        }]
+        "models": [
+          {
+            "id": "anthropic/claude-opus-4.6",
+            "contextWindow": 240000,
+            "maxTokens": 128000
+          }
+        ]
       }
     }
   }
@@ -474,6 +475,7 @@ const modelWithCap = { ...params.model, contextWindow: resolvedCtxTokens };
 **关键**: `contextTokens` 和 `contextWindow` 必须对齐（2026-02-15 实测验证）。
 
 **效果**:
+
 - compaction 触发点: 240K - 16K = **224K tokens**
 - 避免 OpenRouter > 200K premium 定价（240K 仍在安全范围内）
 - 工具链空间充足（224K 足够处理复杂多轮工具调用）
@@ -486,10 +488,10 @@ const modelWithCap = { ...params.model, contextWindow: resolvedCtxTokens };
 
 两者是独立的系统：
 
-| 配置 | 原始值 | 当前值 | 实际控制什么 |
-|------|-------|-------|------------|
-| `agents.defaults.contextTokens` | 20,000 | **240,000** | OpenClaw /status 显示的 cap + safeguard runtime 参考 |
-| `models.providers...contextWindow` | 200,000 | **240,000** | upstream pi-coding-agent 的 compaction 触发 |
+| 配置                               | 原始值  | 当前值      | 实际控制什么                                         |
+| ---------------------------------- | ------- | ----------- | ---------------------------------------------------- |
+| `agents.defaults.contextTokens`    | 20,000  | **240,000** | OpenClaw /status 显示的 cap + safeguard runtime 参考 |
+| `models.providers...contextWindow` | 200,000 | **240,000** | upstream pi-coding-agent 的 compaction 触发          |
 
 这是**架构断层**的表现：OpenClaw 的 `contextTokens` 不传递给 upstream compaction 逻辑。**解决方案**: 将两个值手动对齐为 240K。
 
@@ -506,10 +508,10 @@ const modelWithCap = { ...params.model, contextWindow: resolvedCtxTokens };
 
 **第一阶段总结（2026-02-15 完成）**：
 
-| 环境 | 模型 | contextTokens | contextWindow | compaction | browser | 状态 |
-|------|------|--------------|--------------|-----------|---------|------|
-| 本地 Her | Opus 4.6 | 240K | 240K | safeguard | 未验证 | 配置完成 |
-| Docker carher-4 | Sonnet 4 / Opus 4.6 | 240K | 240K | safeguard | Chrome 运行中 | 配置完成 + 验证 |
+| 环境            | 模型                | contextTokens | contextWindow | compaction | browser       | 状态            |
+| --------------- | ------------------- | ------------- | ------------- | ---------- | ------------- | --------------- |
+| 本地 Her        | Opus 4.6            | 240K          | 240K          | safeguard  | 未验证        | 配置完成        |
+| Docker carher-4 | Sonnet 4 / Opus 4.6 | 240K          | 240K          | safeguard  | Chrome 运行中 | 配置完成 + 验证 |
 
 ### 14.8 待解决问题 (TODO)
 
@@ -532,6 +534,7 @@ const modelWithCap = { ...params.model, contextWindow: resolvedCtxTokens };
 ### 14.8 Docker Browser Use 故障根因与修复 (2025-02-15)
 
 **现象**: Docker 容器中 AI 无法使用 browser tool
+
 - 第一次调用 → "Sandbox browser is unavailable"（AI 选了 target=sandbox）
 - 第二次调用 → "Can't reach the openclaw browser control service (timed out)"
 
@@ -540,6 +543,7 @@ const modelWithCap = { ...params.model, contextWindow: resolvedCtxTokens };
 Docker 容器每次重启 hostname 变化（如 `2c404b3d7403` → `e49c3bce4df2`），但 `/data/` 持久卷上的 Chrome profile 目录保留了旧容器的 `SingletonLock` 锁文件。Chromium 启动时检测到锁文件指向不同 hostname，认为另一个进程正在使用该 profile，拒绝启动。
 
 错误链：
+
 ```
 1. gateway 启动 → browser control service "ready"（不启动 Chrome，lazy launch）
 2. AI 使用 browser tool → 触发 Chrome 启动
@@ -549,6 +553,7 @@ Docker 容器每次重启 hostname 变化（如 `2c404b3d7403` → `e49c3bce4df2
 ```
 
 **修复**:
+
 - 临时: 手动删除 `/data/.openclaw/browser/*/user-data/SingletonLock` 等文件
 - 永久: 在 `scripts/carher-entrypoint.sh` 添加容器启动时自动清理
 
@@ -558,6 +563,7 @@ find /data/.openclaw/browser -name "SingletonLock" -o -name "SingletonSocket" -o
 ```
 
 **架构要点**:
+
 - 重构后（`e7fdccce3`），browser tool 使用 in-process dispatch，不走 HTTP
 - browser control server 不再单独开端口（18791），而是通过 gateway 内部调用
 - Chrome lazy launch：service "ready" 不等于 Chrome 运行，首次 browser action 才启动
@@ -566,12 +572,14 @@ find /data/.openclaw/browser -name "SingletonLock" -o -name "SingletonSocket" -o
 ### 14.10 当前配置快照 (2026-02-15)
 
 **本地 Her** (`~/.openclaw/openclaw.json`):
+
 - `agents.defaults.contextTokens`: 240,000
 - `agents.defaults.compaction.mode`: safeguard
 - `agents.defaults.model.primary`: openrouter/anthropic/claude-opus-4.6
 - `models.providers`: minimax-m2.5 (contextWindow=240000) + opus-4.6 (contextWindow=240000)
 
 **Docker carher-4** (`/data/.openclaw/openclaw.json`, 基于 `docker/carher-config.json`):
+
 - `agents.defaults.contextTokens`: 240,000
 - `agents.defaults.compaction.mode`: safeguard
 - `agents.defaults.model.primary`: openrouter/anthropic/claude-sonnet-4
@@ -583,10 +591,12 @@ find /data/.openclaw/browser -name "SingletonLock" -o -name "SingletonSocket" -o
 每条飞书 AI 回复的 CardKit 卡片底部自动追加状态行，数据源复用 `/status` 的 session store。
 
 **格式**：
+
 - 正常: `🧠 **Opus 4.6** · 📊 42k/240k (18%) · 🧹 0次压缩`
 - 警告 (>=70%): `⚠️ **Opus 4.6** · 📊 170k/240k (71%) · 🧹 2次压缩`
 
 **实现**: `extensions/feishu-her/src/gateway.ts`
+
 - `buildCardStatusFooter()`: dispatch 完成后读 session store，格式化 model + totalTokens/contextTokens + compactionCount
 - 追加到 `cardStreamFinalText`，在 `stopCardStream()` 之前写入卡片
 

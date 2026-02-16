@@ -31,7 +31,13 @@ Read archived Feishu group chat messages stored locally.
 Each line in `messages.jsonl`:
 
 ```json
-{"ts":1707235200,"sender":"张三","senderId":"ou_xxx","text":"明天开会记得带材料","msgId":"om_xxx"}
+{
+  "ts": 1707235200,
+  "sender": "张三",
+  "senderId": "ou_xxx",
+  "text": "明天开会记得带材料",
+  "msgId": "om_xxx"
+}
 ```
 
 Fields: `ts` (unix epoch seconds), `sender` (name or open_id), `senderId` (open_id), `text`, `msgId`.
@@ -80,7 +86,7 @@ jq -r '.sender' ~/.openclaw/feishu-groups/<chatId>/messages.jsonl | sort | uniq 
 
 ## Tips
 
-- If `sender` is an open_id (starts with `ou_`), the display name was unavailable at archive time
+- If `sender` is an open*id (starts with `ou*`), the display name was unavailable at archive time
 - Messages are appended chronologically; newest at the bottom
 - Large files: use `tail` to read recent messages, `jq` to filter by date or keyword
 - The user may refer to groups by partial name — match flexibly against index

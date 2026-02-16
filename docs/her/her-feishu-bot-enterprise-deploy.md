@@ -17,23 +17,23 @@
 
 ### 硬件采购
 
-| 项目 | 最低配置（200 人文字） | 推荐配置（200 人文字 + 语音） |
-|------|----------------------|---------------------------|
-| 服务器 | 1 台：16 核 CPU、64GB RAM、500GB SSD | 2-4 台：各 8 核 CPU、32GB RAM、500GB SSD |
-| 网络 | 公网出口（需访问：GitHub、飞书 API、OpenRouter API、Google Cloud API） | 同左 |
-| 操作系统 | Ubuntu 22.04+ / Debian 12+ | 同左 |
+| 项目     | 最低配置（200 人文字）                                                 | 推荐配置（200 人文字 + 语音）            |
+| -------- | ---------------------------------------------------------------------- | ---------------------------------------- |
+| 服务器   | 1 台：16 核 CPU、64GB RAM、500GB SSD                                   | 2-4 台：各 8 核 CPU、32GB RAM、500GB SSD |
+| 网络     | 公网出口（需访问：GitHub、飞书 API、OpenRouter API、Google Cloud API） | 同左                                     |
+| 操作系统 | Ubuntu 22.04+ / Debian 12+                                             | 同左                                     |
 
 > 每容器约 300-400MB RAM（含 Chromium headless 浏览器），200 容器合计约 60-80GB。CPU 负载极低（AI 推理在云端），16 核足够。推荐配置选 128GB RAM 以留足余量。
 
 ### 软件环境（服务器上安装）
 
-| 软件 | 安装命令 | 用途 |
-|------|---------|------|
-| Docker | `curl -fsSL https://get.docker.com \| sh` | 容器运行环境 |
-| Git | `apt install git` | 拉取部署代码 |
-| Python 3 | `apt install python3` | 配置生成脚本依赖 |
-| tmux | `apt install tmux` | 终端会话持久化（start.sh 自动使用） |
-| cloudflared | `curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \| tee /usr/share/keyrings/cloudflare.gpg && apt install cloudflared` | 远程隧道（可选，仅远程访问时需要） |
+| 软件        | 安装命令                                                                                                                         | 用途                                |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| Docker      | `curl -fsSL https://get.docker.com \| sh`                                                                                        | 容器运行环境                        |
+| Git         | `apt install git`                                                                                                                | 拉取部署代码                        |
+| Python 3    | `apt install python3`                                                                                                            | 配置生成脚本依赖                    |
+| tmux        | `apt install tmux`                                                                                                               | 终端会话持久化（start.sh 自动使用） |
+| cloudflared | `curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \| tee /usr/share/keyrings/cloudflare.gpg && apt install cloudflared` | 远程隧道（可选，仅远程访问时需要）  |
 
 ### 账号与密钥（P0，必须提前申请）
 
@@ -149,12 +149,12 @@ source ~/.bashrc
 
 ## 方案选择
 
-| 方案 | 结论 | 放弃原因 |
-|------|------|---------|
-| per-peer 模式 | 不可用 | 仅隔离对话历史，不隔离记忆文件（MEMORY.md 共享），隐私不可接受 |
-| 单 Gateway + Multi-Agent + Sandbox | 有重大风险 | 单点故障（200 人全断）、升级必须停机、已知稳定性 bug（GitHub #1997）、非 OpenClaw 设计目标 |
-| 4 Bot + 4 Docker（Multi-Agent 分片） | 可行但复杂 | 每容器 50 人仍需 Multi-Agent + Sandbox，配置复杂度高 |
-| **200 Bot + 200 Docker** | **最终方案** | 完全符合 OpenClaw "1 用户 = 1 实例" 设计哲学，阿里云托管服务底层相同 |
+| 方案                                 | 结论         | 放弃原因                                                                                   |
+| ------------------------------------ | ------------ | ------------------------------------------------------------------------------------------ |
+| per-peer 模式                        | 不可用       | 仅隔离对话历史，不隔离记忆文件（MEMORY.md 共享），隐私不可接受                             |
+| 单 Gateway + Multi-Agent + Sandbox   | 有重大风险   | 单点故障（200 人全断）、升级必须停机、已知稳定性 bug（GitHub #1997）、非 OpenClaw 设计目标 |
+| 4 Bot + 4 Docker（Multi-Agent 分片） | 可行但复杂   | 每容器 50 人仍需 Multi-Agent + Sandbox，配置复杂度高                                       |
+| **200 Bot + 200 Docker**             | **最终方案** | 完全符合 OpenClaw "1 用户 = 1 实例" 设计哲学，阿里云托管服务底层相同                       |
 
 ```
 飞书 Bot-001 (张三) → Docker 容器 001 (标准单用户 OpenClaw)
@@ -245,6 +245,7 @@ source ~/.bashrc
 `$include` 自动引入以下共享配置（来自 `carher-config.json` + `shared-config.json5`）：gateway（bind=lan, auth）、browser（headless Chromium）、tools（web search）、commands、messages（TTS）、models（Sonnet 4 + Opus 4.6 定义）、agents（contextTokens 240K, compaction, memorySearch）。
 
 > **注意事项**：
+>
 > - 上述配置由 `start-user.sh` 从 `docker/users.csv` + `docker/carher-config.json` 自动生成，IT 无需手动编写
 > - `dm.allowFrom` 限制只有主人能与 bot 单聊（其他人发消息会被忽略）
 > - `groups.enabled` + `groups.archive` 默认启用群聊归档，主人可在私聊让 bot 总结群聊内容
@@ -257,6 +258,7 @@ source ~/.bashrc
 > - 飞书插件在用户发送 `/new` 时自动发送 Webchat URL（从 gateway 配置自动计算，Docker 模式下可通过 `WEBCHAT_URL` 环境变量覆盖）
 >
 > **Context Window 240K 保护（2026-02-15 新增）**：
+>
 > - `shared-config.json5` 已预配置 `agents.defaults.contextTokens: 240000` + `compaction.mode: "safeguard"`，限制每个用户的最大上下文窗口为 240K token
 > - `models.providers` 定义了 Sonnet 4 和 Opus 4.6 两个模型，均设 `contextWindow: 240000`，确保 compaction 在接近上限时自动触发
 > - **关键**: `contextTokens` 和 `contextWindow` 必须对齐，否则 compaction 不会触发（已实测验证）
@@ -361,18 +363,18 @@ git checkout v旧版本
 
 > 第 2 个 Bot 起就不用看下面的详细步骤了，对照这个表即可。
 
-| # | 操作 | 要点 |
-|---|------|------|
-| 1 | 创建应用 + 启用机器人 | 创建应用，添加「机器人」能力 |
-| 2 | 记录凭证 | 复制 App ID + App Secret |
-| 3 | 批量导入权限 | 粘贴 JSON 导入 26 个权限 |
-| 4 | 第一次发布 | 可用范围 = 指定人员，只选一人（见下方说明） |
-| 5 | 确认 Bot 可见 | 让目标员工搜索 Bot，确认能找到 |
-| 6 | 交给部署者 | 等部署者确认 WSClient connected |
-| 7a | 配置订阅方式 | 选「长连接」，保存（需 WSClient 在线） |
-| 7b | 添加事件 | 添加 im.message.receive_v1 |
-| 8 | 第二次发布 | 再次创建版本，发布（沿用第一次可用范围） |
-| 9 | 验证 | 给 Bot 发消息，确认 AI 回复 |
+| #   | 操作                  | 要点                                        |
+| --- | --------------------- | ------------------------------------------- |
+| 1   | 创建应用 + 启用机器人 | 创建应用，添加「机器人」能力                |
+| 2   | 记录凭证              | 复制 App ID + App Secret                    |
+| 3   | 批量导入权限          | 粘贴 JSON 导入 26 个权限                    |
+| 4   | 第一次发布            | 可用范围 = 指定人员，只选一人（见下方说明） |
+| 5   | 确认 Bot 可见         | 让目标员工搜索 Bot，确认能找到              |
+| 6   | 交给部署者            | 等部署者确认 WSClient connected             |
+| 7a  | 配置订阅方式          | 选「长连接」，保存（需 WSClient 在线）      |
+| 7b  | 添加事件              | 添加 im.message.receive_v1                  |
+| 8   | 第二次发布            | 再次创建版本，发布（沿用第一次可用范围）    |
+| 9   | 验证                  | 给 Bot 发消息，确认 AI 回复                 |
 
 > **关于可用范围（隔离的核心机制）**：
 >
@@ -442,6 +444,7 @@ git checkout v旧版本
 点击「下一步，确认新增权限」→ 确认即可。已开通的权限不会重复添加。
 
 > **权限分类（共 25 个，全部为 tenant 级别）**：
+>
 > - **消息基础**（6 个）：`im:message`、`im:message:send_as_bot`、`im:message.group_msg`、`im:message.p2p_msg:readonly`、`im:chat:readonly`、`im:resource` — 消息收发 + 图片 + 群聊归档
 > - **卡片流式回复**（1 个）：`cardkit:card:write` — AI 打字机效果
 > - **Emoji 表情**（2 个）：`im:message.reactions:read`、`im:message.reactions:write_only` — AI 自动 Get 回应 + 点赞
@@ -519,27 +522,27 @@ git checkout v旧版本
 
 #### 飞书 Bot 常见问题
 
-| 问题 | 答案 |
-|------|------|
-| 创建应用要付费吗？ | 不需要，飞书自建应用完全免费 |
-| 需要备案域名或公网 IP 吗？ | 不需要，长连接模式无需网络配置 |
-| 外部人员（第三方服务商）能帮我创建 Bot 吗？ | **不能。** 飞书开发者后台按企业隔离，外部人员无法访问你企业的后台。所有飞书平台操作必须由企业内部 IT 完成，外部人员只负责服务器部署 |
-| 可用范围能选「全部员工」吗？ | **绝不可以。** 必须选「指定人员」，且只选该 Bot 对应的目标用户一人。否则全公司都能看到并聊天，隐私完全泄露 |
-| 创建 Bot 时需要选通讯录吗？ | 不需要。创建应用时只填名称和描述，**通讯录只在发布时设置可用范围时用到** |
-| 200 个 Bot 如何保证配对？ | 每个 Bot 发布时，可用范围指定不同的员工：Bot-001→董事长、Bot-002→VP……只有目标员工能看到对应的 Bot |
-| 员工会看到其他人的 Bot 吗？ | 不会。可用范围设为「指定人员」后，其他员工完全搜不到这个 Bot。加上服务端 `dm.allowFrom` 白名单，形成双重隔离 |
-| 为什么事件订阅保存失败？ | WSClient 长连接未在线。确认容器日志有 `Feishu WSClient connected`。常见原因：容器未启动、凭证错误、网络不通 |
-| 飞书客户端搜不到 Bot？ | 还没有发布第一个版本，或可用范围未包含你（让目标员工而非 IT 自己去搜） |
-| 搜索到 Bot 但没有回复？ | 事件订阅未配置，或配置后没有发布第二个版本 |
-| 每个应用最多几个长连接？ | 50 个。但 200 Bot 方案中每个 Bot 是独立应用（各 1 个连接），不受此限制 |
-| 容器重启后 Browser Use 不工作？ | Chrome 的 `SingletonLock` 文件残留（容器重启后 hostname 变化导致）。`carher-entrypoint.sh` 已内置自动清理，确保使用最新镜像。手动修复：`docker exec carher-N rm -f /data/.openclaw/browser/*/user-data/SingletonLock /data/.openclaw/browser/*/user-data/SingletonSocket /data/.openclaw/browser/*/user-data/SingletonCookie` 后重启容器 |
+| 问题                                        | 答案                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 创建应用要付费吗？                          | 不需要，飞书自建应用完全免费                                                                                                                                                                                                                                                                                                             |
+| 需要备案域名或公网 IP 吗？                  | 不需要，长连接模式无需网络配置                                                                                                                                                                                                                                                                                                           |
+| 外部人员（第三方服务商）能帮我创建 Bot 吗？ | **不能。** 飞书开发者后台按企业隔离，外部人员无法访问你企业的后台。所有飞书平台操作必须由企业内部 IT 完成，外部人员只负责服务器部署                                                                                                                                                                                                      |
+| 可用范围能选「全部员工」吗？                | **绝不可以。** 必须选「指定人员」，且只选该 Bot 对应的目标用户一人。否则全公司都能看到并聊天，隐私完全泄露                                                                                                                                                                                                                               |
+| 创建 Bot 时需要选通讯录吗？                 | 不需要。创建应用时只填名称和描述，**通讯录只在发布时设置可用范围时用到**                                                                                                                                                                                                                                                                 |
+| 200 个 Bot 如何保证配对？                   | 每个 Bot 发布时，可用范围指定不同的员工：Bot-001→董事长、Bot-002→VP……只有目标员工能看到对应的 Bot                                                                                                                                                                                                                                        |
+| 员工会看到其他人的 Bot 吗？                 | 不会。可用范围设为「指定人员」后，其他员工完全搜不到这个 Bot。加上服务端 `dm.allowFrom` 白名单，形成双重隔离                                                                                                                                                                                                                             |
+| 为什么事件订阅保存失败？                    | WSClient 长连接未在线。确认容器日志有 `Feishu WSClient connected`。常见原因：容器未启动、凭证错误、网络不通                                                                                                                                                                                                                              |
+| 飞书客户端搜不到 Bot？                      | 还没有发布第一个版本，或可用范围未包含你（让目标员工而非 IT 自己去搜）                                                                                                                                                                                                                                                                   |
+| 搜索到 Bot 但没有回复？                     | 事件订阅未配置，或配置后没有发布第二个版本                                                                                                                                                                                                                                                                                               |
+| 每个应用最多几个长连接？                    | 50 个。但 200 Bot 方案中每个 Bot 是独立应用（各 1 个连接），不受此限制                                                                                                                                                                                                                                                                   |
+| 容器重启后 Browser Use 不工作？             | Chrome 的 `SingletonLock` 文件残留（容器重启后 hostname 变化导致）。`carher-entrypoint.sh` 已内置自动清理，确保使用最新镜像。手动修复：`docker exec carher-N rm -f /data/.openclaw/browser/*/user-data/SingletonLock /data/.openclaw/browser/*/user-data/SingletonSocket /data/.openclaw/browser/*/user-data/SingletonCookie` 后重启容器 |
 
 ### 员工生命周期
 
-| 事件 | IT 操作 | 部署者操作 | 对其他员工影响 |
-|------|--------|-----------|-------------|
-| 新员工入职 | 创建 1 个飞书 Bot（15 分钟） | 生成配置 + 启动 1 个容器 | **零影响** |
-| 员工离职 | 注销飞书账号 + 删除 Bot | 停止并删除该容器 | **零影响** |
+| 事件       | IT 操作                      | 部署者操作               | 对其他员工影响 |
+| ---------- | ---------------------------- | ------------------------ | -------------- |
+| 新员工入职 | 创建 1 个飞书 Bot（15 分钟） | 生成配置 + 启动 1 个容器 | **零影响**     |
+| 员工离职   | 注销飞书账号 + 删除 Bot      | 停止并删除该容器         | **零影响**     |
 
 ### 用户管理
 
@@ -552,19 +555,20 @@ git checkout v旧版本
 3,王五,sonnet,cli_bbb222,secret222,ou_xxx222,
 ```
 
-| 字段 | 说明 |
-|------|------|
-| `id` | 用户编号（1-999） |
-| `姓名` | 显示名 |
-| `模型` | AI 模型（留空用默认 sonnet） |
-| `feishu_app_id` | 飞书 Bot 的 App ID（留空不启用飞书） |
-| `feishu_app_secret` | 飞书 Bot 的 App Secret |
+| 字段                   | 说明                                                          |
+| ---------------------- | ------------------------------------------------------------- |
+| `id`                   | 用户编号（1-999）                                             |
+| `姓名`                 | 显示名                                                        |
+| `模型`                 | AI 模型（留空用默认 sonnet）                                  |
+| `feishu_app_id`        | 飞书 Bot 的 App ID（留空不启用飞书）                          |
+| `feishu_app_secret`    | 飞书 Bot 的 App Secret                                        |
 | `feishu_owner_open_id` | 用户的飞书 open_id（`ou_xxx`），用于单聊白名单 + 群聊主人识别 |
-| `备注` | 备注信息 |
+| `备注`                 | 备注信息                                                      |
 
 `feishu_owner_open_id` 获取方法：用户给 Bot 发一条消息，从容器日志中找 `from=ou_xxx`。
 
 `start-user.sh` 从 CSV 自动生成完整配置，包括：
+
 - 飞书通道 + 插件启用
 - `dm.allowFrom`（单聊白名单 = 主人身份）
 - `groups.enabled` + `groups.archive`（群聊归档，默认启用）
@@ -583,47 +587,47 @@ git checkout v旧版本
 
 ## 各通道与工具能力
 
-| 通道/工具 | 状态 | 说明 |
-|------|------|------|
-| 飞书 | **可用** | 每人专属 Bot + 独立容器，CardKit 流式卡片回复，已验证 |
-| Webchat | **可用** | 每容器独立 Webchat（各自端口），已验证 |
-| Telegram | 可用 | 同飞书，每容器可额外配 Telegram Bot |
+| 通道/工具       | 状态            | 说明                                                                                                                                                                                                                                                    |
+| --------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 飞书            | **可用**        | 每人专属 Bot + 独立容器，CardKit 流式卡片回复，已验证                                                                                                                                                                                                   |
+| Webchat         | **可用**        | 每容器独立 Webchat（各自端口），已验证                                                                                                                                                                                                                  |
+| Telegram        | 可用            | 同飞书，每容器可额外配 Telegram Bot                                                                                                                                                                                                                     |
 | 语音 (realtime) | **P0 安全风险** | Gemini Live 原生语音已验证（本地 + Docker），但 realtime 端口零认证，**任何人可连接他人语音端口读取记忆/冒充对话**。企业部署前必须修复。方案见 [飞书架构文档 - 安全架构：两层防护模型](her-feishu-bot-architecture#安全架构两层防护模型2026-02-15-设计) |
-| Web Search | **可用** | Perplexity Sonar 搜索引擎，复用 OpenRouter API key，已验证 |
-| Browser Use | **可用** | 容器内 Chromium headless 浏览器，可打开网页/截图/读取 JS 渲染内容，已验证 |
-| Web Fetch | **可用** | HTTP 网页抓取 + 正文提取（纯静态页面），默认启用 |
+| Web Search      | **可用**        | Perplexity Sonar 搜索引擎，复用 OpenRouter API key，已验证                                                                                                                                                                                              |
+| Browser Use     | **可用**        | 容器内 Chromium headless 浏览器，可打开网页/截图/读取 JS 渲染内容，已验证                                                                                                                                                                               |
+| Web Fetch       | **可用**        | HTTP 网页抓取 + 正文提取（纯静态页面），默认启用                                                                                                                                                                                                        |
 
 ---
 
 ## 费用估算（200 人规模）
 
-| 项目 | 假设 | 月费用 |
-|------|------|--------|
-| 飞书文字（Claude Sonnet via OpenRouter） | 每人 50 条/天，$0.005/条 | ~$1,500 |
-| 语音（Gemini Live, 20% 活跃） | 40 人 x 30 分/天，$0.04/分 | ~$1,440 |
-| 服务器（仅文字） | 1 台 16核 64G 或 4 台 4核 16G | ~$200-500 |
+| 项目                                     | 假设                          | 月费用    |
+| ---------------------------------------- | ----------------------------- | --------- |
+| 飞书文字（Claude Sonnet via OpenRouter） | 每人 50 条/天，$0.005/条      | ~$1,500   |
+| 语音（Gemini Live, 20% 活跃）            | 40 人 x 30 分/天，$0.04/分    | ~$1,440   |
+| 服务器（仅文字）                         | 1 台 16核 64G 或 4 台 4核 16G | ~$200-500 |
 
 > 每容器约 300-400MB RAM（含 Chromium headless），200 容器约 60-80GB。
 
-| 方案 | 月费用 |
-|------|--------|
-| 仅飞书文字 | ~$1,700-2,000 |
+| 方案        | 月费用        |
+| ----------- | ------------- |
+| 仅飞书文字  | ~$1,700-2,000 |
 | 飞书 + 语音 | ~$3,000-7,000 |
 
 ---
 
 ## 总结
 
-| 维度 | 方案 |
-|------|------|
-| 架构 | **200 Bot + 200 Docker**：每人 1 个飞书 Bot + 1 个 Docker 容器 |
+| 维度       | 方案                                                                                                               |
+| ---------- | ------------------------------------------------------------------------------------------------------------------ |
+| 架构       | **200 Bot + 200 Docker**：每人 1 个飞书 Bot + 1 个 Docker 容器                                                     |
 | 每容器配置 | **标准单用户 OpenClaw**（默认配置 + 飞书插件 + Perplexity 搜索 + Chromium 浏览器），无 Multi-Agent/binding/sandbox |
-| 隔离 | **Docker OS 级**：独立文件系统、进程空间、网络 |
-| 单点故障 | **无**：1 容器崩只影响 1 人 |
-| 升级 | **滚动升级**：逐容器重启，每次只影响 1 人 2-3 秒 |
-| 代码修改 | **零**（纯配置 + Docker），与上游零冲突 |
-| 飞书 Bot | IT 手动创建（无 API，~50 小时一次性工作） |
-| 月费用 | ~$2,000-7,000（取决于模型和语音使用量） |
+| 隔离       | **Docker OS 级**：独立文件系统、进程空间、网络                                                                     |
+| 单点故障   | **无**：1 容器崩只影响 1 人                                                                                        |
+| 升级       | **滚动升级**：逐容器重启，每次只影响 1 人 2-3 秒                                                                   |
+| 代码修改   | **零**（纯配置 + Docker），与上游零冲突                                                                            |
+| 飞书 Bot   | IT 手动创建（无 API，~50 小时一次性工作）                                                                          |
+| 月费用     | ~$2,000-7,000（取决于模型和语音使用量）                                                                            |
 
 ---
 
@@ -641,13 +645,13 @@ git checkout v旧版本
 
 OpenClaw 飞书插件的 `docx.ts` 中，**用错了飞书 API**：
 
-| | `documentBlockChildren.create`（当前用的） | `documentBlockDescendant.create`（应该用的） |
-|---|---|---|
-| **API 路径** | `/blocks/:block_id/children` | `/blocks/:block_id/descendant` |
-| **嵌套支持** | ❌ 只能创建扁平一层子块 | ✅ 支持完整嵌套父子关系 |
-| **表格支持** | ❌ Table(31)/TableCell(32) 无法创建 | ✅ 一次请求创建 Table + Cell + 内容 |
-| **每次上限** | 50 个块 | 1000 个块 |
-| **飞书官方推荐** | "推荐使用创建嵌套块接口" | ✅ convert API 官方指定配合此接口 |
+|                  | `documentBlockChildren.create`（当前用的） | `documentBlockDescendant.create`（应该用的） |
+| ---------------- | ------------------------------------------ | -------------------------------------------- |
+| **API 路径**     | `/blocks/:block_id/children`               | `/blocks/:block_id/descendant`               |
+| **嵌套支持**     | ❌ 只能创建扁平一层子块                    | ✅ 支持完整嵌套父子关系                      |
+| **表格支持**     | ❌ Table(31)/TableCell(32) 无法创建        | ✅ 一次请求创建 Table + Cell + 内容          |
+| **每次上限**     | 50 个块                                    | 1000 个块                                    |
+| **飞书官方推荐** | "推荐使用创建嵌套块接口"                   | ✅ convert API 官方指定配合此接口            |
 
 因为 `documentBlockChildren.create` 不支持 Table 和 TableCell，开发者在代码中直接过滤掉了这些块类型（`UNSUPPORTED_CREATE_TYPES = new Set([31, 32])`），导致表格内容被**静默丢弃**。
 

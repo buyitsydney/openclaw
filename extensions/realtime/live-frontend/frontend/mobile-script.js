@@ -116,7 +116,14 @@ const state = {
   audio: { streamer: null, player: null, isStreaming: false },
   video: { streamer: null, isStreaming: false },
   screen: { capture: null, isSharing: false },
-  openclaw: { connected: false, liveMemoryCapsule: "", systemPrompt: null, toolDeclarations: null, geminiProjectId: "", geminiModel: "" },
+  openclaw: {
+    connected: false,
+    liveMemoryCapsule: "",
+    systemPrompt: null,
+    toolDeclarations: null,
+    geminiProjectId: "",
+    geminiModel: "",
+  },
   gemini: { turnComplete: true },
   audioObs: {
     lastAudioRecvAtMs: null,
@@ -145,15 +152,35 @@ let el = {};
 
 function initDOM() {
   const ids = [
-    "transcript", "mainBtn", "videoContainer", "videoPreview",
-    "micBtn", "camBtn", "screenBtn", "volBtn", "debugBtn",
-    "volume", "volLabel", "volumePopup", "debugOverlay",
-    "dbgOcStatus", "dbgGeminiStatus", "dbgMicStatus", "dbgAudioObs", "dbgLog",
-    "jitterSlider", "jitterLabel",
-    "micDeviceSelect", "speakerDeviceSelect", "speakerRow",
-    "refreshDevicesBtn", "deviceHint",
+    "transcript",
+    "mainBtn",
+    "videoContainer",
+    "videoPreview",
+    "micBtn",
+    "camBtn",
+    "screenBtn",
+    "volBtn",
+    "debugBtn",
+    "volume",
+    "volLabel",
+    "volumePopup",
+    "debugOverlay",
+    "dbgOcStatus",
+    "dbgGeminiStatus",
+    "dbgMicStatus",
+    "dbgAudioObs",
+    "dbgLog",
+    "jitterSlider",
+    "jitterLabel",
+    "micDeviceSelect",
+    "speakerDeviceSelect",
+    "speakerRow",
+    "refreshDevicesBtn",
+    "deviceHint",
   ];
-  ids.forEach((id) => { el[id] = document.getElementById(id); });
+  ids.forEach((id) => {
+    el[id] = document.getElementById(id);
+  });
 }
 
 // Jitter buffer: load saved value, apply to AudioPlayer, save on change.
@@ -202,13 +229,15 @@ async function populateAudioDevices() {
         });
       el.micDeviceSelect.addEventListener("change", () => {
         localStorage.setItem("carher.micDeviceId", el.micDeviceSelect.value);
-        dbgLog(`Mic device → ${el.micDeviceSelect.value ? el.micDeviceSelect.selectedOptions[0].textContent : "默认"}`);
+        dbgLog(
+          `Mic device → ${el.micDeviceSelect.value ? el.micDeviceSelect.selectedOptions[0].textContent : "默认"}`,
+        );
       });
     }
 
     // Speaker dropdown (only if setSinkId is available)
-    const sinkIdSupported = typeof AudioContext !== "undefined" &&
-      typeof AudioContext.prototype.setSinkId === "function";
+    const sinkIdSupported =
+      typeof AudioContext !== "undefined" && typeof AudioContext.prototype.setSinkId === "function";
     if (!sinkIdSupported && el.speakerRow) {
       el.speakerRow.style.display = "none"; // hide if unsupported
     }
@@ -226,7 +255,9 @@ async function populateAudioDevices() {
         });
       el.speakerDeviceSelect.addEventListener("change", () => {
         localStorage.setItem("carher.speakerDeviceId", el.speakerDeviceSelect.value);
-        dbgLog(`Speaker device → ${el.speakerDeviceSelect.value ? el.speakerDeviceSelect.selectedOptions[0].textContent : "默认"}`);
+        dbgLog(
+          `Speaker device → ${el.speakerDeviceSelect.value ? el.speakerDeviceSelect.selectedOptions[0].textContent : "默认"}`,
+        );
       });
     }
   } catch (err) {
@@ -284,10 +315,18 @@ function setPhase(phase) {
   const btn = el.mainBtn;
   btn.className = "main-btn " + phase;
   switch (phase) {
-    case "idle":    btn.textContent = "开始"; break;
-    case "connecting": btn.textContent = "连接中..."; break;
-    case "live":    btn.textContent = "结束"; break;
-    case "error":   btn.textContent = "重试"; break;
+    case "idle":
+      btn.textContent = "开始";
+      break;
+    case "connecting":
+      btn.textContent = "连接中...";
+      break;
+    case "live":
+      btn.textContent = "结束";
+      break;
+    case "error":
+      btn.textContent = "重试";
+      break;
   }
 }
 
@@ -381,7 +420,10 @@ function appendAudioObsLine() {
 // ---------------------------------------------------------------------------
 async function connectOpenClaw() {
   const url = CONFIG.openclawUrl;
-  const httpUrl = url.replace(/^wss:\/\//, "https://").replace(/^ws:\/\//, "http://").replace(/\/ws$/, "");
+  const httpUrl = url
+    .replace(/^wss:\/\//, "https://")
+    .replace(/^ws:\/\//, "http://")
+    .replace(/\/ws$/, "");
   const agentId = getAgentIdFromPageUrl();
 
   updateDbgStatus("dbgOcStatus", "连接中...", null);
@@ -413,7 +455,9 @@ async function connectOpenClaw() {
   const bootstrapTools = bootstrapSetup?.tools?.function_declarations;
   if (bootstrapTools && Array.isArray(bootstrapTools) && bootstrapTools.length > 0) {
     state.openclaw.toolDeclarations = bootstrapTools;
-    dbgLog(`Bootstrap OK: ${bootstrapTools.length} tools (from server: ${bootstrapTools.map(t => t.name).join(", ")})`);
+    dbgLog(
+      `Bootstrap OK: ${bootstrapTools.length} tools (from server: ${bootstrapTools.map((t) => t.name).join(", ")})`,
+    );
   } else {
     state.openclaw.toolDeclarations = null;
     dbgLog("Bootstrap: no tool declarations in response, using local fallback");
@@ -421,7 +465,9 @@ async function connectOpenClaw() {
   // Extract Gemini projectId/model from Bootstrap model URI (single source of truth: server.ts)
   const bootstrapModel = bootstrapSetup?.model || "";
   // model URI format: "projects/{projectId}/locations/{loc}/publishers/google/models/{model}"
-  const modelUriMatch = bootstrapModel.match(/^projects\/([^/]+)\/locations\/[^/]+\/publishers\/google\/models\/(.+)$/);
+  const modelUriMatch = bootstrapModel.match(
+    /^projects\/([^/]+)\/locations\/[^/]+\/publishers\/google\/models\/(.+)$/,
+  );
   if (modelUriMatch) {
     state.openclaw.geminiProjectId = modelUriMatch[1];
     state.openclaw.geminiModel = modelUriMatch[2];
@@ -486,9 +532,13 @@ async function connectGemini() {
   const projectId = state.openclaw.geminiProjectId || CONFIG.projectId;
   const model = state.openclaw.geminiModel || CONFIG.model;
   if (!projectId || !model) {
-    throw new Error(`Gemini 配置缺失: projectId="${projectId}", model="${model}"。请检查 Bootstrap API 或 openclaw.json 配置`);
+    throw new Error(
+      `Gemini 配置缺失: projectId="${projectId}", model="${model}"。请检查 Bootstrap API 或 openclaw.json 配置`,
+    );
   }
-  dbgLog(`Gemini config: project=${projectId}, model=${model} (source: ${state.openclaw.geminiProjectId ? "Bootstrap" : "CONFIG"})`);
+  dbgLog(
+    `Gemini config: project=${projectId}, model=${model} (source: ${state.openclaw.geminiProjectId ? "Bootstrap" : "CONFIG"})`,
+  );
 
   state.client = new GeminiLiveAPI(CONFIG.proxyUrl, projectId, model);
 
@@ -556,7 +606,9 @@ async function connectGemini() {
   await state.audio.player.init();
   const speakerId = getSavedSpeakerDeviceId();
   if (speakerId) await state.audio.player.setOutputDevice(speakerId);
-  dbgLog(`AudioPlayer ready (jitter: ${state.audio.player.jitterBufferMs}ms${speakerId ? `, speaker: ${speakerId.slice(0, 8)}…` : ""})`);
+  dbgLog(
+    `AudioPlayer ready (jitter: ${state.audio.player.jitterBufferMs}ms${speakerId ? `, speaker: ${speakerId.slice(0, 8)}…` : ""})`,
+  );
 }
 
 // Auto-start microphone after connection, using saved device if set
@@ -840,9 +892,15 @@ function initEvents() {
   });
 
   // Toolbar
-  el.micBtn.addEventListener("click", () => { if (state.phase === "live") toggleMic(); });
-  el.camBtn.addEventListener("click", () => { if (state.phase === "live") toggleCamera(); });
-  el.screenBtn.addEventListener("click", () => { if (state.phase === "live") toggleScreen(); });
+  el.micBtn.addEventListener("click", () => {
+    if (state.phase === "live") toggleMic();
+  });
+  el.camBtn.addEventListener("click", () => {
+    if (state.phase === "live") toggleCamera();
+  });
+  el.screenBtn.addEventListener("click", () => {
+    if (state.phase === "live") toggleScreen();
+  });
 
   // Volume popup
   el.volBtn.addEventListener("click", () => {
@@ -855,7 +913,11 @@ function initEvents() {
   });
   // Close volume popup on tap outside
   document.addEventListener("click", (e) => {
-    if (!el.volumePopup.contains(e.target) && e.target !== el.volBtn && !el.volBtn.contains(e.target)) {
+    if (
+      !el.volumePopup.contains(e.target) &&
+      e.target !== el.volBtn &&
+      !el.volBtn.contains(e.target)
+    ) {
       el.volumePopup.classList.remove("visible");
     }
   });
@@ -884,7 +946,7 @@ function runEnvChecks() {
     {
       name: "系统",
       ok: true,
-      label: androidVer ? `Android ${androidVer}` : (ua.includes("iPhone") ? "iOS" : "非Android"),
+      label: androidVer ? `Android ${androidVer}` : ua.includes("iPhone") ? "iOS" : "非Android",
     },
     {
       name: "内核",
@@ -911,7 +973,9 @@ function runEnvChecks() {
           const has = "audioWorklet" in ctx;
           ctx.close();
           return has;
-        } catch { return false; }
+        } catch {
+          return false;
+        }
       })(),
     },
     {
@@ -931,7 +995,7 @@ function runEnvChecks() {
     container.appendChild(row);
   }
 
-  const allPassed = checks.every(c => c.ok !== false);
+  const allPassed = checks.every((c) => c.ok !== false);
   const summary = document.createElement("div");
   summary.className = "status-row";
   summary.style.marginTop = "4px";

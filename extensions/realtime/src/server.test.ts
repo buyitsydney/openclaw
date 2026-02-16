@@ -8,8 +8,8 @@
  * 4. Existing personal Her is unaffected (no agentId = same behavior as before)
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import http from "node:http";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 
 /**
@@ -17,10 +17,7 @@ import WebSocket from "ws";
  * The real function is not exported, so we duplicate the logic here to
  * verify the parsing independently.
  */
-function resolveAgentIdFromUrl(
-  urlStr: string | undefined,
-  defaultAgentId: string,
-): string {
+function resolveAgentIdFromUrl(urlStr: string | undefined, defaultAgentId: string): string {
   if (!urlStr) return defaultAgentId;
   try {
     const parsed = new URL(urlStr, "http://localhost");
@@ -80,13 +77,15 @@ describe("appendQueryParam (frontend helper)", () => {
   }
 
   it("appends to URL without existing params", () => {
-    expect(appendQueryParam("ws://localhost:18790/ws", "agentId", "alice"))
-      .toBe("ws://localhost:18790/ws?agentId=alice");
+    expect(appendQueryParam("ws://localhost:18790/ws", "agentId", "alice")).toBe(
+      "ws://localhost:18790/ws?agentId=alice",
+    );
   });
 
   it("appends to URL with existing params", () => {
-    expect(appendQueryParam("ws://localhost:18790/ws?foo=bar", "agentId", "alice"))
-      .toBe("ws://localhost:18790/ws?foo=bar&agentId=alice");
+    expect(appendQueryParam("ws://localhost:18790/ws?foo=bar", "agentId", "alice")).toBe(
+      "ws://localhost:18790/ws?foo=bar&agentId=alice",
+    );
   });
 });
 

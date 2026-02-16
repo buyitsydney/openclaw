@@ -57,10 +57,11 @@
       "token": "carher-container-token"
     },
     "controlUi": {
-      "dangerouslyDisableDeviceAuth": true
+      "allowInsecureAuth": true
     }
   },
   "plugins": {
+    "deny": ["feishu"],
     "entries": {
       "realtime": {
         "enabled": true,

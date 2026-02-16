@@ -121,75 +121,53 @@ function resolveOpenClawRoot(): string {
   throw new Error("Unable to resolve core root. Set OPENCLAW_ROOT to the package root.");
 }
 
-async function importCoreModule<T>(relativePath: string): Promise<T> {
-  const root = resolveOpenClawRoot();
-  const distPath = path.join(root, "dist", relativePath);
-  if (!fs.existsSync(distPath)) {
-    throw new Error(
-      `Missing core module at ${distPath}. Run \`pnpm build\` or install the official package.`,
-    );
-  }
-  return (await import(pathToFileURL(distPath).href)) as T;
-}
-
+// Import all needed core functions from the stable extensionAPI entry point.
+// This avoids depending on internal dist/ chunk structure (hashed filenames).
 export async function loadCoreAgentDeps(): Promise<CoreAgentDeps> {
   if (coreDepsPromise) {
     return coreDepsPromise;
   }
 
   coreDepsPromise = (async () => {
-    const [
-      agentScope,
-      defaults,
-      modelSelection,
-      piEmbedded,
-      timeout,
-      workspace,
-      sessions,
-    ] = await Promise.all([
-      importCoreModule<{
-        resolveDefaultAgentId: CoreAgentDeps["resolveDefaultAgentId"];
-        resolveAgentDir: CoreAgentDeps["resolveAgentDir"];
-        resolveAgentWorkspaceDir: CoreAgentDeps["resolveAgentWorkspaceDir"];
-      }>("agents/agent-scope.js"),
-      importCoreModule<{
-        DEFAULT_MODEL: string;
-        DEFAULT_PROVIDER: string;
-      }>("agents/defaults.js"),
-      importCoreModule<{
-        resolveThinkingDefault: CoreAgentDeps["resolveThinkingDefault"];
-      }>("agents/model-selection.js"),
-      importCoreModule<{
-        runEmbeddedPiAgent: CoreAgentDeps["runEmbeddedPiAgent"];
-      }>("agents/pi-embedded.js"),
-      importCoreModule<{
-        resolveAgentTimeoutMs: CoreAgentDeps["resolveAgentTimeoutMs"];
-      }>("agents/timeout.js"),
-      importCoreModule<{
-        ensureAgentWorkspace: CoreAgentDeps["ensureAgentWorkspace"];
-      }>("agents/workspace.js"),
-      importCoreModule<{
-        resolveStorePath: CoreAgentDeps["resolveStorePath"];
-        loadSessionStore: CoreAgentDeps["loadSessionStore"];
-        saveSessionStore: CoreAgentDeps["saveSessionStore"];
-        resolveSessionFilePath: CoreAgentDeps["resolveSessionFilePath"];
-      }>("config/sessions.js"),
-    ]);
+    const root = resolveOpenClawRoot();
+    const apiPath = path.join(root, "dist", "extensionAPI.js");
+
+    if (!fs.existsSync(apiPath)) {
+      throw new Error(
+        `Missing extensionAPI at ${apiPath}. Run \`pnpm build\` or install the official package.`,
+      );
+    }
+
+    const api = (await import(pathToFileURL(apiPath).href)) as {
+      resolveDefaultAgentId: CoreAgentDeps["resolveDefaultAgentId"];
+      resolveAgentDir: CoreAgentDeps["resolveAgentDir"];
+      resolveAgentWorkspaceDir: CoreAgentDeps["resolveAgentWorkspaceDir"];
+      resolveThinkingDefault: CoreAgentDeps["resolveThinkingDefault"];
+      runEmbeddedPiAgent: CoreAgentDeps["runEmbeddedPiAgent"];
+      resolveAgentTimeoutMs: CoreAgentDeps["resolveAgentTimeoutMs"];
+      ensureAgentWorkspace: CoreAgentDeps["ensureAgentWorkspace"];
+      resolveStorePath: CoreAgentDeps["resolveStorePath"];
+      loadSessionStore: CoreAgentDeps["loadSessionStore"];
+      saveSessionStore: CoreAgentDeps["saveSessionStore"];
+      resolveSessionFilePath: CoreAgentDeps["resolveSessionFilePath"];
+      DEFAULT_MODEL: string;
+      DEFAULT_PROVIDER: string;
+    };
 
     return {
-      resolveDefaultAgentId: agentScope.resolveDefaultAgentId,
-      resolveAgentDir: agentScope.resolveAgentDir,
-      resolveAgentWorkspaceDir: agentScope.resolveAgentWorkspaceDir,
-      resolveThinkingDefault: modelSelection.resolveThinkingDefault,
-      runEmbeddedPiAgent: piEmbedded.runEmbeddedPiAgent,
-      resolveAgentTimeoutMs: timeout.resolveAgentTimeoutMs,
-      ensureAgentWorkspace: workspace.ensureAgentWorkspace,
-      resolveStorePath: sessions.resolveStorePath,
-      loadSessionStore: sessions.loadSessionStore,
-      saveSessionStore: sessions.saveSessionStore,
-      resolveSessionFilePath: sessions.resolveSessionFilePath,
-      DEFAULT_MODEL: defaults.DEFAULT_MODEL,
-      DEFAULT_PROVIDER: defaults.DEFAULT_PROVIDER,
+      resolveDefaultAgentId: api.resolveDefaultAgentId,
+      resolveAgentDir: api.resolveAgentDir,
+      resolveAgentWorkspaceDir: api.resolveAgentWorkspaceDir,
+      resolveThinkingDefault: api.resolveThinkingDefault,
+      runEmbeddedPiAgent: api.runEmbeddedPiAgent,
+      resolveAgentTimeoutMs: api.resolveAgentTimeoutMs,
+      ensureAgentWorkspace: api.ensureAgentWorkspace,
+      resolveStorePath: api.resolveStorePath,
+      loadSessionStore: api.loadSessionStore,
+      saveSessionStore: api.saveSessionStore,
+      resolveSessionFilePath: api.resolveSessionFilePath,
+      DEFAULT_MODEL: api.DEFAULT_MODEL,
+      DEFAULT_PROVIDER: api.DEFAULT_PROVIDER,
     };
   })();
 

@@ -18,17 +18,20 @@
 **身份**：车载语音助手，负责低延时语音对话
 
 **能力边界**：
+
 - 基于 prompt 内的信息即时回答
 - 简单问候、情感交流、闲聊
 - 用户画像里已有的信息（来自 liveMemoryCapsule）
 
 **不具备**：
+
 - 可靠的长期记忆检索
 - 外部信息查询能力
 - 复杂推理/规划能力
 - 任何外部操作能力
 
 **核心规则**：
+
 - 简单问题直接回答，要亲切称呼用户（如"天哥"）
 - 不知道用户称呼时主动询问
 - 任何不确定的事情 → 调用 `openclaw_help`
@@ -39,12 +42,14 @@
 **身份**：后台高智能代理，负责深度任务处理
 
 **能力**：
+
 - 复杂任务：编程、写文章、做报告、数据分析
 - 记忆检索：USER.md / MEMORY.md
 - 外部操作：搜索、浏览器、发消息、设置提醒
 - 深度推理：规划、对比、归纳、纠错
 
 **核心规则**：
+
 - 收到请求后完整处理
 - 审视对话上下文，发现需要补充的信息
 - 在处理过程中自动更新 Memory
@@ -159,6 +164,7 @@ Her: "好的，我帮你查" → toolCall(openclaw_help)
 ```
 
 **关键**：
+
 - 立即 ACK 解除阻塞，Her 不会傻等
 - 结果在安全窗口自动投递，不需要用户追问
 
@@ -196,11 +202,11 @@ Her: "明天多云，15度左右。对了，你刚说要喝点，身体能行吗
 
 ### 新设计
 
-| 原来 Supervisor 做的事 | 新架构里谁做 |
-|------------------------|-------------|
-| 监控对话 | OpenClaw 每次被调用时都能看到完整上下文 |
-| 发现需要提醒的事情 | OpenClaw 在处理任务时顺便检查 |
-| 更新 Memory | OpenClaw 在处理任务时自动更新 |
+| 原来 Supervisor 做的事 | 新架构里谁做                            |
+| ---------------------- | --------------------------------------- |
+| 监控对话               | OpenClaw 每次被调用时都能看到完整上下文 |
+| 发现需要提醒的事情     | OpenClaw 在处理任务时顺便检查           |
+| 更新 Memory            | OpenClaw 在处理任务时自动更新           |
 
 **结论**：Supervisor 的所有职责都可以在 OpenClaw 被调用时完成，不需要单独的监督者。
 
@@ -306,6 +312,7 @@ Her: "明天多云，15度左右。对了，你刚说要喝点，身体能行吗
 ### 现有代码分析
 
 **1. 立即 ACK（保留）**：
+
 ```javascript
 // script.js line 524-528
 state.client.sendToolResponse(functionCallId, "openclaw_help", {
@@ -316,24 +323,26 @@ state.client.sendToolResponse(functionCallId, "openclaw_help", {
 ```
 
 **2. 异步结果投递（现有实现）**：
+
 ```javascript
 // script.js onHelpResult
 openclawConnection.onHelpResult = (callId, reply) => {
-  state.pendingInjects.push(reply);  // 进入队列
+  state.pendingInjects.push(reply); // 进入队列
   tryDeliverInjects();
 };
 
 // inject-delivery.js deliverNextInject
-client.sendTextMessage(reply, { role: "model" });     // inject 内容
+client.sendTextMessage(reply, { role: "model" }); // inject 内容
 client.sendTextMessage(controlLine, { role: "user" }); // 控制句（触发 Gemini 播报）
 ```
 
 ### 新设计
 
 **保留控制句**（触发 Gemini 立刻播报）：
+
 ```javascript
 // inject-delivery.js
-client.sendTextMessage(reply, { role: "model" });       // 结果内容
+client.sendTextMessage(reply, { role: "model" }); // 结果内容
 client.sendTextMessage(controlLine, { role: "user" }); // 触发播报
 ```
 
@@ -341,6 +350,7 @@ client.sendTextMessage(controlLine, { role: "user" }); // 触发播报
 > RESPONSE_REJECTED 问题通过 prompt 设计处理（让 Gemini 理解这是系统控制信号）。
 
 **去掉 Supervisor 整个路径**（已完成）：
+
 - 删除 `server.ts` 中 `runSupervisorTurn` 相关代码
 - 删除 `enqueueSupervisorTurn` 调用
 - 删除 `turnAssembler` 相关代码
@@ -350,6 +360,7 @@ client.sendTextMessage(controlLine, { role: "user" }); // 触发播报
 **现有问题**：`client.conversation` 只记录转录，不记录 tool 调用和结果
 
 **改进**：
+
 ```typescript
 // 当 Help 返回结果时，也记录到 conversation
 client.conversation.push(`[OpenClaw]: ${result}`);
@@ -408,6 +419,7 @@ frontend/
 ```
 
 关键设计决策：
+
 - **Audio observability 默认开启**，调试面板一键切换，方便定位音频断续问题
 - **视频和屏幕共享保留**在底部工具栏，不影响主界面简洁
 - 配置项（Project ID、Model、System Instructions 等）使用合理默认值，不在 UI 暴露
@@ -475,25 +487,25 @@ frontend/
 
 ## 实现状态
 
-| 能力 | 状态 | 备注 |
-|------|------|------|
-| Her 调用 openclaw_help | ✅ 已实现 | |
-| 两段式 ACK | ✅ 已实现 | 立即返回 processing |
-| 结果异步投递 | ✅ 已实现 | 安全窗口投递 + 控制句触发 |
-| Supervisor 监督 | ✅ 已去掉 | 简化架构 |
-| 控制句触发 | ✅ 保留 | 必须有，否则 Gemini 不会主动播报 |
-| liveMemoryCapsule | ✅ 已实现 | 用户画像摘要 |
-| Her 亲切称呼用户 | ✅ 已实现 | prompt 已加入 |
-| conversation 记录完整 | ✅ 已实现 | help 请求和结果已记录 |
-| 播报数据准确性约束 | ✅ 已实现 | 事实数据不得篡改 |
-| 远程手机访问 | ✅ 已实现 | Cloudflare 隧道 + 一键链接 + URL 参数自动填充 |
-| 多设备并发 | ✅ 已验证 | Mac + 手机同时对话，session 完全隔离 |
-| wss:// 协议支持 | ✅ 已修复 | script.js 修复 wss→https 转换 |
-| 手机专属极简界面 | ✅ 已实现 | mobile.html + mobile-script.js，暖白 Apple 风格 |
-| 一键启动脚本 | ✅ 已实现 | start-mobile.sh 根目录快捷入口，自动清理残留进程 |
-| Audio observability (手机) | ✅ 已实现 | 每轮一行滚动累积，与桌面版格式一致 |
-| Jitter buffer | ✅ 已实现 | 两阶段：初始缓冲 → 透传，UI 可调 + localStorage 记忆 |
-| Audio obs 修正 | ✅ 已修正 | drainGap 只测说话期间卡顿，不含 inject 往返延迟 |
+| 能力                       | 状态      | 备注                                                 |
+| -------------------------- | --------- | ---------------------------------------------------- |
+| Her 调用 openclaw_help     | ✅ 已实现 |                                                      |
+| 两段式 ACK                 | ✅ 已实现 | 立即返回 processing                                  |
+| 结果异步投递               | ✅ 已实现 | 安全窗口投递 + 控制句触发                            |
+| Supervisor 监督            | ✅ 已去掉 | 简化架构                                             |
+| 控制句触发                 | ✅ 保留   | 必须有，否则 Gemini 不会主动播报                     |
+| liveMemoryCapsule          | ✅ 已实现 | 用户画像摘要                                         |
+| Her 亲切称呼用户           | ✅ 已实现 | prompt 已加入                                        |
+| conversation 记录完整      | ✅ 已实现 | help 请求和结果已记录                                |
+| 播报数据准确性约束         | ✅ 已实现 | 事实数据不得篡改                                     |
+| 远程手机访问               | ✅ 已实现 | Cloudflare 隧道 + 一键链接 + URL 参数自动填充        |
+| 多设备并发                 | ✅ 已验证 | Mac + 手机同时对话，session 完全隔离                 |
+| wss:// 协议支持            | ✅ 已修复 | script.js 修复 wss→https 转换                        |
+| 手机专属极简界面           | ✅ 已实现 | mobile.html + mobile-script.js，暖白 Apple 风格      |
+| 一键启动脚本               | ✅ 已实现 | start-mobile.sh 根目录快捷入口，自动清理残留进程     |
+| Audio observability (手机) | ✅ 已实现 | 每轮一行滚动累积，与桌面版格式一致                   |
+| Jitter buffer              | ✅ 已实现 | 两阶段：初始缓冲 → 透传，UI 可调 + localStorage 记忆 |
+| Audio obs 修正             | ✅ 已修正 | drainGap 只测说话期间卡顿，不含 inject 往返延迟      |
 
 ### Jitter Buffer 设计
 
@@ -508,22 +520,22 @@ UI：0-1000ms 滑块，localStorage 记忆。桌面 0，手机建议 300ms。
 
 ### Audio Obs 指标说明
 
-| 指标 | 含义 | 正常值 |
-|------|------|--------|
-| recvGapMax | 网络两块到达最大间隔 | <200ms |
-| recvGapAvg | 平均到达间隔 | <100ms |
-| drainGapMax | **说话期间** worklet 播放空白最长时间 | <100ms |
-| drainGap>=200ms | 说话期间可感知卡顿次数 | 0 |
+| 指标            | 含义                                  | 正常值 |
+| --------------- | ------------------------------------- | ------ |
+| recvGapMax      | 网络两块到达最大间隔                  | <200ms |
+| recvGapAvg      | 平均到达间隔                          | <100ms |
+| drainGapMax     | **说话期间** worklet 播放空白最长时间 | <100ms |
+| drainGap>=200ms | 说话期间可感知卡顿次数                | 0      |
 
 修正：drainGap 只在 `_inSpeech` 期间测量（`play()` → `onTurnComplete()`），不含 `waitForIdle` + inject 往返。
 
 ### 手机端音频瓶颈
 
-| 链路 | recvGapAvg | recvGapMax | 体感 |
-|------|-----------|------------|------|
-| Mac+Phone 双 VPN | 59-495ms | 1828ms | 偶有卡顿 |
-| Mac VPN / Phone 4G | 198-293ms | 976ms | 略差 |
-| Mac localhost | <50ms | <100ms | 流畅 |
+| 链路               | recvGapAvg | recvGapMax | 体感     |
+| ------------------ | ---------- | ---------- | -------- |
+| Mac+Phone 双 VPN   | 59-495ms   | 1828ms     | 偶有卡顿 |
+| Mac VPN / Phone 4G | 198-293ms  | 976ms      | 略差     |
+| Mac localhost      | <50ms      | <100ms     | 流畅     |
 
 瓶颈：Cloudflare TCP 隧道 + 跨国 VPN 抖动。根本解法见 `webrtc-upgrade-architecture.md`。
 
@@ -531,20 +543,20 @@ UI：0-1000ms 滑块，localStorage 记忆。桌面 0，手机建议 300ms。
 
 ## 下一步 TODO
 
-| 优先级 | 任务 | 状态 |
-|--------|------|------|
-| P0 | 去掉 Supervisor | ✅ 完成 |
-| P0 | 改进 Her prompt | ✅ 完成 — 快慢分工、亲切称呼、播报准确性约束 |
-| P0 | 远程手机访问 | ✅ 完成 — Cloudflare 隧道 + start-remote.sh 一键启动 |
-| P1 | conversation 完整化 | ✅ 完成 — help 请求和结果已记录 |
-| P1 | 手机专属极简界面 | ✅ 完成 |
-| P1 | Jitter buffer + audio obs 修正 | ✅ 完成 |
-| P1 | Her prompt 快思考边界优化 | 待开始 — 当前时间等 Gemini 自身能力不应转交 OpenClaw |
-| P1 | OpenClaw prompt 注入当前时间 | 待开始 — 避免 Claude 幻觉编造时间 |
-| P1 | WebRTC 语音升级 | 待开始 — 见 webrtc-upgrade-architecture.md |
-| P2 | 改进 OpenClaw prompt | 待开始 — 增加上下文审视要求、输出格式约束 |
-| P2 | RESPONSE_REJECTED 韧性 | 待开始 — 被拒后自动重试或降级 |
-| P2 | 手机端语音提醒 | 待设计 |
-| P0 | **Help request 重复发送 bug** | ✅ 已修复（前端软防护） — 根因：tool response 返回 `{ok:true, status:"processing"}` 的 JSON，Gemini 不理解就不断重试。修复：(1) tool response 改为自然语言明确告知"后台正在处理，不要再次调用"；(2) inject 触发语从"请播报"改为自解释的完整指令；(3) prompt 新增 5 步工具调用流程说明。董事长实测 7 次 help 全部正常，无重复。 |
-| P1 | **多 inject 并发时 Gemini 混淆播报** | ✅ 已修复（#N 编号方案） — 根因：inject 中的中文 request 文本（如"查询用户提醒"）被 Gemini 当成动词指令重发或朗读。修复：(1) 前端自增编号 #1 #2 #3 替代中文标签，tool response 返回"请求 #N 已收到"；(2) inject role=model 保持纯净结果（零标签），role=user 仅用编号关联"以上是 #N 的后台结果"；(3) prompt 同步更新编号说明。本地 Her 11 次 help 压力测试通过，零 bracket 重发，零标签朗读。 |
-| P3 | 长任务进度通知 | 待开始 |
+| 优先级 | 任务                                 | 状态                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------ | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P0     | 去掉 Supervisor                      | ✅ 完成                                                                                                                                                                                                                                                                                                                                                                                       |
+| P0     | 改进 Her prompt                      | ✅ 完成 — 快慢分工、亲切称呼、播报准确性约束                                                                                                                                                                                                                                                                                                                                                  |
+| P0     | 远程手机访问                         | ✅ 完成 — Cloudflare 隧道 + start-remote.sh 一键启动                                                                                                                                                                                                                                                                                                                                          |
+| P1     | conversation 完整化                  | ✅ 完成 — help 请求和结果已记录                                                                                                                                                                                                                                                                                                                                                               |
+| P1     | 手机专属极简界面                     | ✅ 完成                                                                                                                                                                                                                                                                                                                                                                                       |
+| P1     | Jitter buffer + audio obs 修正       | ✅ 完成                                                                                                                                                                                                                                                                                                                                                                                       |
+| P1     | Her prompt 快思考边界优化            | 待开始 — 当前时间等 Gemini 自身能力不应转交 OpenClaw                                                                                                                                                                                                                                                                                                                                          |
+| P1     | OpenClaw prompt 注入当前时间         | 待开始 — 避免 Claude 幻觉编造时间                                                                                                                                                                                                                                                                                                                                                             |
+| P1     | WebRTC 语音升级                      | 待开始 — 见 webrtc-upgrade-architecture.md                                                                                                                                                                                                                                                                                                                                                    |
+| P2     | 改进 OpenClaw prompt                 | 待开始 — 增加上下文审视要求、输出格式约束                                                                                                                                                                                                                                                                                                                                                     |
+| P2     | RESPONSE_REJECTED 韧性               | 待开始 — 被拒后自动重试或降级                                                                                                                                                                                                                                                                                                                                                                 |
+| P2     | 手机端语音提醒                       | 待设计                                                                                                                                                                                                                                                                                                                                                                                        |
+| P0     | **Help request 重复发送 bug**        | ✅ 已修复（前端软防护） — 根因：tool response 返回 `{ok:true, status:"processing"}` 的 JSON，Gemini 不理解就不断重试。修复：(1) tool response 改为自然语言明确告知"后台正在处理，不要再次调用"；(2) inject 触发语从"请播报"改为自解释的完整指令；(3) prompt 新增 5 步工具调用流程说明。董事长实测 7 次 help 全部正常，无重复。                                                                |
+| P1     | **多 inject 并发时 Gemini 混淆播报** | ✅ 已修复（#N 编号方案） — 根因：inject 中的中文 request 文本（如"查询用户提醒"）被 Gemini 当成动词指令重发或朗读。修复：(1) 前端自增编号 #1 #2 #3 替代中文标签，tool response 返回"请求 #N 已收到"；(2) inject role=model 保持纯净结果（零标签），role=user 仅用编号关联"以上是 #N 的后台结果"；(3) prompt 同步更新编号说明。本地 Her 11 次 help 压力测试通过，零 bracket 重发，零标签朗读。 |
+| P3     | 长任务进度通知                       | 待开始                                                                                                                                                                                                                                                                                                                                                                                        |
