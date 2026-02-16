@@ -67,6 +67,9 @@
         "config": {
           "port": 18790
         }
+      },
+      "feishu-her": {
+        "enabled": true
       }
     }
   }

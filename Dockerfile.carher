@@ -27,7 +27,7 @@ COPY patches ./patches
 COPY scripts ./scripts
 
 # Copy all extension package.json files so pnpm resolves workspace deps
-COPY extensions/feishu/package.json ./extensions/feishu/package.json
+COPY extensions/feishu-her/package.json ./extensions/feishu-her/package.json
 COPY extensions/realtime/package.json ./extensions/realtime/package.json
 
 RUN pnpm install --frozen-lockfile

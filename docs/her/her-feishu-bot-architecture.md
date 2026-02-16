@@ -8,7 +8,7 @@
 
 - **对现有 OpenClaw 核心代码：零修改** -- 已验证
 - **对现有 Her（realtime 插件）代码：零修改** -- 已验证
-- **全部新增代码限制在 `extensions/feishu/` 目录内** -- 已验证
+- **全部新增代码限制在 `extensions/feishu-her/` 目录内** -- 已验证（原 extensions/feishu/，重命名以物理隔离于 upstream）
 - **风险评估：极低** -- 已通过端到端测试确认
 - **实际新增代码：~1800 行**（包含 cron 直投修复 + 富文本解析修复 + 图片收发 + 图片接收（vision）+ 目标解析 + 命令授权修复 + 富文本回复 + CardKit 流式卡片 + 群聊归档）
 
@@ -98,8 +98,8 @@ Her 是实时语音通道（Gemini Live + WebSocket），走的是快慢思考�
 ### 飞书插件实际文件结构
 
 ```
-extensions/feishu/
-  openclaw.plugin.json        # 插件清单
+extensions/feishu-her/
+  openclaw.plugin.json        # 插件清单（id: feishu-her）
   package.json                # 依赖：@larksuiteoapi/node-sdk
   index.ts                    # 入口：register() -> api.registerChannel()
   src/
@@ -121,7 +121,7 @@ extensions/feishu/
   │
   │ 事件推送（WebSocket 长连接）
   ↓
-extensions/feishu/gateway.ts
+extensions/feishu-her/gateway.ts
   │
   │ EventDispatcher 接收 im.message.receive_v1 事件
   │ -> 提取文本 / 过滤 bot 消息 / 去重
@@ -132,7 +132,7 @@ OpenClaw auto-reply pipeline（核心代码，未修改）
   │ dispatchReplyWithBufferedBlockDispatcher
   │ -> Agent 处理 -> 生成回复
   ↓
-extensions/feishu/outbound.ts
+extensions/feishu-her/outbound.ts
   │
   │ Lark.Client.im.message.create()
   ↓
@@ -320,7 +320,7 @@ outbound: {
 - `src/infra/` -- 不修改。outbound 通过 `ChannelPlugin.outbound` 注入
 - `src/plugin-sdk/` -- 不修改。使用现有 SDK 类型
 - `src/routing/` -- 不修改。路由自动识别已注册的通道
-- `package.json` -- 不修改。飞书 SDK 仅在 `extensions/feishu/package.json` 中
+- `package.json` -- 不修改。飞书 SDK 仅在 `extensions/feishu-her/package.json` 中
 
 ### 对 Her（realtime 插件）：零修改（已验证）
 
@@ -340,7 +340,7 @@ outbound: {
 | `src/gateway.ts` | 733 | WSClient + pipeline 集成 + 富文本解析 + 回复投递 + 图片下载/接收 + CardKit 流式卡片 + 群聊归档 + CardKit 状态 footer |
 | `src/outbound.ts` | 667 | Lark SDK 消息发送 + ID 类型识别 + 图片上传/发送/下载 + Markdown→Post 转换 + CardKit API |
 | `src/accounts.ts` | 133 | 账户 / 凭证解析 + 群聊主人 ID 解析 |
-| **总计** | **~1800** | 全部在 `extensions/feishu/` 内 |
+| **总计** | **~1800** | 全部在 `extensions/feishu-her/` 内 |
 
 ---
 
@@ -373,7 +373,7 @@ outbound: {
 | 层 | 机制 | 效果 | 实现位置 |
 |----|------|------|---------|
 | **Layer 1：找不到** | 飞书可用范围 = 只选一人 | 其他员工在飞书客户端搜不到这个 Bot | 飞书开放平台（平台级隔离） |
-| **Layer 2：被拒绝** | `dm.allowFrom = [ou_xxx]` 白名单 | 即使找到 Bot，发消息也被忽略 | `extensions/feishu/src/channel.ts` resolveAllowFrom |
+| **Layer 2：被拒绝** | `dm.allowFrom = [ou_xxx]` 白名单 | 即使找到 Bot，发消息也被忽略 | `extensions/feishu-her/src/channel.ts` resolveAllowFrom |
 
 ```
 普通员工 → 搜索董事长的 Bot → 搜不到（Layer 1）
@@ -405,7 +405,7 @@ outbound: {
 5. **飞书 Bot `/voice`**：通过私聊发送带 token 的完整语音 URL；`/voice reset` 重置 token 并发送新 URL
 6. **管理员 `--reset`**：`./start-user.sh --id=N --reset` 重置 token，不重启容器，立即生效，打印厂商可用的完整 URL
 
-> **修改范围**：全部在可修改代码内（`extensions/realtime/`、`extensions/feishu/`、`start-user.sh`、`scripts/`），不触碰上游 `src/` 代码。
+> **修改范围**：全部在可修改代码内（`extensions/realtime/`、`extensions/feishu-her/`、`start-user.sh`、`scripts/`），不触碰上游 `src/` 代码。
 
 ---
 
@@ -490,6 +490,27 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 ---
 
 ## 已修复的问题
+
+### 插件启用架构修复：消除部署脚本硬编码 (2026-02-16)
+
+**问题**：将飞书插件从 `extensions/feishu/` 重命名为 `extensions/feishu-her/`（物理隔离 upstream）后，Docker 容器 (carher-1) 进入启动失败循环。
+
+**根因**：`start-user.sh` 第 439 行硬编码了 `plugins.entries['feishu'] = {'enabled': True}`，而插件 ID 已变为 `feishu-her`。Config 校验器找不到 ID 为 `feishu` 的插件，校验失败，容器挂掉。
+
+**背景**：OpenClaw bundled 插件（`extensions/` 目录下）默认全部关闭（`BUNDLED_ENABLED_BY_DEFAULT` 是空集合），必须在 config 中 `plugins.entries.插件ID.enabled = true` 才能加载。
+
+**修复**（三处改动）：
+
+1. **`docker/carher-config.json`**：在基础配置的 `plugins.entries` 中添加 `feishu-her: {enabled: true}`（与 `realtime` 并列）。插件启用跟着代码走，不跟着部署脚本走。
+2. **`start-user.sh`**：删除硬编码的 `plugins.entries.feishu`。per-user config 只保留 `channels.feishu`（频道凭证，使用稳定的频道名而非插件 ID）。
+3. **`start-user.sh` SOURCE_DIRS**：补全 Docker 自动重建监控列表，新增 `docker/`、`pnpm-workspace.yaml`、`.npmrc`、`patches/`、`tsconfig.json`，并将 `scripts/carher-entrypoint.sh` 扩展为 `scripts/`。确保 Dockerfile COPY 进镜像的每个文件/目录都在监控范围内。
+
+**架构原则**：
+- 插件启用配置放在 `docker/carher-config.json`（与代码同仓库、同版本控制）
+- `start-user.sh` 只管 per-user 数据（飞书凭证、模型选择），不涉及插件 ID
+- 以后改插件名只需改 `docker/carher-config.json` 一处，不影响部署脚本和 200 企业用户
+
+**验证**：本地 Her + Docker 1 双路语音并发测试通过，飞书消息收发正常，语音对话正常，所有隧道端点 200。
 
 ### Cron 定时任务投递修复 (2026-02-06)
 
@@ -733,7 +754,7 @@ handleEventData():
 
 **断电测试**：发送"北京天气"后立即断电重启。ACK 已及时发出（飞书不重推），但 AI 回复因进程被 kill 而丢失。这是 `void` 方案的已知代价——trade-off：**消除重复推送 vs 极端断电时可能丢一条回复**。
 
-**状态：已修复（2026-02-10），修改文件 `extensions/feishu/src/gateway.ts`。**
+**状态：已修复（2026-02-10），修改文件 `extensions/feishu-her/src/gateway.ts`。**
 
 ### 后续可选加固
 
@@ -900,7 +921,7 @@ cardkit.v1.card.settings({
 6. **状态探测**：`openclaw channels status` 显示飞书连接状态
 7. **企业多用户部署**：见 [her-feishu-bot-enterprise-deploy.md](her-feishu-bot-enterprise-deploy.md)（200 Bot + 200 Docker 方案，已验证）
 8. ~~**Context Window 自动约束**~~：已实现（2026-02-15）-- 默认限制 context window 为 240K token（`contextTokens` + `contextWindow` 对齐），防止用户无感知地大量消耗 token 导致高额费用。详见 [context-window-architecture.md](context-window-architecture.md)
-9. ~~**飞书端 Context Window 可视化**~~：已实现（2026-02-15）-- 每条 AI 回复的 CardKit 卡片底部自动追加状态行，格式: `🧠 **模型名** · 📊 Xk/240k (Y%) · 🧹 N次压缩`，数据源复用 `/status` session store，>=70% 自动警告。实现位于 `extensions/feishu/src/gateway.ts`
+9. ~~**飞书端 Context Window 可视化**~~：已实现（2026-02-15）-- 每条 AI 回复的 CardKit 卡片底部自动追加状态行，格式: `🧠 **模型名** · 📊 Xk/240k (Y%) · 🧹 N次压缩`，数据源复用 `/status` session store，>=70% 自动警告。实现位于 `extensions/feishu-her/src/gateway.ts`
 
 ---
 
@@ -1078,7 +1099,7 @@ npm 上至少有 4 个飞书相关包：
 - `@openclaw-cn/feishu` v2026.2.2 — 中文社区版
 - `@max1874/feishu` v0.2.26 — 另一社区贡献者
 
-**我们的飞书实现（`extensions/feishu/`）只在本地 dev 分支，未提交到 origin/main，未发布到 npm。**
+**我们的飞书实现（`extensions/feishu-her/`）只在本地 dev 分支，未提交到 origin/main，未发布到 npm。**
 
 ### 代码规模对比
 
@@ -1150,7 +1171,7 @@ npm 上至少有 4 个飞书相关包：
 
 ## 后续 TODO（从开源版本吸收到自研版本）
 
-策略：**直接吸收社区版能力到本地 `extensions/feishu/`**，使其成为最强版本——既有流式卡片 + 群聊归档（社区版没有的），又有飞书文档/Wiki/云盘/Bitable 工具（当前没有的）。
+策略：**直接吸收社区版能力到本地 `extensions/feishu-her/`**，使其成为最强版本——既有流式卡片 + 群聊归档（社区版没有的），又有飞书文档/Wiki/云盘/Bitable 工具（当前没有的）。
 
 基于对 `@m1heng-clawd/feishu` v0.1.9 源码的详细分析和实际测试（2026-02-12），按优先级排列：
 
@@ -1264,7 +1285,7 @@ npm 上至少有 4 个飞书相关包：
 
 飞书通道本质上是在 OpenClaw 的通道体系中新增一个标准通道插件。它与 Her（realtime 语音通道）完全平行，与 Telegram/Slack/Discord 完全同构。
 
-- 实际新增代码 ~1,800 行，全部在 `extensions/feishu/` 内
+- 实际新增代码 ~1,800 行，全部在 `extensions/feishu-her/` 内
 - 不修改 OpenClaw 核心代码的任何一行
 - 不修改 Her（realtime 插件）的任何一行
 - 不修改任何已有扩展的任何一行

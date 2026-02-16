@@ -297,7 +297,7 @@ importers:
         specifier: workspace:*
         version: link:../..
 
-  extensions/feishu:
+  extensions/feishu-her:
     dependencies:
       '@larksuiteoapi/node-sdk':
         specifier: ^1.50.0

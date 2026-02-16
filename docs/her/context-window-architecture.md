@@ -519,7 +519,7 @@ const modelWithCap = { ...params.model, contextWindow: resolvedCtxTokens };
   - **用户完全不知道发生了什么**，无法自行恢复
   - **需要方案**: 飞书插件捕获此异常，主动发消息提醒用户发 `/new` 开始新 session
   - 需要定义检测条件：typing TTL reached + 无 assistant 响应 = session 异常
-  - **可修改范围**: `extensions/feishu/`（自有插件代码）
+  - **可修改范围**: `extensions/feishu-her/`（自有插件代码）
 - [ ] **P0: compaction summary 质量 (fromHook: false)** — OpenClaw 代码 bug，safeguard 扩展未接入
   - 根因: `attempt.ts:613` `buildEmbeddedExtensionPaths()` 返回值被丢弃，extension paths 未传给 `createAgentSession`
   - 修复需要改 `src/`（upstream），需提 GitHub issue/PR
@@ -586,7 +586,7 @@ find /data/.openclaw/browser -name "SingletonLock" -o -name "SingletonSocket" -o
 - 正常: `🧠 **Opus 4.6** · 📊 42k/240k (18%) · 🧹 0次压缩`
 - 警告 (>=70%): `⚠️ **Opus 4.6** · 📊 170k/240k (71%) · 🧹 2次压缩`
 
-**实现**: `extensions/feishu/src/gateway.ts`
+**实现**: `extensions/feishu-her/src/gateway.ts`
 - `buildCardStatusFooter()`: dispatch 完成后读 session store，格式化 model + totalTokens/contextTokens + compactionCount
 - 追加到 `cardStreamFinalText`，在 `stopCardStream()` 之前写入卡片
 

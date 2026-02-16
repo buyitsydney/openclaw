@@ -16,7 +16,7 @@ alwaysApply: true
 ## 可以修改的代码（自己的插件和部署）
 
 - `extensions/realtime/` — realtime 语音插件（自有）
-- `extensions/feishu/` — 飞书插件（自有）
+- `extensions/feishu-her/` — 飞书插件（自有，物理隔离于 upstream feishu）
 - `docs/her/` — 自有文档
 - `scripts/`、`start*.sh`、`Dockerfile*`、`docker/` — 部署脚本
 - `~/.openclaw/openclaw.json` — 运行时配置

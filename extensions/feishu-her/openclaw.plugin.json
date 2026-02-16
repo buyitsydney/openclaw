@@ -1,0 +1,9 @@
+{
+  "id": "feishu-her",
+  "channels": ["feishu"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

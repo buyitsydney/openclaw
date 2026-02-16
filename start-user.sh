@@ -260,7 +260,7 @@ echo ""
 
 # --- Auto-rebuild: compare build hash (git SHA + dirty diff hash) with image label ---
 CURRENT_SHA=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
-SOURCE_DIRS="src/ extensions/ skills/ package.json pnpm-lock.yaml Dockerfile.carher scripts/carher-entrypoint.sh ui/"
+SOURCE_DIRS="src/ extensions/ skills/ docker/ scripts/ patches/ ui/ package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.json Dockerfile.carher"
 DIFF_OUTPUT=$(git diff HEAD -- $SOURCE_DIRS 2>/dev/null || true)
 if [ -n "$DIFF_OUTPUT" ]; then
   DIRTY_HASH=$(printf '%s' "$DIFF_OUTPUT" | sha256 | cut -d' ' -f1)
@@ -436,9 +436,6 @@ if feishu_id and feishu_secret:
         'archive': True,
     }
     cfg.setdefault('channels', {})['feishu'] = feishu_cfg
-    cfg.setdefault('plugins', {}).setdefault('entries', {})['feishu'] = {
-        'enabled': True
-    }
 
 json.dump(cfg, sys.stdout, indent=2)
 " > "$CUSTOM_CONFIG"

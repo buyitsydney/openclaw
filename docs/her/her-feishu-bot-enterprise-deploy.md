@@ -657,7 +657,7 @@ OpenClaw 飞书插件的 `docx.ts` 中，**用错了飞书 API**：
 
 ### 修复方案
 
-修改 `extensions/feishu/src/tools/docx.ts` 中的 `insertBlocks` 函数：
+修改 `extensions/feishu-her/src/tools/docx.ts` 中的 `insertBlocks` 函数：
 
 1. 将 `documentBlockChildren.create` 替换为 `documentBlockDescendant.create`
 2. 删除 `UNSUPPORTED_CREATE_TYPES` 过滤逻辑
