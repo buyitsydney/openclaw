@@ -6,7 +6,7 @@
 import type * as Lark from "@larksuiteoapi/node-sdk";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { Type } from "@sinclair/typebox";
-import { createReadStream, existsSync, statSync, unlinkSync } from "fs";
+import { createReadStream, existsSync, readFileSync, statSync, unlinkSync } from "fs";
 import { mkdirSync, writeFileSync } from "fs";
 import { stringEnum } from "openclaw/plugin-sdk";
 import { homedir } from "os";
@@ -16,6 +16,38 @@ import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accoun
 import { getFeishuClient, downloadWhiteboardImage } from "../outbound.js";
 
 // ── Helpers ──
+
+/** Extract meaningful error info from Lark SDK AxiosErrors.
+ *  The SDK often throws `AxiosError: Request failed with status code 400`
+ *  without surfacing the actual error code/message from the response body. */
+function extractLarkError(err: unknown): { code?: number; msg: string } {
+  if (err && typeof err === "object") {
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const axiosErr = err as any;
+    const data = axiosErr?.response?.data;
+    if (data?.code && data?.msg) return { code: data.code, msg: data.msg };
+    if (data?.error?.message) return { msg: data.error.message };
+  }
+  return { msg: String(err) };
+}
+
+/** Map Feishu error codes to human-readable explanations for the AI. */
+function describeLarkError(code: number | undefined, msg: string): string {
+  const explanations: Record<number, string> = {
+    1770001:
+      "invalid param — content may contain unsupported block types (tables must be created separately via children API, not descendant API)",
+    1770004: "document has too many blocks — reduce content or split across multiple documents",
+    1770007: "block has too many children — a single parent block's child count exceeds the limit",
+    1770010: "table has too many columns (max ~20)",
+    1770011: "table has too many cells — reduce table size",
+    1770033: "raw content size exceeds limit — text is too long for a single block",
+    1770034:
+      "operation count exceeds limit — too many cell operations; split into multiple requests",
+    1770035: "resource count exceeds limit — max 20 images per request",
+  };
+  if (code && explanations[code]) return `Feishu API error ${code}: ${explanations[code]}`;
+  return msg;
+}
 
 function json(data: unknown) {
   return {
@@ -62,6 +94,7 @@ const BLOCK_TYPE_NAMES: Record<number, string> = {
 // Table block type — cannot be created via descendant API; needs a two-step
 // approach: documentBlockChildren.create (empty table) + documentBlock.patch (fill cells).
 const TABLE_BLOCK_TYPE = 31;
+const TABLE_CELL_TYPE = 32;
 
 /** Extract table dimensions and cell content from convertMarkdown output.
  *  Preserves text formatting (bold, italic, etc.) from the original elements. */
@@ -165,6 +198,23 @@ function extractImageSources(markdown: string, workspaceDir?: string): string[] 
  *  with content via documentBlock.patch. The descendant API rejects Table(31)
  *  blocks, so tables need this two-step approach. */
 // oxlint-disable-next-line typescript/no-explicit-any
+// Feishu table creation limit: documentBlockChildren.create supports max 9×9.
+// For larger tables: create at 9×9, then extend via insert_table_row/insert_table_column.
+const MAX_TABLE_CREATE = 9;
+// Approximate total document width in Feishu column_width units (~700px).
+const TABLE_TOTAL_WIDTH = 700;
+// Delay between consecutive API calls to respect Feishu's 3 QPS rate limit.
+const API_RATE_DELAY_MS = 350;
+
+/** Calculate even column widths for a table, ensuring they sum to full width. */
+function calcColumnWidths(colCount: number): number[] {
+  const w = Math.floor(TABLE_TOTAL_WIDTH / colCount);
+  return Array.from({ length: colCount }, (_, i) =>
+    i === colCount - 1 ? TABLE_TOTAL_WIDTH - w * (colCount - 1) : w,
+  );
+}
+
+/** Create and fill a table. Large tables are extended via insert_table_row/column. */
 async function createAndFillTable(
   client: Lark.Client,
   docToken: string,
@@ -172,61 +222,174 @@ async function createAndFillTable(
   tableData: { rowSize: number; columnSize: number; cellElements: any[][] },
   // oxlint-disable-next-line typescript/no-explicit-any
 ): Promise<any[]> {
+  const { rowSize, columnSize, cellElements } = tableData;
+
+  // Step 1: Create table at min(rows, 9) × min(cols, 9) with column widths.
+  const createRows = Math.min(rowSize, MAX_TABLE_CREATE);
+  const createCols = Math.min(columnSize, MAX_TABLE_CREATE);
+  const colWidths = calcColumnWidths(columnSize);
+
   // oxlint-disable-next-line typescript/no-explicit-any
-  const createRes: any = await client.docx.documentBlockChildren.create({
-    path: { document_id: docToken, block_id: docToken },
-    data: {
-      children: [
-        {
-          block_type: TABLE_BLOCK_TYPE,
-          table: {
-            property: {
-              row_size: tableData.rowSize,
-              column_size: tableData.columnSize,
+  let createRes: any;
+  try {
+    createRes = await client.docx.documentBlockChildren.create({
+      path: { document_id: docToken, block_id: docToken },
+      data: {
+        children: [
+          {
+            block_type: TABLE_BLOCK_TYPE,
+            table: {
+              property: {
+                row_size: createRows,
+                column_size: createCols,
+                // Set column widths for proper display (only for initial cols).
+                column_width: colWidths.slice(0, createCols),
+              },
             },
           },
-        },
-      ],
-    },
-  });
-  if (createRes.code !== 0) throw new Error(createRes.msg);
+        ],
+      } as any, // column_width not in SDK types but accepted by API
+    });
+  } catch (err) {
+    const { code, msg } = extractLarkError(err);
+    throw new Error(
+      `Failed to create ${rowSize}×${columnSize} table: ${describeLarkError(code, msg)}`,
+    );
+  }
+  if (createRes.code !== 0) {
+    throw new Error(
+      `Failed to create ${rowSize}×${columnSize} table: ${describeLarkError(createRes.code, createRes.msg)}`,
+    );
+  }
 
   const createdBlocks = createRes.data?.children ?? [];
   // oxlint-disable-next-line typescript/no-explicit-any
   const tableBlock = createdBlocks.find((b: any) => b.block_type === TABLE_BLOCK_TYPE);
   if (!tableBlock) throw new Error("Table not found in creation response");
+  const tableBlockId = tableBlock.block_id as string;
 
-  const cellIds: string[] = tableBlock.children ?? [];
-
-  // Fill each cell: get its text child block ID, then patch with content.
-  for (let i = 0; i < Math.min(cellIds.length, tableData.cellElements.length); i++) {
-    const elements = tableData.cellElements[i];
-    if (elements.length === 0) continue;
+  // Step 2: Extend columns if needed (>9 cols), respecting rate limit.
+  for (let c = createCols; c < columnSize; c++) {
+    await new Promise((r) => setTimeout(r, API_RATE_DELAY_MS));
     try {
-      // oxlint-disable-next-line typescript/no-explicit-any
-      const cellRes: any = await client.docx.documentBlock.get({
-        path: { document_id: docToken, block_id: cellIds[i] },
-      });
-      const textBlockId = cellRes.data?.block?.children?.[0];
-      if (!textBlockId) continue;
       await client.docx.documentBlock.patch({
-        path: { document_id: docToken, block_id: textBlockId },
-        data: { update_text_elements: { elements } },
+        path: { document_id: docToken, block_id: tableBlockId },
+        data: { insert_table_column: { column_index: c } } as any,
+      });
+    } catch (err) {
+      const { code, msg } = extractLarkError(err);
+      throw new Error(`Failed to add column ${c + 1}: ${describeLarkError(code, msg)}`);
+    }
+  }
+
+  // Step 3: Extend rows if needed (>9 rows), respecting rate limit.
+  for (let r = createRows; r < rowSize; r++) {
+    await new Promise((r) => setTimeout(r, API_RATE_DELAY_MS));
+    try {
+      await client.docx.documentBlock.patch({
+        path: { document_id: docToken, block_id: tableBlockId },
+        data: { insert_table_row: { row_index: r } } as any,
+      });
+    } catch (err) {
+      const { code, msg } = extractLarkError(err);
+      throw new Error(`Failed to add row ${r + 1}: ${describeLarkError(code, msg)}`);
+    }
+  }
+
+  // Step 4: Batch-read all blocks to build cell→textBlock map.
+  // Uses paginated list to handle docs with 500+ blocks.
+  const allDocBlocks = await listAllDocBlocks(client, docToken);
+
+  // Re-read table to get cell IDs (including newly added rows).
+  const tableInList = allDocBlocks.find(
+    // oxlint-disable-next-line typescript/no-explicit-any
+    (b: any) => b.block_id === tableBlockId,
+  );
+  const allCellIds: string[] = tableInList?.children ?? [];
+
+  // Build cell ID → text block ID map from the list result.
+  const cellTextMap = new Map<string, string>();
+  for (const cellId of allCellIds) {
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const cellBlock = allDocBlocks.find((b: any) => b.block_id === cellId);
+    if (cellBlock?.block_type === TABLE_CELL_TYPE && cellBlock.children?.length > 0) {
+      cellTextMap.set(cellId, cellBlock.children[0]);
+    }
+  }
+
+  // Step 5: Fill all cells via batch_update (1 API call for all cells instead
+  // of N individual PATCHes — verified 162 cells/480ms in diagnostics, ~70x faster).
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const batchRequests: any[] = [];
+  for (let i = 0; i < Math.min(allCellIds.length, cellElements.length); i++) {
+    const elements = cellElements[i];
+    if (elements.length === 0) continue;
+    const textBlockId = cellTextMap.get(allCellIds[i]);
+    if (!textBlockId) continue;
+    batchRequests.push({
+      block_id: textBlockId,
+      update_text_elements: { elements },
+    });
+  }
+
+  // Batch in chunks (limit not yet hit at 162, use 150 as safe max).
+  const BATCH_CHUNK = 150;
+  for (let i = 0; i < batchRequests.length; i += BATCH_CHUNK) {
+    const chunk = batchRequests.slice(i, i + BATCH_CHUNK);
+    try {
+      await client.docx.documentBlock.batchUpdate({
+        path: { document_id: docToken },
+        data: { requests: chunk },
       });
     } catch {
-      // Best-effort: continue filling remaining cells.
+      // Fallback: try individual PATCHes for this chunk.
+      for (const req of chunk) {
+        try {
+          await client.docx.documentBlock.patch({
+            path: { document_id: docToken, block_id: req.block_id },
+            data: { update_text_elements: req.update_text_elements },
+          });
+        } catch {
+          // Best-effort: continue filling remaining cells.
+        }
+      }
     }
   }
 
   return createdBlocks;
 }
 
+/** Fetch ALL blocks from a document, handling pagination.
+ *  The Feishu API returns max 500 blocks per page; documents with 500+
+ *  blocks require multiple requests via page_token. */
+// oxlint-disable-next-line typescript/no-explicit-any
+async function listAllDocBlocks(client: Lark.Client, docToken: string): Promise<any[]> {
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const allBlocks: any[] = [];
+  let pageToken: string | undefined;
+  do {
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const res: any = await client.docx.documentBlock.list({
+      path: { document_id: docToken },
+      params: pageToken ? { page_token: pageToken, page_size: 500 } : { page_size: 500 },
+    });
+    if (res.code !== 0) throw new Error(res.msg);
+    allBlocks.push(...(res.data?.items ?? []));
+    pageToken = res.data?.has_more ? res.data?.page_token : undefined;
+  } while (pageToken);
+  return allBlocks;
+}
+
 // ── Core functions ──
 
 async function convertMarkdown(client: Lark.Client, markdown: string) {
+  // Escape bare $ signs to prevent Feishu from interpreting them as LaTeX delimiters.
+  // Only escapes $ followed by digits (e.g. $500, $1,000) — not LaTeX like $x^2$.
+  // Backslash escape \$ renders as $ in Feishu without triggering LaTeX.
+  const escaped = markdown.replace(/\$(\d)/g, (_, d) => `\\$${d}`);
   // oxlint-disable-next-line typescript/no-explicit-any
   const res: any = await client.docx.document.convert({
-    data: { content_type: "markdown", content: markdown },
+    data: { content_type: "markdown", content: escaped },
   });
   if (res.code !== 0) throw new Error(res.msg);
   return {
@@ -260,13 +423,20 @@ async function insertBlocksWithTables(
     if (currentBatch.length === 0) return;
     const { descendants, childrenId } = collectDescendantsForIds(blocks, blockMap, currentBatch);
     if (childrenId.length > 0) {
-      // oxlint-disable-next-line typescript/no-explicit-any
-      const res: any = await client.docx.documentBlockDescendant.create({
-        path: { document_id: docToken, block_id: docToken },
-        data: { children_id: childrenId, descendants },
-      });
-      if (res.code !== 0) throw new Error(res.msg);
-      allInserted.push(...(res.data?.children ?? []));
+      try {
+        // oxlint-disable-next-line typescript/no-explicit-any
+        const res: any = await client.docx.documentBlockDescendant.create({
+          path: { document_id: docToken, block_id: docToken },
+          data: { children_id: childrenId, descendants },
+        });
+        if (res.code !== 0) throw new Error(describeLarkError(res.code, res.msg));
+        allInserted.push(...(res.data?.children ?? []));
+      } catch (err) {
+        const { code, msg } = extractLarkError(err);
+        throw new Error(
+          `Failed to insert ${childrenId.length} blocks (${descendants.length} total descendants): ${describeLarkError(code, msg)}`,
+        );
+      }
     }
     currentBatch = [];
   }
@@ -292,11 +462,9 @@ async function insertBlocksWithTables(
 }
 
 async function clearDocumentContent(client: Lark.Client, docToken: string) {
-  const existing = await client.docx.documentBlock.list({ path: { document_id: docToken } });
-  // oxlint-disable-next-line typescript/no-explicit-any
-  if ((existing as any).code !== 0) throw new Error((existing as any).msg);
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const childIds = ((existing as any).data?.items ?? [])
+  // Use paginated list to ensure all blocks are fetched (API max 500/page).
+  const allBlocks = await listAllDocBlocks(client, docToken);
+  const childIds = allBlocks
     // oxlint-disable-next-line typescript/no-explicit-any
     .filter((b: any) => b.parent_id === docToken && b.block_type !== 1)
     // oxlint-disable-next-line typescript/no-explicit-any
@@ -509,15 +677,13 @@ async function fetchBoardImages(
 }
 
 async function readDoc(client: Lark.Client, docToken: string, account?: ResolvedFeishuAccount) {
-  const [contentRes, infoRes, blocksRes] = await Promise.all([
+  const [contentRes, infoRes, blocks] = await Promise.all([
     client.docx.document.rawContent({ path: { document_id: docToken } }),
     client.docx.document.get({ path: { document_id: docToken } }),
-    client.docx.documentBlock.list({ path: { document_id: docToken } }),
+    listAllDocBlocks(client, docToken),
   ]);
   // oxlint-disable-next-line typescript/no-explicit-any
   if ((contentRes as any).code !== 0) throw new Error((contentRes as any).msg);
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const blocks = ((blocksRes as any).data?.items ?? []) as any[];
   const blockCounts: Record<string, number> = {};
   const structuredTypes: string[] = [];
   for (const b of blocks) {
@@ -609,43 +775,65 @@ async function writeDoc(client: Lark.Client, docToken: string, markdown: string)
       images_processed: 0,
       ...(backupPath && { backup_path: backupPath }),
     };
-  const { children: inserted, tablesCreated } = await insertBlocksWithTables(
-    client,
-    docToken,
-    blocks,
-    firstLevelBlockIds,
-  );
-  const imageResult = await processImages(client, docToken, markdown, inserted);
-  return {
-    success: true,
-    blocks_deleted: deleted,
-    blocks_added: inserted.length,
-    images_processed: imageResult.processed,
-    ...(backupPath && { backup_path: backupPath }),
-    ...(tablesCreated > 0 && { tables_created: tablesCreated }),
-    ...(imageResult.errors.length > 0 && { image_errors: imageResult.errors }),
-  };
+  try {
+    const { children: inserted, tablesCreated } = await insertBlocksWithTables(
+      client,
+      docToken,
+      blocks,
+      firstLevelBlockIds,
+    );
+    const imageResult = await processImages(client, docToken, markdown, inserted);
+    return {
+      success: true,
+      blocks_deleted: deleted,
+      blocks_added: inserted.length,
+      images_processed: imageResult.processed,
+      ...(backupPath && { backup_path: backupPath }),
+      ...(tablesCreated > 0 && { tables_created: tablesCreated }),
+      ...(imageResult.errors.length > 0 && { image_errors: imageResult.errors }),
+    };
+  } catch (err) {
+    // Provide recovery guidance: backup path is available for restore.
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `write failed after clearing document (${deleted} blocks deleted). ` +
+        `${detail}. ` +
+        `Content had ${blocks.length} blocks (${firstLevelBlockIds.length} first-level). ` +
+        (backupPath
+          ? `Backup saved at ${backupPath} — use feishu_doc write with smaller sections or split tables into separate append calls.`
+          : ""),
+    );
+  }
 }
 
 async function appendDoc(client: Lark.Client, docToken: string, markdown: string) {
   const { blocks, firstLevelBlockIds } = await convertMarkdown(client, markdown);
   if (blocks.length === 0) throw new Error("Content is empty");
-  const { children: inserted, tablesCreated } = await insertBlocksWithTables(
-    client,
-    docToken,
-    blocks,
-    firstLevelBlockIds,
-  );
-  const imageResult = await processImages(client, docToken, markdown, inserted);
-  return {
-    success: true,
-    blocks_added: inserted.length,
-    images_processed: imageResult.processed,
-    // oxlint-disable-next-line typescript/no-explicit-any
-    block_ids: inserted.map((b: any) => b.block_id),
-    ...(tablesCreated > 0 && { tables_created: tablesCreated }),
-    ...(imageResult.errors.length > 0 && { image_errors: imageResult.errors }),
-  };
+  try {
+    const { children: inserted, tablesCreated } = await insertBlocksWithTables(
+      client,
+      docToken,
+      blocks,
+      firstLevelBlockIds,
+    );
+    const imageResult = await processImages(client, docToken, markdown, inserted);
+    return {
+      success: true,
+      blocks_added: inserted.length,
+      images_processed: imageResult.processed,
+      // oxlint-disable-next-line typescript/no-explicit-any
+      block_ids: inserted.map((b: any) => b.block_id),
+      ...(tablesCreated > 0 && { tables_created: tablesCreated }),
+      ...(imageResult.errors.length > 0 && { image_errors: imageResult.errors }),
+    };
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `append failed. ${detail}. ` +
+        `Content had ${blocks.length} blocks (${firstLevelBlockIds.length} first-level). ` +
+        "Try splitting into smaller sections. Tables should be appended separately from text content.",
+    );
+  }
 }
 
 async function createDoc(client: Lark.Client, title: string, folderToken?: string) {
@@ -685,6 +873,15 @@ const FeishuDocSchema = Type.Object({
   content: Type.Optional(
     Type.String({ description: "Markdown content (for write/append/update_block)" }),
   ),
+  source_file: Type.Optional(
+    Type.String({
+      description:
+        "Local file path to read content from (for write/append/create). " +
+        "Use INSTEAD of content for large documents — the tool reads the file directly, " +
+        "avoiding the need to pass large content through the LLM. " +
+        "Absolute or relative to ~/.openclaw/workspace/.",
+    }),
+  ),
   title: Type.Optional(Type.String({ description: "Document title (for create)" })),
   folder_token: Type.Optional(Type.String({ description: "Target folder token (for create)" })),
   block_id: Type.Optional(
@@ -703,6 +900,36 @@ const FeishuDocSchema = Type.Object({
     }),
   ),
 });
+
+/** Resolve content from either inline `content` or `source_file` path.
+ *  source_file lets the AI pass a file path instead of huge inline content,
+ *  eliminating 30K+ output tokens for large documents. */
+function resolveContent(params: { content?: string; source_file?: string }): string {
+  if (params.content && params.source_file) {
+    throw new Error(
+      "Provide either content or source_file, not both. " +
+        "Use source_file for large documents to avoid LLM output token overhead.",
+    );
+  }
+  if (params.source_file) {
+    let filePath = params.source_file;
+    if (!isAbsolute(filePath)) {
+      filePath = resolve(join(homedir(), ".openclaw", "workspace"), filePath);
+    }
+    if (!existsSync(filePath)) {
+      throw new Error(`source_file not found: ${filePath}`);
+    }
+    const content = readFileSync(filePath, "utf-8");
+    if (content.length === 0) {
+      throw new Error(`source_file is empty: ${filePath}`);
+    }
+    return content;
+  }
+  if (!params.content) {
+    throw new Error("Either content or source_file is required.");
+  }
+  return params.content;
+}
 
 // ── Registration ──
 
@@ -726,27 +953,27 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
           switch (params.action) {
             case "read":
               return await readDoc(client, params.doc_token, firstAccount);
-            case "write":
-              return json(await writeDoc(client, params.doc_token, params.content));
-            case "append":
-              return json(await appendDoc(client, params.doc_token, params.content));
+            case "write": {
+              const content = resolveContent(params);
+              return json(await writeDoc(client, params.doc_token, content));
+            }
+            case "append": {
+              const content = resolveContent(params);
+              return json(await appendDoc(client, params.doc_token, content));
+            }
             case "create": {
               const created = await createDoc(client, params.title, params.folder_token);
-              // If content was provided, write it into the newly created document.
-              if (params.content) {
-                const writeResult = await writeDoc(client, created.document_id, params.content);
+              // If content or source_file was provided, write it into the newly created document.
+              if (params.content || params.source_file) {
+                const content = resolveContent(params);
+                const writeResult = await writeDoc(client, created.document_id, content);
                 return json({ ...created, ...writeResult });
               }
               return json(created);
             }
             case "list_blocks": {
-              const res = await client.docx.documentBlock.list({
-                path: { document_id: params.doc_token },
-              });
-              // oxlint-disable-next-line typescript/no-explicit-any
-              if ((res as any).code !== 0) throw new Error((res as any).msg);
-              // oxlint-disable-next-line typescript/no-explicit-any
-              const items = (res as any).data?.items ?? [];
+              // Paginated: fetches all blocks even for 500+ block documents.
+              const items = await listAllDocBlocks(client, params.doc_token);
               // Detect board blocks and fetch their images automatically.
               const boards = extractBoardBlocks(items);
               let boardData: BoardBlockInfo[] | undefined;

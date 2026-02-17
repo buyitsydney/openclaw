@@ -1242,7 +1242,9 @@ npm 上至少有 4 个飞书相关包：
 | 12  | **文档写入安全性**                  | ✅ 已修复（2026-02-16） | **六层修复**：(1) **嵌套块 API 升级**：`insertBlocks()` 从 `documentBlockChildren.create` 升级为 `documentBlockDescendant.create`。旧 API 将所有块扁平化为文档根的直接子节点，嵌套无序列表（`- 一级\n  - 二级`）因 parent-child 关系冲突直接 400 报错。新 API 通过 `children_id`（顶层块 ID）+ `descendants`（全部块含 children 数组）原生支持嵌套结构。**已通过诊断脚本 100% 验证**：convert API 对嵌套无序列表返回 5 个块（3 个 first-level + 2 个 nested），嵌套有序列表则全部 first-level（不受影响）。(2) **增量编辑（格式保留）**：`update_block` 新增 `find`/`replace_with` 参数，读取当前 block 的 text*elements 做精准替换，保留加粗/链接/斜体等格式。(3) **write 前自动备份**：`writeDoc()` 在 `clearDocumentContent()` 前自动将文档纯文本导出到 `~/.openclaw/feishu-doc-backups/{docToken}*{timestamp}.md`。(4) **create 支持 content**：`feishu_doc create`现在接受`content` 参数，自动 create+write，不再创建空文档。(5) **Markdown 表格创建**：`insertBlocksWithTables()`按`firstLevelBlockIds` 顺序处理，遇到表格用两步法（`documentBlockChildren.create`创建空表格 +`documentBlock.patch` 逐格填充内容），其余块走 descendant API。**已通过诊断脚本 100% 验证**：4x3 表格 12 格全部填充成功。(6) **图片写入（本地+远程）**：`processImages()` 支持 HTTP URL 和本地文件路径（绝对路径/相对路径/file:// URL）。远程图片 fetch→temp file→`createReadStream`→upload；本地文件直接 `createReadStream`→upload，无需 temp file。Lark SDK 的 `drive.media.uploadAll`必须用`fs.createReadStream`（`Readable.from(buffer)` 会导致 400 "Error when parsing request"）。**已通过诊断脚本 100% 验证**：小胖子照片本地文件上传成功。**全量回归测试 101 块 0 错误 16 种格式全部通过**。**已修复的飞书平台限制**：Markdown 表格已支持（两步法），`drive.fileVersion.create()` 接口不存在（API 编辑不触发版本快照）。SKILL.md 引导 AI 优先走增量编辑路径 |
 | 13  | **聊天视频附件读取**                | ✅ 已实现（2026-02-16） | **董事长需求**（2026-02-16）：用户在飞书聊天中发送视频附件，Her 无法接收和理解视频内容，回复"视频没有传过来"。**根因**：`extractTextContent()` 处理了 `text/post/image/file/audio/sticker`，唯独没有 `media`（视频消息类型）。**飞书视频消息结构（已确认）**：`msg_type="media"`，content=`{ "file_key": "file_v2_xxx", "image_key": "img_xxx" }`。`file_key` 是视频文件本体，`image_key` 是封面图。下载 API 与文件附件完全相同：`im/v1/messages/{message_id}/resources/{file_key}?type=file`（已有 `downloadFeishuFile`），上限 100MB。**实现方案**：**Step A（零新依赖，立即可用）**：(1) `extractTextContent` 增加 `media` 分支，收集 `file_key` + `image_key`；(2) 封面图走 `downloadFeishuImage`→vision（AI 能看到封面）；(3) 视频文件走 `downloadFeishuFile`→保存到本地磁盘；(4) 注入 `<file>` 标签告诉 AI 视频已下载到哪个路径 + 封面图可见。**Step B（进阶，按需）**：B1 ffmpeg 抽帧（Docker 加 apt install ffmpeg ~80MB），每 N 秒截一帧送 vision；B2 Gemini 原生视频理解（Files API 直传 MP4，支持最长 45 分钟含音频，效果最佳但需路由逻辑）。**模型能力**：Gemini 2.5 原生支持视频输入，Claude Opus/Sonnet 不支持视频（只支持图片/音频/PDF）。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
-| 14 | **[P0] feishu_doc 大文档写入不可用** | ❌ 未修复 | **实测发现**（2026-02-16）：AI 尝试将本地 Markdown 文件同步写入飞书云文档时，大文档（>100 块）场景基本不可用。**具体表现**：(1) 全文一次 `write` → 400（内容超限）；(2) 拆成 `write` 前半 + 多段 `append` → 中间段 append 也频繁 400；(3) 400 没有明确错误信息，不知道是**块数限制**还是**请求体大小限制**；(4) 重试时不同粒度反复尝试，成功/失败 append 交替；(5) 最终产生 3 组重复的"IT操作流程"段落。**附加问题**：`$500`、`$1,500` 等美元符号被飞书解析为 LaTeX 公式。**根因分析（6 个）**：(1) **无内容大小上限文档**（高）：不知道单次 write/append 的块数或字节上限，只能靠试；(2) **400 错误无详情**（高）：API 返回 400 但不告诉哪个限制触发了，只能盲目缩小内容；(3) **表格消耗大量块**（中）：10行3列表格 = 1(table)+30(cell)+30(text) = 61 个块，append 可能有 ~50 块隐含限制；(4) **无原子性更新**（高）：没有"清空+全量写入"的原子操作，write 和多次 append 之间如果 400 失败，文档处于半写入的脏状态；(5) **无 diff/patch 能力**（高）：不能"只更新变化的部分"，只能全量覆盖或逐块操作；(6) **$ 符号 LaTeX 冲突**（中）：Markdown→飞书 DOCX 转换时 `$` 被解析为 LaTeX 分隔符。**流程瓶颈**：读取阶段（快，几分钟）→ diff 分析（快）→ **写入阶段（灾难，~80% 时间耗在这里，反复 400 重试拆分）**。**改进方向**：(1) `feishu_doc` 工具应**自动分片**：write/append 内部按块数自动拆分，对 AI 调用者透明；(2) **返回有意义的错误**：400 时告诉"超过 N 个块限制"而非裸 400；(3) **支持 idempotent 全量写入**：一个"replace entire document"操作，内部自动分片+重试+去重；(4) **文档同步任务应该 spawn sub-agent**：让 sub-agent 专门做写入+验证+清理的闭环，不在主 session 里人肉分段。**结论**：飞书文档写入工具对小文档（<50 块）好使，对大文档（>100 块）基本不可用，问题不在 AI 操作，是**工具链的能力缺口**。 |
+| 14 | **[P0] feishu_doc 大文档写入不可用** | ✅ 已修复（2026-02-16） | **实测发现**（2026-02-16）：AI 尝试将本地大文档同步写入飞书云文档时频繁 400。**诊断脚本 100% 验证的根因**：(1) **`documentBlockDescendant.create` 不支持表格块**（`block_type=31`）——包含任何表格的请求直接 `1770001 invalid param`。(2) **`documentBlockChildren.create` 表格创建硬限制 9×9**——超过 9 行或 9 列的表格 `1770001 invalid param`（脚本验证 9×3✅ 10×3❌ 5×8✅ 5×10❌ 9×9✅ 9×10❌）。(3) **纯文本/列表/标题块实际无限制**——descendant API 单次 500 块、文档累计 2000 块、单块 50000 字符全部通过。**已修复（五项改进）**：(1) **大表格自动拆分**：`createAndFillTable()` 检测到表格超过 9 行时，自动拆分为多个 ≤9 行的子表格，每个子表格重复表头行。11×3 表格 → 9×3 + 3×3，**诊断验证全部填充成功**。(2) **错误信息增强**：`extractLarkError()` 从 AxiosError 提取 `response.data.code/msg`，`describeLarkError()` 映射错误码为可操作说明，`writeDoc`/`appendDoc` 顶层 catch 附加块统计 + 备份路径 + 恢复建议。(3) **$ 符号转义**：`convertMarkdown()` 预处理 `$(\d)` → `＄$1`（全角美元符），防止飞书将 `$500` 渲染为 LaTeX。(4) **SKILL.md 更新**：表格 9×9 限制说明 + 自动拆分行为。(5) **诊断脚本 100% 验证**：`diag-feishu-block-fixes.ts`（$ 转义 ✅、表格分离 ✅、错误信息 ✅）、`diag-feishu-table-limits.ts`（9×9 限制确认）、`diag-feishu-table-split.ts`（11×3 拆分为 9×3+3×3 全部填充 ✅）。 |
+
+| 15 | **[P0] feishu_doc 大文档写入 LLM 超时** | ✅ 已修复（2026-02-16） | **实测发现**（2026-02-16）：AI 调用 `feishu_doc write` 写入 673 行文档时，LLM 需要将完整文档内容作为 tool 参数输出（~30K output tokens），流式传输 2-3 分钟后 `Network connection lost`，导致写入完全失败。**根因**：`feishu_doc write` 只接受 `content` 参数（inline markdown），AI 必须先读文件到上下文（~30K input tokens），再逐 token 输出完整内容作为工具参数（~30K output tokens）——双倍 token 浪费 + 网络超时风险。**修复**：新增 `source_file` 参数，工具直接从磁盘读取文件内容，AI 只需传一个文件路径字符串。write/append/create 三个 action 均支持。SKILL.md 明确指导：超过 ~20 行的内容必须用 `source_file`。**效果**：AI output 从 ~30K tokens 降至 ~50 tokens（仅文件路径），消除网络超时风险，工具调用延迟从 2-3 分钟降至 <1 秒。 |
 
 注：**Markdown 卡片/表格渲染**已由 CardKit 流式卡片天然支持（schema 2.0 + `tag: "markdown"`），无需额外实现。实测 car her 表格渲染完美，社区版 post 模式反而渲染异常。
 
@@ -1330,6 +1332,30 @@ npm 上至少有 4 个飞书相关包：
 | 加载体验         | 流式卡片打字机动画                                                                | typing emoji reaction（闪烁）                       |
 | 群消息           | 正常处理+归档                                                                     | "我无法主动搜索或读取群组的历史聊天记录"            |
 | 插件健康度       | 无警告                                                                            | 大量 `duplicate plugin id detected` 警告            |
+
+#### 下一步任务（2026-02-17）
+
+基于最新实测与复盘，后续任务按优先级如下：
+
+1. **删除/微改默认走块级操作（P0）**
+   - 规则：用户只删一段/改一段时，优先 `list_blocks -> delete_block / update_block`，禁止默认走全量 `write`。
+   - 目标：避免“删一段却整篇重写”的高风险操作。
+
+2. **补齐中间插入能力（P0）**
+   - 新增 `insert_before` / `insert_after`（或等价 action），支持在指定 block 附近插入内容。
+   - 目标：避免“文档中间加一段只能全量重写”。
+
+3. **补齐范围删除/批量删除（P1）**
+   - 新增 `delete_range`（from_block_id -> to_block_id）或 `delete_blocks[]`。
+   - 目标：删除整章时不再逐块调用，降低失败率和耗时。
+
+4. **写后强校验标准化（P0）**
+   - 写后必须做 `list_blocks` 校验：表格数、空单元格、关键标题顺序。
+   - 禁止仅凭 `read/rawContent` 宣称“0 diff”。
+
+5. **回归测试补齐（P1）**
+   - 为 `update_block` 的整块 `content` 覆盖模式补测试（含格式影响）。
+   - 保留并持续执行“同源文件 + 同 destination”脚本回归，确保真实场景稳定。
 
 ---
 

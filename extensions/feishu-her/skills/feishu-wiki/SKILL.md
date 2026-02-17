@@ -8,6 +8,17 @@ description: |
 
 Single tool `feishu_wiki` for knowledge base operations.
 
+## Mandatory Workflow (MUST FOLLOW)
+
+For any wiki URL sync/edit task, AI must:
+
+1. `feishu_wiki get` with wiki token from URL.
+2. Use returned `obj_token` as `feishu_doc.doc_token`.
+3. For large local files, call `feishu_doc write` with `source_file` (NOT inline `content`).
+4. Verify with `feishu_doc list_blocks` on the same `obj_token`.
+
+Do not report success without step 4.
+
 ## Token Extraction
 
 From URL `https://xxx.feishu.cn/wiki/ABC123def` → `token` = `ABC123def`
@@ -92,7 +103,8 @@ To edit a wiki page:
 
 1. Get node: `{ "action": "get", "token": "wiki_token" }` → returns `obj_token`
 2. Read doc: `feishu_doc { "action": "read", "doc_token": "obj_token" }`
-3. Write doc: `feishu_doc { "action": "write", "doc_token": "obj_token", "content": "..." }`
+3. Write doc (large file): `feishu_doc { "action": "write", "doc_token": "obj_token", "source_file": "/absolute/path/to/file.md" }`
+4. Verify structure/tables: `feishu_doc { "action": "list_blocks", "doc_token": "obj_token" }`
 
 ## Configuration
 
