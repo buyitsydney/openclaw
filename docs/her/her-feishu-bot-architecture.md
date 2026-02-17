@@ -1357,6 +1357,64 @@ npm 上至少有 4 个飞书相关包：
    - 为 `update_block` 的整块 `content` 覆盖模式补测试（含格式影响）。
    - 保留并持续执行“同源文件 + 同 destination”脚本回归，确保真实场景稳定。
 
+#### 回归防回退测试状态（2026-02-17）
+
+已完成“旧版失败 -> 新版通过（测试代码零改动）”的防回退验证，并沉淀为可复用流程：
+
+1. **新增 unit 防线（已通过）**
+   - 文件：`extensions/feishu-her/src/tools/docx.test.ts`
+   - 覆盖点：
+     - `list_blocks` 分页拉全量（避免 500 截断）
+     - `write` 清空阶段分页删除全部顶层块
+     - `source_file` 读取优先级与参数互斥校验
+
+2. **新增 e2e 防线（已通过）**
+   - 文件：`extensions/feishu-her/src/tools/docx.e2e.test.ts`
+   - 命令：`pnpm test:e2e:feishu-her`
+   - 覆盖点：
+     - 650 旧块场景下 `write` 必须全部清空后再写入
+     - 750 块场景下 `list_blocks` 必须返回全量（非 500）
+
+3. **旧版失败验证（已完成）**
+   - 临时切换实现：`git restore --source 07eaaee5b -- extensions/feishu-her/src/tools/docx.ts`
+   - 同一套测试不改动，结果：
+     - unit：4/4 失败（分页调用次数与 source_file 语义不满足）
+     - e2e：2/2 失败（`blocks_deleted` 500 vs 650、`list_blocks` 500 vs 750）
+
+4. **切回新版验证（已完成）**
+   - 恢复实现：`git restore --source HEAD -- extensions/feishu-her/src/tools/docx.ts`
+   - 同一套测试不改动，结果：
+     - unit：4/4 通过
+     - e2e：2/2 通过
+
+5. **CI 策略**
+   - 耗时 e2e 不进默认快速链路，采用独立命令 `pnpm test:e2e:feishu-her`。
+   - 默认 CI 继续以快速、确定性检查为主；e2e 走手动/专用流程。
+
+#### Feishu Her 二开隔离与升级规范（2026-02-17）
+
+目标：保证你只二开 `feishu-her`，同时随时低成本同步上游 `openclaw`。
+
+1. **改动边界（硬约束）**
+   - 业务功能只落在 `extensions/feishu-her/**`、对应 `skills/**` 与 `docs/her/**`。
+   - 禁止把 Feishu 专有逻辑扩散到 `src/**` 通用框架层。
+   - 若必须改核心，先在架构文档记录“不可避免原因 + 回退方案 + 上游对齐方案”。
+
+2. **CI 隔离策略**
+   - 上游默认 CI 行为不改：`ci.yml` 继续服务 `main`。
+   - Fork 侧单独维护 `dev` 工作流（例如 `ci-dev.yml`），仅对 fork 的 `dev` 分支触发。
+   - 本地门禁（pre-commit/pre-push）优先走本地未提交 hook，避免把个人流程提交进仓库主线。
+
+3. **升级流程（固定 SOP）**
+   - 固定节奏把 `upstream/main` 同步到你的 `dev`（rebase 优先）。
+   - 每次同步后先跑：`pnpm check && pnpm build && pnpm test && pnpm test:e2e`。
+   - Feishu 回归固定跑“同源文件 + 同 destination”脚本，验证表格、顺序、空单元格与重复写入问题。
+
+4. **冲突处理优先级**
+   - 优先保持 upstream 原实现不动，在扩展层适配。
+   - 若冲突发生在框架层，优先回退到扩展层方案，不做长期框架分叉。
+   - 对任何临时补丁设置“删除条件”（上游修复后移除）。
+
 ---
 
 ## 总结
