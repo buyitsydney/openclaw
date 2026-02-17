@@ -1,4 +1,8 @@
 import * as Lark from "@larksuiteoapi/node-sdk";
+import { execSync } from "node:child_process";
+import { writeFileSync, readFileSync, unlinkSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 
 // Cache Lark clients per appId to avoid redundant token fetches.
@@ -435,6 +439,113 @@ export async function downloadFeishuFile(params: {
     buffer,
     contentType: typeof contentType === "string" ? contentType : "application/octet-stream",
   };
+}
+
+/** Convert non-Opus audio (e.g. MP3 from TTS) to OGG/Opus via ffmpeg.
+ *  Returns the original buffer if already Opus or if ffmpeg is unavailable. */
+function convertToOpus(buffer: Buffer): Buffer {
+  // Check for OGG/Opus magic bytes (OggS header) — skip conversion if already Opus.
+  if (
+    buffer.length >= 4 &&
+    buffer[0] === 0x4f &&
+    buffer[1] === 0x67 &&
+    buffer[2] === 0x67 &&
+    buffer[3] === 0x53
+  ) {
+    return buffer;
+  }
+  const dir = mkdtempSync(join(tmpdir(), "feishu-audio-"));
+  const inFile = join(dir, "input.mp3");
+  const outFile = join(dir, "output.ogg");
+  try {
+    writeFileSync(inFile, buffer);
+    execSync(`ffmpeg -y -i "${inFile}" -c:a libopus -b:a 32k -ac 1 -ar 16000 "${outFile}"`, {
+      timeout: 15000,
+      stdio: "pipe",
+    });
+    return readFileSync(outFile) as Buffer;
+  } catch {
+    // ffmpeg not available or conversion failed: upload as-is.
+    return buffer;
+  } finally {
+    try {
+      unlinkSync(inFile);
+    } catch {
+      /* ignore */
+    }
+    try {
+      unlinkSync(outFile);
+    } catch {
+      /* ignore */
+    }
+    try {
+      unlinkSync(dir);
+    } catch {
+      /* ignore: rmdir fails if not empty, ok */
+    }
+  }
+}
+
+/** Upload an audio buffer to Feishu and return the file_key for sending.
+ *  Uses `client.im.file.create` with `file_type: "opus"`.
+ *  Non-Opus audio (e.g. MP3 from TTS) is auto-converted via ffmpeg.
+ *  Feishu requires a `duration` param (ms); estimated from buffer if not given. */
+export async function uploadFeishuAudio(params: {
+  account: ResolvedFeishuAccount;
+  buffer: Buffer;
+  fileName?: string;
+  duration?: number;
+}): Promise<string> {
+  const client = getFeishuClient(params.account);
+  const opusBuffer = convertToOpus(params.buffer);
+  const fileName = params.fileName ?? `voice-${Date.now()}.ogg`;
+  // Estimate duration from opus bitrate (~32kbps) if not provided.
+  const duration = params.duration ?? Math.max(1000, Math.round((opusBuffer.length * 8) / 32));
+
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const response = (await client.im.file.create({
+    data: {
+      file_type: "opus",
+      file_name: fileName,
+      file: opusBuffer as never,
+      duration,
+    },
+  })) as any;
+
+  if (response.code !== undefined && response.code !== 0) {
+    throw new Error(`Feishu audio upload failed: ${response.msg || `code ${response.code}`}`);
+  }
+  const fileKey = response.file_key ?? response.data?.file_key;
+  if (!fileKey) {
+    throw new Error("Feishu audio upload failed: no file_key returned");
+  }
+  return fileKey;
+}
+
+/** Send an audio message to a Feishu chat or user.
+ *  Uses `msg_type: "audio"` with the `file_key` from `uploadFeishuAudio`. */
+export async function sendFeishuAudio(params: {
+  account: ResolvedFeishuAccount;
+  chatId: string;
+  fileKey: string;
+  replyToMessageId?: string;
+}): Promise<void> {
+  const client = getFeishuClient(params.account);
+  const content = JSON.stringify({ file_key: params.fileKey });
+
+  if (params.replyToMessageId) {
+    await client.im.message.reply({
+      path: { message_id: params.replyToMessageId },
+      data: { content, msg_type: "audio" },
+    });
+    return;
+  }
+
+  const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
+  await client.im.message.create({
+    params: { receive_id_type: receiveIdType },
+    data: { receive_id: receiveId, content, msg_type: "audio" },
+  });
 }
 
 /** Send an image message to a Feishu chat or user. */

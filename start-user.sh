@@ -316,23 +316,38 @@ if [ ! -f "$GCLOUD_ADC" ]; then
 fi
 echo -e "${GREEN}  ✓ Google Cloud 凭证${NC}"
 
-# Check OpenRouter API key
-if [ -z "${OPENROUTER_API_KEY:-}" ]; then
-  # Try to read from local openclaw.json (env.vars is a sibling key, JSON.parse can read it)
-  OPENROUTER_API_KEY=$(python3 -c "
+# Auto-read ALL env.vars from ~/.openclaw/openclaw.json (single source of truth).
+# This propagates every API key (OPENROUTER, GROQ, DEEPGRAM, etc.) to Docker
+# without needing to update this script when new keys are added.
+ENV_ARGS=()
+while IFS='=' read -r key val; do
+  [ -n "$key" ] && ENV_ARGS+=(-e "${key}=${val}")
+done < <(python3 -c "
 import json, os
 try:
     c = json.load(open(os.path.expanduser('~/.openclaw/openclaw.json')))
-    print(c.get('env', {}).get('vars', {}).get('OPENROUTER_API_KEY', ''))
+    for k, v in c.get('env', {}).get('vars', {}).items():
+        print(f'{k}={v}')
 except: pass
-" 2>/dev/null || true)
+" 2>/dev/null)
+
+# Verify OPENROUTER_API_KEY is present (required for AI models).
+HAS_OPENROUTER=""
+for arg in "${ENV_ARGS[@]}"; do
+  case "$arg" in OPENROUTER_API_KEY=*) HAS_OPENROUTER="yes" ;; esac
+done
+if [ -z "$HAS_OPENROUTER" ]; then
+  # Fallback to environment variable
+  if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+    ENV_ARGS+=(-e "OPENROUTER_API_KEY=${OPENROUTER_API_KEY}")
+    HAS_OPENROUTER="yes"
+  fi
 fi
-if [ -z "${OPENROUTER_API_KEY:-}" ]; then
-  echo -e "${RED}✗ OPENROUTER_API_KEY 未设置${NC}"
-  echo -e "${YELLOW}  export OPENROUTER_API_KEY=sk-or-...${NC}"
+if [ -z "$HAS_OPENROUTER" ]; then
+  echo -e "${RED}✗ OPENROUTER_API_KEY 未设置（~/.openclaw/openclaw.json env.vars 或环境变量）${NC}"
   exit 1
 fi
-echo -e "${GREEN}  ✓ OpenRouter API key${NC}"
+echo -e "${GREEN}  ✓ API keys (${#ENV_ARGS[@]} env vars from config)${NC}"
 echo ""
 
 # --- Read user info from registry (docker/users.csv) ---
@@ -486,7 +501,7 @@ docker run -d \
   --init \
   --restart unless-stopped \
   -e HOME=/data \
-  -e OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
+  "${ENV_ARGS[@]}" \
   -e GOOGLE_APPLICATION_CREDENTIALS=/gcloud/application_default_credentials.json \
   ${WEBCHAT_URL:+-e WEBCHAT_URL="$WEBCHAT_URL"} \
   -e VOICE_FE_HOST="${NAMED_FE_HOST}" \

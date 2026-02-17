@@ -27,6 +27,8 @@ import {
   createFeishuCardStream,
   uploadFeishuImage,
   sendFeishuImage,
+  uploadFeishuAudio,
+  sendFeishuAudio,
   downloadFeishuImage,
   downloadFeishuFile,
   getBotOpenId,
@@ -506,7 +508,13 @@ function extractTextContent(
       }
       return null; // Handled in handleInboundMessage.
     }
-    if (msgType === "audio") return "[audio]";
+    // Audio/voice messages: collect file_key for download (triggers STT pipeline).
+    if (msgType === "audio") {
+      if (parsed.file_key && fileInfo) {
+        fileInfo.push({ fileKey: parsed.file_key, fileName: parsed.file_name ?? "voice.ogg" });
+      }
+      return null; // Handled in handleInboundMessage via file download.
+    }
     if (msgType === "sticker") return "[sticker]";
     return null;
   } catch {
@@ -853,16 +861,23 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         );
         const fileData = await downloadFeishuFile({ account, messageId, fileKey: fi.fileKey });
         if (fileData) {
+          // Feishu may return application/octet-stream for audio; fix to audio/ogg
+          // so the STT pipeline detects audio/* and triggers transcription.
+          const isAudioFile = fi.fileName.endsWith(".ogg") || fi.fileName.endsWith(".opus");
+          const effectiveContentType =
+            isAudioFile && fileData.contentType === "application/octet-stream"
+              ? "audio/ogg"
+              : fileData.contentType;
           // No size limit — Feishu already caps uploads; buffer is already in memory.
           const saved = await core.channel.media.saveMediaBuffer(
             fileData.buffer,
-            fileData.contentType,
+            effectiveContentType,
             "inbound",
             Infinity,
             fi.fileName,
           );
           mediaPaths.push(saved.path);
-          mediaTypes.push(saved.contentType ?? fileData.contentType ?? "application/octet-stream");
+          mediaTypes.push(saved.contentType ?? effectiveContentType ?? "application/octet-stream");
           log?.info(`[${account.accountId}] file saved: ${saved.path} (${fi.fileName})`);
         } else {
           fileErrors.push({ name: fi.fileName, reason: "download returned empty" });
@@ -949,13 +964,17 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   }
 
   // For media-only messages, pick the right placeholder:
+  // - Audio messages: "<media:audio>" triggers STT pipeline (same as Telegram pattern).
   // - Image messages (or image-as-file like jpg with msgType=file): "<media:image>" triggers vision.
   // - Video messages (msgType=media): cover image for vision + video file path for AI context.
   // - Non-image file messages: filePlaceholder with name+path so AI can use exec to read them.
+  const isAudioMedia = msgType === "audio" && mediaType?.startsWith("audio/");
   const isImageMedia =
     imageKeys.length > 0 || (fileInfo.length > 0 && mediaType?.startsWith("image/"));
   const textFromMessage =
     rawText ??
+    // Audio: placeholder triggers STT transcription.
+    (isAudioMedia && mediaPath ? "<media:audio>" : null) ??
     // Video: combine cover image (vision) + video file path (AI can reference it).
     (msgType === "media" && isImageMedia && mediaPath && filePlaceholder
       ? `<media:image>\n${filePlaceholder}`
@@ -981,7 +1000,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   if (!cleanText && !parentId && !isGroup) return;
 
   log?.info(
-    `[${account.accountId}] inbound: chat=${chatId} from=${senderId} type=${chatType}${mediaPath ? " +image" : ""}`,
+    `[${account.accountId}] inbound: chat=${chatId} from=${senderId} type=${chatType}${mediaPath ? (isAudioMedia ? " +audio" : " +image") : ""}`,
   );
   setStatus({ lastInboundAt: Date.now() });
 
@@ -1335,16 +1354,28 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // Strategy: onPartialReply drives the card typewriter (streaming display).
   // deliver only accumulates text for finalize — it does NOT update the card,
   // because onPartialReply already streamed the same content.
+  //
+  // Media dedup: when AI manually calls TTS, the tool result contains a MEDIA: path.
+  // AI often echoes the same MEDIA: path in its final text reply. Without dedup,
+  // the same audio gets uploaded+sent twice. This matches the pattern of
+  // `filterMessagingToolDuplicates` (text dedup) in core reply-payloads.ts.
+  // Preferred mode: tts.auto = "inbound" — system handles TTS, no AI echo, no dedup needed.
+  const sentMediaUrls = new Set<string>();
   await core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
     ctx: ctxPayload,
     cfg: config,
     dispatcherOptions: {
       deliver: async (payload, info) => {
-        log?.info(
-          `[${account.accountId}] deliver: kind=${info.kind} hasText=${!!payload.text} textLen=${payload.text?.length ?? 0} hasMedia=${!!(payload.mediaUrls?.length || payload.mediaUrl)}`,
-        );
+        // Filter already-delivered media (same pattern as filterMessagingToolDuplicates for text).
+        const rawMediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
+        const mediaUrls = rawMediaUrls.filter((u) => !sentMediaUrls.has(u));
+        for (const u of mediaUrls) sentMediaUrls.add(u);
+        const hasMedia = mediaUrls.length > 0;
+        const skippedMedia = rawMediaUrls.length - mediaUrls.length;
 
-        const hasMedia = !!(payload.mediaUrls?.length || payload.mediaUrl);
+        log?.info(
+          `[${account.accountId}] deliver: kind=${info.kind} hasText=${!!payload.text} textLen=${payload.text?.length ?? 0} hasMedia=${hasMedia}${skippedMedia > 0 ? ` (skipped ${skippedMedia} duplicate media)` : ""}`,
+        );
 
         if (cardStream?.started && payload.text) {
           // deliver is called after the entire turn ends (all paragraphs at once).
@@ -1361,7 +1392,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           // Media attachments still need separate delivery.
           if (hasMedia) {
             await deliverFeishuReply({
-              payload: { mediaUrls: payload.mediaUrls, mediaUrl: payload.mediaUrl },
+              payload: { mediaUrls },
               account,
               chatId,
               isGroup,
@@ -1377,7 +1408,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
         // Card stream not active or no text — deliver normally.
         await deliverFeishuReply({
-          payload,
+          payload: { ...payload, mediaUrls: hasMedia ? mediaUrls : undefined, mediaUrl: undefined },
           account,
           chatId,
           isGroup,
@@ -1439,23 +1470,41 @@ async function deliverFeishuReply(params: {
   const { payload, account, chatId, isGroup, replyToMessageId, log, setStatus, config, core } =
     params;
 
-  // Handle media (images) if present.
+  // Handle media (images/audio) if present.
   const mediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
   for (const url of mediaUrls) {
     try {
-      const media = await core.channel.media.fetchRemoteMedia({ url });
+      // Local file paths (e.g. TTS output) need direct read, not HTTP fetch.
+      const isLocalFile = url.startsWith("/") && existsSync(url);
+      const media = isLocalFile
+        ? {
+            buffer: readFileSync(url) as Buffer,
+            contentType: url.endsWith(".mp3")
+              ? "audio/mpeg"
+              : url.endsWith(".ogg") || url.endsWith(".opus")
+                ? "audio/ogg"
+                : url.endsWith(".wav")
+                  ? "audio/wav"
+                  : undefined,
+          }
+        : await core.channel.media.fetchRemoteMedia({ url });
       if (!media?.buffer) {
         log?.error(`Feishu media fetch returned empty for ${url}`);
         continue;
       }
+      const isAudio = media.contentType?.startsWith("audio/");
       // Feishu image upload supports JPEG, PNG, WEBP, GIF, TIFF, BMP, ICO.
       const isImage = !media.contentType || media.contentType.startsWith("image/");
-      if (isImage) {
+      if (isAudio) {
+        const fileKey = await uploadFeishuAudio({ account, buffer: media.buffer });
+        await sendFeishuAudio({ account, chatId, fileKey });
+        setStatus({ lastOutboundAt: Date.now() });
+      } else if (isImage) {
         const imageKey = await uploadFeishuImage({ account, buffer: media.buffer });
         await sendFeishuImage({ account, chatId, imageKey });
         setStatus({ lastOutboundAt: Date.now() });
       } else {
-        // Non-image media: send URL as text fallback.
+        // Non-image/audio media: send URL as text fallback.
         await sendFeishuText({ account, chatId, text: `[media] ${url}` });
         setStatus({ lastOutboundAt: Date.now() });
       }

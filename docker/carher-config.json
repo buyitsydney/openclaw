@@ -45,6 +45,13 @@
     "noSandbox": true,
     "defaultProfile": "openclaw"
   },
+  "tools": {
+    "media": {
+      "audio": {
+        "models": [{ "provider": "groq" }]
+      }
+    }
+  },
   "commands": {
     "restart": false
   },

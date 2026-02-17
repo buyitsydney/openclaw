@@ -25,6 +25,8 @@ import {
   sendFeishuRichText,
   uploadFeishuImage,
   sendFeishuImage,
+  uploadFeishuAudio,
+  sendFeishuAudio,
   addFeishuReaction,
   removeFeishuReaction,
 } from "./outbound.js";
@@ -244,18 +246,22 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
     },
     sendMedia: async ({ to, text, mediaUrl, accountId, cfg }) => {
       const account = resolveFeishuAccount({ cfg, accountId });
-      // Upload and send image if a media URL is provided.
       if (mediaUrl) {
         try {
           const { loadWebMedia } = await import("openclaw/plugin-sdk");
           const media = await loadWebMedia(mediaUrl);
           if (media?.buffer) {
-            const imageKey = await uploadFeishuImage({ account, buffer: media.buffer });
-            await sendFeishuImage({ account, chatId: to, imageKey });
+            if (media.contentType?.startsWith("audio/")) {
+              const fileKey = await uploadFeishuAudio({ account, buffer: media.buffer });
+              await sendFeishuAudio({ account, chatId: to, fileKey });
+            } else {
+              const imageKey = await uploadFeishuImage({ account, buffer: media.buffer });
+              await sendFeishuImage({ account, chatId: to, imageKey });
+            }
           }
         } catch {
           // Fallback: send URL as text if upload fails.
-          await sendFeishuText({ account, chatId: to, text: `[image] ${mediaUrl}` });
+          await sendFeishuText({ account, chatId: to, text: `[media] ${mediaUrl}` });
         }
       }
       if (text) {

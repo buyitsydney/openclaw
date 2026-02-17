@@ -30,8 +30,8 @@
     web: {
       search: { provider: "perplexity" },
     },
-    // 注意: tools.media.audio 不需要配置，auto-detect 机制会自动
-    // 按优先级尝试: primary model → 本地 CLI → OpenAI → Groq → Deepgram → Google
+    // 注意: tools.media.audio.models 是数组，不能放 shared-config（deep merge 会 concat）
+    // 已放在 carher-config.json + 本地 openclaw.json 中，显式指定 Groq 跳过本地 whisper auto-detect
   },
 
   // 命令（环境特有的 restart 由各自 overlay 设置）
@@ -44,7 +44,7 @@
   messages: {
     ackReactionScope: "group-mentions",
     tts: {
-      auto: "off",
+      auto: "inbound",
       provider: "edge",
       edge: { voice: "zh-CN-XiaoxiaoNeural" },
     },
