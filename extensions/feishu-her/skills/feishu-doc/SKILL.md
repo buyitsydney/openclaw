@@ -25,21 +25,6 @@ Hard rules:
 - Do not claim "0 diff" without `list_blocks`-based verification.
 - Verification must be on the SAME destination doc token the user asked for.
 
-## Regression Proof Protocol (MUST FOLLOW)
-
-For any bugfix/regression testcase in `feishu_doc`, AI must use deterministic A/B proof:
-
-1. Run tests on latest code (baseline).
-2. Switch only implementation file(s) to known old SHA.
-3. Run the exact same tests again (test files unchanged).
-4. Confirm old version fails with behavioral assertions.
-5. Restore latest implementation and re-run; confirm pass.
-
-Do NOT claim regression proof via static inspection (symbol names, grep, etc.).
-Proof requires runtime assertions and old-fail/new-pass evidence.
-
-Reference workflow skill: `.cursor/skills/feishu-regression-proof/SKILL.md`
-
 ## Token Extraction
 
 From URL `https://xxx.feishu.cn/docx/ABC123def` -> `doc_token` = `ABC123def`
@@ -214,12 +199,6 @@ For short inline content:
 1. Start with `action: "read"` - get plain text + statistics
 2. Check `block_types` in response for Table, Image, Code, etc.
 3. If structured content exists, use `action: "list_blocks"` for full data
-
-## E2E Execution (Feishu Her)
-
-- Dedicated command: `pnpm test:e2e:feishu-her`
-- Purpose: heavy anti-regression e2e checks for `feishu-her` doc tool.
-- Policy: keep this command outside default fast CI lanes; run in dedicated/manual flow.
 
 **IMPORTANT: Verifying writes**
 
