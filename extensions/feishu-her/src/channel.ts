@@ -27,6 +27,9 @@ import {
   sendFeishuImage,
   uploadFeishuAudio,
   sendFeishuAudio,
+  uploadFeishuFile,
+  sendFeishuFile,
+  sendFeishuVideo,
   addFeishuReaction,
   removeFeishuReaction,
 } from "./outbound.js";
@@ -249,18 +252,54 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
       if (mediaUrl) {
         try {
           const { loadWebMedia } = await import("openclaw/plugin-sdk");
-          const media = await loadWebMedia(mediaUrl);
+          const { readFile } = await import("node:fs/promises");
+          // Feishu IM file upload limit is 30MB; pass it as maxBytes so
+          // loadWebMedia doesn't reject large audio/video with its 16MB default.
+          const FEISHU_MAX_BYTES = 30 * 1024 * 1024;
+          const media = await loadWebMedia(mediaUrl, {
+            maxBytes: FEISHU_MAX_BYTES,
+            sandboxValidated: true,
+            readFile: (f: string) => readFile(f),
+            optimizeImages: false,
+          });
           if (media?.buffer) {
             if (media.contentType?.startsWith("audio/")) {
               const fileKey = await uploadFeishuAudio({ account, buffer: media.buffer });
               await sendFeishuAudio({ account, chatId: to, fileKey });
-            } else {
+            } else if (media.contentType?.startsWith("video/")) {
+              // Video requires msg_type "media" (not "file"); error 230055 otherwise.
+              const fileName =
+                mediaUrl.split("/").pop()?.split("?")[0] ?? `video-${Date.now()}.mp4`;
+              const fileKey = await uploadFeishuFile({ account, buffer: media.buffer, fileName });
+              await sendFeishuVideo({ account, chatId: to, fileKey });
+            } else if (media.contentType?.startsWith("image/")) {
               const imageKey = await uploadFeishuImage({ account, buffer: media.buffer });
               await sendFeishuImage({ account, chatId: to, imageKey });
+            } else {
+              // Non-audio/non-video/non-image → send as file (PPT, PDF, DOCX, etc.)
+              const fileName = mediaUrl.split("/").pop()?.split("?")[0] ?? `file-${Date.now()}`;
+              const fileKey = await uploadFeishuFile({
+                account,
+                buffer: media.buffer,
+                fileName,
+              });
+              await sendFeishuFile({ account, chatId: to, fileKey });
             }
           }
-        } catch {
-          // Fallback: send URL as text if upload fails.
+        } catch (err) {
+          // Re-throw actionable errors so the AI gets useful feedback.
+          const msg = err instanceof Error ? err.message : String(err);
+          if (
+            msg.includes("文件太大") ||
+            msg.includes("飞书文件上传失败") ||
+            msg.includes("exceeds") ||
+            msg.includes("limit") ||
+            msg.includes("upload failed") ||
+            msg.includes("230055")
+          ) {
+            throw new Error(msg);
+          }
+          // Other failures: send URL as text fallback.
           await sendFeishuText({ account, chatId: to, text: `[media] ${mediaUrl}` });
         }
       }

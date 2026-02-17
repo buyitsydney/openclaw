@@ -16,7 +16,7 @@ import crypto from "node:crypto";
 import { existsSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { homedir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, extname } from "node:path";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { resolveGroupOwnerIds } from "./accounts.js";
 import {
@@ -29,6 +29,9 @@ import {
   sendFeishuImage,
   uploadFeishuAudio,
   sendFeishuAudio,
+  uploadFeishuFile,
+  sendFeishuFile,
+  sendFeishuVideo,
   downloadFeishuImage,
   downloadFeishuFile,
   getBotOpenId,
@@ -38,6 +41,36 @@ import {
   type FeishuCardStream,
 } from "./outbound.js";
 import { getFeishuRuntime } from "./runtime.js";
+
+// ── Content-type inference for local files ────────────────────────────────
+/** Infer MIME content-type from a file path extension. */
+function inferContentType(filePath: string): string | undefined {
+  const ext = extname(filePath).toLowerCase();
+  const map: Record<string, string> = {
+    ".mp3": "audio/mpeg",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".wav": "audio/wav",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".pdf": "application/pdf",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".doc": "application/msword",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xls": "application/vnd.ms-excel",
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+    ".txt": "text/plain",
+    ".csv": "text/csv",
+    ".zip": "application/zip",
+  };
+  return map[ext] ?? "application/octet-stream";
+}
 
 // ── CardKit status footer helpers ────────────────────────────────────────
 // Appended to every AI reply card to show model + context usage at a glance.
@@ -828,10 +861,12 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         log?.info(`[${account.accountId}] downloading image: key=${imageKey} msg=${messageId}`);
         const imgData = await downloadFeishuImage({ account, messageId, imageKey });
         if (imgData) {
+          // No size limit — image is already downloaded into memory.
           const saved = await core.channel.media.saveMediaBuffer(
             imgData.buffer,
             imgData.contentType,
             "inbound",
+            Infinity,
           );
           mediaPaths.push(saved.path);
           mediaTypes.push(saved.contentType ?? imgData.contentType ?? "image/jpeg");
@@ -1164,10 +1199,12 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
               imageKey: imgKey,
             });
             if (imgData) {
+              // No size limit — image is already downloaded into memory.
               const saved = await core.channel.media.saveMediaBuffer(
                 imgData.buffer,
                 imgData.contentType,
                 "inbound",
+                Infinity,
               );
               mediaPaths.push(saved.path);
               mediaTypes.push(saved.contentType ?? imgData.contentType ?? "image/jpeg");
@@ -1472,20 +1509,31 @@ async function deliverFeishuReply(params: {
 
   // Handle media (images/audio) if present.
   const mediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
-  for (const url of mediaUrls) {
+  for (const rawUrl of mediaUrls) {
     try {
-      // Local file paths (e.g. TTS output) need direct read, not HTTP fetch.
+      // Normalize media URL: strip MEDIA: prefix, resolve file:// and ~ paths.
+      let url = rawUrl.replace(/^\s*MEDIA\s*:\s*/i, "").trim();
+      if (url.startsWith("file://")) {
+        try {
+          url = new URL(url).pathname;
+        } catch {
+          /* keep as-is */
+        }
+      }
+      if (url.startsWith("~")) {
+        url = url.replace(/^~/, homedir());
+      }
+      // Skip obviously invalid entries (AI hallucinations, instructional text, etc.)
+      if (!url.startsWith("/") && !url.startsWith("http://") && !url.startsWith("https://")) {
+        log?.warn?.(`Feishu: skipping invalid media URL (not a path or http): ${url.slice(0, 80)}`);
+        continue;
+      }
+      // Local file paths (e.g. TTS output, generated files) need direct read.
       const isLocalFile = url.startsWith("/") && existsSync(url);
       const media = isLocalFile
         ? {
             buffer: readFileSync(url) as Buffer,
-            contentType: url.endsWith(".mp3")
-              ? "audio/mpeg"
-              : url.endsWith(".ogg") || url.endsWith(".opus")
-                ? "audio/ogg"
-                : url.endsWith(".wav")
-                  ? "audio/wav"
-                  : undefined,
+            contentType: inferContentType(url),
           }
         : await core.channel.media.fetchRemoteMedia({ url });
       if (!media?.buffer) {
@@ -1493,26 +1541,34 @@ async function deliverFeishuReply(params: {
         continue;
       }
       const isAudio = media.contentType?.startsWith("audio/");
-      // Feishu image upload supports JPEG, PNG, WEBP, GIF, TIFF, BMP, ICO.
-      const isImage = !media.contentType || media.contentType.startsWith("image/");
+      const isVideo = media.contentType?.startsWith("video/");
+      const isImage = media.contentType?.startsWith("image/");
       if (isAudio) {
         const fileKey = await uploadFeishuAudio({ account, buffer: media.buffer });
         await sendFeishuAudio({ account, chatId, fileKey });
+        setStatus({ lastOutboundAt: Date.now() });
+      } else if (isVideo) {
+        // Video requires msg_type "media" (not "file"); error 230055 otherwise.
+        const fileName = url.split("/").pop()?.split("?")[0] ?? `video-${Date.now()}.mp4`;
+        const fileKey = await uploadFeishuFile({ account, buffer: media.buffer, fileName });
+        await sendFeishuVideo({ account, chatId, fileKey });
         setStatus({ lastOutboundAt: Date.now() });
       } else if (isImage) {
         const imageKey = await uploadFeishuImage({ account, buffer: media.buffer });
         await sendFeishuImage({ account, chatId, imageKey });
         setStatus({ lastOutboundAt: Date.now() });
       } else {
-        // Non-image/audio media: send URL as text fallback.
-        await sendFeishuText({ account, chatId, text: `[media] ${url}` });
+        // Non-audio/non-video/non-image → upload as file (PPT, PDF, DOCX, etc.)
+        const fileName = url.split("/").pop()?.split("?")[0] ?? `file-${Date.now()}`;
+        const fileKey = await uploadFeishuFile({ account, buffer: media.buffer, fileName });
+        await sendFeishuFile({ account, chatId, fileKey });
         setStatus({ lastOutboundAt: Date.now() });
       }
     } catch (err) {
-      log?.error(`Feishu media send failed for ${url}: ${String(err)}`);
+      log?.error(`Feishu media send failed for ${rawUrl}: ${String(err)}`);
       // Fallback: send URL as text.
       try {
-        await sendFeishuText({ account, chatId, text: `[media] ${url}` });
+        await sendFeishuText({ account, chatId, text: `[media] ${rawUrl}` });
       } catch {
         /* ignore fallback error */
       }

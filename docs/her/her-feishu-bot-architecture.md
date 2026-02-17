@@ -259,9 +259,14 @@ outbound: {
   },
   sendText: async ({ to, text, accountId, cfg }) => { ... },
   sendMedia: async ({ to, text, mediaUrl, accountId, cfg }) => {
-    // 下载媒体 -> uploadFeishuImage -> sendFeishuImage
+    // loadWebMedia(maxBytes=30MB) -> 按 contentType 路由:
+    //   audio/* -> convertToOpus -> uploadFeishuAudio -> sendFeishuAudio (msg_type: "audio")
+    //   video/* -> uploadFeishuFile -> sendFeishuVideo (msg_type: "media")
+    //   image/* -> uploadFeishuImage -> sendFeishuImage (msg_type: "image")
+    //   其他   -> uploadFeishuFile -> sendFeishuFile (msg_type: "file")
+    // 飞书 IM 文件上限 30MB，超限在 loadWebMedia 层拦截并返回清晰错误
     // 失败时 fallback 为文本发送 URL
-    if (text) await sendFeishuText({ account, chatId: to, text });
+    if (text) await sendFeishuRichText({ account, chatId: to, text });
     return { channel: "feishu" };
   },
 }
@@ -338,10 +343,10 @@ outbound: {
 | `openclaw.plugin.json` | 9         | 插件清单                                                                                                             |
 | `package.json`         | 39        | 依赖 + 通道元数据                                                                                                    |
 | `index.ts`             | 17        | 入口注册                                                                                                             |
-| `src/channel.ts`       | 254       | ChannelPlugin 主体 + sendMedia 图片上传 + 目标解析                                                                   |
+| `src/channel.ts`       | 300       | ChannelPlugin 主体 + sendMedia 全媒体上传（音频/视频/图片/文件）+ 目标解析                                           |
 | `src/runtime.ts`       | 14        | Runtime 单例                                                                                                         |
 | `src/gateway.ts`       | 733       | WSClient + pipeline 集成 + 富文本解析 + 回复投递 + 图片下载/接收 + CardKit 流式卡片 + 群聊归档 + CardKit 状态 footer |
-| `src/outbound.ts`      | 667       | Lark SDK 消息发送 + ID 类型识别 + 图片上传/发送/下载 + Markdown→Post 转换 + CardKit API                              |
+| `src/outbound.ts`      | 690       | Lark SDK 消息发送 + ID 类型识别 + 图片/音频/视频/文件上传发送/下载 + Markdown→Post 转换 + CardKit API                |
 | `src/accounts.ts`      | 133       | 账户 / 凭证解析 + 群聊主人 ID 解析                                                                                   |
 | **总计**               | **~1800** | 全部在 `extensions/feishu-her/` 内                                                                                   |
 
@@ -1245,6 +1250,8 @@ npm 上至少有 4 个飞书相关包：
 | 14 | **[P0] feishu_doc 大文档写入不可用** | ✅ 已修复（2026-02-16） | **实测发现**（2026-02-16）：AI 尝试将本地大文档同步写入飞书云文档时频繁 400。**诊断脚本 100% 验证的根因**：(1) **`documentBlockDescendant.create` 不支持表格块**（`block_type=31`）——包含任何表格的请求直接 `1770001 invalid param`。(2) **`documentBlockChildren.create` 表格创建硬限制 9×9**——超过 9 行或 9 列的表格 `1770001 invalid param`（脚本验证 9×3✅ 10×3❌ 5×8✅ 5×10❌ 9×9✅ 9×10❌）。(3) **纯文本/列表/标题块实际无限制**——descendant API 单次 500 块、文档累计 2000 块、单块 50000 字符全部通过。**已修复（五项改进）**：(1) **大表格自动拆分**：`createAndFillTable()` 检测到表格超过 9 行时，自动拆分为多个 ≤9 行的子表格，每个子表格重复表头行。11×3 表格 → 9×3 + 3×3，**诊断验证全部填充成功**。(2) **错误信息增强**：`extractLarkError()` 从 AxiosError 提取 `response.data.code/msg`，`describeLarkError()` 映射错误码为可操作说明，`writeDoc`/`appendDoc` 顶层 catch 附加块统计 + 备份路径 + 恢复建议。(3) **$ 符号转义**：`convertMarkdown()` 预处理 `$(\d)` → `＄$1`（全角美元符），防止飞书将 `$500` 渲染为 LaTeX。(4) **SKILL.md 更新**：表格 9×9 限制说明 + 自动拆分行为。(5) **诊断脚本 100% 验证**：`diag-feishu-block-fixes.ts`（$ 转义 ✅、表格分离 ✅、错误信息 ✅）、`diag-feishu-table-limits.ts`（9×9 限制确认）、`diag-feishu-table-split.ts`（11×3 拆分为 9×3+3×3 全部填充 ✅）。 |
 
 | 15 | **[P0] feishu_doc 大文档写入 LLM 超时** | ✅ 已修复（2026-02-16） | **实测发现**（2026-02-16）：AI 调用 `feishu_doc write` 写入 673 行文档时，LLM 需要将完整文档内容作为 tool 参数输出（~30K output tokens），流式传输 2-3 分钟后 `Network connection lost`，导致写入完全失败。**根因**：`feishu_doc write` 只接受 `content` 参数（inline markdown），AI 必须先读文件到上下文（~30K input tokens），再逐 token 输出完整内容作为工具参数（~30K output tokens）——双倍 token 浪费 + 网络超时风险。**修复**：新增 `source_file` 参数，工具直接从磁盘读取文件内容，AI 只需传一个文件路径字符串。write/append/create 三个 action 均支持。SKILL.md 明确指导：超过 ~20 行的内容必须用 `source_file`。**效果**：AI output 从 ~30K tokens 降至 ~50 tokens（仅文件路径），消除网络超时风险，工具调用延迟从 2-3 分钟降至 <1 秒。 |
+
+| 16 | **聊天文件/音频/视频发送** | ✅ 已实现（2026-02-17） | **AI 可通过 `message` tool 发送任意文件到飞书聊天**。实现：(1) `sendMedia` 调用 `loadWebMedia(maxBytes=30MB)` 加载本地/远程文件（`sandboxValidated + readFile` 绕过 localRoots 限制）；(2) 按 contentType 自动路由：`audio/*` → `convertToOpus` → `uploadFeishuAudio` → `sendFeishuAudio`（`msg_type: "audio"`），`video/*` → `uploadFeishuFile` → `sendFeishuVideo`（`msg_type: "media"`，飞书要求视频用 media 而非 file，否则 230055 错误），`image/*` → `uploadFeishuImage` → `sendFeishuImage`，其他 → `uploadFeishuFile` → `sendFeishuFile`（`msg_type: "file"`）；(3) 飞书 IM 文件上限 30MB，在 `loadWebMedia` 层和 `uploadFeishuFile` 层双重拦截；(4) 错误传播：catch 块匹配 size/format 错误（"exceeds"/"limit"/"文件太大"/"230055"）并 re-throw 给 AI，确保 AI 收到可操作反馈。`deliverFeishuReply`（gateway 路径）同样实现了完整的音频/视频/图片/文件路由。**E2E 脚本验证**：WAV 17.7MB 音频 + MP4 3.1MB 视频均成功发送到飞书。Docker 1 压力测试：10 个 <30MB 小文件全部成功，10 个 >30MB 大文件全部正确拦截并返回清晰错误。 |
 
 注：**Markdown 卡片/表格渲染**已由 CardKit 流式卡片天然支持（schema 2.0 + `tag: "markdown"`），无需额外实现。实测 car her 表格渲染完美，社区版 post 模式反而渲染异常。
 

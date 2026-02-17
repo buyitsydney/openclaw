@@ -548,6 +548,127 @@ export async function sendFeishuAudio(params: {
   });
 }
 
+// ── File upload/send (PPT, PDF, DOCX, etc.) ─────────────────────────────
+
+/** Map common file extensions to Feishu's `file_type` parameter.
+ *  Feishu IM file upload accepts: mp4, pdf, doc, xls, ppt, stream (generic). */
+function mapFileType(ext: string): string {
+  const e = ext.toLowerCase().replace(/^\./, "");
+  if (e === "mp4" || e === "mov") return "mp4";
+  if (e === "pdf") return "pdf";
+  if (e === "doc" || e === "docx") return "doc";
+  if (e === "xls" || e === "xlsx") return "xls";
+  if (e === "ppt" || e === "pptx") return "ppt";
+  return "stream";
+}
+
+const FEISHU_FILE_MAX_BYTES = 30 * 1024 * 1024; // 30MB — Feishu IM file upload limit
+
+/** Upload a file buffer to Feishu IM and return the file_key.
+ *  Uses `client.im.file.create`; max 30MB per Feishu docs. */
+export async function uploadFeishuFile(params: {
+  account: ResolvedFeishuAccount;
+  buffer: Buffer;
+  fileName: string;
+}): Promise<string> {
+  // Pre-check: Feishu IM file upload hard limit is 30MB.
+  const sizeMb = (params.buffer.length / (1024 * 1024)).toFixed(1);
+  if (params.buffer.length > FEISHU_FILE_MAX_BYTES) {
+    throw new Error(
+      `文件太大无法发送到飞书：${params.fileName} (${sizeMb}MB)，飞书限制最大 30MB。请压缩文件或发送较小的版本。`,
+    );
+  }
+
+  const client = getFeishuClient(params.account);
+  const ext = params.fileName.split(".").pop() ?? "";
+  const fileType = mapFileType(ext);
+
+  // oxlint-disable-next-line typescript/no-explicit-any
+  let response: any;
+  try {
+    response = (await client.im.file.create({
+      data: {
+        file_type: fileType as never,
+        file_name: params.fileName,
+        file: params.buffer as never,
+      },
+    })) as any;
+  } catch (err: unknown) {
+    // Extract Feishu error details from Axios response for actionable error messages.
+    const axiosErr = err as { response?: { status?: number; data?: unknown } };
+    const status = axiosErr.response?.status;
+    const data = axiosErr.response?.data;
+    if (status === 400) {
+      throw new Error(
+        `飞书文件上传失败 (400)：${params.fileName} (${sizeMb}MB)。${data ? JSON.stringify(data) : "请检查文件格式和大小（限制 30MB）。"}`,
+      );
+    }
+    throw err;
+  }
+
+  if (response.code !== undefined && response.code !== 0) {
+    throw new Error(`Feishu file upload failed: ${response.msg || `code ${response.code}`}`);
+  }
+  const fileKey = response.file_key ?? response.data?.file_key;
+  if (!fileKey) {
+    throw new Error("Feishu file upload failed: no file_key returned");
+  }
+  return fileKey;
+}
+
+/** Send a video/media message to a Feishu chat or user.
+ *  Uses `msg_type: "media"` — required for video files (mp4/mov).
+ *  Sending video with `msg_type: "file"` triggers Feishu error 230055. */
+export async function sendFeishuVideo(params: {
+  account: ResolvedFeishuAccount;
+  chatId: string;
+  fileKey: string;
+  replyToMessageId?: string;
+}): Promise<void> {
+  const client = getFeishuClient(params.account);
+  const content = JSON.stringify({ file_key: params.fileKey });
+
+  if (params.replyToMessageId) {
+    await client.im.message.reply({
+      path: { message_id: params.replyToMessageId },
+      data: { content, msg_type: "media" },
+    });
+    return;
+  }
+
+  const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
+  await client.im.message.create({
+    params: { receive_id_type: receiveIdType },
+    data: { receive_id: receiveId, content, msg_type: "media" },
+  });
+}
+
+/** Send a file message to a Feishu chat or user.
+ *  Uses `msg_type: "file"` with the `file_key` from `uploadFeishuFile`. */
+export async function sendFeishuFile(params: {
+  account: ResolvedFeishuAccount;
+  chatId: string;
+  fileKey: string;
+  replyToMessageId?: string;
+}): Promise<void> {
+  const client = getFeishuClient(params.account);
+  const content = JSON.stringify({ file_key: params.fileKey });
+
+  if (params.replyToMessageId) {
+    await client.im.message.reply({
+      path: { message_id: params.replyToMessageId },
+      data: { content, msg_type: "file" },
+    });
+    return;
+  }
+
+  const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
+  await client.im.message.create({
+    params: { receive_id_type: receiveIdType },
+    data: { receive_id: receiveId, content, msg_type: "file" },
+  });
+}
+
 /** Send an image message to a Feishu chat or user. */
 export async function sendFeishuImage(params: {
   account: ResolvedFeishuAccount;

@@ -40,17 +40,8 @@
     }
   },
   "browser": {
-    "enabled": true,
     "headless": true,
-    "noSandbox": true,
-    "defaultProfile": "openclaw"
-  },
-  "tools": {
-    "media": {
-      "audio": {
-        "models": [{ "provider": "groq" }]
-      }
-    }
+    "noSandbox": true
   },
   "commands": {
     "restart": false
@@ -68,16 +59,12 @@
     }
   },
   "plugins": {
-    "deny": ["feishu"],
     "entries": {
       "realtime": {
         "enabled": true,
         "config": {
           "port": 18790
         }
-      },
-      "feishu-her": {
-        "enabled": true
       }
     }
   }
