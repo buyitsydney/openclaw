@@ -28,13 +28,15 @@ NC='\033[0m'
 # 跨平台 SHA-256：Ubuntu 用 sha256sum，macOS 用 shasum -a 256
 sha256() { command -v sha256sum &>/dev/null && sha256sum || shasum -a 256; }
 
-# --- Model shortcuts (短名 → 完整 OpenRouter 路径) ---
+# --- Model shortcuts (短名 → 完整路径，自动跟随 ~/.openclaw/openclaw.json 的 provider) ---
+# CARHER_PROVIDER 由下方 ENV_ARGS 块从 openclaw.json model.primary 自动提取（openrouter 或 anthropic）
 resolve_model() {
+  local provider="${CARHER_PROVIDER:-openrouter}"
   case "$1" in
-    sonnet|sonnet-4)       echo "openrouter/anthropic/claude-sonnet-4" ;;
-    sonnet-4.5)            echo "openrouter/anthropic/claude-sonnet-4.5" ;;
-    opus|opus-4.6)         echo "openrouter/anthropic/claude-opus-4.6" ;;
-    haiku|haiku-3.5)       echo "openrouter/anthropic/claude-3.5-haiku" ;;
+    sonnet|sonnet-4)       [ "$provider" = "anthropic" ] && echo "anthropic/claude-sonnet-4"   || echo "openrouter/anthropic/claude-sonnet-4" ;;
+    sonnet-4.5)            [ "$provider" = "anthropic" ] && echo "anthropic/claude-sonnet-4-5" || echo "openrouter/anthropic/claude-sonnet-4.5" ;;
+    opus|opus-4.6)         [ "$provider" = "anthropic" ] && echo "anthropic/claude-opus-4-6"   || echo "openrouter/anthropic/claude-opus-4.6" ;;
+    haiku|haiku-3.5)       echo "openrouter/anthropic/claude-3.5-haiku" ;;  # haiku 始终走 openrouter
     gemini-2.5|gemini-pro) echo "openrouter/google/gemini-2.5-pro-preview" ;;
     gemini-flash)          echo "openrouter/google/gemini-2.0-flash-001" ;;
     gpt-4o)                echo "openrouter/openai/gpt-4o" ;;
@@ -319,15 +321,28 @@ echo -e "${GREEN}  ✓ Google Cloud 凭证${NC}"
 # Auto-read ALL env.vars from ~/.openclaw/openclaw.json (single source of truth).
 # This propagates every API key (OPENROUTER, GROQ, DEEPGRAM, etc.) to Docker
 # without needing to update this script when new keys are added.
+# Also auto-detects CARHER_PROVIDER from model.primary (openrouter/anthropic/...)
+# so resolve_model follows the same provider as the local Her config.
+CARHER_PROVIDER="openrouter"
 ENV_ARGS=()
 while IFS='=' read -r key val; do
-  [ -n "$key" ] && ENV_ARGS+=(-e "${key}=${val}")
+  [ -n "$key" ] || continue
+  if [ "$key" = "CARHER_PROVIDER" ]; then
+    CARHER_PROVIDER="$val"  # shell var for resolve_model; not injected into containers
+    continue
+  fi
+  ENV_ARGS+=(-e "${key}=${val}")
 done < <(python3 -c "
 import json, os
 try:
     c = json.load(open(os.path.expanduser('~/.openclaw/openclaw.json')))
-    for k, v in c.get('env', {}).get('vars', {}).items():
+    vars = c.get('env', {}).get('vars', {})
+    for k, v in vars.items():
         print(f'{k}={v}')
+    m = c.get('agents', {}).get('defaults', {}).get('model', {}).get('primary', '')
+    if m.startswith('\${') and m.endswith('}'):
+        m = vars.get(m[2:-1], m)
+    print('CARHER_PROVIDER=' + (m.split('/')[0] if '/' in m else 'openrouter'))
 except: pass
 " 2>/dev/null)
 
