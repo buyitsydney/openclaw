@@ -624,14 +624,14 @@ find /data/.openclaw/browser -name "SingletonLock" -o -name "SingletonSocket" -o
 - `agents.defaults.contextTokens`: 240,000
 - `agents.defaults.compaction.mode`: safeguard
 - `agents.defaults.model.primary`: openrouter/anthropic/claude-opus-4.6
-- `models.providers`: minimax-m2.5 (contextWindow=240000) + opus-4.6 (contextWindow=240000)
+- `models.providers`: sonnet-4.6 (contextWindow=240000) + opus-4.6 (contextWindow=240000)
 
 **Docker carher-4** (`/data/.openclaw/openclaw.json`, 基于 `docker/carher-config.json`):
 
 - `agents.defaults.contextTokens`: 240,000
 - `agents.defaults.compaction.mode`: safeguard
-- `agents.defaults.model.primary`: openrouter/anthropic/claude-sonnet-4
-- `models.providers`: sonnet-4 (contextWindow=240000) + opus-4.6 (contextWindow=240000)
+- `agents.defaults.model.primary`: openrouter/anthropic/claude-sonnet-4.6
+- `models.providers`: sonnet-4.6 (contextWindow=240000) + opus-4.6 (contextWindow=240000)
 - `browser`: enabled + headless + noSandbox
 
 ### 14.11 CardKit 状态 Footer (2026-02-15)

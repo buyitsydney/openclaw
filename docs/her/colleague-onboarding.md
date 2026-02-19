@@ -293,7 +293,7 @@ pnpm openclaw config set channels.feishu.appSecret "你的AppSecret"
 
 ```bash
 cat > docker/users.csv << 'EOF'
-id,name,model,feishu_app_id,feishu_app_secret,feishu_owner_open_id,note
+id,name,model,feishu_app_id,feishu_app_secret,feishu_owner_open_id,provider,note
 EOF
 ```
 
@@ -305,14 +305,15 @@ EOF
 - `feishu_app_id`：飞书 App ID（如果这个用户需要飞书机器人）
 - `feishu_app_secret`：飞书 App Secret
 - `feishu_owner_open_id`：飞书用户 open_id（可选，用于 DM 白名单）
+- `provider`：`anthropic` 或 `openrouter`（留空默认 `openrouter`）
 - `note`：备注
 
 **示例**：
 
 ```csv
-id,name,model,feishu_app_id,feishu_app_secret,feishu_owner_open_id,note
-1,我的测试,sonnet,cli_xxx,secret_xxx,ou_xxx,我自己的测试用户
-2,同事A演示,opus,,,,无飞书的演示用户
+id,name,model,feishu_app_id,feishu_app_secret,feishu_owner_open_id,provider,note
+1,我的测试,sonnet,cli_xxx,secret_xxx,ou_xxx,anthropic,我自己的测试用户
+2,同事A演示,opus,,,,,无飞书的演示用户
 ```
 
 ### 6.3 启动用户容器

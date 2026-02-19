@@ -524,14 +524,15 @@ pnpm openclaw config set channels.feishu.appSecret "你的AppSecret"
 
 ### 5.4 可用的模型快捷名
 
-| 快捷名       | 模型                    | 特点           |
-| ------------ | ----------------------- | -------------- |
-| `sonnet`     | Claude Sonnet 4（默认） | 性价比最高     |
-| `sonnet-4.5` | Claude Sonnet 4.5       | 同价更强       |
-| `opus`       | Claude Opus 4.6         | 最聪明，价格高 |
-| `haiku`      | Claude 3.5 Haiku        | 最便宜         |
-| `gemini-2.5` | Gemini 2.5 Pro          | Google 模型    |
-| `gpt-4o`     | GPT-4o                  | OpenAI 模型    |
+| 快捷名       | 模型                      | 特点           |
+| ------------ | ------------------------- | -------------- |
+| `sonnet`     | Claude Sonnet 4.6（默认） | 性价比最高     |
+| `opus`       | Claude Opus 4.6           | 最聪明，价格高 |
+| `or-sonnet`  | 另一 provider 的 Sonnet   | provider 切换  |
+| `or-opus`    | 另一 provider 的 Opus     | provider 切换  |
+| `haiku`      | Claude 3.5 Haiku          | 最便宜         |
+| `gemini-2.5` | Gemini 2.5 Pro            | Google 模型    |
+| `gpt-4o`     | GPT-4o                    | OpenAI 模型    |
 
 ### 5.5 管理容器
 

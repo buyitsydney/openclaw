@@ -209,7 +209,7 @@ source ~/.bashrc
   "$include": "/app/docker/carher-config.json",
   "agents": {
     "defaults": {
-      "model": { "primary": "openrouter/anthropic/claude-sonnet-4" }
+      "model": { "primary": "openrouter/anthropic/claude-sonnet-4.6" }
     }
   },
   "channels": {
@@ -242,7 +242,7 @@ source ~/.bashrc
 }
 ```
 
-`$include` 自动引入以下共享配置（来自 `carher-config.json` + `shared-config.json5`）：gateway（bind=lan, auth）、browser（headless Chromium）、tools（web search）、commands、messages（TTS）、models（Sonnet 4 + Opus 4.6 定义）、agents（contextTokens 240K, compaction, memorySearch）。
+`$include` 自动引入以下共享配置（来自 `carher-config.json` + `shared-config.json5`）：gateway（bind=lan, auth）、browser（headless Chromium）、tools（web search）、commands、messages（TTS）、models（Sonnet 4.6 + Opus 4.6 定义，双 provider）、agents（contextTokens 240K, compaction, memorySearch）。
 
 > **注意事项**：
 >
@@ -260,7 +260,7 @@ source ~/.bashrc
 > **Context Window 240K 保护（2026-02-15 新增）**：
 >
 > - `shared-config.json5` 已预配置 `agents.defaults.contextTokens: 240000` + `compaction.mode: "safeguard"`，限制每个用户的最大上下文窗口为 240K token
-> - `models.providers` 定义了 Sonnet 4 和 Opus 4.6 两个模型，均设 `contextWindow: 240000`，确保 compaction 在接近上限时自动触发
+> - `models.providers` 定义了 Sonnet 4.6 和 Opus 4.6 两个模型（双 provider：anthropic + openrouter），均设 `contextWindow: 240000`，确保 compaction 在接近上限时自动触发
 > - **关键**: `contextTokens` 和 `contextWindow` 必须对齐，否则 compaction 不会触发（已实测验证）
 > - 每条 AI 回复的飞书卡片底部自动显示模型名 + context 用量 + 压缩次数（CardKit 状态 footer）
 > - 这是防止单个用户在长对话中无限消耗 token 导致高额费用的关键保护措施
@@ -477,7 +477,7 @@ git checkout v旧版本
 
 部署者收到 App ID + App Secret 后：
 
-1. 编辑 `docker/users.csv`，新增一行：`N,董事长,sonnet,cli_xxx,secret_xxx,,董事长专属Bot`
+1. 编辑 `docker/users.csv`，新增一行：`N,董事长,sonnet,cli_xxx,secret_xxx,,openrouter,董事长专属Bot`
 2. 运行 `./start-user.sh --id=N --local`
 3. 确认日志出现 `Feishu WSClient connected` 后通知 IT 继续
 
@@ -549,10 +549,10 @@ git checkout v旧版本
 用户凭证集中管理在 `docker/users.csv`（已加入 .gitignore 不入库）：
 
 ```csv
-# id, 姓名, 模型, feishu_app_id, feishu_app_secret, feishu_owner_open_id, 备注
-1,张三,sonnet,cli_aaa111,secret111,ou_xxx111,测试用户
-2,厂商A,opus,,,,"厂商演示（无飞书）"
-3,王五,sonnet,cli_bbb222,secret222,ou_xxx222,
+# id, 姓名, 模型, feishu_app_id, feishu_app_secret, feishu_owner_open_id, provider, 备注
+1,张三,sonnet,cli_aaa111,secret111,ou_xxx111,openrouter,测试用户
+2,厂商A,opus,,,,anthropic,"厂商演示（无飞书）"
+3,王五,sonnet,cli_bbb222,secret222,ou_xxx222,,
 ```
 
 | 字段                   | 说明                                                          |
@@ -563,6 +563,7 @@ git checkout v旧版本
 | `feishu_app_id`        | 飞书 Bot 的 App ID（留空不启用飞书）                          |
 | `feishu_app_secret`    | 飞书 Bot 的 App Secret                                        |
 | `feishu_owner_open_id` | 用户的飞书 open_id（`ou_xxx`），用于单聊白名单 + 群聊主人识别 |
+| `provider`             | `anthropic` 或 `openrouter`（留空默认 `openrouter`）          |
 | `备注`                 | 备注信息                                                      |
 
 `feishu_owner_open_id` 获取方法：用户给 Bot 发一条消息，从容器日志中找 `from=ou_xxx`。

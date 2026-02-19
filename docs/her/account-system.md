@@ -26,7 +26,7 @@ OpenClaw 根据 `model.primary` 的 provider 前缀自动选择认证来源：
 - `anthropic/...` 前缀 → 本地 Her 走 `auth-profiles.json` 中的 setup-token；Docker 容器走 `ANTHROPIC_OAUTH_TOKEN` 环境变量
 - `openrouter/...` 前缀 → 使用 `OPENROUTER_API_KEY` 环境变量
 
-`start-user.sh` 自动读取 `openclaw.json` 的 `model.primary`，提取 provider 前缀，Docker 容器的模型短名（`opus`、`sonnet`）随之解析到正确的 provider 路径，**无需修改 `users.csv`**。
+`start-user.sh` 从 `docker/users.csv` 的 `provider` 列读取每用户的 provider（`anthropic` 或 `openrouter`，留空默认 `openrouter`），Docker 容器的模型短名（`opus`、`sonnet`）随之解析到正确的 provider 路径。
 
 ---
 
@@ -37,7 +37,7 @@ OpenClaw 根据 `model.primary` 的 provider 前缀自动选择认证来源：
 | `openclaw.json`       | `~/.openclaw/openclaw.json`                        | 否   | 本机主配置，含模型、env.vars、**anthropic provider 显示名**      |
 | `auth-profiles.json`  | `~/.openclaw/agents/main/agent/auth-profiles.json` | 否   | 本地 Her 的 setup-token 存储（不在 git，不需要手动管理）         |
 | `carher-config.json`  | `docker/carher-config.json`                        | 是   | Docker 容器基础配置，含 openrouter/**anthropic provider 显示名** |
-| `users.csv`           | `docker/users.csv`                                 | 是   | Docker 容器用户表，只填模型短名                                  |
+| `users.csv`           | `docker/users.csv`                                 | 否   | Docker 容器用户表（含模型、provider、飞书凭证）                  |
 | `shared-config.json5` | `docker/shared-config.json5`                       | 是   | 所有环境共享的功能配置（**不放 provider 定义**）                 |
 
 > **注意**：`models.providers.anthropic` 显示名需在两处各写一份——`~/.openclaw/openclaw.json`（本地 Her）和 `docker/carher-config.json`（Docker 容器）。`$include` 的 merge 不支持跨文件深度合并 `models.providers`，放在 `shared-config.json5` 会被本地 overlay 覆盖导致丢失。
@@ -86,16 +86,24 @@ OpenClaw 根据 `model.primary` 的 provider 前缀自动选择认证来源：
 
 ## 模型短名解析规则
 
-`start-user.sh` 从 `openclaw.json` 的 `model.primary` 自动提取 provider 前缀，`users.csv` 中的短名随之解析：
+`start-user.sh` 从 `docker/users.csv` 的 `provider` 列读取 provider，短名解析规则如下：
 
-| 短名                  | `anthropic` 模式              | `openrouter` 模式（默认）                |
-| --------------------- | ----------------------------- | ---------------------------------------- |
-| `opus` / `opus-4.6`   | `anthropic/claude-opus-4-6`   | `openrouter/anthropic/claude-opus-4.6`   |
-| `sonnet` / `sonnet-4` | `anthropic/claude-sonnet-4`   | `openrouter/anthropic/claude-sonnet-4`   |
-| `sonnet-4.5`          | `anthropic/claude-sonnet-4-5` | `openrouter/anthropic/claude-sonnet-4.5` |
-| `haiku` / `haiku-3.5` | `openrouter/...`（始终）      | `openrouter/...`（始终）                 |
-| `gemini-*` / `gpt-*`  | `openrouter/...`（始终）      | `openrouter/...`（始终）                 |
-| 完整路径              | 原样透传                      | 原样透传                                 |
+| 短名                    | `anthropic` provider          | `openrouter` provider（默认）            |
+| ----------------------- | ----------------------------- | ---------------------------------------- |
+| `opus` / `opus-4.6`     | `anthropic/claude-opus-4-6`   | `openrouter/anthropic/claude-opus-4.6`   |
+| `sonnet` / `sonnet-4.6` | `anthropic/claude-sonnet-4-6` | `openrouter/anthropic/claude-sonnet-4.6` |
+| `haiku` / `haiku-3.5`   | `openrouter/...`（始终）      | `openrouter/...`（始终）                 |
+| `gemini-*` / `gpt-*`    | `openrouter/...`（始终）      | `openrouter/...`（始终）                 |
+| 完整路径                | 原样透传                      | 原样透传                                 |
+
+每个 Docker 容器的白名单同时包含两个 provider 的模型，支持 `/model` 动态切换：
+
+| 别名        | 含义                      |
+| ----------- | ------------------------- |
+| `opus`      | 默认 provider 的 Opus     |
+| `sonnet`    | 默认 provider 的 Sonnet   |
+| `or-opus`   | 另一个 provider 的 Opus   |
+| `or-sonnet` | 另一个 provider 的 Sonnet |
 
 ---
 
