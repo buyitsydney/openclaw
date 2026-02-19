@@ -28,20 +28,20 @@ NC='\033[0m'
 # 跨平台 SHA-256：Ubuntu 用 sha256sum，macOS 用 shasum -a 256
 sha256() { command -v sha256sum &>/dev/null && sha256sum || shasum -a 256; }
 
-# --- Model shortcuts (短名 → 完整路径，自动跟随 ~/.openclaw/openclaw.json 的 provider) ---
-# CARHER_PROVIDER 由下方 ENV_ARGS 块从 openclaw.json model.primary 自动提取（openrouter 或 anthropic）
+# --- Model shortcuts (短名 → 完整路径) ---
+# resolve_model <shortname> [provider]
+# provider: "anthropic" 或 "openrouter"（默认 openrouter）
 resolve_model() {
-  local provider="${CARHER_PROVIDER:-openrouter}"
+  local provider="${2:-openrouter}"
   case "$1" in
-    sonnet|sonnet-4)       [ "$provider" = "anthropic" ] && echo "anthropic/claude-sonnet-4"   || echo "openrouter/anthropic/claude-sonnet-4" ;;
-    sonnet-4.5)            [ "$provider" = "anthropic" ] && echo "anthropic/claude-sonnet-4-5" || echo "openrouter/anthropic/claude-sonnet-4.5" ;;
+    sonnet|sonnet-4.6)     [ "$provider" = "anthropic" ] && echo "anthropic/claude-sonnet-4-6" || echo "openrouter/anthropic/claude-sonnet-4.6" ;;
     opus|opus-4.6)         [ "$provider" = "anthropic" ] && echo "anthropic/claude-opus-4-6"   || echo "openrouter/anthropic/claude-opus-4.6" ;;
-    haiku|haiku-3.5)       echo "openrouter/anthropic/claude-3.5-haiku" ;;  # haiku 始终走 openrouter
+    haiku|haiku-3.5)       echo "openrouter/anthropic/claude-3.5-haiku" ;;
     gemini-2.5|gemini-pro) echo "openrouter/google/gemini-2.5-pro-preview" ;;
     gemini-flash)          echo "openrouter/google/gemini-2.0-flash-001" ;;
     gpt-4o)                echo "openrouter/openai/gpt-4o" ;;
     gpt-4o-mini)           echo "openrouter/openai/gpt-4o-mini" ;;
-    *)                     echo "$1" ;;  # 完整路径直接使用
+    *)                     echo "$1" ;;
   esac
 }
 
@@ -88,8 +88,7 @@ for arg in "$@"; do
       echo "用户注册表: docker/users.csv（IT 维护，含飞书凭证等）"
       echo ""
       echo "模型快捷名:"
-      echo "  sonnet       → claude-sonnet-4 (默认)"
-      echo "  sonnet-4.5   → claude-sonnet-4.5 (同价，更强)"
+      echo "  sonnet       → claude-sonnet-4.6 (默认)"
       echo "  opus         → claude-opus-4.6 (最强，贵)"
       echo "  haiku        → claude-3.5-haiku (最省)"
       echo "  gemini-2.5   → gemini-2.5-pro-preview"
@@ -113,10 +112,9 @@ if [ "$ACTION" = "list" ]; then
     exit 1
   fi
   echo ""
-  echo -e "${CYAN}ID  姓名          模型      飞书Bot           主人OpenID                              容器状态    备注${NC}"
-  echo -e "${CYAN}──  ────          ────      ───────           ──────────                              ────────    ────${NC}"
-  while IFS=',' read -r uid uname umodel ufeishu_id ufeishu_secret ufeishu_owner unote; do
-    # Skip comments and empty lines
+  echo -e "${CYAN}ID  姓名          模型      Provider    飞书Bot           主人OpenID                              容器状态    备注${NC}"
+  echo -e "${CYAN}──  ────          ────      ────────    ───────           ──────────                              ────────    ────${NC}"
+  while IFS=',' read -r uid uname umodel ufeishu_id ufeishu_secret ufeishu_owner uprovider unote; do
     [[ "$uid" =~ ^[[:space:]]*# ]] && continue
     [[ -z "$uid" ]] && continue
     uid=$(echo "$uid" | xargs)
@@ -124,8 +122,8 @@ if [ "$ACTION" = "list" ]; then
     umodel=$(echo "$umodel" | xargs)
     ufeishu_id=$(echo "$ufeishu_id" | xargs)
     ufeishu_owner=$(echo "$ufeishu_owner" | xargs)
+    uprovider=$(echo "$uprovider" | xargs)
     unote=$(echo "$unote" | xargs)
-    # Check container status
     CNAME="carher-${uid}"
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CNAME}$"; then
       STATUS="${GREEN}运行中${NC}"
@@ -136,7 +134,7 @@ if [ "$ACTION" = "list" ]; then
     fi
     FEISHU_DISPLAY="${ufeishu_id:-—}"
     OWNER_DISPLAY="${ufeishu_owner:-—}"
-    printf "%-3s %-12s  %-8s  %-18s  %-38s  " "$uid" "$uname" "${umodel:-sonnet}" "$FEISHU_DISPLAY" "$OWNER_DISPLAY"
+    printf "%-3s %-12s  %-8s  %-10s  %-18s  %-38s  " "$uid" "$uname" "${umodel:-sonnet}" "${uprovider:-openrouter}" "$FEISHU_DISPLAY" "$OWNER_DISPLAY"
     echo -e "$STATUS    $unote"
   done < "$USERS_CSV"
   echo ""
@@ -339,30 +337,17 @@ fi
 echo -e "${GREEN}  ✓ Google Cloud 凭证${NC}"
 
 # Auto-read ALL env.vars from ~/.openclaw/openclaw.json (single source of truth).
-# This propagates every API key (OPENROUTER, GROQ, DEEPGRAM, etc.) to Docker
-# without needing to update this script when new keys are added.
-# Also auto-detects CARHER_PROVIDER from model.primary (openrouter/anthropic/...)
-# so resolve_model follows the same provider as the local Her config.
-CARHER_PROVIDER="openrouter"
+# Propagates every API key (OPENROUTER, GROQ, DEEPGRAM, etc.) to Docker.
 ENV_ARGS=()
 while IFS='=' read -r key val; do
   [ -n "$key" ] || continue
-  if [ "$key" = "CARHER_PROVIDER" ]; then
-    CARHER_PROVIDER="$val"  # shell var for resolve_model; not injected into containers
-    continue
-  fi
   ENV_ARGS+=(-e "${key}=${val}")
 done < <(python3 -c "
 import json, os
 try:
     c = json.load(open(os.path.expanduser('~/.openclaw/openclaw.json')))
-    vars = c.get('env', {}).get('vars', {})
-    for k, v in vars.items():
+    for k, v in c.get('env', {}).get('vars', {}).items():
         print(f'{k}={v}')
-    m = c.get('agents', {}).get('defaults', {}).get('model', {}).get('primary', '')
-    if m.startswith('\${') and m.endswith('}'):
-        m = vars.get(m[2:-1], m)
-    print('CARHER_PROVIDER=' + (m.split('/')[0] if '/' in m else 'openrouter'))
 except: pass
 " 2>/dev/null)
 
@@ -391,10 +376,11 @@ CSV_MODEL=""
 CSV_FEISHU_ID=""
 CSV_FEISHU_SECRET=""
 CSV_FEISHU_OWNER=""
+CSV_PROVIDER=""
 CSV_NOTE=""
 
 if [ -f "$USERS_CSV" ]; then
-  while IFS=',' read -r uid uname umodel ufeishu_id ufeishu_secret ufeishu_owner unote; do
+  while IFS=',' read -r uid uname umodel ufeishu_id ufeishu_secret ufeishu_owner uprovider unote; do
     [[ "$uid" =~ ^[[:space:]]*# ]] && continue
     [[ -z "$uid" ]] && continue
     uid=$(echo "$uid" | xargs)
@@ -404,6 +390,7 @@ if [ -f "$USERS_CSV" ]; then
       CSV_FEISHU_ID=$(echo "$ufeishu_id" | xargs)
       CSV_FEISHU_SECRET=$(echo "$ufeishu_secret" | xargs)
       CSV_FEISHU_OWNER=$(echo "$ufeishu_owner" | xargs)
+      CSV_PROVIDER=$(echo "$uprovider" | xargs)
       CSV_NOTE=$(echo "$unote" | xargs)
       break
     fi
@@ -417,13 +404,16 @@ else
   echo -e "${YELLOW}  ⚠ docker/users.csv 不存在，使用默认配置${NC}"
 fi
 
+# --- Resolve provider: CSV > default (openrouter) ---
+USER_PROVIDER="${CSV_PROVIDER:-openrouter}"
+
 # --- Resolve model: CLI arg > CSV > base config default ---
 if [ -n "$MODEL_ARG" ]; then
-  MODEL_FULL=$(resolve_model "$MODEL_ARG")
+  MODEL_FULL=$(resolve_model "$MODEL_ARG" "$USER_PROVIDER")
 elif [ -n "$CSV_MODEL" ]; then
-  MODEL_FULL=$(resolve_model "$CSV_MODEL")
+  MODEL_FULL=$(resolve_model "$CSV_MODEL" "$USER_PROVIDER")
 else
-  MODEL_FULL=""  # 使用 docker/carher-config.json 中的默认值
+  MODEL_FULL=""
 fi
 
 # --- Generate per-user config (model + feishu from CSV) ---
@@ -436,17 +426,35 @@ CUSTOM_CONFIG="/tmp/carher-config-${USER_ID}.json"
 python3 -c "
 import json, sys, os, pathlib
 
-# Build config with \$include pointing to Docker base inside the config directory.
-# v2026.2.17 security: \$include paths must stay under the config root (/data/.openclaw).
-# The base config files are mounted into /data/.openclaw/ by start-user.sh.
 cfg = {
     '\$include': './carher-config.json',
 }
 
-# Model override (sibling key overrides included value via deep merge)
+# Model override
 model = '${MODEL_FULL}'
+provider = '${USER_PROVIDER}'
 if model:
-    cfg['agents'] = {'defaults': {'model': {'primary': model}}}
+    agents = {'defaults': {'model': {'primary': model}}}
+else:
+    agents = {'defaults': {}}
+
+# Per-user model whitelist: both providers available, aliases follow CSV provider
+if provider == 'anthropic':
+    agents['defaults']['models'] = {
+        'anthropic/claude-opus-4-6': {'alias': 'opus'},
+        'anthropic/claude-sonnet-4-6': {'alias': 'sonnet'},
+        'openrouter/anthropic/claude-opus-4.6': {'alias': 'or-opus'},
+        'openrouter/anthropic/claude-sonnet-4.6': {'alias': 'or-sonnet'},
+    }
+else:
+    agents['defaults']['models'] = {
+        'openrouter/anthropic/claude-opus-4.6': {'alias': 'opus'},
+        'openrouter/anthropic/claude-sonnet-4.6': {'alias': 'sonnet'},
+        'anthropic/claude-opus-4-6': {'alias': 'or-opus'},
+        'anthropic/claude-sonnet-4-6': {'alias': 'or-sonnet'},
+    }
+if agents['defaults']:
+    cfg['agents'] = agents
 
 # Gemini config for realtime plugin
 # Priority: env var > host openclaw.json (gemini is a sibling key, JSON.parse reads it) > error
@@ -499,7 +507,7 @@ import json
 with open('${CUSTOM_CONFIG}') as f:
     print(json.load(f)['agents']['defaults']['model']['primary'])
 " 2>/dev/null || echo "sonnet")
-echo -e "${GREEN}  ✓ 模型: ${DISPLAY_MODEL}${NC}"
+echo -e "${GREEN}  ✓ 模型: ${DISPLAY_MODEL} (provider: ${USER_PROVIDER})${NC}"
 
 if [ -n "$CSV_FEISHU_ID" ] && [ -n "$CSV_FEISHU_SECRET" ]; then
   echo -e "${GREEN}  ✓ 飞书: ${CSV_FEISHU_ID}${NC}"
@@ -593,6 +601,10 @@ while [ $WAITED -lt $MAX_WAIT ]; do
   fi
 
   if [ "$GW_READY" = "true" ] && [ "$FEISHU_READY" = "false" ]; then
+    if [ -z "$CSV_FEISHU_ID" ]; then
+      echo -e "  · 飞书未配置，跳过连接检查"
+      break
+    fi
     if docker logs "$CONTAINER_NAME" 2>&1 | grep -q "ws client ready"; then
       FEISHU_READY=true
       echo -e "${GREEN}  ✓ 飞书连接就绪 (${WAITED}s)${NC}"
