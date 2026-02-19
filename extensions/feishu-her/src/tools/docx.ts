@@ -3,15 +3,15 @@
  * Adapted from @m1heng-clawd/feishu with schema guardrails (no Type.Union).
  */
 
-import type * as Lark from "@larksuiteoapi/node-sdk";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { Type } from "@sinclair/typebox";
 import { createReadStream, existsSync, readFileSync, statSync, unlinkSync } from "fs";
 import { mkdirSync, writeFileSync } from "fs";
-import { stringEnum } from "openclaw/plugin-sdk";
 import { homedir } from "os";
 import { tmpdir } from "os";
 import { isAbsolute, join, resolve, basename } from "path";
+import type * as Lark from "@larksuiteoapi/node-sdk";
+import { Type } from "@sinclair/typebox";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import { stringEnum } from "openclaw/plugin-sdk";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import { getFeishuClient, downloadWhiteboardImage } from "../outbound.js";
 

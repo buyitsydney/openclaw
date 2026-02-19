@@ -5,9 +5,9 @@
  * with OpenClaw as the intelligent backend for complex tasks.
  */
 
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import os from "node:os";
 import path from "node:path";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { loadCoreAgentDeps, type CoreConfig } from "./src/core-bridge.js";
 import { setupFileWatcher, type FileWatcher } from "./src/file-watcher.js";
 import { buildBackendModePrompt } from "./src/prompt.js";

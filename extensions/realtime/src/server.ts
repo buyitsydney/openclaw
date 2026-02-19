@@ -7,7 +7,6 @@
  * - Broadcasts prompt updates
  */
 
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import crypto from "node:crypto";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
@@ -15,6 +14,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { URL } from "node:url";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { WebSocket, WebSocketServer } from "ws";
 import { loadCoreAgentDeps, type CoreAgentDeps, type CoreConfig } from "./core-bridge.js";
 // TurnAssembler removed - Supervisor architecture replaced by Help-only model

@@ -35,4 +35,4 @@ trap cleanup EXIT INT TERM
 # Start Gateway in foreground
 echo "▶ Starting Gateway..."
 cd /app
-exec node dist/index.js gateway run --port 18789 --force --bind lan
+exec node dist/index.js gateway run --port 18789 --bind lan

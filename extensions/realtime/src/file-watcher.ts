@@ -5,13 +5,13 @@
  * then broadcasts prompt_update to Live clients.
  */
 
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { watch, type FSWatcher } from "chokidar";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { RealtimeServer } from "./server.js";
+import { watch, type FSWatcher } from "chokidar";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { loadCoreAgentDeps, type CoreAgentDeps, type CoreConfig } from "./core-bridge.js";
 import { generateLiveMemoryCapsule } from "./live-memory-capsule-agent.js";
+import type { RealtimeServer } from "./server.js";
 
 export interface FileWatcher {
   close: () => Promise<void>;

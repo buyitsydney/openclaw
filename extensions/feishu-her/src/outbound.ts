@@ -1,8 +1,8 @@
-import * as Lark from "@larksuiteoapi/node-sdk";
 import { execSync } from "node:child_process";
 import { writeFileSync, readFileSync, unlinkSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as Lark from "@larksuiteoapi/node-sdk";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 
 // Cache Lark clients per appId to avoid redundant token fetches.

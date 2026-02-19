@@ -26,6 +26,10 @@ NC='\033[0m' # No Color
 echo -e "${YELLOW}🚀 CarHer Gateway 启动脚本${NC}"
 echo ""
 
+# 同步 shared config 到 ~/.openclaw/（upstream v2026.2.17 安全策略要求 $include 在 config 目录内）
+cp "$SCRIPT_DIR/docker/shared-config.json5" "$HOME/.openclaw/shared-config.json5"
+echo -e "${GREEN}  ✓ shared-config.json5 已同步到 ~/.openclaw/${NC}"
+
 # 确定性重编译（后端 dist + 控制台 UI）
 echo -e "${YELLOW}[1/5] 重编译后端与前端资源...${NC}"
 pnpm build

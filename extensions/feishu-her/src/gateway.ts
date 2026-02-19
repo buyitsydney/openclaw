@@ -5,18 +5,18 @@
  * to Feishu servers. Received messages are forwarded to OpenClaw's auto-reply pipeline.
  */
 
+import crypto from "node:crypto";
+import { existsSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import { homedir } from "node:os";
+import { join, dirname, extname } from "node:path";
+import * as Lark from "@larksuiteoapi/node-sdk";
 import type {
   ChannelAccountSnapshot,
   ChannelLogSink,
   OpenClawConfig,
   RuntimeEnv,
 } from "openclaw/plugin-sdk";
-import * as Lark from "@larksuiteoapi/node-sdk";
-import crypto from "node:crypto";
-import { existsSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } from "node:fs";
-import os from "node:os";
-import { homedir } from "node:os";
-import { join, dirname, extname } from "node:path";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { resolveGroupOwnerIds } from "./accounts.js";
 import {

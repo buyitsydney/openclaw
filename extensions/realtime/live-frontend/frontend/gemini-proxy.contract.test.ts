@@ -581,14 +581,14 @@ describe("Gemini proxy contract (hits Google)", () => {
       // Wait for response
       await waitForAny(
         events,
-        (e) => typeof e.turnCompleteReason === "string" || e.hasAudio,
+        (e) => typeof e.turnCompleteReason === "string" || e.hasAudio === true,
         30_000,
       );
 
       const reason = events.find(
         (e) => typeof e.turnCompleteReason === "string",
       )?.turnCompleteReason;
-      const hadAudio = events.some((e) => e.hasAudio);
+      const hadAudio = events.some((e) => e.hasAudio === true);
       const outputFinished = events.some((e) => e.outputFinished === true);
       const allText = events
         .filter((e) => typeof e.outputText === "string" && e.outputText)
@@ -681,14 +681,14 @@ describe("Gemini proxy contract (hits Google)", () => {
         // Wait for response
         await waitForAny(
           events,
-          (e) => typeof e.turnCompleteReason === "string" || e.hasAudio,
+          (e) => typeof e.turnCompleteReason === "string" || e.hasAudio === true,
           30_000,
         );
 
         const reason = events.find(
           (e) => typeof e.turnCompleteReason === "string",
         )?.turnCompleteReason;
-        const hadAudio = events.some((e) => e.hasAudio);
+        const hadAudio = events.some((e) => e.hasAudio === true);
         const allText = events
           .filter((e) => typeof e.outputText === "string" && e.outputText)
           .map((e) => e.outputText)

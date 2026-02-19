@@ -436,10 +436,11 @@ CUSTOM_CONFIG="/tmp/carher-config-${USER_ID}.json"
 python3 -c "
 import json, sys, os, pathlib
 
-# Build config with \$include pointing to Docker base inside the container.
-# OpenClaw resolves the include chain: per-user -> Docker base -> shared config.
+# Build config with \$include pointing to Docker base inside the config directory.
+# v2026.2.17 security: \$include paths must stay under the config root (/data/.openclaw).
+# The base config files are mounted into /data/.openclaw/ by start-user.sh.
 cfg = {
-    '\$include': '/app/docker/carher-config.json',
+    '\$include': './carher-config.json',
 }
 
 # Model override (sibling key overrides included value via deep merge)
@@ -559,27 +560,59 @@ docker run -d \
   -v "carher-${USER_ID}-data:/data/.openclaw" \
   -v "${GCLOUD_ADC}:/gcloud/application_default_credentials.json:ro" \
   -v "${CONFIG_MOUNT}:/data/.openclaw/openclaw.json:ro" \
+  -v "${SCRIPT_DIR}/docker/carher-config.json:/data/.openclaw/carher-config.json:ro" \
+  -v "${SCRIPT_DIR}/docker/shared-config.json5:/data/.openclaw/shared-config.json5:ro" \
   "${DEV_MOUNTS[@]}" \
   carher:local
 
 echo -e "${GREEN}  ✓ 容器已启动${NC}"
 
-# Wait for health
+# Wait for health — three-layer verification:
+#   1. Container not in crash-restart loop
+#   2. Gateway port responds (not just the frontend proxy)
+#   3. Feishu WebSocket connected
 echo -e "${YELLOW}等待容器就绪...${NC}"
-MAX_WAIT=30
+MAX_WAIT=60
 WAITED=0
+GW_READY=false
+FEISHU_READY=false
+
 while [ $WAITED -lt $MAX_WAIT ]; do
-  if curl -sf "http://localhost:${PORT_FE}/" -o /dev/null 2>/dev/null; then
-    echo -e "${GREEN}  ✓ 容器就绪 (${WAITED}s)${NC}"
-    break
+  CONTAINER_STATUS=$(docker inspect --format '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo "unknown")
+  if [ "$CONTAINER_STATUS" = "restarting" ]; then
+    echo -e "${RED}  ✗ 容器在崩溃重启中！最近日志:${NC}"
+    docker logs "$CONTAINER_NAME" --tail 20 2>&1
+    exit 1
   fi
+
+  if [ "$GW_READY" = "false" ]; then
+    if curl -sf "http://localhost:${PORT_GW}/" -o /dev/null 2>/dev/null; then
+      GW_READY=true
+      echo -e "${GREEN}  ✓ Gateway 就绪 (${WAITED}s)${NC}"
+    fi
+  fi
+
+  if [ "$GW_READY" = "true" ] && [ "$FEISHU_READY" = "false" ]; then
+    if docker logs "$CONTAINER_NAME" 2>&1 | grep -q "ws client ready"; then
+      FEISHU_READY=true
+      echo -e "${GREEN}  ✓ 飞书连接就绪 (${WAITED}s)${NC}"
+      break
+    fi
+  fi
+
   sleep 1
   WAITED=$((WAITED + 1))
 done
-if [ $WAITED -ge $MAX_WAIT ]; then
-  echo -e "${RED}⚠ 容器启动超时 (${MAX_WAIT}s)${NC}"
-  echo -e "${YELLOW}  查看日志: ./start-user.sh --id=${USER_ID} --logs${NC}"
+
+if [ "$GW_READY" = "false" ]; then
+  echo -e "${RED}✗ Gateway 启动超时 (${MAX_WAIT}s)${NC}"
+  echo -e "${YELLOW}  最近日志:${NC}"
+  docker logs "$CONTAINER_NAME" --tail 20 2>&1
   exit 1
+fi
+
+if [ "$FEISHU_READY" = "false" ]; then
+  echo -e "${YELLOW}⚠ 飞书连接未就绪（Gateway 已启动，飞书可能稍后连接）${NC}"
 fi
 
 # Auto-sync workspace templates on startup

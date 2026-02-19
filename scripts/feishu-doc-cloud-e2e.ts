@@ -1,4 +1,3 @@
-import * as Lark from "@larksuiteoapi/node-sdk";
 /**
  * Real cloud E2E for feishu_doc with strict isolation.
  *
@@ -18,6 +17,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import * as Lark from "@larksuiteoapi/node-sdk";
 import { registerFeishuDocTools } from "../extensions/feishu-her/src/tools/docx.js";
 
 type Block = {
