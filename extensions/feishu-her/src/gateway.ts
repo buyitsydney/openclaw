@@ -133,6 +133,103 @@ function buildCardStatusFooter(params: {
   }
 }
 
+// ── Anthropic Max quota probe ────────────────────────────────────────────
+// Send a minimal API request using the OAuth token and extract rate limit
+// headers that Anthropic returns on every response.
+
+function formatResetTime(unixStr: string | null): string {
+  if (!unixStr) return "未知";
+  const d = new Date(parseInt(unixStr) * 1000);
+  const now = Date.now();
+  const diffMin = Math.round((d.getTime() - now) / 60000);
+  const hh = d.getHours().toString().padStart(2, "0");
+  const mm = d.getMinutes().toString().padStart(2, "0");
+  const md = `${d.getMonth() + 1}/${d.getDate()}`;
+  const time = `${hh}:${mm}`;
+  if (diffMin <= 0) return `${md} ${time}（已过）`;
+  if (diffMin < 60) return `${time}（${diffMin}分钟后）`;
+  const diffH = Math.floor(diffMin / 60);
+  const remMin = diffMin % 60;
+  if (diffH < 24) return `${time}（${diffH}h${remMin > 0 ? `${remMin}m` : ""}后）`;
+  const diffDays = Math.floor(diffH / 24);
+  const remH = diffH % 24;
+  return `${md} ${time}（${diffDays}天${remH > 0 ? `${remH}h` : ""}后）`;
+}
+
+async function checkAnthropicQuota(): Promise<string | null> {
+  const token = process.env.ANTHROPIC_OAUTH_TOKEN;
+  if (!token) return null;
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "anthropic-version": "2023-06-01",
+      "anthropic-beta": "oauth-2025-04-20",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1,
+      messages: [{ role: "user", content: "." }],
+    }),
+  });
+
+  const util5h = res.headers.get("anthropic-ratelimit-unified-5h-utilization");
+  const util7d = res.headers.get("anthropic-ratelimit-unified-7d-utilization");
+
+  if (!util5h && !util7d) {
+    if (!res.ok) {
+      const body = await res.text();
+      return `❌ API 请求失败 (${res.status})\n\n${body.slice(0, 200)}`;
+    }
+    return "⚠️ 响应中无用量信息\n\n可能不是 Claude Max 订阅的 OAuth token。";
+  }
+
+  const reset5h = res.headers.get("anthropic-ratelimit-unified-5h-reset");
+  const reset7d = res.headers.get("anthropic-ratelimit-unified-7d-reset");
+  const util7dSonnet = res.headers.get("anthropic-ratelimit-unified-7d_sonnet-utilization");
+  const fallbackRaw = res.headers.get("anthropic-ratelimit-unified-fallback-percentage");
+  const claim = res.headers.get("anthropic-ratelimit-unified-representative-claim");
+
+  const pct5h = util5h ? Math.round(parseFloat(util5h) * 100) : null;
+  const pct7d = util7d ? Math.round(parseFloat(util7d) * 100) : null;
+  const pct7dS = util7dSonnet ? Math.round(parseFloat(util7dSonnet) * 100) : null;
+  const fallback = fallbackRaw ? Math.round(parseFloat(fallbackRaw) * 100) : 50;
+
+  const icon5h = pct5h === null ? "❓" : pct5h >= 90 ? "🚫" : pct5h >= fallback ? "⚠️" : "✅";
+  const icon7d = pct7d === null ? "❓" : pct7d >= 90 ? "🚫" : pct7d >= fallback ? "⚠️" : "✅";
+
+  const maxPct = Math.max(pct5h ?? 0, pct7d ?? 0);
+  const safety =
+    maxPct >= 90
+      ? "🚫 **危险** — 即将或已经限流"
+      : maxPct >= fallback
+        ? "⚠️ **注意** — 已进入降级区"
+        : maxPct >= 30
+          ? "📊 正常 — 用量适中"
+          : "✅ **充裕** — 用量很低";
+
+  const claimLabel = claim === "five_hour" ? "5h 窗口" : claim === "seven_day" ? "7d 窗口" : claim;
+
+  const lines = [
+    "📊 **Claude Max 用量**",
+    "",
+    `**5h 窗口** ${icon5h}  已用 ${pct5h ?? "?"}%`,
+    `重置：${formatResetTime(reset5h)}`,
+    "",
+    `**7d 窗口** ${icon7d}  已用 ${pct7d ?? "?"}%`,
+    pct7dS !== null ? `Sonnet 专属 7d：${pct7dS}%` : null,
+    `重置：${formatResetTime(reset7d)}`,
+    "",
+    `降级阈值：${fallback}% · 主要约束：${claimLabel ?? "未知"}`,
+    "",
+    `**安全评估**：${safety}`,
+  ];
+
+  return lines.filter((l): l is string => l !== null).join("\n");
+}
+
 // ── Permission error extraction ─────────────────────────────────────────
 // Detect Feishu API permission errors (code 99991672) and extract the grant URL
 // so the agent can report actionable guidance instead of an opaque error.
@@ -1148,6 +1245,35 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       log?.error(`[${account.accountId}] voice URL send failed: ${String(err)}`);
     }
     return; // /voice is a command, don't forward to AI
+  }
+
+  // /quota — check Anthropic Max subscription usage via a minimal API probe
+  if (cleanText === "/quota") {
+    try {
+      const quotaMsg = await checkAnthropicQuota();
+      if (quotaMsg) {
+        await sendFeishuRichText({ account, chatId, text: quotaMsg });
+        log?.info(`[${account.accountId}] quota report sent to ${senderId}`);
+      } else {
+        await sendFeishuText({
+          account,
+          chatId,
+          text: "无法查询用量：未配置 ANTHROPIC_OAUTH_TOKEN 环境变量。",
+        });
+      }
+    } catch (err) {
+      log?.error(`[${account.accountId}] quota check failed: ${String(err)}`);
+      try {
+        await sendFeishuText({
+          account,
+          chatId,
+          text: `用量查询失败: ${String(err).slice(0, 200)}`,
+        });
+      } catch {
+        /* ignore send failure */
+      }
+    }
+    return; // /quota is a command, don't forward to AI
   }
 
   // ── Resolve sender display name (best-effort, non-blocking) ──

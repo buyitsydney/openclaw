@@ -974,6 +974,7 @@ cardkit.v1.card.settings({
 7. **企业多用户部署**：见 [her-feishu-bot-enterprise-deploy.md](her-feishu-bot-enterprise-deploy.md)（200 Bot + 200 Docker 方案，已验证）
 8. ~~**Context Window 自动约束**~~：已实现（2026-02-15）-- 默认限制 context window 为 240K token（`contextTokens` + `contextWindow` 对齐），防止用户无感知地大量消耗 token 导致高额费用。详见 [context-window-architecture.md](context-window-architecture.md)
 9. ~~**飞书端 Context Window 可视化**~~：已实现（2026-02-15）-- 每条 AI 回复的 CardKit 卡片底部自动追加状态行，格式: `🧠 **模型名** · 📊 Xk/240k (Y%) · 🧹 N次压缩`，数据源复用 `/status` session store，>=70% 自动警告。实现位于 `extensions/feishu-her/src/gateway.ts`
+10. ~~**Claude Max 用量查询 `/quota`**~~：已实现（2026-02-19）-- 飞书输入 `/quota` 实时查询 Anthropic Claude Max 订阅用量。原理：发送一个最小 API 请求（`max_tokens: 1`），从响应头提取 `anthropic-ratelimit-unified-*` 系列 headers，展示 5h/7d 滚动窗口 utilization、重置时间、降级阈值、安全评估。与当前使用的 AI 模型无关（即使 primary 设为 OpenRouter，只要环境变量 `ANTHROPIC_OAUTH_TOKEN` 存在就能查询）。详见 [anthropic-max-enterprise.md](anthropic-max-enterprise.md)
 
 ---
 
