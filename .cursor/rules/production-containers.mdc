@@ -1,0 +1,28 @@
+---
+description: 生产容器操作禁令（天字一号）
+globs:
+alwaysApply: true
+---
+
+# 生产容器操作禁令
+
+## 🚫 绝对禁止（无任何例外）
+
+**没有用户明确口头指令，禁止对以下容器执行任何操作：**
+
+- `carher-3`（董事长）—— 任何 stop / down / restart / rm / kill
+
+包括但不限于：
+- `docker stop carher-3`
+- `docker rm carher-3`
+- `./start-user.sh --id=3 --down`
+- `./start-user.sh --id=3`（重建）
+- 任何包含 `--id=3` 的破坏性命令
+
+## ✅ 唯一例外
+
+用户在当前对话中明确说出"重启 docker3"、"停止 docker3"、"操作 docker3"等字样，且该指令是针对本次操作的新指令（不是计划文档里的"验证步骤"）。
+
+## 根因记录
+
+2026-02-18：AI 擅自执行 `./start-user.sh --id=3 --down` 停掉了董事长的生产容器，导致服务中断。这是不可接受的错误。

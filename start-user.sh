@@ -52,6 +52,7 @@ ACTION="start"
 MODEL_ARG=""
 HOST_ARG="localhost"  # Webchat URL base host（默认 localhost，企业部署用内网 IP）
 NO_REBUILD=""  # 跳过自动重建检查
+DEV_MODE=""    # --dev: bind mount 源码，跳过镜像重建（秒级启动）
 
 for arg in "$@"; do
   case "$arg" in
@@ -66,6 +67,7 @@ for arg in "$@"; do
     --list) ACTION="list" ;;
     --sync-workspace) ACTION="sync-workspace" ;;
     --no-rebuild) NO_REBUILD="yes" ;;
+    --dev) DEV_MODE="yes" ;;
     -h|--help)
       echo "用法: ./start-user.sh --id=N [--model=MODEL] [--host=IP] [--down] [--logs]"
       echo ""
@@ -79,6 +81,7 @@ for arg in "$@"; do
       echo "  --list        列出所有注册用户和容器状态"
       echo "  --sync-workspace  同步 docker/workspace/ 模板到容器"
       echo "  --no-rebuild  跳过自动镜像重建检查"
+      echo "  --dev         Dev 模式: bind mount 源码到容器，跳过镜像重建（秒级启动）"
       echo ""
       echo "固定隧道由 cloudflared Docker 容器管理: ./start-tunnel.sh"
       echo ""
@@ -261,39 +264,56 @@ echo -e "${YELLOW}🚗 CarHer User ${USER_ID} — 启动${NC}"
 echo ""
 
 # --- Auto-rebuild: compare build hash (git SHA + dirty diff hash) with image label ---
-CURRENT_SHA=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
-SOURCE_DIRS="src/ extensions/ skills/ docker/ scripts/ patches/ ui/ package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.json Dockerfile.carher"
-DIFF_OUTPUT=$(git diff HEAD -- $SOURCE_DIRS 2>/dev/null || true)
-if [ -n "$DIFF_OUTPUT" ]; then
-  DIRTY_HASH=$(printf '%s' "$DIFF_OUTPUT" | sha256 | cut -d' ' -f1)
-  CURRENT_BUILD_HASH="${CURRENT_SHA}-dirty-${DIRTY_HASH:0:16}"
-else
-  CURRENT_BUILD_HASH="$CURRENT_SHA"
-fi
-
-IMAGE_BUILD_HASH=$(docker inspect carher:local --format '{{index .Config.Labels "carher.build.hash"}}' 2>/dev/null || echo "none")
-
-NEED_REBUILD=""
-if ! docker image inspect carher:local &>/dev/null; then
-  NEED_REBUILD="镜像不存在"
-elif [ "$IMAGE_BUILD_HASH" = "none" ] || [ "$IMAGE_BUILD_HASH" = "unknown" ] || [ "$IMAGE_BUILD_HASH" = "" ]; then
-  NEED_REBUILD="镜像无版本标记（旧版构建）"
-elif [ "$CURRENT_BUILD_HASH" != "$IMAGE_BUILD_HASH" ]; then
-  NEED_REBUILD="源码已变更 (镜像: ${IMAGE_BUILD_HASH:0:16}, 当前: ${CURRENT_BUILD_HASH:0:16})"
-fi
-
-if [ -n "$NEED_REBUILD" ]; then
-  if [ -n "$NO_REBUILD" ]; then
-    echo -e "${YELLOW}  ⚠ 镜像需要重建 (${NEED_REBUILD})，但 --no-rebuild 已跳过${NC}"
-  else
-    echo -e "${YELLOW}  ⟳ 自动重建镜像: ${NEED_REBUILD}${NC}"
+if [ -n "$DEV_MODE" ]; then
+  # Dev mode: skip full rebuild, just ensure base image exists for node_modules/pip
+  if ! docker image inspect carher:local &>/dev/null; then
+    echo -e "${YELLOW}  ⟳ Dev 模式: 首次构建基础镜像...${NC}"
     echo ""
-    docker build -f Dockerfile.carher --build-arg BUILD_HASH="$CURRENT_BUILD_HASH" -t carher:local .
+    DOCKER_BUILDKIT=1 docker build -f Dockerfile.carher --build-arg BUILD_HASH="dev" -t carher:local .
     echo ""
-    echo -e "${GREEN}  ✓ 镜像自动重建完成${NC}"
+    echo -e "${GREEN}  ✓ 基础镜像构建完成${NC}"
   fi
+  # Ensure dist/ exists on host (compiled core gateway code)
+  if [ ! -d "dist" ]; then
+    echo -e "${YELLOW}  ⟳ Dev 模式: 编译核心代码 (pnpm build)...${NC}"
+    pnpm build
+  fi
+  echo -e "${GREEN}  ✓ Dev 模式: bind mount 源码，跳过镜像重建${NC}"
 else
-  echo -e "${GREEN}  ✓ Docker 镜像已是最新 (${CURRENT_BUILD_HASH:0:16})${NC}"
+  CURRENT_SHA=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+  SOURCE_DIRS="src/ extensions/ skills/ docker/ scripts/ patches/ ui/ package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.json Dockerfile.carher"
+  DIFF_OUTPUT=$(git diff HEAD -- $SOURCE_DIRS 2>/dev/null || true)
+  if [ -n "$DIFF_OUTPUT" ]; then
+    DIRTY_HASH=$(printf '%s' "$DIFF_OUTPUT" | sha256 | cut -d' ' -f1)
+    CURRENT_BUILD_HASH="${CURRENT_SHA}-dirty-${DIRTY_HASH:0:16}"
+  else
+    CURRENT_BUILD_HASH="$CURRENT_SHA"
+  fi
+
+  IMAGE_BUILD_HASH=$(docker inspect carher:local --format '{{index .Config.Labels "carher.build.hash"}}' 2>/dev/null || echo "none")
+
+  NEED_REBUILD=""
+  if ! docker image inspect carher:local &>/dev/null; then
+    NEED_REBUILD="镜像不存在"
+  elif [ "$IMAGE_BUILD_HASH" = "none" ] || [ "$IMAGE_BUILD_HASH" = "unknown" ] || [ "$IMAGE_BUILD_HASH" = "" ]; then
+    NEED_REBUILD="镜像无版本标记（旧版构建）"
+  elif [ "$CURRENT_BUILD_HASH" != "$IMAGE_BUILD_HASH" ]; then
+    NEED_REBUILD="源码已变更 (镜像: ${IMAGE_BUILD_HASH:0:16}, 当前: ${CURRENT_BUILD_HASH:0:16})"
+  fi
+
+  if [ -n "$NEED_REBUILD" ]; then
+    if [ -n "$NO_REBUILD" ]; then
+      echo -e "${YELLOW}  ⚠ 镜像需要重建 (${NEED_REBUILD})，但 --no-rebuild 已跳过${NC}"
+    else
+      echo -e "${YELLOW}  ⟳ 自动重建镜像: ${NEED_REBUILD}${NC}"
+      echo ""
+      DOCKER_BUILDKIT=1 docker build -f Dockerfile.carher --build-arg BUILD_HASH="$CURRENT_BUILD_HASH" -t carher:local .
+      echo ""
+      echo -e "${GREEN}  ✓ 镜像自动重建完成${NC}"
+    fi
+  else
+    echo -e "${GREEN}  ✓ Docker 镜像已是最新 (${CURRENT_BUILD_HASH:0:16})${NC}"
+  fi
 fi
 
 # Check cloudflared (only for --random)
@@ -511,6 +531,18 @@ esac
 
 echo -e "${YELLOW}启动容器 ${CONTAINER_NAME}...${NC}"
 echo -e "  端口映射: GW=${PORT_GW} FE=${PORT_FE} WS=${PORT_WS} (RT=内部，不暴露)"
+
+# Dev mode: bind mount host source into container; use a named volume for
+# node_modules so the container keeps its own Linux-native dependencies
+# instead of the host's macOS ones.
+DEV_MOUNTS=()
+if [ -n "$DEV_MODE" ]; then
+  DEV_MOUNTS=(
+    -v "$(pwd):/app"
+    -v "carher-dev-node-modules:/app/node_modules"
+  )
+fi
+
 docker run -d \
   --name "$CONTAINER_NAME" \
   --init \
@@ -527,6 +559,7 @@ docker run -d \
   -v "carher-${USER_ID}-data:/data/.openclaw" \
   -v "${GCLOUD_ADC}:/gcloud/application_default_credentials.json:ro" \
   -v "${CONFIG_MOUNT}:/data/.openclaw/openclaw.json:ro" \
+  "${DEV_MOUNTS[@]}" \
   carher:local
 
 echo -e "${GREEN}  ✓ 容器已启动${NC}"

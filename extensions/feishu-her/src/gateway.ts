@@ -78,10 +78,11 @@ function inferContentType(filePath: string): string | undefined {
 /** Shorten model ID to a display name (e.g., "claude-sonnet-4-20250514" → "Sonnet 4"). */
 function shortenModelName(model?: string): string {
   if (!model) return "unknown";
-  const claude = model.match(/claude-(\w+)-([\d.]+)/);
+  const claude = model.match(/claude-(\w+)-([\d][\d.-]*)/);
   if (claude) {
     const family = claude[1].charAt(0).toUpperCase() + claude[1].slice(1);
-    return `${family} ${claude[2]}`;
+    const version = claude[2].replace(/-/g, ".");
+    return `${family} ${version}`;
   }
   if (model.startsWith("gpt-")) return model.replace(/-\d{4}-\d{2}-\d{2}$/, "");
   if (model.startsWith("gemini-")) return model.replace(/-\d{4,}$/, "");
@@ -1415,32 +1416,48 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         );
 
         if (cardStream?.started && payload.text) {
-          // deliver is called after the entire turn ends (all paragraphs at once).
-          // onPartialReply + paragraph boundary detection already displayed everything.
-          // Just accumulate text for finalize (summary). Do NOT update the card.
-          cardStreamFinalText = cardStreamFinalText
-            ? cardStreamFinalText + "\n\n" + payload.text
-            : payload.text;
-          log?.info(
-            `[${account.accountId}] deliver: text accumulated for finalize (${cardStreamFinalText.length} chars total)`,
-          );
-          setStatus({ lastOutboundAt: Date.now() });
+          // reasoning blocks and verbose tool results must always be sent as
+          // separate Feishu messages so the user can see them alongside the card.
+          const isReasoningBlock =
+            info.kind === "block" && payload.text.trimStart().startsWith("Reasoning:");
+          const isVerboseTool = info.kind === "tool";
 
-          // Media attachments still need separate delivery.
-          if (hasMedia) {
-            await deliverFeishuReply({
-              payload: { mediaUrls },
-              account,
-              chatId,
-              isGroup,
-              replyToMessageId: isGroup ? messageId : undefined,
-              log,
-              setStatus,
-              config,
-              core,
-            });
+          log?.info(
+            `[${account.accountId}] deliver: card-stream check: kind=${info.kind} isReasoning=${isReasoningBlock} isVerbose=${isVerboseTool} textPrefix="${payload.text.slice(0, 60).replace(/\n/g, "\\n")}"`,
+          );
+
+          if (!isReasoningBlock && !isVerboseTool) {
+            // deliver is called after the entire turn ends (all paragraphs at once).
+            // onPartialReply + paragraph boundary detection already displayed everything.
+            // Just accumulate text for finalize (summary). Do NOT update the card.
+            cardStreamFinalText = cardStreamFinalText
+              ? cardStreamFinalText + "\n\n" + payload.text
+              : payload.text;
+            log?.info(
+              `[${account.accountId}] deliver: text accumulated for finalize (${cardStreamFinalText.length} chars total)`,
+            );
+            setStatus({ lastOutboundAt: Date.now() });
+
+            // Media attachments still need separate delivery.
+            if (hasMedia) {
+              await deliverFeishuReply({
+                payload: { mediaUrls },
+                account,
+                chatId,
+                isGroup,
+                replyToMessageId: isGroup ? messageId : undefined,
+                log,
+                setStatus,
+                config,
+                core,
+              });
+            }
+            return;
           }
-          return;
+
+          log?.info(
+            `[${account.accountId}] deliver: bypassing card accumulation for ${isReasoningBlock ? "reasoning" : "verbose tool"} (kind=${info.kind})`,
+          );
         }
 
         // Card stream not active or no text — deliver normally.

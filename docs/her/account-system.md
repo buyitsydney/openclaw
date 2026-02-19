@@ -32,12 +32,15 @@ OpenClaw 根据 `model.primary` 的 provider 前缀自动选择认证来源：
 
 ## 文件存储位置
 
-| 文件                  | 位置                                               | 入库 | 说明                                                     |
-| --------------------- | -------------------------------------------------- | ---- | -------------------------------------------------------- |
-| `openclaw.json`       | `~/.openclaw/openclaw.json`                        | 否   | 本机主配置，含模型和 env.vars                            |
-| `auth-profiles.json`  | `~/.openclaw/agents/main/agent/auth-profiles.json` | 否   | 本地 Her 的 setup-token 存储（不在 git，不需要手动管理） |
-| `users.csv`           | `docker/users.csv`                                 | 是   | Docker 容器用户表，只填模型短名                          |
-| `shared-config.json5` | `docker/shared-config.json5`                       | 是   | 所有环境共享的功能配置                                   |
+| 文件                  | 位置                                               | 入库 | 说明                                                             |
+| --------------------- | -------------------------------------------------- | ---- | ---------------------------------------------------------------- |
+| `openclaw.json`       | `~/.openclaw/openclaw.json`                        | 否   | 本机主配置，含模型、env.vars、**anthropic provider 显示名**      |
+| `auth-profiles.json`  | `~/.openclaw/agents/main/agent/auth-profiles.json` | 否   | 本地 Her 的 setup-token 存储（不在 git，不需要手动管理）         |
+| `carher-config.json`  | `docker/carher-config.json`                        | 是   | Docker 容器基础配置，含 openrouter/**anthropic provider 显示名** |
+| `users.csv`           | `docker/users.csv`                                 | 是   | Docker 容器用户表，只填模型短名                                  |
+| `shared-config.json5` | `docker/shared-config.json5`                       | 是   | 所有环境共享的功能配置（**不放 provider 定义**）                 |
+
+> **注意**：`models.providers.anthropic` 显示名需在两处各写一份——`~/.openclaw/openclaw.json`（本地 Her）和 `docker/carher-config.json`（Docker 容器）。`$include` 的 merge 不支持跨文件深度合并 `models.providers`，放在 `shared-config.json5` 会被本地 overlay 覆盖导致丢失。
 
 ---
 

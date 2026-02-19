@@ -513,7 +513,55 @@ const modelWithCap = { ...params.model, contextWindow: resolvedCtxTokens };
 | 本地 Her        | Opus 4.6            | 240K          | 240K          | safeguard  | 未验证        | 配置完成        |
 | Docker carher-4 | Sonnet 4 / Opus 4.6 | 240K          | 240K          | safeguard  | Chrome 运行中 | 配置完成 + 验证 |
 
-### 14.8 待解决问题 (TODO)
+### 14.8 Claude Setup-Token 的 200K 上下文限制 (2026-02-19)
+
+**问题**: 使用 Claude Max 订阅 + setup-token 直连 Anthropic 时，配置了 `contextWindow: 1000000` 和 `context-1m-2025-08-07` beta header，导致所有请求返回 429：
+
+```
+429 {"type":"error","error":{"type":"rate_limit_error","message":"Extra usage is required for long context requests."}}
+```
+
+**错误日志** (session `9ee03d04-1d80-4413-9bc5-b9a0cc6438d9`, 2026-02-19 08:14):
+
+```
+model-snapshot: provider=anthropic, modelApi=anthropic-messages, modelId=claude-opus-4-6
+429 {"type":"error","error":{"type":"rate_limit_error","message":"Extra usage is required for long context requests."},"request_id":"req_011CYGTox76PRdZBvJwkVQEx"}
+429 {"type":"error","error":{"type":"rate_limit_error","message":"Extra usage is required for long context requests."},"request_id":"req_011CYGTpM11ASLgnhkMx8u1V"}
+429 {"type":"error","error":{"type":"rate_limit_error","message":"Extra usage is required for long context requests."},"request_id":"req_011CYGTpwuiMF8sFxhU8i5Po"}
+```
+
+连续 3 次重试全部 429，session 进入错误状态。
+
+**根因链路**:
+
+1. 配置中加了 `context-1m-2025-08-07` header → 启用了 1M 上下文窗口
+2. Anthropic 检测到 long context request（>200K）→ 要求开启 "Extra usage"
+3. 开启 "Extra usage" 需要在 claude.ai → Settings → Usage 底部打开开关
+4. 该开关需要绑定信用卡（额外付费），对于已付 $240 Max 订阅的用户不合理
+
+**结论（二选一）**:
+
+| 方案                             | 配置                                    | 上下文上限 | 限制                                          |
+| -------------------------------- | --------------------------------------- | ---------- | --------------------------------------------- |
+| **Anthropic 直连 (setup-token)** | 默认 200K，**不加** `context-1m` header | 200K       | 无需额外付费，Max 订阅内                      |
+| **OpenRouter**                   | 可自由设置 200K–1M                      | 取决于配置 | OpenRouter 按 token 计费，无 Extra usage 限制 |
+
+**规则（必须遵守）**:
+
+- Anthropic 直连（setup-token auth）: `contextWindow` **不超过 200000**，`anthropic-beta` header **不包含** `context-1m-2025-08-07`
+- OpenRouter: `contextWindow` 可根据需要设置（当前 240K）
+- `agents.defaults.contextTokens` 作为全局 cap，不影响此限制（cap 只向下生效）
+
+**配置变更记录**:
+
+| 文件                               | 变更                    | 原值                       | 新值        |
+| ---------------------------------- | ----------------------- | -------------------------- | ----------- |
+| `~/.openclaw/openclaw.json` (本地) | anthropic contextWindow | 1,000,000                  | 200,000     |
+| `~/.openclaw/openclaw.json` (本地) | anthropic-beta header   | 含 `context-1m-2025-08-07` | 移除该 flag |
+| `docker/carher-config.json`        | anthropic contextWindow | 1,000,000                  | 200,000     |
+| `docker/carher-config.json`        | anthropic-beta header   | 含 `context-1m-2025-08-07` | 移除该 flag |
+
+### 14.9 待解决问题 (TODO)
 
 - [ ] **P0: session 异常静默失败 + 用户无感知** — 当 session 因 compaction 失败/token 超限进入异常状态后：
   - 用户在飞书端发消息，gateway 收到但 agent 无响应
