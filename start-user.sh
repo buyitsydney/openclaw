@@ -42,6 +42,7 @@ resolve_model() {
     gemini-flash)          echo "openrouter/google/gemini-2.0-flash-001" ;;
     gpt-4o)                echo "openrouter/openai/gpt-4o" ;;
     gpt-4o-mini)           echo "openrouter/openai/gpt-4o-mini" ;;
+    minimax|minimax-m2.5)  echo "openrouter/minimax/minimax-m2.5" ;;
     *)                     echo "$1" ;;
   esac
 }
@@ -447,6 +448,7 @@ if provider == 'anthropic':
         'openrouter/anthropic/claude-opus-4.6': {'alias': 'or-opus'},
         'openrouter/anthropic/claude-sonnet-4.6': {'alias': 'or-sonnet'},
         'openrouter/google/gemini-3.1-pro-preview': {'alias': 'gemini'},
+        'openrouter/minimax/minimax-m2.5': {'alias': 'minimax'},
     }
 else:
     agents['defaults']['models'] = {
@@ -455,6 +457,7 @@ else:
         'anthropic/claude-opus-4-6': {'alias': 'or-opus'},
         'anthropic/claude-sonnet-4-6': {'alias': 'or-sonnet'},
         'openrouter/google/gemini-3.1-pro-preview': {'alias': 'gemini'},
+        'openrouter/minimax/minimax-m2.5': {'alias': 'minimax'},
     }
 if agents['defaults']:
     cfg['agents'] = agents

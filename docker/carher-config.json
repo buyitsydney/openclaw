@@ -24,7 +24,12 @@
             "input": ["text", "image"],
             "contextWindow": 200000,
             "maxTokens": 128000,
-            "cost": { "input": 5, "output": 25, "cacheRead": 0.5, "cacheWrite": 6.25 }
+            "cost": {
+              "input": 5,
+              "output": 25,
+              "cacheRead": 0.5,
+              "cacheWrite": 6.25
+            }
           },
           {
             "id": "claude-sonnet-4-6",
@@ -34,7 +39,12 @@
             "input": ["text", "image"],
             "contextWindow": 200000,
             "maxTokens": 64000,
-            "cost": { "input": 3, "output": 15, "cacheRead": 0.3, "cacheWrite": 3.75 }
+            "cost": {
+              "input": 3,
+              "output": 15,
+              "cacheRead": 0.3,
+              "cacheWrite": 3.75
+            }
           }
         ]
       },
@@ -49,7 +59,12 @@
             "input": ["text", "image"],
             "contextWindow": 240000,
             "maxTokens": 128000,
-            "cost": { "input": 5, "output": 25, "cacheRead": 0.5, "cacheWrite": 6.25 }
+            "cost": {
+              "input": 5,
+              "output": 25,
+              "cacheRead": 0.5,
+              "cacheWrite": 6.25
+            }
           },
           {
             "id": "anthropic/claude-sonnet-4.6",
@@ -59,7 +74,12 @@
             "input": ["text", "image"],
             "contextWindow": 240000,
             "maxTokens": 64000,
-            "cost": { "input": 3, "output": 15, "cacheRead": 0.3, "cacheWrite": 3.75 }
+            "cost": {
+              "input": 3,
+              "output": 15,
+              "cacheRead": 0.3,
+              "cacheWrite": 3.75
+            }
           },
           {
             "id": "google/gemini-3.1-pro-preview",
@@ -69,7 +89,26 @@
             "input": ["text", "image"],
             "contextWindow": 1048576,
             "maxTokens": 65536,
-            "cost": { "input": 2, "output": 12, "cacheRead": 0.2, "cacheWrite": 0.375 }
+            "cost": {
+              "input": 2,
+              "output": 12,
+              "cacheRead": 0.2,
+              "cacheWrite": 0.375
+            }
+          },
+          {
+            "id": "minimax/minimax-m2.5",
+            "name": "MiniMax M2.5",
+            "api": "openai-completions",
+            "reasoning": false,
+            "input": ["text"],
+            "contextWindow": 50000,
+            "maxTokens": 16384,
+            "cost": {
+              "input": 0.3,
+              "output": 1.1,
+              "cacheRead": 0.15
+            }
           }
         ]
       }
