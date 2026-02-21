@@ -1078,12 +1078,21 @@ memorySearch: {
 
 ### P0.5 — 核心设计缺陷（已确认，影响 68%+ 对话内容）
 
-| #   | 任务                                            | 状态      | 说明                                                                                                                                                                                                                                                                                                                                                                   |
-| --- | ----------------------------------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A   | **memory search 搜索所有历史 session**          | 🔴 待做   | `session-files.ts:28` 用 `.endsWith(".jsonl")` 排除了 `.reset` 归档。92 个 `.reset` 文件共 37.9MB，是当前索引内容(17.7MB)的 213%。`/new` 后旧对话从索引消失，超过 2/3 真实对话内容无法被搜索到                                                                                                                                                                         |
-| B   | **飞书 session 生命周期管理（新建/列表/切换）** | 🟡 待评估 | 需求：飞书中能 `/new` 新建 session、`/sessions` 列出所有 session、`/switch <id>` 切换回旧 session 继续聊。底层 Gateway 已有 `sessions.list` RPC 和 TUI `setSession()`，但飞书通道未暴露。需要：(1) Gateway 新增 `sessions.switch` RPC (2) 修改路由逻辑支持动态 session ID 映射 (3) `/new` 不再 rename 为 `.reset` 或支持 `.reset` 复活。**复杂度高，需 upstream 改动** |
+| #   | 任务                                            | 状态                    | 说明                                                                                                                                                                                                                                                                                                                                                                                                           |
+| --- | ----------------------------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A   | **memory search 搜索所有历史 session**          | 🟢 upstream PR #20183   | `session-files.ts:28` 用 `.endsWith(".jsonl")` 排除了 `.reset` 归档。92 个 `.reset` 文件共 37.9MB，是当前索引内容(17.7MB)的 213%。**upstream 已有 PR [#20183](https://github.com/openclaw/openclaw/pull/20183) 完全修复此问题**（VACInc，mergeable_state: clean，+370/-9，9 files，5 个测试文件全覆盖）。等 merge 后升级即可，无需本地 patch                                                                   |
+| B   | **飞书 session 生命周期管理（新建/列表/切换）** | 🟡 upstream Issue #9959 | 需求：飞书中能 `/new` 新建、`/sessions` 列表、`/switch <id>` 切换旧 session。**upstream Issue [#9959](https://github.com/openclaw/openclaw/issues/9959) 已提出完全一致的需求**，指出底层全部就绪（TUI `/session <key>` + Gateway `sessions.list` RPC + Agent `sessions_list` tool + Dashboard/WebChat/macOS UI），仅缺 chat 命令入口。0 comments，无人领取。可考虑在 `feishu-her` 扩展层实现或贡献 upstream PR |
 
-**关联说明**：任务 A 是任务 B 的前置条件。即使实现了 session 切换，搜不到旧内容也没意义。任务 A 改动小（一行过滤条件），任务 B 需要 upstream 级别架构改动。
+**关联说明**：任务 A 是任务 B 的前置条件。任务 A 已有 upstream PR 待合并；任务 B 已有 upstream Issue 但无实现。
+
+**Upstream 现有 session 管理能力一览**（2026-02-21 调查确认）：
+
+- **TUI**: `/sessions`（列表）+ `Ctrl+P`（picker）+ `/session <key>`（切换）+ `setSession()` 函数
+- **Dashboard**: 完整 session list + 点击查看
+- **WebChat/macOS app**: Session switcher UI
+- **Agent tools**: `sessions_list`、`sessions_history`、`sessions_send`
+- **Gateway RPC**: `sessions.list`、`sessions.reset`、`sessions.delete`
+- **Chat 命令（Telegram/Discord/WhatsApp/Feishu）**: 仅有 `/new`、`/reset`、`/compact`、`/status`，**缺少 `/sessions` 和 `/session <key>`**
 
 ### P1 — 高优先级（搜索质量提升，已 CLI 实测验证）
 

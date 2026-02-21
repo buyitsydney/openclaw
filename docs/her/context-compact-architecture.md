@@ -904,3 +904,2311 @@ Use the sessions_history tool with sessionKey="<key>" to recover details.]
 | SDK `compaction.js`                                       | `compact()`                               | SDK 底层 compact                    |
 | SDK `utils.js`                                            | `SUMMARIZATION_SYSTEM_PROMPT`             | 摘要 prompt                         |
 | SDK `agent-session.js`                                    | `_checkCompaction()`                      | 触发判断                            |
+| `src/auto-reply/reply/memory-flush.ts`                    | `shouldRunMemoryFlush()`                  | Memory flush 触发判断               |
+| `src/auto-reply/reply/agent-runner-memory.ts`             | `runMemoryFlushIfNeeded()`                | Memory flush 执行                   |
+
+---
+
+## 15. Compact 相关配置完整清单（4 层 13+ 项）
+
+### 15.1 第 1 层：核心触发参数
+
+| 配置项                          | 路径                                            | 默认值        | 作用                                                        |
+| ------------------------------- | ----------------------------------------------- | ------------- | ----------------------------------------------------------- |
+| `contextTokens`                 | `agents.defaults.contextTokens`                 | 200000        | context 容量上限，决定何时触发 compaction                   |
+| `compaction.mode`               | `agents.defaults.compaction.mode`               | `"safeguard"` | `"default"` (SDK 原生) / `"safeguard"` (OpenClaw 增强)      |
+| `compaction.reserveTokensFloor` | `agents.defaults.compaction.reserveTokensFloor` | 20000         | SDK reserveTokens 的最低值保障（防止 SDK 默认 16384 过低）  |
+| `compaction.maxHistoryShare`    | `agents.defaults.compaction.maxHistoryShare`    | 0.5           | safeguard 模式下历史消息最大占比 (0.1-0.9)，越低=越激进裁剪 |
+
+### 15.2 第 2 层：Pre-Compaction Memory Flush
+
+| 配置项                            | 路径                                             | 默认值                                                       | 作用                                       |
+| --------------------------------- | ------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------ |
+| `memoryFlush.enabled`             | `agents.defaults.compaction.memoryFlush.enabled` | `true`                                                       | compact 前是否先跑一轮"记忆写盘"           |
+| `memoryFlush.softThresholdTokens` | `...memoryFlush.softThresholdTokens`             | 4000                                                         | 距 compact 阈值多少 token 时提前触发 flush |
+| `memoryFlush.prompt`              | `...memoryFlush.prompt`                          | "Pre-compaction memory flush. Store durable memories now..." | flush 时发给 agent 的 prompt               |
+| `memoryFlush.systemPrompt`        | `...memoryFlush.systemPrompt`                    | "Pre-compaction memory flush turn..."                        | flush 轮的 system prompt                   |
+
+### 15.3 第 3 层：Context Pruning (独立于 compaction)
+
+| 配置项                                            | 路径                                  | 默认值  | 作用                                                  |
+| ------------------------------------------------- | ------------------------------------- | ------- | ----------------------------------------------------- |
+| `contextPruning.mode`                             | `agents.defaults.contextPruning.mode` | `"off"` | `"off"` / `"cache-ttl"` — 基于缓存 TTL 的工具结果裁剪 |
+| `contextPruning.keepLastAssistants`               | `...keepLastAssistants`               | -       | 保留最近 N 个 assistant 回复不裁剪                    |
+| `contextPruning.softTrimRatio` / `hardClearRatio` | -                                     | -       | soft trim 和 hard clear 的比例阈值                    |
+
+### 15.4 第 4 层：History Turn Limiting (按 channel 配置)
+
+| 配置项           | 路径                                            | 默认值 | 作用                           |
+| ---------------- | ----------------------------------------------- | ------ | ------------------------------ |
+| `dmHistoryLimit` | `channels.<provider>.dmHistoryLimit`            | 无限制 | DM 会话保留最近 N 轮 user turn |
+| `historyLimit`   | `channels.<provider>.historyLimit`              | 无限制 | 群聊/频道会话保留最近 N 轮     |
+| 每用户覆盖       | `channels.<provider>.dms.<userId>.historyLimit` | -      | 对特定用户的 DM 限制           |
+
+### 15.5 模型层面
+
+| 配置项          | 位置                                          | 作用                                                 |
+| --------------- | --------------------------------------------- | ---------------------------------------------------- |
+| `contextWindow` | `models.providers.<p>.models[].contextWindow` | 模型物理上限 (API 层面)，与 `contextTokens` 取较小值 |
+
+---
+
+## 16. E2E 测试方案
+
+### 16.1 测试环境
+
+- **运行方式**: 修改本地 Her 配置 → `./start.sh` 重启 → `bun scripts/test-compact-e2e.ts` 运行
+- **配置变更**: `contextTokens: 50000` (50K), `model.primary: anthropic/claude-sonnet-4-6`
+- **Session 隔离**: 使用 `test-compact-*` session key，不影响主会话
+- **清理方式**: `bun scripts/test-compact-e2e.ts --cleanup` 删除 JSONL 文件 + sessions.json 条目
+- **Memory 索引**: 自动清理（下次 sync 检测到 stale 文件自动删除）
+- **预计成本**: ~$2-3 (Sonnet 4.6)
+- **预计时间**: ~15-20 分钟
+
+### 16.2 核心假设（Hypotheses）
+
+#### H1: 配置生效验证（前提保障）
+
+- **假设**: contextTokens=50K 生效后，auto-compaction 在约 8-12 轮对话后触发（而非 200K 下的 40+ 轮）
+- **验证方法**: 发送长消息，计数触发 compaction 的轮次
+- **通过标准**: compact 在第 5-15 轮之间触发
+- **失败意味着**: 配置未生效或 token 估算严重偏差，后续所有测试不可信
+
+#### H2: Compaction 摘要遵循结构化模板
+
+- **假设**: safeguard 模式的 LLM 摘要包含 Goal / Progress / Decisions / Next Steps 结构
+- **验证方法**: 读取 session JSONL 中 compaction entry 的 summary 字段
+- **通过标准**: summary 中至少包含 3/4 结构化段落
+- **失败意味着**: LLM 没有忠实遵循 summarization prompt，摘要质量不可控
+
+#### H3: 关键事实信息在单次 compaction 后存活
+
+- **假设**: 植入 5 个具体事实，compaction 后能回忆 >= 4 个
+- **植入信息**: 名字=张三, 城市=杭州, 数字=42, 偏好=Rust, 密码提示=蓝色大象跳舞123
+- **验证方法**: compact 后逐一询问这 5 个事实
+- **通过标准**: >= 4/5 正确回忆
+- **失败意味着**: 摘要丢失了用户关键信息，体验差
+
+#### H4: 信息经过 2 次 compaction 后显著衰减
+
+- **假设**: 第 1 次 compact 后存活率 >= 80%，第 2 次后降至 <= 60%
+- **验证方法**: 在 H3 基础上继续对话填满 context，触发第 2 次 compact，再次询问原始 5 个事实
+- **通过标准**: 第 2 次后存活率 < 第 1 次
+- **优先级**: P2（如果时间不够可跳过）
+
+#### H5: 中文内容的 token 估算偏差
+
+- **假设**: `chars / 4` 公式对中文低估 2-3 倍（1 中文字 ≈ 1.5-2 token），导致 compact 触发过晚
+- **验证方法**: 对比纯中文对话 vs 纯英文对话触发 compact 的实际轮次差异
+- **通过标准**: 中文需要更多轮才触发 = 低估存在
+- **优先级**: P2（需要对照组，额外成本）
+
+#### H6: Compaction 的 token 压缩率
+
+- **假设**: 单次 compact 后 token 使用量降为之前的 20%-40%
+- **验证方法**: 记录 compaction entry 的 `tokensBefore`，compaction 后继续发一条消息获取新的 totalTokens
+- **通过标准**: 压缩率 (1 - after/before) 在 60%-80% 之间
+- **失败意味着**: 压缩率过低=compact 没啥用；过高=丢了太多信息
+
+#### H7: Memory Flush 是否生效
+
+- **假设**: compact 前 memoryFlush 自动触发，将关键信息写入 `memory/YYYY-MM-DD.md`
+- **验证方法**: compact 后检查 agent workspace 的 `memory/` 目录是否有新写入
+- **通过标准**: memory 文件中包含对话中的关键信息
+- **失败意味着**: memoryFlush 未生效或 agent 判断"无需保存"
+
+#### H8: maxHistoryShare 参数效果（可选）
+
+- **假设**: maxHistoryShare=0.3 vs 默认 0.5 时，compact 丢弃更多旧消息，summary 更短
+- **验证方法**: 两组对比实验，比较 compaction 后的 summary 长度和信息保留
+- **通过标准**: 0.3 的 summary 明显短于 0.5
+- **优先级**: P3（需要额外重启，如果时间不够跳过）
+
+### 16.3 测试优先级
+
+| 优先级      | 假设 | 原因                        |
+| ----------- | ---- | --------------------------- |
+| P0 (必须)   | H1   | 前提保障，不过则其他不可信  |
+| P0 (必须)   | H3   | 用户最关心的核心问题        |
+| P1 (重要)   | H2   | 摘要质量的结构化验证        |
+| P1 (重要)   | H6   | 压缩效率量化                |
+| P1 (重要)   | H7   | memoryFlush 保险机制验证    |
+| P2 (有余力) | H4   | 多轮衰减（需更多 LLM 调用） |
+| P2 (有余力) | H5   | 中文偏差（需要对照组）      |
+| P3 (可选)   | H8   | 参数对比（需额外重启）      |
+
+### 16.4 测试脚本信息
+
+- 文件: `scripts/test-compact-e2e.ts`
+- 运行: `bun scripts/test-compact-e2e.ts`
+- 清理: `bun scripts/test-compact-e2e.ts --cleanup`
+- 连接: `GatewayClient` → `ws://127.0.0.1:18789` (token: 本地配置)
+- 结果: `~/.openclaw/compact-test-results.json`
+
+### 16.5 测试数据清理
+
+| 数据               | 位置                                                    | 清理方式                        |
+| ------------------ | ------------------------------------------------------- | ------------------------------- |
+| Session JSONL      | `~/.openclaw/agents/main/sessions/*test-compact*.jsonl` | `--cleanup` 自动删除            |
+| Compaction 备份    | 同上 `*.jsonl.bak.*`                                    | `--cleanup` 自动删除            |
+| sessions.json 条目 | `~/.openclaw/agents/main/sessions/sessions.json`        | `--cleanup` 自动移除            |
+| Memory 向量索引    | `~/.openclaw/memory/main.sqlite`                        | 自动清理 (下次 sync 检测 stale) |
+| Memory flush 文件  | agent workspace `memory/YYYY-MM-DD.md`                  | 手动检查（可能混入正常记忆）    |
+| Gateway 日志       | `/tmp/openclaw/openclaw-*.log`                          | 自动 24h 清理                   |
+
+### 16.6 测试结果（2026-02-21 实测）
+
+测试环境: 本地 Her, model=anthropic/claude-sonnet-4-6, contextTokens=50000, contextWindow=50000
+
+#### H1 结果: 配置生效
+
+- 状态: **PASS**（脚本误报 FAIL，手动验证通过）
+- Auto-compact 触发轮次: **第 1 轮**（totalTokens=30,135 > 阈值 30,000）
+- compactionCount: 5（整个 session 共触发 9 次 compaction entry）
+- 备注: 每轮 assistant 回复 ~30K tokens 都触发 compaction。脚本的 `findNewSessionFiles` 和事件匹配有 bug，导致 messages #2-15 瞬间"完成"（实际未真正执行 API 调用），脚本误判为"未触发"。从 JSONL 原始数据确认 compaction 正确触发。
+
+#### H2 结果: 摘要结构
+
+- 状态: **CRITICAL BUG — Summary 内容为空**
+- Summary 是否结构化: 是（Goal / Constraints & Preferences / Progress / Done / In Progress / Blocked）
+- Summary 全文（所有 compaction 的 summary 完全相同）:
+
+```
+## Goal
+- No goal identified — the conversation is empty.
+
+## Constraints & Preferences
+- (none)
+
+## Progress
+### Done
+- (none)
+
+### In Progress
+- (none)
+
+### Blocked
+- No conversation content was provided
+```
+
+- 备注: **这是本次测试最关键的发现。** 所有 9 次 compaction 的 summary 都是"conversation is empty"，完全没有提取任何对话内容。Compaction 等同于"删除全部历史"。根因待调查（见 16.7）。
+
+#### H3 结果: 信息保留 (单次 compact)
+
+- 状态: **FAIL**（根因是 H2 的 summary 为空）
+- 存活率: **1/5**（仅 password 被"提及"——但是以拒绝存储的方式）
+- 各事实回忆: 名字=✗ 城市=✗ 数字=✗ 语言=✗ 密码提示=△（AI 识别为安全风险拒绝存储）
+- compact 前 AI 回复: 正确确认收到了全部 5 个事实
+- compact 后 AI 回复: "我注意到这条消息来自 webchat 的 test 发送者，不是我认识的天哥"
+- 备注: AI 表现出安全行为（识别非天哥身份、拒绝存储密码提示），但核心问题是 summary 完全为空导致所有 context 信息丢失。
+
+#### H4 结果: 信息衰减 (多次 compact)
+
+- 状态: **WARN — 有趣发现**
+- 第 1 轮存活率: 0/5（compact summary 为空，session 内信息全部丢失）
+- 第 2 轮存活率: 0/5
+- **但 AI 通过 memory search 找回了天哥的真实信息:**
+  - 找回: 姓名（卜弋天/天哥）、住址（上海华升新苑/杭州人）
+  - 未找回: 数字(42)、语言(Rust)、密码提示（这些是测试植入的假数据，不在 memory 文件中）
+- 备注: **Memory search 是 compact 信息丢失的有效补救机制。** 即使 summary 完全为空，AI 仍能通过 tool call 搜索 memory 文件来恢复部分上下文。但这只能恢复已经被持久化到 memory 文件的信息，session 内新植入的临时事实无法恢复。
+
+#### H5 结果: 中文 token 偏差
+
+- 状态: 跳过（未实现）
+- 备注: H1 已证明触发阈值正确，中文 token 偏差需要单独测试。
+
+#### H6 结果: 压缩率
+
+- 状态: **100% 压缩（即全部丢失）**
+- tokensBefore: ~30,000
+- tokensAfter: 0
+- 压缩率: 100%
+- 备注: summary 约 350-388 chars 但语义内容为零。实际上是"删除"而非"压缩"。
+
+#### H7 结果: Memory Flush
+
+- 状态: **PASS**
+- memory 文件写入: 是（`memory/2026-02-21.md` 存在且被更新）
+- Memory flush 正确触发: AI 在 compaction 前收到 "Pre-compaction memory flush" 指令
+- AI 行为: 读取现有 memory 文件 → 判断是否需要追加 → 写入/确认
+- 备注: Memory flush 机制工作正常。即使 compact summary 为空，flush 在 compact 前已将重要信息持久化到文件。这是关键的安全网。
+
+#### H8 结果: maxHistoryShare
+
+- 状态: 跳过
+- 备注: 需要单独测试
+
+#### 异常发现: 双重 Compaction 模式
+
+每次真实 compaction 后，立即触发第二次 compaction:
+
+1. 第一次: 真实对话 ~30K tokens → 空 summary (tokensAfter=0)
+2. 第二次: 空 summary ~90-97 tokens → 空 summary (tokensAfter=0)
+
+这个"二次 compaction"不应该发生——97 tokens 远低于 30K 阈值。可能原因:
+
+- Safeguard 模式触发
+- compact 后的 context 状态异常触发了重新检查
+- 与 memory flush 回合的交互
+
+### 16.7 根因调查（已完成 2026-02-21）
+
+**核心问题: 为什么所有 compaction summary 都是"conversation is empty"？**
+
+**根因: pi-coding-agent SDK 的 token 计算不一致**
+
+#### 两套 token 计算方法的冲突
+
+SDK 的 compaction 系统在两个关键步骤使用了完全不同的 token 计算方法:
+
+1. **触发判断** (`shouldCompact` → `estimateContextTokens`):
+   - 读取最后一条 assistant 消息的 `usage.totalTokens`（API 返回值）
+   - 此值**包含 system prompt**（OpenClaw 的 system prompt 约 28K tokens）
+   - 公式: `contextTokens > contextWindow - reserveTokens` → `30135 > 50000 - 20000 = 30000` → **触发**
+
+2. **切分点计算** (`findCutPoint` → `estimateTokens` per message):
+   - 对每条消息使用 `chars / 4` 启发式估算
+   - 此值**仅计算消息内容文本**，不包含 system prompt
+   - 结果: user(54) + assistant(940) = **994 tokens**
+   - `994 < keepRecentTokens(20000)` → **全部保留，无内容可压缩**
+
+#### 实测数据（H1 session 第一轮）
+
+| 消息      | chars | estimateTokens (chars/4) | API totalTokens |
+| --------- | ----- | ------------------------ | --------------- |
+| user      | 217   | **54**                   | 0               |
+| assistant | 3,760 | **940**                  | **30,135**      |
+| 合计      | 3,977 | **994**                  | **30,135**      |
+
+差距 **30 倍**。API 的 totalTokens 包含 ~28K system prompt tokens。
+
+#### 代码路径追踪
+
+```
+pi-coding-agent/dist/core/compaction/compaction.js
+
+1. shouldCompact(contextTokens=30135, contextWindow=50000, settings)
+   → 30135 > 50000 - 20000 = 30000 → true → 触发 compaction
+
+2. prepareCompaction(pathEntries, settings)
+   → findCutPoint(entries, 0, 6, keepRecentTokens=20000)
+   → 逆序遍历: assistant estimateTokens=940, user estimateTokens=54
+   → accumulatedTokens=994 < 20000 → 全部保留
+   → firstKeptEntryIndex=4 (user message)
+   → historyEnd=4
+   → messagesToSummarize: entries[0..3] 全是 session/model_change/thinking_level_change → 无有效消息 → []
+
+3. compact(preparation, model, apiKey, ...)
+   → isSplitTurn=false, messagesToSummarize=[]
+   → generateSummary([], model, ...) ← 空数组!
+   → convertToLlm([]) → serializeConversation([]) → ""
+   → LLM 收到: "<conversation>\n\n</conversation>\n\n[SUMMARIZATION_PROMPT]"
+   → LLM 输出: "## Goal\n- No goal identified — the conversation is empty."
+```
+
+#### 双重 Compaction 的原因
+
+1. 第一次 compaction 后，kept assistant message 仍保留 `usage.totalTokens=30135`
+2. SDK 在 `_runAutoCompaction` 完成后调用 `agent.continue()` 重新进入 agent loop
+3. 新一轮 `shouldCompact` 检查: 30135 > 30000 → 再次触发
+4. 中间的 `custom` entry（"Compacted ..."通知消息）阻止了 `prepareCompaction` 的 "last entry is compaction" 提前返回
+5. 第二次 compaction: `tokensBefore=97`（仅 compaction summary 自身的 tokens），同样产生空 summary
+
+#### 为什么正常使用（200K context）不受影响
+
+- 200K contextWindow, 20K reserveTokens → 触发阈值 180K
+- 需要数十轮对话才能累积到 180K
+- 此时 per-message estimates 已正确累积超过 keepRecentTokens(20K)
+- `messagesToSummarize` 包含真实的旧对话消息
+- Summary 能正确提取对话内容
+
+#### 50K 测试暴露此 bug 的条件
+
+- System prompt ~28K tokens（OpenClaw 的完整 system prompt 非常大）
+- 单轮回复: API totalTokens ≈ 28K(system) + 2K(actual response) = 30K
+- 刚好超过 30K 阈值触发 compaction
+- 但 per-message 内容仅 ~1K → 远低于 keepRecentTokens(20K)
+- 所有消息被标记为"保留" → 无内容可压缩 → 空 summary
+
+#### SDK 层 Bug 位置
+
+文件: `node_modules/@mariozechner/pi-coding-agent/dist/core/compaction/compaction.js`
+
+1. **line 568**: `compact()` 函数在非 split-turn 分支中未检查 `messagesToSummarize.length > 0`
+2. **根本问题**: `shouldCompact` 使用 `usage.totalTokens`（含 system prompt），`findCutPoint` 使用 `estimateTokens`（不含 system prompt），两者不一致
+
+#### 潜在修复方向
+
+1. **SDK 层**: `findCutPoint` 应该使用与 `shouldCompact` 一致的 token 计算方法，或在 `messagesToSummarize` 为空时跳过 compaction
+2. **OpenClaw 层**: 启用 `safeguard` 模式（`compaction.mode = "safeguard"`），该模式有额外的 pruning 和 fallback 逻辑
+3. **配置层**: 确保 contextWindow 足够大，使系统不会在单轮就触发 compaction
+4. **upstream 修复**: 向 pi-coding-agent 提交 bug report / PR
+
+---
+
+## 17. 第二轮 E2E 测试方案（v2）
+
+### 17.1 第一轮测试教训
+
+第一轮测试（16.6 节）暴露了两个问题：
+
+1. **50K contextWindow 太小**：触发 SDK token 估算不一致 bug，summary 全部为空
+2. **自动化脚本过于复杂**：事件匹配 bug、轮次预测不准、无法灵活应对意外
+
+### 17.2 测试目的
+
+验证 OpenClaw compaction 系统在**正常配置**下的实际能力边界：
+
+| 编号 | 验证目标                                                       | 判定标准                            |
+| ---- | -------------------------------------------------------------- | ----------------------------------- |
+| V1   | Auto-compact 在 context 超阈值时自动触发                       | JSONL 出现 compaction entry         |
+| V2   | Summary 包含对话中的关键信息（Goal/Progress/Decision/Context） | summary 文本包含植入的特定关键词    |
+| V3   | Compact 后 AI 仍能回忆关键事实                                 | AI 回复中命中 ≥3/5 植入事实         |
+| V4   | 多次 compact 后信息是否衰减                                    | 第 2 次 compact 后命中率 vs 第 1 次 |
+| V5   | 压缩率是否合理                                                 | tokensBefore / summaryLength        |
+| V6   | Memory flush 在 compact 前写入 memory 文件                     | memory/\*.md 文件有新内容           |
+
+### 17.3 测试环境
+
+- **模型**: OpenRouter MiniMax M2.5（`openrouter/minimax/minimax-m2.5`）
+  - 价格: $0.30/M input, $1.10/M output（比 sonnet 便宜 10x+）
+  - SWE-Bench 80.2%，支持 tool calling
+- **contextWindow**: 130,000（模型配置和 contextTokens 对齐）
+- **触发阈值**: 130K - 20K(reserveTokens) = 110K
+- **预计触发**: 5-8 轮（取决于每轮输出长度）
+- **预计成本**: ~$0.20
+- **Compaction 摘要模型**: 同 primary（MiniMax M2.5），因为 SDK 用 `this.model` 生成 summary
+
+### 17.4 测试方法：交互式手动驱动
+
+不使用自动化脚本。通过 Gateway WebSocket RPC 逐条发消息，每步检查 JSONL 状态。
+
+**工具**：
+
+- 发消息: Gateway RPC `chat.send`（复用 test-compact-e2e.ts 中的 GatewayClient）
+- 检查状态: 读 `~/.openclaw/agents/main/sessions/` 下的 JSONL 文件
+- 检查 memory: 读 `~/.openclaw/agents/main/memory/*.md`
+
+### 17.5 测试对话设计
+
+**植入的可验证关键词**（compact 后用于检查 summary 和 AI 回忆）：
+
+| 关键词                                  | 类别             | 植入轮次 |
+| --------------------------------------- | ---------------- | -------- |
+| `Phoenix`（项目名）                     | Goal             | 轮 1     |
+| `TypeScript` + `Express` + `PostgreSQL` | Goal             | 轮 1     |
+| `src/api/products.ts`                   | File path        | 轮 2     |
+| `Drizzle ORM`（而非 Prisma）            | Decision         | 轮 2     |
+| `seq scan` / `GIN 索引`                 | Critical Context | 轮 3     |
+| `端口 8472`                             | Fact             | 轮 1     |
+| `负责人张三`                            | Fact             | 轮 1     |
+
+### 17.6 固定输入消息（执行时必须逐字使用，修改必须同步此文档）
+
+#### 阶段一：植入事实 + 填充 context（轮 1-8）
+
+**轮 1（植入核心事实）**:
+
+```
+我们启动一个新项目，以下是关键信息，请你记住：
+- 项目代号：Phoenix
+- 技术栈：TypeScript + Express + PostgreSQL
+- 服务端口：8472
+- 项目负责人：张三
+- 目标：搭建电商平台 REST API
+
+请基于以上信息，给出完整的项目架构设计，包括目录结构、核心模块划分、数据库表设计、API 路由设计。要求详细，每个部分都给出完整说明。
+```
+
+**轮 2（植入 file path + decision）**:
+
+```
+很好。我已经按你的设计创建了 src/api/products.ts 和 src/db/schema.sql。
+关于 ORM 选型，我们决定用 Drizzle ORM 而不是 Prisma，原因是 Drizzle 的类型推导更好，且 SQL-like 语法更直观。
+请把商品模块的完整 CRUD 实现用 Drizzle ORM 重写，包括：
+1. 完整的 Drizzle schema 定义
+2. 所有 CRUD 接口实现（含分页、筛选、排序）
+3. 输入验证（用 Zod）
+4. 错误处理中间件
+给出所有文件的完整代码。
+```
+
+**轮 3（植入 blocker + critical context）**:
+
+```
+商品 CRUD 基本完成了，但遇到一个性能问题：
+分页查询在数据量大时非常慢，我执行 EXPLAIN ANALYZE 发现是 seq scan on products 表。
+当前表有 50 万条记录，查询耗时 3.2 秒。
+请分析原因，给出解决方案。我需要：
+1. 详细的性能分析（为什么是 seq scan）
+2. 需要创建哪些索引（包括 GIN 索引用于全文搜索）
+3. 完整的 SQL 语句
+4. 查询优化后的代码改写
+5. 性能测试方案
+```
+
+**轮 4（继续填充）**:
+
+```
+索引问题已解决，感谢。现在实现购物车模块，要求：
+1. Redis 做购物车缓存（TTL 7天）
+2. 库存锁定机制（乐观锁）
+3. 并发安全（防止超卖）
+4. 购物车合并（未登录→登录后合并）
+请给出完整实现，包括 Redis 操作封装、购物车 service、API 路由、所有边界情况处理。
+```
+
+**轮 5（继续填充）**:
+
+```
+购物车模块完成。现在实现订单和支付模块：
+1. 订单状态机（待支付→已支付→已发货→已完成/已取消）
+2. 集成 Stripe 支付（含 webhook 验签）
+3. 支付幂等性处理（防重复扣款）
+4. 订单超时自动取消（30分钟未支付）
+请给出完整实现，包括所有文件代码、Stripe webhook handler、定时任务实现。
+```
+
+**轮 6（继续填充，如未触发 compact 则发送）**:
+
+```
+支付模块完成。现在实现用户认证和权限系统：
+1. JWT + Refresh Token 双令牌机制
+2. RBAC 角色权限（admin/seller/buyer）
+3. OAuth2 第三方登录（Google、GitHub）
+4. 密码加密（bcrypt）和安全策略
+请给出完整实现，包括 auth middleware、token 管理、权限装饰器、所有 API 端点。
+```
+
+**轮 7（继续填充，如未触发 compact 则发送）**:
+
+```
+认证完成。现在实现搜索和推荐系统：
+1. Elasticsearch 全文搜索（支持中文分词）
+2. 搜索建议/自动补全
+3. 基于协同过滤的商品推荐
+4. 搜索结果排序（相关性+销量+评分）
+请给出完整实现，包括 ES 索引映射、搜索 service、推荐算法、API 路由。
+```
+
+**轮 8（继续填充，如未触发 compact 则发送）**:
+
+```
+搜索完成。现在实现通知和消息系统：
+1. WebSocket 实时通知
+2. 邮件通知（订单确认、发货提醒）
+3. 短信验证码
+4. 消息队列（RabbitMQ）异步处理
+请给出完整实现，包括 WebSocket server、邮件模板、消息队列 producer/consumer。
+```
+
+#### 策略修正（v2.1）：快速填充 + 大输入法
+
+**原策略问题**：让 AI 生成大量代码输出，每轮 2-5 分钟等 AI 写代码，极其低效。
+
+**修正策略**：
+
+1. 轮 1-3：快速短问答植入关键事实（每轮 ~15s）
+2. **轮 4+：主动发送大段输入文本**（粘贴代码/规格书），一次性灌入 30-50K tokens，AI 只需简短确认
+3. 大输入中夹带关键信息（"注意：项目代号 Phoenix，端口 8472"），测试 compact 是否保留中间夹带的事实
+4. compact 触发后：快速验证问答
+
+**核心区别**：输入是即时的（不等 AI 生成），可在 5 分钟内完成从 0 到 compact 的全流程。
+
+#### 阶段二：大输入推过 compact 阈值
+
+**触发条件**：`totalTokens > contextWindow - reserveTokens` = 130,000 - 16,384 = **113,616**
+
+**大输入消息（夹带关键信息）**：构造 ~50K chars 的技术文档/代码，中间嵌入关键事实回顾，一次性推过阈值。
+
+#### 阶段三：Compaction 后验证
+
+**验证消息 V-1（compaction 触发后立即发送）**:
+
+```
+请回答以下问题，如果你不确定就说不知道，不要猜测：
+1. 我们的项目代号是什么？
+2. 用了什么技术栈（语言、框架、数据库）？
+3. 服务运行在哪个端口？
+4. 项目负责人是谁？
+5. 我们选了什么 ORM？为什么选它而不是另一个？
+6. 之前遇到过什么性能问题？怎么解决的？
+```
+
+#### 阶段四：继续填充到第 2 次 Compaction
+
+再次用大输入法快速填满 context，触发第 2 次 compact。
+
+**验证消息 V-2（与 V-1 完全相同）**:
+
+```
+请回答以下问题，如果你不确定就说不知道，不要猜测：
+1. 我们的项目代号是什么？
+2. 用了什么技术栈（语言、框架、数据库）？
+3. 服务运行在哪个端口？
+4. 项目负责人是谁？
+5. 我们选了什么 ORM？为什么选它而不是另一个？
+6. 之前遇到过什么性能问题？怎么解决的？
+```
+
+### 17.7 测试执行记录（2026-02-21）
+
+#### 环境
+
+- 模型: `openrouter/minimax/minimax-m2.5` (MiniMax M2.5, 130K context)
+- contextTokens: 130,000
+- contextWindow: 130,000 (对齐，避免 SDK token estimation bug)
+- reserveTokens: 16,384 (SDK 默认值)
+- keepRecentTokens: 20,000 (SDK 默认值)
+- **compact 触发阈值**: 130,000 - 16,384 = **113,616 tokens**
+- session key: `test-compact-v2-main`
+- session ID: `978f3fd8-ca9c-43d6-9b79-742fc985ca3e`
+
+#### Token 增长轨迹
+
+| 轮次    | 内容                                      | Input  | Output | Total       | 占比       | 耗时    |
+| ------- | ----------------------------------------- | ------ | ------ | ----------- | ---------- | ------- |
+| R1      | 植入核心事实 (Phoenix/8472/张三/Drizzle)  | 20,868 | 3,450  | 24,638      | 19.0%      | 42s     |
+| R2      | Drizzle ORM CRUD 完整实现                 | 24,149 | 5,942  | 30,381      | 23.4%      | 123s    |
+| R3      | seq scan 性能问题分析+索引优化            | 29,732 | 4,287  | 34,369      | 26.4%      | 94s     |
+| R4      | 购物车模块 (Redis+乐观锁)                 | 33,976 | 7,380  | 41,721      | 32.1%      | 151s    |
+| R5      | 订单+支付 (Stripe+状态机)                 | 41,351 | 9,833  | 51,546      | 39.7%      | ~290s   |
+| R6      | 4 模块压力请求 (认证+搜索+通知+上传)      | 51,480 | 16,499 | 68,341      | 52.6%      | ~300s   |
+| R7      | 3 模块压力请求 (导出+监控+多租户)         | 68,155 | 16,446 | 84,951      | 65.3%      | ~300s   |
+| R8      | 3 模块压力请求 (审计+灰度+i18n)           | 84,943 | 16,482 | 101,715     | 78.2%      | ~300s   |
+| **R9**  | **大输入法: 68K chars 部署文档+关键事实** | ~101K  | ~250   | **116,594** | **89.7%**  | **13s** |
+|         | **→ COMPACTION #1 触发**                  |        |        |             |            |         |
+| V1      | 验证问答 (6/6 正确)                       | ~54K   | ~500   | 54,540      | 42.0%      | 37s     |
+| **R10** | **大输入法: 211K chars ECS 迁移文档**     | ~130K  | ~400   | **130,392** | **100.3%** | **15s** |
+|         | **→ COMPACTION #2 触发**                  |        |        |             |            |         |
+
+**策略对比**：
+
+- R1-R8 (让 AI 生成代码): 8 轮, ~30 分钟, 从 19% 到 78%
+- R9 (大输入法): 1 轮, **13 秒**, 从 78% 到 89.7% → 触发 compact
+- **大输入法效率是传统方法的 100 倍以上**
+
+#### Compaction #1 结果
+
+- **触发条件**: totalTokens 116,594 > 阈值 113,616
+- **触发时间**: R9 回复完成后 19 秒 (08:37:20 → 08:37:39)
+- **Summary 长度**: 6,652 chars
+- **Summary 结构**: Goal / Constraints & Preferences / Progress (Done/In Progress/Blocked) / Key Decisions / Next Steps / Critical Context / Turn Context
+- **compact 后 tokens**: 54,633 → 54,540 (42.0%)，降幅 53.3%
+
+**关键信息保留检查**：
+
+| 关键事实                          | Summary 中             | AI 回忆  | 来源         |
+| --------------------------------- | ---------------------- | -------- | ------------ |
+| Phoenix (项目名)                  | **有** (Goal 标题)     | **正确** | summary      |
+| TypeScript + Express + PostgreSQL | **有** (Constraints)   | **正确** | summary      |
+| 端口 8472                         | **有** (Constraints)   | **正确** | summary      |
+| 张三 (负责人)                     | **无！**               | **正确** | memory flush |
+| Drizzle ORM (非 Prisma)           | **有** (Key Decisions) | **正确** | summary      |
+| seq scan + GIN 索引               | **有** (Progress)      | **正确** | summary      |
+
+**重大发现 1: Memory Flush 机制**
+
+Compact 触发后，AI 的第一个动作不是回答验证问题，而是**主动写入 memory 文件**：
+
+- 工具调用: `None` (实际是 write_file，写入 memory/2026-02-21.md)
+- 写入内容: 784 bytes，包含 Phoenix/张三/8472/Drizzle/seq scan 等关键信息
+- **这就是"张三"能被回忆的原因** — summary 没有保留张三，但 memory flush 保存了
+
+**重大发现 2: Memory Flush 的数据污染**
+
+Memory flush **覆盖了**用户原来的 `2026-02-21.md` 日记（Cron 重构、OpenClaw 开发状态、董事长巡检等），替换为测试项目 Phoenix 的信息。这证实了 17.8 节预警的数据污染风险。**备份恢复是必须的**。
+
+#### Compaction #2 结果
+
+- **触发条件**: totalTokens 130,392 > 阈值 113,616
+- **Summary 长度**: 5,374 chars（比 #1 少 1,278 chars）
+- **Summary 结构**: 与 #1 基本相同，增加了 memory persistence 和 context restoration verification 的记录
+- **新增内容**: `Memory persistence system implemented: memory/2026-02-21.md stores project configuration`
+
+**Compaction #2 vs #1 对比**：
+
+| 维度             | #1                        | #2                         |
+| ---------------- | ------------------------- | -------------------------- |
+| Summary 长度     | 6,652 chars               | 5,374 chars                |
+| Goal 保留        | 完整                      | 完整（相同）               |
+| Constraints 保留 | 完整                      | 完整（相同）               |
+| Progress 列表    | 完整                      | 完整 + memory/verification |
+| Key Decisions    | 6 条                      | 7 条 (+memory file)        |
+| 张三 in summary  | **无**                    | **无**                     |
+| 张三 可回忆      | **是** (via memory flush) | 待验证                     |
+
+#### 假设验证汇总
+
+| 假设                                  | 状态     | 结论                                                          |
+| ------------------------------------- | -------- | ------------------------------------------------------------- |
+| H1: Auto-compact 在阈值触发           | **PASS** | 116,594 > 113,616 时触发                                      |
+| H2: Summary 保留关键信息              | **PASS** | 5/6 关键事实保留在 summary，1/6 (张三) 通过 memory flush 补救 |
+| H3: Memory flush 自动执行             | **PASS** | Compact 后 AI 主动写入 memory/2026-02-21.md                   |
+| H4: Memory flush 有数据污染风险       | **PASS** | 覆盖了用户原有日记内容                                        |
+| H5: 二次 compact summary 质量         | **PASS** | 略短但核心信息无损                                            |
+| H6: Compact 后 token 大幅下降         | **PASS** | 116K → 54K (降 53%)                                           |
+| H7: AI 能通过 summary+memory 回忆事实 | **PASS** | 验证问答 6/6 全部正确                                         |
+
+#### V-2 验证结果（第二次 compact 后）
+
+**Compact 后 session 卡死 bug**：
+
+- compact #2 完成后 session 停止响应新消息
+- `chat.send` 返回 runId 且立刻触发 completion 事件，但消息未写入 JSONL
+- 持续约 **~10 分钟**后自动 timeout 恢复
+- 恢复后积压的 5 条消息（含 3 次重复 V-2、1 次 ping、1 次最终 V-2）批量处理
+- 这是已知的 compact bug，不影响 compact 本身的质量
+
+**V-2 验证：7/7 全部正确**（二次 compact 后）：
+
+| 关键事实                          | AI 回答 | 来源推测                         |
+| --------------------------------- | ------- | -------------------------------- |
+| Phoenix                           | 正确    | compact summary (Goal)           |
+| TypeScript + Express + PostgreSQL | 正确    | compact summary (Constraints)    |
+| 端口 8472                         | 正确    | compact summary (Constraints)    |
+| 张三 (负责人)                     | 正确    | memory flush (2026-02-21.md)     |
+| Drizzle ORM (类型推断更好)        | 正确    | compact summary (Key Decisions)  |
+| seq scan → GIN 索引               | 正确    | compact summary (Progress)       |
+| 李四(架构师) + 王五(DBA)          | 正确    | compact summary (R10 大输入保留) |
+
+**重大发现 3: 二次 compact 的 summary 质量与一次无显著差异**
+
+Summary 从 6,652 chars → 5,374 chars（略短），但核心 Goal/Constraints/Key Decisions 完整保留。
+新增了 memory persistence 和 context restoration verification 的记录，说明 summary 正确追踪了 compact #1 后的验证行为。
+
+### 17.8 测试结论
+
+#### 整体评价
+
+OpenClaw 的 compact 系统在 MiniMax M2.5 (130K context) 下**基本工作正常**，compact summary 的质量令人满意。
+
+#### 核心发现
+
+1. **Compact 触发机制正确**：`totalTokens > contextWindow - reserveTokens` (113,616) 时准确触发
+2. **Summary 质量好**：结构化输出 (Goal/Constraints/Progress/Key Decisions/Next Steps/Critical Context)，核心事实保留率高
+3. **Memory flush 是关键补救机制**：summary 丢失的细节（如人名"张三"）通过 memory flush 写入持久化文件得以恢复
+4. **Memory flush 有数据污染风险**：会覆盖用户原有 memory 日记文件（已验证），**必须备份**
+5. **Compact 后 session 卡死 ~10min**：已知 bug，timeout 后自动恢复，积压消息批量处理
+6. **大输入法极大提升测试效率**：一条 68K/211K chars 消息比让 AI 生成代码快 100 倍
+
+#### SDK token estimation bug（仍存在，未触发）
+
+本次测试使用 `contextWindow = contextTokens = 130,000` 对齐配置，绕过了 SDK 的 `estimateTokens` (chars/4) 与 `usage.totalTokens` (API reported) 不一致的 bug。
+在 `contextWindow >> contextTokens` 的配置下（如 contextTokens=50K, contextWindow=200K），此 bug 会导致 compact summary 为空。详见 16.7 节。
+
+#### 改进建议
+
+1. **修复 SDK token estimation bug**：`findCutPoint` 应使用 `usage.totalTokens` 而非 `estimateTokens`
+2. **修复 compact 后 session 卡死 bug**：timeout 10min 太长
+3. **Memory flush 应追加而非覆盖**：当前 flush 覆盖 memory 文件，应改为追加模式
+4. **Summary 应保留人名等 metadata**：项目负责人等关键角色信息不应被丢弃
+5. **配置对齐检查**：Gateway 启动时应检查 `contextTokens` 和 `contextWindow` 是否对齐
+
+### 17.8 数据污染风险与清理方案
+
+#### 污染风险分析
+
+测试使用的是本地 Her 实例（agent=main），AI 拥有用户的完整记忆上下文：
+
+| 数据            | 位置                                             | 污染方式                      | 清理方法   |
+| --------------- | ------------------------------------------------ | ----------------------------- | ---------- |
+| Session JSONL   | `~/.openclaw/agents/main/sessions/<id>.jsonl`    | 新建测试 session 文件         | 删除文件   |
+| sessions.json   | `~/.openclaw/agents/main/sessions/sessions.json` | 注册测试 session 条目         | 删除条目   |
+| QMD 搜索索引    | `~/.openclaw/memory/main.sqlite`                 | 测试 session 内容被索引       | reindex    |
+| Memory 日记文件 | `~/.openclaw/workspace/memory/*.md`              | memory flush 写入测试相关内容 | 从备份恢复 |
+
+注意：测试中 AI 会识别 webchat/test 发送者不是天哥，但仍能访问所有 memory 和 memory search 工具。
+
+#### 测试前备份
+
+```bash
+# 1. 备份 memory 文件
+cp -r ~/.openclaw/workspace/memory/ ~/.openclaw/workspace/memory.bak.compact-test-v2/
+
+# 2. 备份 sessions.json
+cp ~/.openclaw/agents/main/sessions/sessions.json ~/.openclaw/agents/main/sessions/sessions.json.bak.compact-test-v2
+
+# 3. 记录当前 memory 索引时间戳（用于判断是否需要 reindex）
+ls -la ~/.openclaw/memory/main.sqlite
+```
+
+#### 测试后清理（必须全部执行）
+
+```bash
+# 1. 删除测试 session 文件（session key 以 test-compact-v2- 开头）
+# 先查找
+grep -l "test-compact-v2-" ~/.openclaw/agents/main/sessions/*.jsonl
+# 然后删除找到的文件
+
+# 2. 从 sessions.json 删除测试条目
+# 用 python 过滤掉 key 包含 test-compact-v2- 的条目
+
+# 3. 恢复 memory 文件
+rm -rf ~/.openclaw/workspace/memory/
+mv ~/.openclaw/workspace/memory.bak.compact-test-v2/ ~/.openclaw/workspace/memory/
+
+# 4. 恢复 sessions.json（如果手动删条目太麻烦）
+# cp ~/.openclaw/agents/main/sessions/sessions.json.bak.compact-test-v2 ~/.openclaw/agents/main/sessions/sessions.json
+
+# 5. 重建 QMD 搜索索引（清除测试数据的索引）
+pnpm openclaw memory reindex
+
+# 6. 恢复 openclaw.json 配置（见 17.9）
+
+# 7. 重启 gateway
+```
+
+#### 测试 session key 命名规则
+
+所有测试 session 使用固定前缀 `test-compact-v2-{timestamp}`，便于清理时识别。
+
+### 17.9 配置变更清单
+
+#### 测试前修改 `~/.openclaw/openclaw.json`
+
+1. `models.providers.openrouter.models[]` 添加:
+   ```json
+   {
+     "id": "minimax/minimax-m2.5",
+     "name": "MiniMax M2.5",
+     "contextWindow": 130000,
+     "maxTokens": 16384
+   }
+   ```
+2. `agents.defaults.model.primary` → `"openrouter/minimax/minimax-m2.5"`
+3. `agents.defaults.contextTokens` → `130000`
+4. 恢复 `claude-sonnet-4-6` 的 `contextWindow` → `200000`（还原第一轮测试修改）
+
+#### 测试后恢复
+
+1. MiniMax 模型条目保留备用
+2. `model.primary` → `"anthropic/claude-opus-4-6"`
+3. `contextTokens` → `200000`
+4. 重启 gateway
+
+---
+
+## 18. JSONL 完整性深度分析（第一轮测试 v2）
+
+### 18.1 Session JSONL 是 append-only 日志
+
+Session `978f3fd8` 共 42 条 entries，compact 不删除任何历史条目：
+
+| 类型                    | 数量   | 说明                                 |
+| ----------------------- | ------ | ------------------------------------ |
+| session                 | 1      | 会话头                               |
+| model_change            | 1      | 模型信息                             |
+| thinking_level_change   | 1      | thinking 级别                        |
+| custom (model-snapshot) | 1      | 模型快照                             |
+| message (user)          | 17     | 含系统注入的 memory flush/audit 消息 |
+| message (assistant)     | 18     | 含 tool call                         |
+| message (toolResult)    | 1      | memory write 结果                    |
+| compaction              | 2      | compact summary                      |
+| **总计**                | **42** |                                      |
+
+**结论：Compact 只影响发送给 API 的 context，不影响 JSONL 存储。历史记录 1 字不差全部保留。**
+
+### 18.2 Compact #1 vs #2 详细时间线
+
+#### Compact #1（成功，含 memory flush）
+
+```
+08:37:20  [21] AI 回复 R9 (116,594 tokens, 89.7%)  → 超过阈值 113,616
+08:37:39  [22] COMPACTION #1 写入 (summary 6,652 chars)      ← 19s 生成 summary
+08:38:14  [23] 系统注入 USER "Pre-compaction memory flush"   ← 35s 后启动 flush
+08:38:30  [24] AI 调用 write 工具写入 memory/2026-02-21.md    ← 16s flush 响应
+08:38:30  [25] TOOL_RESULT: 784 bytes 写入成功
+08:38:45  [26] AI 确认 "已保存今日工作日志"                    ← 15s
+08:38:45  [27] 系统注入 USER "Post-Compaction Audit"
+08:38:51  [28] AI 回答审计+验证问答                            ← 6s
+```
+
+总耗时: ~91s，全部正常完成。
+
+#### Compact #2（summary 成功，memory flush 卡死）
+
+```
+08:41:06  R10 run 开始 (chat.send, 211K chars 大输入)
+08:41:21  [30] AI 回复 R10 (130,392 tokens, 100.3%)           ← 15s
+08:41:49  [31] COMPACTION #2 写入 (summary 5,374 chars)       ← 28s 生成 summary
+08:41:50+ Memory flush 应该启动但卡住（MiniMax API 无响应）
+08:51:06  embedded run timeout (600,000ms = 10min)
+08:51:06  "using current snapshot: timed out during compaction"
+08:51:06+ 积压的 5 条消息批量处理 ([32]-[41])
+```
+
+**关键差异**：
+
+- Summary 生成都成功了（#1: 19s, #2: 28s）
+- 卡住的是 summary 之后的 **memory flush LLM 调用**
+- #1 的 memory flush 正常（~72s），#2 的 memory flush 无限期卡住直到 10min timeout
+
+### 18.3 Compact 卡死 Bug 触发条件
+
+**已知条件**：
+
+- 发生在 compact #2（第二次 compaction），#1 正常
+- Summary 生成正常完成，卡在后续的 memory flush
+- timeout = 600,000ms (10 min)，从 run 开始算不是从 compact 开始算
+- 恢复后积压消息批量处理，session 恢复正常
+
+**待验证**：
+
+- 是否 **每次 #2+ compact 都卡死**，还是概率性的
+- 是否与 MiniMax M2.5 特有（换模型是否复现）
+- 是否与大输入有关（R10 是 211K chars）
+
+**代码位置**：
+
+- `src/agents/pi-embedded-runner/run/attempt.ts` 行 807-822: timeout 检测
+- `src/agents/pi-embedded-runner/run/compaction-timeout.ts`: snapshot 选择逻辑
+
+### 18.4 Memory Search 行为
+
+本次测试中 AI **未使用 memory_search 工具**。V-1/V-2 验证问答全部从 compact summary 直接回答。
+"张三"在 V-1 中能回忆是因为 compact #1 的 memory flush 写入了 memory 文件，AI thinking 提到"根据刚才保存的工作日志"。
+
+### 18.5 Memory Flush 行为
+
+| 维度              | Compact #1                         | Compact #2        |
+| ----------------- | ---------------------------------- | ----------------- |
+| Memory flush 执行 | 完成                               | 未执行（timeout） |
+| 写入方式          | **覆盖** (非追加)                  | N/A               |
+| 写入文件          | memory/2026-02-21.md               | N/A               |
+| 写入大小          | 784 bytes                          | N/A               |
+| 原有内容          | 被完全替换                         | N/A               |
+| 包含的关键信息    | Phoenix/张三/8472/Drizzle/seq scan | N/A               |
+
+**问题**：Memory flush 覆盖了用户原有日记（Cron 重构、开发状态等），造成数据污染。
+
+---
+
+## 19. 第三轮 E2E 测试方案（v3）— 日常工作场景 + 多轮短消息
+
+### 19.1 测试目标
+
+1. 用**日常工作对话**（非代码生成）模拟真实使用场景
+2. 通过**多轮短消息**（每轮 1-3 句话）植入 **25+ 关键事实**
+3. 用**大输入法**快速填满 context 触发 compact
+4. 验证：compact summary 保留了多少关键事实（25 个逐一对照）
+5. 复现：compact 后 session 卡死 bug 是否 100% 出现
+6. 验证：memory search 是否被调用、memory flush 是否正确
+7. 触发 2 次 compact，验证二次 compact 后的信息保留
+
+### 19.2 植入的 25 个关键事实
+
+| #   | 类别 | 事实                                            | 植入轮次 |
+| --- | ---- | ----------------------------------------------- | -------- |
+| 1   | 人物 | 我叫王明，是 CTO                                | R1       |
+| 2   | 人物 | 同事刘芳是前端 lead                             | R1       |
+| 3   | 人物 | 同事陈磊是后端 lead                             | R1       |
+| 4   | 公司 | 公司叫星辰科技，在杭州                          | R2       |
+| 5   | 公司 | 办公地址：西湖区文三路 478 号                   | R2       |
+| 6   | 项目 | 当前项目代号: Aurora                            | R3       |
+| 7   | 项目 | Aurora 是智能客服系统                           | R3       |
+| 8   | 技术 | 后端用 Go + gRPC                                | R4       |
+| 9   | 技术 | 前端用 React + TypeScript                       | R4       |
+| 10  | 技术 | 数据库用 TiDB (分布式)                          | R4       |
+| 11  | 决策 | 选 TiDB 不选 MySQL：需要水平扩展                | R5       |
+| 12  | 决策 | 消息队列选 Pulsar 不选 Kafka                    | R5       |
+| 13  | 事件 | 上周五线上故障：TiDB 连接池泄漏                 | R6       |
+| 14  | 事件 | 故障持续 47 分钟，影响 2.3 万用户               | R6       |
+| 15  | 事件 | 根因：goroutine 没有 defer close                | R7       |
+| 16  | 事件 | 修复方案：加 context timeout + pool max         | R7       |
+| 17  | 计划 | 下周三要做 Aurora v2.1 发布                     | R8       |
+| 18  | 计划 | 发布包含 3 个 feature：多语言、工单系统、知识库 | R8       |
+| 19  | 个人 | 我女儿叫小星星，今年 5 岁                       | R9       |
+| 20  | 个人 | 下个月 15 号是我结婚纪念日                      | R9       |
+| 21  | 数字 | 公司有 128 名员工                               | R10      |
+| 22  | 数字 | Aurora 项目预算 350 万                          | R10      |
+| 23  | 密码 | 服务器 IP：10.0.1.42                            | R11      |
+| 24  | 密码 | staging 环境端口 9527                           | R11      |
+| 25  | 偏好 | 我喜欢用 Vim，讨厌 Emacs                        | R12      |
+
+### 19.3 测试流程
+
+```
+阶段一：植入事实 (R1-R12, 每轮 ~10s, 共 ~2min)
+  → 多轮短消息，每轮 1-3 个事实，要求 AI 简短确认
+
+阶段二：大输入填充 (R13-R14, ~30s)
+  → 发送大段文本（夹带关键事实回顾），推到 compact 阈值
+
+阶段三：等待 Compact #1 + 验证 (V1, ~2min)
+  → 25 题验证问卷
+  → 检查 memory flush 内容
+  → 检查 JSONL 完整性
+
+阶段四：再次填充 + Compact #2 (R15+大输入, ~30s)
+  → 触发第 2 次 compact
+  → 记录是否卡死 + 等待 timeout 恢复
+
+阶段五：二次验证 (V2, ~2min)
+  → 同样 25 题验证
+  → 对比 V1 vs V2 的回忆差异
+
+阶段六：Memory Search 测试 (MS1)
+  → 发送只能通过 search 回答的问题
+  → 检查 tool call
+
+总预计时间：15-20 分钟
+```
+
+### 19.4 固定输入消息
+
+#### R1（人物信息）
+
+```
+你好！我叫王明，是公司的 CTO。我的团队里有两个核心骨干：刘芳是前端 lead，陈磊是后端 lead。记住这些人名和角色。
+```
+
+#### R2（公司信息）
+
+```
+我们公司叫星辰科技，总部在杭州，办公地址是西湖区文三路 478 号。
+```
+
+#### R3（项目信息）
+
+```
+我们目前在做的项目代号是 Aurora，这是一个智能客服系统。
+```
+
+#### R4（技术栈）
+
+```
+Aurora 的技术栈：后端用 Go 语言 + gRPC 通信，前端是 React + TypeScript，数据库用 TiDB 分布式数据库。
+```
+
+#### R5（技术决策）
+
+```
+两个重要的技术决策记录一下：1) 数据库选了 TiDB 而不是 MySQL，因为我们需要水平扩展能力。2) 消息队列选了 Pulsar 而不是 Kafka，因为 Pulsar 的多租户支持更好。
+```
+
+#### R6（线上故障）
+
+```
+上周五出了一个线上故障，挺严重的：TiDB 连接池泄漏，故障持续了 47 分钟，影响了大约 2.3 万用户。
+```
+
+#### R7（故障根因和修复）
+
+```
+故障的根因已经查到了：是 goroutine 里没有用 defer 关闭数据库连接。修复方案是加了 context timeout 和连接池 max 限制。
+```
+
+#### R8（发布计划）
+
+```
+下周三我们要发布 Aurora v2.1，这个版本包含 3 个重要 feature：多语言支持、工单系统、知识库集成。
+```
+
+#### R9（个人信息）
+
+```
+顺便说一下个人的事：我女儿叫小星星，今年 5 岁了。还有，下个月 15 号是我和太太的结婚纪念日，帮我记着。
+```
+
+#### R10（数字信息）
+
+```
+几个重要数字：公司目前有 128 名员工，Aurora 项目的总预算是 350 万。
+```
+
+#### R11（服务器信息）
+
+```
+基础设施信息：服务器 IP 是 10.0.1.42，staging 环境端口是 9527。
+```
+
+#### R12（个人偏好）
+
+```
+最后一个：我喜欢用 Vim 写代码，讨厌 Emacs。别给我推荐 Emacs 相关的东西。
+```
+
+#### V-验证问卷（compact 后发送）
+
+```
+请逐一回答以下 25 个问题，如果不确定就说不知道，不要猜：
+1. 我叫什么名字？什么职位？
+2. 前端 lead 是谁？
+3. 后端 lead 是谁？
+4. 公司叫什么？在哪个城市？
+5. 办公地址是？
+6. 当前项目代号是？
+7. 这个项目是做什么的？
+8. 后端用什么语言和通信框架？
+9. 前端用什么技术？
+10. 数据库用什么？
+11. 为什么选这个数据库而不是 MySQL？
+12. 消息队列选了什么？为什么不选 Kafka？
+13. 上周五出了什么故障？
+14. 故障持续多久？影响多少用户？
+15. 故障的根因是什么？
+16. 修复方案是什么？
+17. 下周几要发布什么版本？
+18. 发布包含哪 3 个 feature？
+19. 我女儿叫什么？几岁？
+20. 什么时候是我的结婚纪念日？
+21. 公司有多少员工？
+22. 项目预算是多少？
+23. 服务器 IP 是多少？
+24. staging 端口是多少？
+25. 我喜欢用什么编辑器？讨厌什么？
+```
+
+---
+
+## 20. 第三轮 E2E 测试执行记录（v3）— 2026-02-21
+
+### 20.1 测试环境
+
+- 模型: MiniMax M2.5 (via OpenRouter)
+- contextTokens: 130,000
+- contextWindow: 130,000
+- reserveTokens: 16,384（默认）
+- compact 阈值: 113,616 (87.4%)
+- Session Key: `test-compact-v3-daily`
+- Session ID: `3c547eb9-e46e-4bd8-a482-8e417b1bb0ae`
+
+### 20.2 阶段一：植入事实（R1-R12）
+
+| 轮次 | 耗时  | 发送内容概要                   |
+| ---- | ----- | ------------------------------ |
+| R1   | 9.0s  | 王明/CTO/刘芳/陈磊             |
+| R2   | 13.9s | 星辰科技/杭州/文三路478号      |
+| R3   | 5.5s  | 项目 Aurora/智能客服           |
+| R4   | 69.2s | Go+gRPC/React+TS/TiDB          |
+| R5   | 26.4s | TiDB vs MySQL/Pulsar vs Kafka  |
+| R6   | 19.4s | TiDB 连接池泄漏/47min/2.3万    |
+| R7   | 12.1s | defer close/context timeout    |
+| R8   | 18.4s | Aurora v2.1/多语言/工单/知识库 |
+| R9   | 25.9s | 小星星5岁/3月15结婚纪念日      |
+| R10  | 24.5s | 128员工/350万预算              |
+| R11  | 11.3s | IP 10.0.1.42/port 9527         |
+| R12  | 16.2s | Vim/讨厌Emacs                  |
+
+12 轮短消息植入完成，平均 21s/轮。
+
+植入后 token: 27,519 (21.2%)
+
+### 20.3 阶段二：大输入填充 + Compact #1
+
+R13：发送 341K chars 技术文档填充材料（14.9s）。
+
+token 从 27,519 → 139,091 (107.0%)，超过阈值。
+
+#### Compact #1 Summary（完整文本）
+
+```
+## Goal
+The user (identified as "王明", CTO of 星辰科技) is providing information
+to be recorded in USER.md about his company, team, project, and personal details.
+
+## Constraints & Preferences
+- User explicitly stated: "讨厌 Emacs" - do not recommend Emacs-related tools
+- User prefers Vim for coding
+
+## Progress
+### Done
+- [x] Recorded company info (星辰科技, 杭州总部, 128 employees, 350万 budget)
+- [x] Recorded team leads (刘芳 - 前端 Lead, 陈磊 - 后端 Lead)
+- [x] Recorded project Aurora tech stack (Go+gRPC, React+TS, TiDB, Pulsar)
+- [x] Recorded infrastructure (server IP 10.0.1.42, staging port 9527)
+- [x] Recorded last Friday's TiDB connection pool leak incident (47 min, 23k users)
+- [x] Recorded incident root cause and fix
+- [x] Recorded upcoming release (Aurora v2.1 next Wednesday with 3 features)
+- [x] Recorded personal info (daughter 小星星, 5 years old; wedding anniversary March 15)
+- [x] Recorded editor preference (Vim, no Emacs)
+
+## Key Decisions
+- Database choice (TiDB over MySQL): Selected for horizontal scaling
+- Message queue choice (Pulsar over Kafka): Selected for multi-tenant support
+- Incident fix: Added context timeout + connection pool max limit
+
+## Critical Context
+- Aurora v2.1 release scheduled for Wednesday 2026-02-25
+- Wedding anniversary 3月15日
+```
+
+**Summary 质量评分：24/25**（仅"办公地址文三路478号"未明确出现在 summary 中）
+
+### 20.4 Compact 后 Session 卡死 — 100% 复现
+
+#### 精确时间线
+
+```
+09:08:57  embedded run start (R13 大输入, runId=994e633f)
+09:09:11  agent end (14s 处理完毕)
+09:09:11  compaction start
+09:09:11  prompt end
+09:09:27  compaction retry (willRetry=true)  ← SDK 认为需要重试
+          <--- 完全静默, 只有 cron tick --->
+09:18:57  embedded run timeout (600,000ms)   ← 精确 10 分钟
+09:18:57  "compaction wait aborted"
+09:18:57  "using current snapshot: timed out during compaction"
+09:18:57  run cleared, run done (aborted=true)
+09:18:57  V1 消息开始处理 (runId=1db1aec3)
+09:18:57  compaction start (pre-run compaction check)
+09:18:57  agent start
+09:19:35  agent end
+09:19:35  compaction start (post-run compaction)
+09:19:50  compaction retry (又 willRetry=true!)
+          <--- 又将卡 10 分钟 --->
+```
+
+#### 死循环机制
+
+1. Context 超过阈值 → 触发 auto-compaction
+2. Summary 生成成功（写入 JSONL）
+3. PI SDK 发出 `compaction end` 事件，但 `willRetry=true`
+4. OpenClaw 调用 `resetForCompactionRetry()`，等待下一次 compaction
+5. 但下一次 compaction 似乎永远不来（可能是 MiniMax API 挂起）
+6. 10 分钟后 `embedded run timeout`
+7. 使用 "current snapshot"（含 compaction summary）
+8. 下一条消息开始 → 又检测到需要 compaction → 回到步骤 1
+
+#### 关键发现
+
+- **Summary 生成本身是成功的** — JSONL 中有 2200 chars 的高质量 summary
+- **卡死发生在 compaction retry 阶段** — SDK 的 `willRetry` 导致 run 无法结束
+- **每条新消息都会重新触发 compaction** — 形成死循环
+- **Session 最终能恢复** — 通过 10min timeout + "current snapshot" 兜底
+
+#### 代码路径
+
+```
+handleAutoCompactionEnd() (src/agents/pi-embedded-subscribe.handlers.compaction.ts)
+  → willRetry = Boolean(evt.willRetry)  // PI SDK 设置
+  → ctx.resetForCompactionRetry()        // 重置等待
+  → compaction promise 不 resolve        // run 保持 active
+  → 10min 后 timeout → abort → snapshot
+```
+
+### 20.5 V1 验证结果：Compact #1 后 25 题问卷
+
+**得分：25/25（100%）**
+
+| #   | 问题                   | 正确答案                 | AI 回答                  | 结果 |
+| --- | ---------------------- | ------------------------ | ------------------------ | ---- |
+| 1   | 我叫什么？什么职位？   | 王明, CTO                | 王明，CTO                | ✅   |
+| 2   | 前端 lead 是谁？       | 刘芳                     | 刘芳                     | ✅   |
+| 3   | 后端 lead 是谁？       | 陈磊                     | 陈磊                     | ✅   |
+| 4   | 公司叫什么？哪个城市？ | 星辰科技, 杭州           | 星辰科技，杭州           | ✅   |
+| 5   | 办公地址？             | 西湖区文三路478号        | 西湖区文三路478号        | ✅   |
+| 6   | 项目代号？             | Aurora                   | Aurora                   | ✅   |
+| 7   | 项目做什么？           | 智能客服系统             | 智能客服系统             | ✅   |
+| 8   | 后端语言+框架？        | Go + gRPC                | Go + gRPC                | ✅   |
+| 9   | 前端技术？             | React + TypeScript       | React + TypeScript       | ✅   |
+| 10  | 数据库？               | TiDB                     | TiDB 分布式数据库        | ✅   |
+| 11  | 为什么选 TiDB？        | 水平扩展                 | 水平扩展能力             | ✅   |
+| 12  | 消息队列？为什么？     | Pulsar, 多租户           | Apache Pulsar，多租户    | ✅   |
+| 13  | 上周五故障？           | TiDB 连接池泄漏          | TiDB 连接池泄漏          | ✅   |
+| 14  | 持续多久？影响多少？   | 47min, 2.3万             | 47分钟，约2.3万          | ✅   |
+| 15  | 故障根因？             | defer close 遗漏         | goroutine没有defer关闭   | ✅   |
+| 16  | 修复方案？             | context timeout+pool max | context timeout+pool max | ✅   |
+| 17  | 发布什么版本？         | 周三, Aurora v2.1        | 周三, Aurora v2.1        | ✅   |
+| 18  | 3 个 feature？         | 多语言/工单/知识库       | 多语言/工单/知识库       | ✅   |
+| 19  | 女儿？几岁？           | 小星星, 5岁              | 小星星，5岁              | ✅   |
+| 20  | 结婚纪念日？           | 下月15号                 | 3月15日                  | ✅   |
+| 21  | 公司多少人？           | 128                      | 128人                    | ✅   |
+| 22  | 项目预算？             | 350万                    | 350万                    | ✅   |
+| 23  | 服务器 IP？            | 10.0.1.42                | 10.0.1.42                | ✅   |
+| 24  | staging 端口？         | 9527                     | 9527                     | ✅   |
+| 25  | 编辑器偏好？           | Vim/讨厌Emacs            | Vim/讨厌Emacs            | ✅   |
+
+**结论：Compact summary 完美保留了所有 25 个关键事实。AI 在 compact 后依赖 summary 即可 100% 回忆。**
+
+### 20.6 严重发现：AI "作弊" — 主动写入 USER.md
+
+#### 问题
+
+在 R1-R12 短消息植入阶段（compact 之前！），AI 已经将所有 25 个测试事实写入了
+`~/.openclaw/workspace/USER.md`。写入内容包括：
+
+```
+## 王明（星辰科技 CTO）
+- 公司：星辰科技, 杭州, 128员工, 350万预算
+- 团队：刘芳(前端Lead), 陈磊(后端Lead)
+- 项目 Aurora 全部技术栈
+- 故障信息, IP, 端口, 所有个人信息
+  ... (完整 609 bytes)
+```
+
+#### 影响
+
+1. **V1 25/25 成绩不可信** — AI 可能通过 `read_file USER.md` 回忆，不是纯靠 compact summary
+2. **数据污染** — 虚假人物"王明"出现在真实 USER.md 中
+3. **测试方法论缺陷** — 任何涉及 user/memory 的事实，AI 都会主动持久化
+
+#### 根因
+
+OpenClaw AI 的默认行为包括：
+
+- 主动更新 USER.md（记录用户信息）
+- 主动写 memory 文件（记录重要事件）
+- 这些写入发生在**正常对话轮次中**，不依赖 compact/memory flush
+
+#### 清理
+
+- USER.md 已手动删除虚假"王明"section（609 bytes）
+- Memory 文件未被 v3 测试污染（compact 卡死，memory flush 未执行）
+
+#### 公平测试方案建议
+
+要验证 compact summary 的**纯信息保留能力**，必须：
+
+1. **方案 A**：禁用 memory/user 写入工具，仅靠 compact summary（需要代码修改或配置）
+2. **方案 B**：使用 compact 后 AI 不可能通过 tool 获取的信息（如即时计算结果、临时密码等）
+3. **方案 C**：compact 后立刻删除 USER.md 和 memory 中的测试数据，再验证（测试 summary 本身）
+
+### 20.7 V1 作弊铁证 + Summary 逐字分析
+
+#### 作弊证据
+
+AI 在 V1 回答的 thinking 中明确写道：
+
+> "Let me check the USER.md file to find these answers"
+
+R1-R12 期间 AI 共发起 **11 次 tool call** 编辑 USER.md，逐条写入所有 25 个事实。
+V1 的 25/25 成绩完全来自 USER.md，**不是**来自 compact summary。
+
+#### Compact Summary 逐字分析（纯 summary 能回忆多少）
+
+| #   | 事实                      | Summary 中 | 引用                         |
+| --- | ------------------------- | ---------- | ---------------------------- |
+| 1   | 王明/CTO                  | ✅         | `"王明", CTO of 星辰科技`    |
+| 2   | 刘芳前端Lead              | ✅         | `刘芳 - 前端 Lead`           |
+| 3   | 陈磊后端Lead              | ✅         | `陈磊 - 后端 Lead`           |
+| 4   | 星辰科技/杭州             | ✅         | `星辰科技, 杭州总部`         |
+| 5   | **西湖区文三路478号**     | **❌**     | 未出现                       |
+| 6   | Aurora                    | ✅         | `project Aurora`             |
+| 7   | **智能客服系统**          | **❌**     | 只写"Aurora"无描述           |
+| 8   | Go+gRPC                   | ✅         | `Go+gRPC`                    |
+| 9   | React+TS                  | ✅         | `React+TS`                   |
+| 10  | TiDB                      | ✅         | `TiDB`                       |
+| 11  | 水平扩展                  | ✅         | `horizontal scaling`         |
+| 12  | Pulsar/多租户             | ✅         | `multi-tenant support`       |
+| 13  | TiDB连接池泄漏            | ✅         | `connection pool leak`       |
+| 14  | 47min/2.3万               | ✅         | `47 min, 23k users`          |
+| 15  | **goroutine defer close** | **❌**     | 只写 `root cause and fix`    |
+| 16  | context timeout+pool max  | ✅         | `context timeout + pool max` |
+| 17  | 周三/v2.1                 | ✅         | `Wednesday 2026-02-25`       |
+| 18  | **多语言/工单/知识库**    | **❌**     | 只写 `3 features`            |
+| 19  | 小星星5岁                 | ✅         | `小星星, 5 years old`        |
+| 20  | 3月15日                   | ✅         | `March 15`                   |
+| 21  | 128员工                   | ✅         | `128 employees`              |
+| 22  | 350万                     | ✅         | `350万 budget`               |
+| 23  | 10.0.1.42                 | ✅         | `10.0.1.42`                  |
+| 24  | 9527                      | ✅         | `9527`                       |
+| 25  | Vim/讨厌Emacs             | ✅         | `Vim, no Emacs`              |
+
+**纯 summary 预期得分：21/25**
+
+丢失的 4 个信息：
+
+1. 办公地址（西湖区文三路478号）— 被压缩掉
+2. 项目描述（智能客服系统）— 只保留项目名
+3. 故障根因细节（goroutine defer close）— 只写"根因已修复"
+4. 3 个 feature 具体名称 — 只写"3 features"
+
+**v3 测试回答 25/25 vs 纯 summary 预期 21/25 → 差距 4 分 = AI 从 USER.md 补充了缺失信息**
+
+### 20.8 Compact 卡死死循环（续）
+
+Compact #2 触发了与 #1 相同的死循环（compaction retry → 10min timeout）。
+每条新消息都会再次触发，形成无限循环。
+
+---
+
+## 21. Compact E2E 测试标准操作规程（SOP）
+
+### 21.1 核心原则
+
+**Compact summary 是有损压缩。公平测试 = 验证时 AI 只能依赖 compact summary，不能通过 USER.md / memory / memory_search 作弊。**
+
+### 21.2 AI 的持久化写入路径（必须全部封堵）
+
+| 路径                                         | 写入时机                          | 内容                      |
+| -------------------------------------------- | --------------------------------- | ------------------------- |
+| `~/.openclaw/workspace/USER.md`              | **每轮对话**，AI 主动调 edit 工具 | 用户信息、偏好、项目      |
+| `~/.openclaw/workspace/memory/YYYY-MM-DD.md` | Compact 后 memory flush / 日常    | 当日重要事件              |
+| `~/.openclaw/workspace/memory/reference.md`  | 偶尔                              | 长期参考信息              |
+| QMD 索引 (`~/.openclaw/memory/main.sqlite`)  | 自动                              | session + memory 全文索引 |
+
+### 21.3 测试前准备（备份）
+
+```bash
+# === 测试前必须全部执行 ===
+
+# 1. 备份 USER.md
+cp ~/.openclaw/workspace/USER.md ~/.openclaw/workspace/USER.md.bak.compact-test
+
+# 2. 备份 memory 目录
+cp -r ~/.openclaw/workspace/memory/ ~/.openclaw/workspace/memory.bak.compact-test/
+
+# 3. 备份 sessions.json
+cp ~/.openclaw/agents/main/sessions/sessions.json \
+   ~/.openclaw/agents/main/sessions/sessions.json.bak.compact-test
+
+# 4. 记录 QMD 时间戳（用于判断是否需要 reindex）
+ls -la ~/.openclaw/memory/main.sqlite
+
+# 5. 确认备份完整
+echo "USER.md backup:" && ls -la ~/.openclaw/workspace/USER.md.bak.compact-test
+echo "memory backup:" && ls ~/.openclaw/workspace/memory.bak.compact-test/ | wc -l
+echo "sessions.json backup:" && ls -la ~/.openclaw/agents/main/sessions/sessions.json.bak.compact-test
+```
+
+### 21.4 测试执行流程
+
+```
+阶段 1: 植入事实 (R1-R12 短消息)
+  ↓ AI 会写 USER.md + 可能写 memory — 这是预期的，不用管
+阶段 2: 大输入触发 compact
+  ↓ 等待 compact summary 出现在 JSONL 中
+  ↓ 如果遇到 compact 卡死 bug: 等 10min timeout 或重启 gateway
+阶段 3: ★★★ 关键步骤 — 在验证前清理 ★★★
+  ↓ 恢复 USER.md（从备份覆盖回去）
+  ↓ 恢复 memory/（从备份覆盖回去）
+  ↓ 重启 gateway（重新加载 session 状态 + 打破卡死循环）
+阶段 4: 发送验证问卷
+  ↓ AI 此时只能依赖: compact summary + system prompt
+  ↓ USER.md 里没有测试数据，memory 里没有测试数据
+  ↓ 这才是对 compact summary 的公平测试
+阶段 5: 检查 JSONL 中的回答 + 评分
+```
+
+### 21.5 阶段 3 详细步骤（compact 后、验证前）
+
+```bash
+# === compact 出现在 JSONL 后立即执行 ===
+
+# 1. 确认 compact summary 已写入 JSONL
+python3 -c "
+import json, glob, os
+for f in sorted(glob.glob(os.path.expanduser('~/.openclaw/agents/main/sessions/*.jsonl')), key=os.path.getmtime, reverse=True)[:5]:
+    with open(f) as fh:
+        for line in fh:
+            e = json.loads(line)
+            if e.get('type') == 'compaction':
+                print(f'FOUND compaction in {os.path.basename(f)}: {len(e.get(\"summary\",\"\"))} chars')
+                break
+"
+
+# 2. 恢复 USER.md（删除 AI 写入的测试数据）
+cp ~/.openclaw/workspace/USER.md.bak.compact-test ~/.openclaw/workspace/USER.md
+
+# 3. 恢复 memory/（删除 AI 写入的 memory flush）
+rm -rf ~/.openclaw/workspace/memory/
+cp -r ~/.openclaw/workspace/memory.bak.compact-test/ ~/.openclaw/workspace/memory/
+
+# 4. 重启 gateway（打破 compact 卡死循环 + 重新加载 clean 状态）
+# 用户确认后执行 ./start.sh 或 scripts/restart-mac.sh
+
+# 5. 等待 gateway 启动完成
+
+# 6. 发送验证问卷
+npx tsx scripts/compact-test-send.ts "<session-key>" "<验证问卷>"
+```
+
+### 21.6 测试后最终清理
+
+```bash
+# === 测试全部结束后执行 ===
+
+# 1. 恢复 USER.md
+cp ~/.openclaw/workspace/USER.md.bak.compact-test ~/.openclaw/workspace/USER.md
+
+# 2. 恢复 memory
+rm -rf ~/.openclaw/workspace/memory/
+cp -r ~/.openclaw/workspace/memory.bak.compact-test/ ~/.openclaw/workspace/memory/
+
+# 3. 删除测试 session JSONL
+# 查找: grep -l "<session-key>" ~/.openclaw/agents/main/sessions/*.jsonl
+# 删除找到的文件
+
+# 4. 从 sessions.json 删除测试条目
+python3 -c "
+import json
+with open(os.path.expanduser('~/.openclaw/agents/main/sessions/sessions.json'), 'r') as f:
+    data = json.load(f)
+keys = [k for k in data if 'test-compact' in k]
+for k in keys: del data[k]
+with open(os.path.expanduser('~/.openclaw/agents/main/sessions/sessions.json'), 'w') as f:
+    json.dump(data, f, indent=2)
+print(f'Removed {len(keys)} test entries')
+"
+
+# 5. 重建 QMD 索引
+pnpm openclaw memory reindex
+
+# 6. 恢复 openclaw.json（如需要）
+# model.primary → anthropic/claude-opus-4-6
+# contextTokens → 200000
+
+# 7. 删除备份文件
+rm ~/.openclaw/workspace/USER.md.bak.compact-test
+rm -rf ~/.openclaw/workspace/memory.bak.compact-test/
+rm ~/.openclaw/agents/main/sessions/sessions.json.bak.compact-test
+
+# 8. 重启 gateway
+```
+
+### 21.7 检查清单
+
+- [ ] 测试前备份了 USER.md、memory/、sessions.json
+- [ ] 植入事实后确认 AI 写了 USER.md（预期行为）
+- [ ] Compact summary 出现在 JSONL 中
+- [ ] **验证前**恢复了 USER.md 和 memory/
+- [ ] **验证前**重启了 gateway
+- [ ] 验证问卷通过 JSONL 确认 AI 的回答内容
+- [ ] 验证后评分并记录到文档
+- [ ] 最终清理完成
+
+---
+
+## 22. Exp3a JSONL 逐行解析 + SDK Compaction 源码分析
+
+基于 `docs/her/exp3a-session.jsonl`（38 行），结合 SDK 源码
+`node_modules/@mariozechner/pi-coding-agent/dist/core/compaction/compaction.js`
+
+### 22.1 Session 结构总览
+
+| 行号    | 类型                    | 角色       | 时间         | 说明                                     |
+| ------- | ----------------------- | ---------- | ------------ | ---------------------------------------- |
+| L1      | session                 | -          | 10:43:24     | 会话初始化                               |
+| L2      | model_change            | -          | 10:43:24     | minimax-m2.5                             |
+| L3      | thinking_level_change   | -          | 10:43:24     | off（MiniMax 非推理模型，SDK 自动设置）  |
+| L4      | custom (model-snapshot) | -          | 10:43:24     | 模型快照                                 |
+| **L5**  | message                 | user       | 10:43:24     | R1: 张伟自我介绍（10个事实，253 chars）  |
+| **L6**  | message                 | assistant  | 10:43:44     | AI 回复（thinking + text，无 tool_use）  |
+| **L7**  | message                 | user       | 10:43:54     | R2: 补充信息（7个事实，277 chars）       |
+| **L8**  | message                 | assistant  | 10:44:16     | AI 回复 + tool_use (写 USER.md)          |
+| L9      | message                 | toolResult | 10:44:16     | USER.md 写入成功                         |
+| L10     | message                 | assistant  | 10:44:20     | AI 确认回复                              |
+| **L11** | message                 | user       | 10:44:38     | R3: 大输入（149,189 chars 重复技术文档） |
+| L12     | message                 | assistant  | 10:45:02     | AI review 回复                           |
+| **L13** | **compaction**          | -          | **10:45:14** | **第一次 Compact**                       |
+| L14     | message                 | user       | 10:45:14     | 验证问卷                                 |
+| L15-L27 | message                 | 交替       | 10:45:14~54  | AI 尝试读文件验证（5次工具调用）         |
+| **L28** | **compaction**          | -          | **10:46:50** | **第二次 Compact**                       |
+| L29     | message                 | user       | 10:46:50     | Memory flush 系统提示                    |
+| L30-L36 | message                 | 交替       | 10:46:57~10  | AI 写 memory                             |
+| **L37** | message                 | user       | 10:47:11     | 最终验证问卷（清理后，17题）             |
+| **L38** | message                 | assistant  | 10:47:18     | AI 纯靠 compact summary 回答 17/17       |
+
+### 22.2 SDK Compaction 核心参数（硬编码）
+
+源码 `compaction.js` 第 59-63 行：
+
+```javascript
+export const DEFAULT_COMPACTION_SETTINGS = {
+  enabled: true,
+  reserveTokens: 16384, // 预留给 system prompt + tools 的空间
+  keepRecentTokens: 20000, // 最近消息保护区（不被 summarize）
+};
+```
+
+- `reserveTokens (16384)`: 决定 compaction 触发阈值 = contextWindow - reserveTokens
+- `keepRecentTokens (20000)`: **保护最近的消息不被 summarize**
+  - 设计意图：最近几轮往往是最新鲜的信息（bug log、最新决定），summary 必然丢失原始细节
+  - 直接从 summarization 输入中剔除，保留原始消息
+
+这两个值都是 SDK 硬编码的默认值，OpenClaw 没有覆盖。
+
+### 22.3 Cut Point 算法（findCutPoint）
+
+源码第 295-345 行。算法：
+
+1. 从最新消息**往回**遍历
+2. 逐条累加 `estimateTokens`（chars ÷ 4，向上取整）
+3. 当累计 ≥ `keepRecentTokens` (20000) 时停止
+4. 停止位置 = 切割点
+
+- 切割点**之前**的消息 → `messagesToSummarize`（发给 LLM 总结后丢弃）
+- 切割点**及之后**的消息 → `keptMessages`（保留原始，不 summarize）
+
+合法切割点类型：user / assistant / custom / bashExecution / branchSummary / compactionSummary。
+**永远不能在 toolResult 上切割**（toolResult 必须跟随其 tool_use）。
+
+### 22.4 第一次 Compaction（L13）精确解析
+
+**元数据：**
+
+- `firstKeptEntryId: 8d385273` → 对应 **L11**（大输入）
+- `tokensBefore: 43077`
+- `previousSummary: 无`（第一次 compact）
+
+**Cut point 计算过程：**
+
+```
+从 L12 (entry[11]) 往回走:
+  L12 (assistant):  1358 chars → 340 tokens, 累计 340 < 20000 → 继续
+  L11 (user):    149189 chars → 37298 tokens, 累计 37638 ≥ 20000 → 停止！
+
+切割点 = L11（index 10, user 消息，合法切割点）
+  firstKeptEntryIndex = 10 (L11)
+  historyEnd = 10
+
+messagesToSummarize: entries[4..9] = L5-L10
+  → L5 (user, 253c/64t), L6 (assistant, 282c/71t)
+  → L7 (user, 277c/70t), L8 (assistant, 97c/25t)
+  → L9 (toolResult, 64c/16t), L10 (assistant, 242c/61t)
+  → 总计 307 estimated tokens
+
+keptMessages: L11 (37298t), L12 (340t)
+```
+
+**generateSummary 的输入：**
+
+- `<conversation>`: L5-L10 序列化（307 tokens 的用户 profile 对话）
+- `<previous-summary>`: 无
+- Prompt: `SUMMARIZATION_PROMPT`（首次，完整总结）
+
+**结果：** 1310 chars 的 summary，17/17 事实完整保留。
+
+**关键洞察：真正被 summarize 的只有 307 tokens 的精华内容（用户 profile），而 37298 tokens 的垃圾填充内容（L11 大输入）反而被完整保留了。**
+
+### 22.5 第一次 Compact 后 AI 看到的 Context
+
+源码 `session-manager.js` 第 174-194 行：context 重建时用**最新的 compaction** 的 `firstKeptEntryId` 决定哪些消息在 context 里。
+
+**时刻 A：第一次 compact 后、第二次 compact 前（AI 处理 L14-L27 时）**
+
+此时 `compaction = L13`，重建逻辑：
+
+```javascript
+// Step 1: 放 L13 summary
+messages.push(L13.summary);
+
+// Step 2: keptMessages (从 firstKeptEntryId=L11 到 L13 之前)
+for (i = 0; i < 12) {
+    if (entry.id === L11.id) foundFirstKept = true;
+    if (foundFirstKept) appendMessage(entry);
+    // → 发射 L11, L12
+}
+
+// Step 3: L13 之后的消息
+for (i = 13; ...) appendMessage(entry);
+// → 发射 L14, L15, ...
+```
+
+Context 消息列表：
+
+```
+[0] L13 compactionSummary             ~328 tokens (1310 chars)
+[1] L11 user message - 大输入          ~37298 tokens (149189 chars) ← keptMessages!
+[2] L12 assistant message              ~340 tokens ← keptMessages!
+[3] L14 user message - 验证问卷        ~50 tokens
+─── 总计 ~43K+ tokens ───
+```
+
+**L11 和 L12 确实在 context 里！** 这是因为 L13 的 `firstKeptEntryId = L11`。
+
+`shouldCompact(43077, 50000, settings)` → `43077 > 50000 - 16384 = 33616` → **true**
+→ 第二次 compact 几乎立刻触发。
+
+### 22.6 第二次 Compaction（L28）— L11/L12 消失之谜
+
+**元数据：**
+
+- `firstKeptEntryId: 1b66306d` → 对应 **L14**（验证问卷）
+- `tokensBefore: 43481`
+- `previousSummary: L13 的 summary`
+
+**prepareCompaction 的关键逻辑（源码第 457-525 行）：**
+
+```javascript
+prevCompactionIndex = 12   // L13 在 JSONL 中的 0-indexed 位置
+
+// ★ 关键行 — L11/L12 消失的根因 ★
+boundaryStart = prevCompactionIndex + 1 = 13  // L14!!!
+```
+
+这行代码的意思是：**只考虑上次 compaction entry 之后的 JSONL 条目**。
+L11 (index 10) 和 L12 (index 11) 在 JSONL 中的物理位置在 L13 (index 12) **之前**，
+所以被排除在 boundaryStart 之外。
+
+```
+JSONL 物理顺序:
+  [L5-L10] [L11] [L12] | [L13=compact#1] | [L14..L27]
+                        ↑                  ↑
+                   compactionIdx=12     boundaryStart=13
+                                         ↑
+                                    L11/L12 在这之前!
+```
+
+**Cut point 计算（只看 L14-L27）：**
+
+```
+L14-L27 共 14 条消息, 总计 4941 chars → 1236 estimated tokens
+1236 < keepRecentTokens (20000) → 永远不超过预算
+→ cutIndex = cutPoints[0] = L14（默认为范围内第一个合法切割点）
+→ firstKeptEntryIndex = 13 (L14)
+→ historyEnd = 13
+```
+
+**messagesToSummarize 计算：**
+
+```javascript
+for (let i = boundaryStart; i < historyEnd; i++) {
+  // boundaryStart = 13, historyEnd = 13
+  // 13 < 13 = false → 循环不执行
+}
+// messagesToSummarize = [] ← 空数组！L11/L12 不在其中！
+```
+
+**L28 写入后（时刻 B），context 重建用 L28：**
+
+```javascript
+// compaction = L28 (最新)
+// Step 1: 放 L28 summary
+messages.push(L28.summary);  // ≈ L13 summary 的复制品
+
+// Step 2: keptMessages from firstKeptEntryId = L14
+for (i = 0; i < 27) {
+    if (entry.id === L14.id) foundFirstKept = true;
+    // L11 (i=10), L12 (i=11) → foundFirstKept 为 false → 跳过!
+}
+// → 只发射 L14-L27，L11/L12 彻底消失
+```
+
+**L11/L12 的完整去向追踪：**
+
+| 阶段              | L11/L12 在 context 中？ | 在 messagesToSummarize 中？ | 在 summary 中？              |
+| ----------------- | ----------------------- | --------------------------- | ---------------------------- |
+| 第一次 compact 前 | ✅ 原始消息             | L11/L12 在 keptMessages     | -                            |
+| L13 compact 后    | ✅ 作为 keptMessages    | ❌ (不在任何 summary 输入)  | ❌ (L13 summary 只含 L5-L10) |
+| L28 compact 时    | ✅ (AI 仍能看到)        | ❌ (在 boundaryStart 之前)  | ❌                           |
+| L28 compact 后    | ❌ **永久消失**         | -                           | ❌ (L28 = L13 的复制品)      |
+
+**根因：`boundaryStart = prevCompactionIndex + 1` 假设"compaction entry 之前的一切都被该 compaction 处理好了"。但 keptMessages 是"被保留、未被 summarize"的消息 — 它们在 compaction entry 之前，却不在 summary 里。这是 SDK 的设计盲区。**
+
+**generateSummary 的实际输入：**
+
+```
+<conversation>
+（空 — 没有任何新消息需要 summarize）
+</conversation>
+
+<previous-summary>
+## Goal
+This is an initial profile setup session where the user (张伟)...
+[L13 的完整 1310 字 summary，包含全部 17 个事实]
+</previous-summary>
+
+[UPDATE_SUMMARIZATION_PROMPT]:
+"PRESERVE all existing information from the previous summary"
+"ADD new progress, decisions, and context from the new messages"
+```
+
+**结果：** MiniMax M2.5 收到空对话 + 旧 summary + "保留所有信息" 指令，
+只能**近乎原封不动复制**旧 summary。唯一差异：`(张伟)` → `(\n张伟)` — LLM 重新生成时的微小随机抖动。
+
+### 22.7 两次 Summary 对比
+
+| 指标                | L13 (第一次)         | L28 (第二次)                        |
+| ------------------- | -------------------- | ----------------------------------- |
+| 字符数              | 1310                 | 1311                                |
+| 17 个事实           | 全部保留             | 全部保留                            |
+| 差异                | -                    | 仅 `(张伟)` → `(\n张伟)` 一个换行符 |
+| messagesToSummarize | L5-L10 (307 tokens)  | **空** (0 tokens)                   |
+| previousSummary     | 无                   | L13 summary                         |
+| Prompt              | SUMMARIZATION_PROMPT | UPDATE_SUMMARIZATION_PROMPT         |
+
+**第二次 summary 几乎相同不是巧合，是必然** — 输入中没有新消息，prompt 要求 "PRESERVE all existing information"。
+
+### 22.8 重大发现：keptMessages 信息丢失机制（SDK 设计盲区）
+
+**核心问题：** `prepareCompaction` 中 `boundaryStart = prevCompactionIndex + 1`
+这行代码使得**上次 compaction 的 keptMessages 永远不会出现在下次 compaction 的 messagesToSummarize 中**。
+
+**源码证据链：**
+
+1. `session-manager.js:174-194` — context 重建包含 keptMessages（L11/L12 在 AI 视野内）
+2. `compaction.js:468` — `boundaryStart = prevCompactionIndex + 1`（L14，跳过 L11/L12）
+3. `compaction.js:488` — `messagesToSummarize` 只从 boundaryStart 到 historyEnd（空）
+4. `compaction.js:504` — `previousSummary` 来自上次 compaction（只含 L5-L10 信息）
+5. `session-manager.js:183` — 下次重建时 `firstKeptEntryId = L14`，L11/L12 被跳过
+
+**L11/L12 从未进入任何 summarization 输入，但在第二次 compact 后从 context 中消失。**
+
+**触发条件：**
+
+1. 某条消息（如 L11）的 estimateTokens 单独超过 keepRecentTokens (20K)
+2. 导致第一次 compact 的 keptMessages 包含这条大消息
+3. keptMessages 使 context 仍超过 compaction 阈值
+4. 触发第二次 compact，但 boundaryStart 跳过了 keptMessages
+5. 结果：大消息的内容未被 summarize 就永久丢失
+
+**真实使用中的风险场景：**
+
+- 用户贴了一段很长的 bug log / 规格书 / 代码
+- 该内容被第一次 compact 保留在 keptMessages 中
+- 随后几轮对话触发了第二次 compact
+- 该内容**从未被 summarize 就从 context 中消失**
+- AI 在后续对话中完全不记得这段内容
+
+**本测试中不影响结果**（L11 是垃圾填充），但这是一个需要关注的 SDK 设计盲区。
+
+**可能的修复方向：**
+
+- `prepareCompaction` 应将 boundary 起点设为上次 compact 的 `firstKeptEntryId` 而非 `prevCompactionIndex + 1`
+- 或在第二次 compact 时将 keptMessages 也纳入 `messagesToSummarize`
+
+### 22.9 MiniMax M2.5 工具理解力问题
+
+L14-L27 期间，AI 连续 3 次通过工具读取了完整的 USER.md（包含全部 17 个事实），
+但每次 thinking 都错误判断为"文件被删除"或"被 compacted"：
+
+| 行号 | 工具返回                      | AI thinking                                 |
+| ---- | ----------------------------- | ------------------------------------------- |
+| L16  | ✅ 完整 USER.md（含全部事实） | —                                           |
+| L17  | —                             | "文件被删除了？" ← 幻觉！                   |
+| L20  | ✅ 完整 USER.md（含全部事实） | —                                           |
+| L21  | —                             | "the file read is being compacted" ← 幻觉！ |
+| L22  | ✅ 完整 USER.md（含全部事实） | —                                           |
+| L23  | —                             | "This is strange"                           |
+
+工具返回的内容在 JSONL 中有铁证（L16/L20/L22 的 toolResult 包含完整文件内容），
+但 MiniMax M2.5 无法正确理解工具返回结果。最终在 L27 放弃工具，转而从 compact summary 中提取信息。
+
+这是模型能力问题，不是文件系统或 compact 系统的问题。
+
+---
+
+## 23. 无限 Compaction 循环分析
+
+### 23.1 问题发现
+
+在 exp3a 测试中，L11 是一个 ~37K token 的巨大消息（垃圾填充内容）。由于 bug 的存在：
+
+1. **第一次 compact (L13)**: 摘要 L1-L10，保留 L11+L12
+2. compact 后 AI 上下文 = summary(~1-2K) + L11(37K) + L12(340) ≈ **39K tokens**
+3. `shouldCompact` 阈值 = `contextWindow - reserveTokens` = 50K - 16K = **34K**
+4. 39K > 34K → **立即触发第二次 compact！**
+
+第二次 compact 由于 boundaryStart bug，L11 不在 `messagesToSummarize` 中：
+
+- 只摘要了 L14-L27 的小消息（~1.2K tokens）
+- L11 仍然 37K → 总量仍然 > 34K → **第三次 compact 再次触发！**
+
+这形成了一个 **无限循环**：
+
+```
+用户发消息 → 总 token > 阈值 → 触发 compact → L11 不被摘要 →
+总 token 不减少 → 用户再发消息 → 总 token > 阈值 → 再次 compact → ...
+```
+
+SDK 有一个保护：如果最后一条是 compaction entry 则跳过。所以不是瞬时无限循环，而是 **"每条消息都触发一次无用的 compact"**。
+
+### 23.2 影响
+
+- 每条用户消息都产生一次 LLM summarization 调用（浪费 API 费用）
+- 摘要结果几乎不变（输入不变，输出当然不变）
+- 用户体验：每轮对话多一次无意义的延迟
+- JSONL 文件快速膨胀（不断追加 compaction entries）
+
+### 23.3 触发条件
+
+任何满足以下条件的场景都会触发无限循环：
+
+```
+单条 keptMessage 的 token 数 > (contextWindow - reserveTokens - keepRecentTokens)
+```
+
+常见场景：
+
+- 用户贴了一段很长的代码、日志、文档
+- AI 执行了一个大量输出的工具调用
+- 一个 tool result 返回了完整文件内容
+
+---
+
+## 24. 行业调研：Context Compaction 最佳实践
+
+### 24.1 行业现状
+
+这个 bug **不是 pi-coding-agent 独有的**。GitHub 上多个主流 coding agent 都遇到了类似问题：
+
+| 项目        | Issue                                                            | 核心问题                                          |
+| ----------- | ---------------------------------------------------------------- | ------------------------------------------------- |
+| Claude Code | [#7919](https://github.com/anthropics/claude-code/issues/7919)   | 提议 `--keep-recent N` 参数保留最近 N 条消息      |
+| Claude Code | [#19736](https://github.com/anthropics/claude-code/issues/19736) | Compaction 后丢失 CLAUDE.md 指引                  |
+| OpenCode    | [Epic #4102](https://github.com/sst/opencode/issues/4102)        | Boundary 选择不当导致上下文丢失，关联 6+ 子 issue |
+| OpenCode    | [#2234](https://github.com/anomalyco/opencode/issues/2234)       | Compact 导致 LLM 遗忘对话                         |
+| OpenCode    | [#3099](https://github.com/anomalyco/opencode/issues/3099)       | Compact 后规则不被遵守                            |
+
+学术界也有系统性研究：
+
+- **CDIC** 论文指出"静态摘要的跨轮信息丢失"是核心缺陷，提出 retrieve → revise → write-back 循环
+- **ACON** (Agent Context Optimization) 减少 26-54% 内存占用同时保持 95%+ 准确率
+- **SUPO** 端到端优化 summarization 策略
+
+### 24.2 行业三大架构方案
+
+#### 方案 A：Summarize + Rehydrate（Claude Code）
+
+Claude Code 的三层架构是当前行业标杆（来源：[Decode Claude](https://decodeclaude.com/compaction-deep-dive/)）：
+
+```
+Layer 1: Microcompaction — 大 tool output 提前写磁盘，只保留引用
+Layer 2: Auto-compaction — context 接近满时生成结构化 summary
+Layer 3: Manual compaction — 用户手动触发（任务边界）
+
+关键创新: compaction 后执行 "rehydration":
+  → 重新读取最近 5 个文件
+  → 恢复 todo 状态
+  → 注入 continuation message
+  → AI 永远有完整的工作上下文
+```
+
+Claude Code **不依赖 append-only JSONL 的物理位置重建上下文**。JSONL 是审计日志，逻辑上下文由 summary + rehydration 构建。
+
+#### 方案 B：逻辑视图驱动 Compaction（OpenCode 修复方向）
+
+OpenCode Epic #4102 的修复方向：
+
+> "replace `filterCompacted` with smarter selection that preserves the last N turns intact, includes the last assistant message, and then compacts earlier history only"
+
+核心：每次 compaction 的输入 = AI 当前能看到的完整逻辑上下文。
+
+#### 方案 C：分层压缩 + 选择性删除
+
+先删除旧的 tool output（最大的 token 消耗者），再在必要时做全量 summarization。
+
+### 24.3 pi-coding-agent 的 bug 根因
+
+```javascript
+// compaction.js line 468 — BUG
+const boundaryStart = prevCompactionIndex + 1;
+```
+
+在 append-only JSONL 中，物理布局为：
+
+```
+[keptMessages] [COMPACT_ENTRY] [new messages]
+                ^
+                prevCompactionIndex
+```
+
+`boundaryStart = prevCompactionIndex + 1` 跳过了 `[keptMessages]`。
+
+### 24.4 最佳实践修复方案：两阶段 Compaction
+
+**核心原则：上一轮的 keptMessages 已完成使命（提供原始细节），必须在下一轮被摘要。**
+
+```
+Phase 1: 收集上一轮 keptMessages → 无条件纳入 messagesToSummarize
+Phase 2: 对新消息（compaction entry 之后）应用 findCutPoint →
+         决定哪些新消息被摘要、哪些被保留
+
+合并: messagesToSummarize = prevKeptMessages + newMessagesToSummarize
+      previousSummary = 上一轮的 summary（覆盖 keptMessages 之前的历史）
+```
+
+**为什么不能只改 boundaryStart？**
+
+简单把 `boundaryStart` 回退到 `firstKeptEntryId` 不够：
+
+- `findCutPoint` 从后往前累积 token，37K 的大消息超过 `keepRecentTokens=20K`
+- 大消息会被 `findCutPoint` 再次归为 "kept"
+- `messagesToSummarize` 仍然为空 → 问题不变
+
+两阶段方案将 "旧 kept" 和 "新消息" 分开处理，避免了这个问题。
+
+### 24.5 为什么不采用"插入到 cut point"方案
+
+曾考虑将 compaction entry 插入到 JSONL 的逻辑切割点（摘要消息之后、kept 消息之前），而非 append。这样 `boundaryStart = prevCompactionIndex + 1` 就自然正确了。
+
+**不采用的原因：**
+
+| 维度         | 插入方案                       | 两阶段方案                        |
+| ------------ | ------------------------------ | --------------------------------- |
+| JSONL 格式   | 破坏 append-only（需重写文件） | 保持 append-only                  |
+| crash safety | 文件中间插入有一致性风险       | 天然安全                          |
+| 改动范围     | 写入层 + 读取层都要改          | 只改 `prepareCompaction`          |
+| 向后兼容     | 旧 session 文件格式不兼容      | 完全兼容                          |
+| 行业实践     | 无先例                         | 符合 OpenCode 和 Claude Code 方向 |
+
+---
+
+## 25. 单元测试：Bug 复现与修复验证
+
+### 25.1 测试文件
+
+`test/compact-boundary-bug.test.ts` — 纯逻辑测试，无 AI/LLM 调用。
+
+### 25.2 测试用例
+
+#### Bug 复现（3 个测试，全部通过 = 证明 bug 存在）
+
+| #   | 测试名                                      | 验证内容                                                                   |
+| --- | ------------------------------------------- | -------------------------------------------------------------------------- |
+| 1   | keptMessages excluded from round 2          | L11/L12 不在第二轮 `messagesToSummarize` 中                                |
+| 2   | infinite compaction loop                    | 37K 大消息永远不被摘要，token 不减少 → 每条消息触发 compact                |
+| 3   | context rebuild vs compaction contradiction | `buildSessionContext` 看得到 keptMessages，但 `prepareCompaction` 丢弃它们 |
+
+#### Fix 验证（4 个测试，全部通过 = 证明修复有效）
+
+| #   | 测试名                           | 验证内容                                      |
+| --- | -------------------------------- | --------------------------------------------- |
+| 4   | keptMessages included in round 2 | L11/L12 出现在第二轮 `messagesToSummarize` 中 |
+| 5   | big message breaks infinite loop | 37K 大消息被纳入摘要输入（总 token > 35K）    |
+| 6   | info preservation                | "IMPORTANT_FACT" 文本出现在摘要输入中         |
+| 7   | multi-round continuity           | 第三轮仍包含第二轮的 keptMessages             |
+
+### 25.3 测试结果
+
+```
+ ✓ test/compact-boundary-bug.test.ts (7 tests) 3ms
+
+ Test Files  1 passed (1)
+      Tests  7 passed (7)
+```
+
+### 25.4 修复代码（两阶段方案）
+
+对 `prepareCompaction` 的修改（约 15 行增量）：
+
+```javascript
+// Phase 1: Collect previous keptMessages (unconditionally summarized)
+const prevKeptMessages = [];
+if (prevCompactionIndex >= 0) {
+  const prevCompaction = pathEntries[prevCompactionIndex];
+  if (prevCompaction.firstKeptEntryId) {
+    const keptIdx = pathEntries.findIndex((e) => e.id === prevCompaction.firstKeptEntryId);
+    if (keptIdx >= 0 && keptIdx < prevCompactionIndex) {
+      for (let i = keptIdx; i < prevCompactionIndex; i++) {
+        const msg = getMessageFromEntry(pathEntries[i]);
+        if (msg) prevKeptMessages.push(msg);
+      }
+    }
+  }
+}
+
+// Phase 2: findCutPoint only operates on NEW messages
+const newStart = prevCompactionIndex + 1;
+// ... (findCutPoint unchanged, only on newStart..end)
+
+// Combine: prevKeptMessages always in messagesToSummarize
+const messagesToSummarize = [...prevKeptMessages, ...newMessagesToSummarize];
+```
+
+---
+
+## 26. Upstream PR 提交方案
+
+### 26.1 上游仓库信息
+
+- 仓库: [badlogic/pi-mono](https://github.com/badlogic/pi-mono) (14.4K stars, MIT)
+- 作者: Mario Zechner (@badlogic)
+- 包: `@mariozechner/pi-coding-agent` (packages/coding-agent)
+- 源码: `packages/coding-agent/src/core/compaction/compaction.ts`
+- 贡献流程: CONTRIBUTING.md 要求**先开 issue 获得 lgtm → 再提 PR**
+
+### 26.2 关键时间窗口
+
+⚠️ 仓库当前处于 "OSS Vacation" 状态，**2026年2月23日重新开放**（2天后）。
+所有 PR 在假期内会被自动关闭。
+
+### 26.3 提交步骤
+
+#### Step 1: 开 Issue（2月23日之后）
+
+标题: `fix(coding-agent): keptMessages lost during iterative compaction`
+
+内容结构:
+
+```markdown
+## Bug
+
+In iterative compaction, messages kept from round N are silently
+dropped from round N+1's summarization input.
+
+`prepareCompaction()` sets `boundaryStart = prevCompactionIndex + 1`,
+which skips over keptMessages that are physically stored before the
+compaction entry in the append-only session file.
+
+## Consequences
+
+1. **Information loss**: keptMessages are never summarized, they
+   simply vanish from context after the next compaction.
+2. **Infinite compaction loop**: When a single keptMessage exceeds
+   `keepRecentTokens` (e.g. large tool result), it permanently stays
+   in the kept zone but is never summarizable, triggering compaction
+   on every subsequent message.
+
+## Reproduction
+
+Unit test (no LLM calls needed):
+[link to test file in PR]
+
+## Proposed fix
+
+Two-phase approach in `prepareCompaction()`:
+
+- Phase 1: Previous round's keptMessages → always in messagesToSummarize
+- Phase 2: findCutPoint only operates on new messages after compaction
+
+~15 lines of code change. All existing behavior preserved for
+first-time compaction. Only iterative compaction boundary is corrected.
+```
+
+#### Step 2: 等待 lgtm
+
+维护者 @badlogic 评论 `lgtm` 后开始 PR。
+
+#### Step 3: Fork + 修改源码
+
+修改文件: `packages/coding-agent/src/core/compaction/compaction.ts`
+
+在 `prepareCompaction` 函数中：
+
+```typescript
+// BEFORE (line ~468):
+const boundaryStart = prevCompactionIndex + 1;
+
+// AFTER:
+const newStart = prevCompactionIndex + 1;
+
+// Phase 1: Previous round's keptMessages → always summarized
+const prevKeptMessages: AgentMessage[] = [];
+if (prevCompactionIndex >= 0) {
+  const prevCompaction = pathEntries[prevCompactionIndex] as CompactionEntry;
+  if (prevCompaction.firstKeptEntryId) {
+    const keptIdx = pathEntries.findIndex((e) => e.id === prevCompaction.firstKeptEntryId);
+    if (keptIdx >= 0 && keptIdx < prevCompactionIndex) {
+      for (let i = keptIdx; i < prevCompactionIndex; i++) {
+        const msg = getMessageFromEntry(pathEntries[i]);
+        if (msg) prevKeptMessages.push(msg);
+      }
+    }
+  }
+}
+
+// Phase 2: findCutPoint only on new messages
+const boundaryStart = newStart;
+```
+
+并在 messagesToSummarize 构建后合并:
+
+```typescript
+const messagesToSummarize = [...prevKeptMessages, ...newMsgsToSummarize];
+```
+
+#### Step 4: 添加单元测试
+
+在 `packages/coding-agent/src/core/compaction/compaction.test.ts` 中添加测试用例。
+
+#### Step 5: 提交 PR
+
+```bash
+npm run check   # 必须通过
+./test.sh        # 必须通过
+```
+
+PR 标题: `fix(coding-agent): include previous keptMessages in iterative compaction`
+
+### 26.4 被接受可能性分析
+
+#### 有利因素 ✅
+
+| 因素                | 说明                                                                   |
+| ------------------- | ---------------------------------------------------------------------- |
+| **真实 bug**        | 不是 feature request，是可复现的逻辑错误                               |
+| **有单元测试**      | 纯逻辑测试，不依赖 LLM，CI 可跑                                        |
+| **改动极小**        | ~15 行增量，只改一个函数，不影响公开 API                               |
+| **向后兼容**        | 旧 session 文件完全兼容，首次 compaction 行为不变                      |
+| **相关 issue 存在** | #128 (under-compaction)、#322 (stats lost after compaction) 是相关场景 |
+| **活跃社区**        | 已有 41 个 compaction 相关 PR，说明维护者关注此领域                    |
+| **时机好**          | 假期 2月23日结束，可以在重新开放第一时间提交                           |
+
+#### 风险因素 ⚠️
+
+| 因素             | 说明                                                             |
+| ---------------- | ---------------------------------------------------------------- |
+| **新贡献者审批** | 首次贡献者必须先开 issue 获得 lgtm                               |
+| **维护者精力**   | 大量 PR 被关闭（41个 compaction PR 中多数被关闭），审核标准严格  |
+| **可能已知**     | 维护者可能已知此问题但选择在更大重构中解决                       |
+| **设计偏好**     | 维护者可能有不同的修复方案（如 Claude Code 的 rehydration 模式） |
+
+#### 综合评估
+
+**被接受概率: 60-70%**
+
+- 这是一个干净的 bug fix，不是 feature bloat
+- 有清晰的 reproduction + test + minimal fix
+- 主要风险是维护者可能有自己的修复计划或更大的重构路线图
+- CONTRIBUTING.md 明确说"pi's core is minimal. PRs that bloat the core will likely be rejected."——但我们的 fix 是减少问题而非增加代码
+
+### 26.5 替代方案：本地 patch
+
+如果 upstream PR 不被接受，可以用 pnpm patch 在本地修复：
+
+```bash
+pnpm patch @mariozechner/pi-coding-agent
+# 编辑 dist/core/compaction/compaction.js
+pnpm patch-commit @mariozechner/pi-coding-agent
+```
+
+这会在 `package.json` 的 `pnpm.patchedDependencies` 中记录 patch，
+每次 `pnpm install` 自动应用。
+
+---
+
+## 27. Upstream PR 操作日志 (2026-02-22)
+
+### 27.1 仓库准备
+
+```
+操作时间: 2026-02-22 07:17 (UTC+8)
+操作环境: macOS, ~/Documents/work/pi-mono
+```
+
+1. **Fork + Clone**:
+
+   ```bash
+   cd ~/Documents/work
+   gh repo fork badlogic/pi-mono --clone -- pi-mono
+   ```
+
+   - Fork 地址: `https://github.com/buyitsydney/pi-mono`
+   - Remotes: `origin` → fork, `upstream` → `badlogic/pi-mono`
+   - 基线版本: `v0.54.0` (commit `76b02a81`)
+
+2. **创建分支**:
+
+   ```bash
+   git checkout -b fix/compaction-kept-messages-lost
+   ```
+
+3. **安装依赖 + 构建**:
+   ```bash
+   npm install   # ~3 min
+   npm run build # ~14s
+   ```
+
+### 27.2 源码修改
+
+**文件**: `packages/coding-agent/src/core/compaction/compaction.ts`
+
+**修改内容**: 在 `prepareCompaction()` 函数中，`boundaryStart = prevCompactionIndex + 1` 这行之前，新增 ~20 行代码：
+
+- 从上一轮 compaction entry 的 `firstKeptEntryId` 出发，收集 `[firstKeptEntryId, prevCompactionIndex)` 范围内的所有消息到 `prevKeptMessages[]`
+- 将原来的 `messagesToSummarize` 改为 `newMessagesToSummarize`（仅收集 `[boundaryStart, historyEnd)` 的新消息）
+- 最终 `messagesToSummarize = [...prevKeptMessages, ...newMessagesToSummarize]`
+
+**不变的部分**:
+
+- `boundaryStart` / `boundaryEnd` 计算不变
+- `findCutPoint` 仍然只对 `[boundaryStart, boundaryEnd)` 操作
+- `firstKeptEntryId` 返回值不变
+- `previousSummary` / `fileOps` / `turnPrefixMessages` 逻辑不变
+
+### 27.3 测试
+
+**文件**: `packages/coding-agent/test/compaction.test.ts`
+
+新增 `describe("prepareCompaction iterative keptMessages")` 包含 3 个测试：
+
+| #   | 测试名                                                                      | 验证内容                                                              |
+| --- | --------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| 1   | should include previous keptMessages in next round messagesToSummarize      | 37K 大消息被 kept 后，第 2 轮 compact 的 messagesToSummarize 包含它   |
+| 2   | should not loop infinitely when a kept message exceeds keepRecentTokens     | 5 轮 compact 模拟，大消息在第 2 轮被 summarize，后续不再出现          |
+| 3   | buildSessionContext sees keptMessages that prepareCompaction also processes | buildSessionContext 和 prepareCompaction 对 keptMessages 的可见性一致 |
+
+### 27.4 检查结果
+
+| 检查项                                      | 结果                                                                              |
+| ------------------------------------------- | --------------------------------------------------------------------------------- |
+| `npm run check` (biome + tsgo)              | ✅ 通过                                                                           |
+| `test/compaction.test.ts` (22 pass, 2 skip) | ✅ 通过                                                                           |
+| 全量测试 (657 pass, 8 fail, 45 skip)        | ⚠️ 8 个失败全在 `test/git-update.test.ts`，upstream main 同样失败，与本次修改无关 |
+| pre-commit hooks                            | ✅ 通过                                                                           |
+
+### 27.5 Commit
+
+```
+commit: 8740013a
+branch: fix/compaction-kept-messages-lost
+message: fix(compaction): include previous keptMessages in iterative summarization
+files:
+  - packages/coding-agent/src/core/compaction/compaction.ts (+24 -2)
+  - packages/coding-agent/test/compaction.test.ts (+137)
+total: +159 -2
+```
+
+### 27.6 下一步：Push + 创建 PR
+
+**注意**: upstream 仓库 `badlogic/pi-mono` 标注 "OSS Vacation till Feb 23"。
+
+待执行步骤：
+
+```bash
+cd ~/Documents/work/pi-mono
+
+# 1. Push
+git push -u origin fix/compaction-kept-messages-lost
+
+# 2. 先提 Bug Report Issue
+gh issue create -R badlogic/pi-mono \
+  --title "Iterative compaction drops kept messages, causing info loss + infinite loop" \
+  --body "..."
+
+# 3. 等 maintainer lgtm 后提 PR
+gh pr create -R badlogic/pi-mono \
+  --base main \
+  --head buyitsydney:fix/compaction-kept-messages-lost \
+  --title "fix(compaction): include previous keptMessages in iterative summarization" \
+  --body "..."
+```
+
+### 27.7 PR 内容草稿
+
+**Title**: fix(compaction): include previous keptMessages in iterative summarization
+
+**Body**:
+
+```markdown
+## Problem
+
+When compaction runs iteratively, messages between `firstKeptEntryId` and
+the compaction entry ("kept messages" from the previous round) are never
+included in any subsequent round's `messagesToSummarize`.
+
+This causes two issues:
+
+1. **Information loss**: facts from kept messages permanently disappear
+   from conversation context after the next compaction round.
+2. **Infinite compaction loop**: when a kept message is larger than
+   `keepRecentTokens` (20K), it stays in the "kept" zone indefinitely
+   and can never be summarized, triggering compaction on every turn.
+
+### Reproduction (no LLM calls needed)
+
+See the 3 added tests in `test/compaction.test.ts` under
+`"prepareCompaction iterative keptMessages"`.
+
+The scenario: 5 small Q&A pairs → 1 large user message (~37K tokens) →
+short reply → COMPACT#1 (keeps the large message) → 7 more Q&A pairs →
+COMPACT#2. Before the fix, COMPACT#2's `messagesToSummarize` does not
+include the large message. After the fix, it does.
+
+## Fix
+
+In `prepareCompaction()`, collect previous-round kept messages
+(`[firstKeptEntryId, prevCompactionIndex)`) and prepend them to
+`messagesToSummarize`. `findCutPoint` continues to operate only on
+new messages (after the compaction entry).
+
+## Testing
+
+- 3 new unit tests (pure logic, no LLM calls)
+- All existing compaction tests pass
+- `npm run check` (biome + tsgo) passes
+```

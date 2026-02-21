@@ -1,0 +1,57 @@
+---
+description: Enforces contextTokens and contextWindow alignment when modifying OpenClaw context/compaction config. Triggered by keywords: contextTokens, contextWindow, compaction, compact, context window, 上下文.
+globs:
+alwaysApply: false
+---
+
+# contextTokens 与 contextWindow 必须对齐（铁律）
+
+## 架构断层（已实测确认 2026-02-15）
+
+OpenClaw 的 context window 管理分两层，**互不相通**：
+
+| 层 | 配置项 | 实际控制 |
+|----|--------|----------|
+| OpenClaw 层 | `agents.defaults.contextTokens` | /status 显示、context guard、pruning、memory flush 阈值 |
+| PI SDK 层 | `models.providers.<provider>.models[].contextWindow` | **compaction 触发阈值**（唯一决定何时 compact） |
+
+`contextTokens` **不传递**给 PI SDK 的 compaction 判断逻辑。PI SDK 直接读 `model.contextWindow`。
+
+## 铁律
+
+**修改 `contextTokens` 时，必须同时修改对应模型的 `contextWindow` 为相同值。否则 compaction 永远不会按预期触发。**
+
+修改流程：
+1. 确定当前使用的模型 ID（`agents.defaults.model.primary`）
+2. 找到该模型在 `models.providers.<provider>.models[]` 中的条目
+3. 将 `contextWindow` 改为与 `contextTokens` 相同的值
+4. 两个值必须完全一致
+
+## 反例（会导致 compaction 永远不触发）
+
+```json
+{
+  "agents": { "defaults": { "contextTokens": 50000 } },
+  "models": { "providers": { "anthropic": { "models": [
+    { "id": "claude-sonnet-4-6", "contextWindow": 200000 }
+  ]}}}
+}
+```
+
+此时 compaction 阈值 = 200000 - 20000 = 180000，而非预期的 50000 - 20000 = 30000。
+
+## 正确配置
+
+```json
+{
+  "agents": { "defaults": { "contextTokens": 50000 } },
+  "models": { "providers": { "anthropic": { "models": [
+    { "id": "claude-sonnet-4-6", "contextWindow": 50000 }
+  ]}}}
+}
+```
+
+## 参考文档
+
+- `docs/her/context-window-architecture.md` — 完整架构分析和实测记录
+- `docs/her/context-compact-architecture.md` — compact 系统架构设计

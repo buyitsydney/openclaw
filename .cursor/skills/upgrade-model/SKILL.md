@@ -165,6 +165,28 @@ docker logs carher-N --tail 50 2>&1 | grep -i 'model\|gemini'
 2. 如果已有 → 升级四个 `@mariozechner/pi-*` 包（必须同版本）
 3. 如果没有 → 手动定义（按上面的 Checklist），待上游跟进后删除
 
+## Compaction 触发与 contextWindow 对齐（极其重要）
+
+**`agents.defaults.contextTokens` 不控制 compact 触发！** compact 触发完全由 `model.contextWindow` 决定。
+
+上游 pi-coding-agent 的触发公式：
+
+```
+shouldCompact(contextTokens, contextWindow):
+  return contextTokens > contextWindow - reserveTokens
+```
+
+其中 `contextWindow` = `models.providers.<provider>.models[].contextWindow`，`reserveTokens` = max(16384, 20000)。
+
+**`contextTokens` 只影响**: Context Window Guard 显示、Safeguard extension runtime、Context Pruning、Memory Flush 阈值。
+
+**如果要让 compact 在 N tokens 时触发**，必须同时设置：
+
+1. `models.providers.<provider>.models[].contextWindow` = N（控制 compact 何时触发）
+2. `agents.defaults.contextTokens` = N（控制其他子系统的 cap）
+
+两个值必须对齐，否则 compact 永远不触发。详见 `docs/her/context-window-architecture.md` 第 4-11 节。
+
 ## 热更新 vs 重启
 
 修改 `openclaw.json` 后仍需 gateway restart 才能生效。通过 `gateway config.patch` 或 `/restart` 可自动触发，不需要手动重启进程。
@@ -190,6 +212,7 @@ docker logs carher-N --tail 50 2>&1 | grep -i 'model\|gemini'
 | `or-opus`   | `openrouter/anthropic/claude-opus-4.6`     | ✅         |
 | `or-sonnet` | `openrouter/anthropic/claude-sonnet-4.6`   | ✅         |
 | `gemini`    | `openrouter/google/gemini-3.1-pro-preview` | ✅         |
+| `minimax`   | `openrouter/minimax/minimax-m2.5`          | ✅         |
 
 > **直连 vs OpenRouter 同模型**：`opus`（Anthropic 直连）更便宜、延迟更低；`or-opus`（OpenRouter）有 fallback 和统一计费。
 
@@ -205,3 +228,4 @@ docker logs carher-N --tail 50 2>&1 | grep -i 'model\|gemini'
 | `gemini-flash`                  | `openrouter/google/gemini-2.0-flash-001`                                                  | ❌ 仅短名映射 |
 | `gpt-4o`                        | `openrouter/openai/gpt-4o`                                                                | ❌ 仅短名映射 |
 | `gpt-4o-mini`                   | `openrouter/openai/gpt-4o-mini`                                                           | ❌ 仅短名映射 |
+| `minimax` / `minimax-m2.5`      | `openrouter/minimax/minimax-m2.5`                                                         | ✅            |
