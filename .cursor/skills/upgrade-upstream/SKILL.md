@@ -137,6 +137,48 @@ upstream 可能改变 `dist/` 输出结构。`realtime` 插件通过 `dist/exten
 - [ ] 零 error/fatal/crash
 ```
 
+## 本地对 upstream 的 patch 清单
+
+升级前必须检查以下本地 patch 是否仍然需要。如果 upstream 已合并等效修复，则在 merge 时取 upstream 版本即可；如果 upstream 未修复，则 merge 后需要保留或重新应用这些改动。
+
+### Patch 1: `src/memory/mmr.ts` — CJK 中文分词支持
+
+- **Commit**: `95d45f2e7` (2026-02-19)
+- **问题**: `tokenize()` 只处理 ASCII（`/[a-z0-9_]+/g`），导致 MMR 去重对中文内容完全失效
+- **修改**: 增加 CJK 字符提取（U+4E00-9FFF, U+3400-4DBF）+ bigram 分词
+- **升级时检查**: `git diff v2026.X.Y -- src/memory/mmr.ts`，看 upstream 是否改了 `tokenize()` 函数
+- **如果 upstream 未修**: merge 后手动 cherry-pick 或重新应用以下 diff：
+
+```diff
+ export function tokenize(text: string): Set<string> {
+-  const tokens = text.toLowerCase().match(/[a-z0-9_]+/g) ?? [];
+-  return new Set(tokens);
++  const lower = text.toLowerCase();
++  const ascii = lower.match(/[a-z0-9_]+/g) ?? [];
++  const cjkChars = Array.from(lower).filter((c) => /[\u4e00-\u9fff\u3400-\u4dbf]/.test(c));
++  const bigrams: string[] = [];
++  for (let i = 0; i < cjkChars.length - 1; i++) {
++    bigrams.push(cjkChars[i] + cjkChars[i + 1]);
++  }
++  return new Set([...ascii, ...bigrams, ...cjkChars]);
+ }
+```
+
+### Patch 2: `src/memory/hybrid.test.ts` — BM25 rank-to-score 测试修正
+
+- **Commit**: `95d45f2e7` (2026-02-19)
+- **问题**: 测试用例假设 FTS5 rank 是正数，但 SQLite FTS5 的 `rank` 列返回负数（越负 = 越相关），导致 `bm25RankToScore` 测试错误
+- **修改**: 测试用例改为使用负数 rank 值，与 `5fbbc7215` 中 `bm25RankToScore` 的修复一致
+- **升级时检查**: `git diff v2026.X.Y -- src/memory/hybrid.test.ts`
+
+### Patch 3: `src/memory/session-files.ts` — .reset 文件纳入索引（待实施）
+
+- **状态**: 计划中，尚未实施
+- **问题**: `listSessionFilesForAgent` 用 `.endsWith(".jsonl")` 排除了 `.reset` 归档文件，导致 `/new` 后旧 session 从搜索索引消失
+- **影响**: 92 个 `.reset` 文件（37.9MB）未被索引，占总对话内容的 68%+
+- **修改计划**: 放宽过滤条件，让 `.jsonl.reset.*` 也被列入
+- **升级时**: 如果 upstream 修复了此问题则直接用 upstream 版本；否则需要在 merge 后应用本地 patch
+
 ## 风险与回退
 
 - **回退方式**：`git revert -m 1 <merge-commit>` 或 `git reset --hard <pre-merge-sha>`

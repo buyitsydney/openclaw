@@ -374,6 +374,7 @@ const modelWithCap = { ...params.model, contextWindow: resolvedCtxTokens };
 
 ## 13. 相关文档
 
+- [context-compact-architecture.md](context-compact-architecture.md) - Compact 系统完整架构设计（原理、对比、改进建议）
 - `docs/concepts/compaction.md` - compaction 概念文档
 - `docs/reference/session-management-compaction.md` - session 管理与 compaction 深度文档
 - `docs/her/cost-analysis-and-billing.md` - 费用分析（包含 context window 溢出的历史分析）
