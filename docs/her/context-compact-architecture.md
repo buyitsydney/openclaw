@@ -3143,24 +3143,35 @@ files:
 total: +159 -2
 ```
 
-### 27.6 下一步：Push + 创建 PR
+### 27.6 Push 到 Fork ✅
 
-**注意**: upstream 仓库 `badlogic/pi-mono` 标注 "OSS Vacation till Feb 23"。
+**2026-02-22 完成**:
+
+```bash
+cd ~/Documents/work/pi-mono
+git push -u origin fix/compaction-kept-messages-lost
+# → https://github.com/buyitsydney/pi-mono/tree/fix/compaction-kept-messages-lost
+```
+
+**状态**: 分支已推送到 fork，等待 upstream OSS Vacation 结束（Feb 23）后创建 Issue + PR。
+
+### 27.8 下一步：创建 Issue + PR（2/23 解禁后执行）
+
+upstream `badlogic/pi-mono` README 标注：
+> **Issue tracker and PRs reopen February 23, 2026.**
+> All PRs will be auto-closed until then.
 
 待执行步骤：
 
 ```bash
 cd ~/Documents/work/pi-mono
 
-# 1. Push
-git push -u origin fix/compaction-kept-messages-lost
-
-# 2. 先提 Bug Report Issue
+# 1. 先提 Bug Report Issue
 gh issue create -R badlogic/pi-mono \
   --title "Iterative compaction drops kept messages, causing info loss + infinite loop" \
   --body "..."
 
-# 3. 等 maintainer lgtm 后提 PR
+# 2. 等 maintainer lgtm 后提 PR（或直接提 PR 引用 Issue）
 gh pr create -R badlogic/pi-mono \
   --base main \
   --head buyitsydney:fix/compaction-kept-messages-lost \
