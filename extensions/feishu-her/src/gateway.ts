@@ -1493,6 +1493,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   let ackReactionId: string | null = null;
   const addAckReaction = async () => {
     if (isCommand) return;
+    if (ackReactionId) return; // typing heartbeat re-fires onReplyStart; ACK only needs adding once
     try {
       ackReactionId = await addFeishuReaction({ account, messageId, emoji: ACK_EMOJI });
       if (ackReactionId) {

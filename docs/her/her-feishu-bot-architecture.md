@@ -458,6 +458,18 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 
 ## 已知问题（未修复）
 
+### [P2] ~~ACK Reaction 重复调用（日志刷屏）~~ ✅ 已修复 (2026-02-22)
+
+**问题**：每次用户发消息时，日志中出现大量重复的 `added ACK reaction (Get) to om_xxx`，约每 6 秒一次，持续整个 AI 处理过程（3 分钟处理 = 30+ 条重复日志）。
+
+**根因**：upstream `createTypingController`（`src/auto-reply/reply/typing.ts`）设计为每 `typingIntervalSeconds`（默认 6 秒）重复调用 `onReplyStart` 回调作为心跳。在 Telegram/Discord 等频道中，typing 指示器会自动过期（约 5 秒），所以需要定期刷新。但飞书的 emoji reaction 是持久的（不会过期），`addFeishuReaction` 被重复调用只是白白浪费 API 调用和刷屏日志。
+
+**调用链**：`feishu-her/gateway.ts onReplyStart` → `dispatchReplyWithBufferedBlockDispatcher` → `createReplyDispatcherWithTyping` → `createTypingController` → `setInterval(triggerTyping, 6000)` → `onReplyStart()`（循环）
+
+**修复**：`extensions/feishu-her/src/gateway.ts` 在 `addAckReaction()` 开头加 guard —— `if (ackReactionId) return;`，已添加过则跳过。心跳机制对 card stream 无影响（`startCardStream` 已有自己的 guard）。回复完成后 `removeAckReaction()` 正常移除 emoji（typing indicator 语义不变）。
+
+**验证**：Docker 1 日志确认修复后每条消息只有 1 次 `added ACK reaction` + 1 次 `removed ACK reaction`，零重复。
+
 ### [P0] Agent Run 超时后飞书用户无错误通知 (2026-02-16 定位)
 
 **问题**：agent 回复到一半出错（如 compaction 重试挂死、LLM 超时等），飞书用户看到 typing 停止后再无任何反馈——没有错误消息、没有提示重试。
