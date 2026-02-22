@@ -1020,8 +1020,53 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         log?.error(
           `[${account.accountId}] file download failed (key=${fi.fileKey} name=${fi.fileName}): ${msg}`,
         );
-        // Extract a human-readable reason for the AI.
-        const reason = msg.includes("exceeds") ? msg.replace(/^Error:\s*/, "") : "download failed";
+        // Feishu /im/v1/messages/{id}/resources/{key} returns HTTP 400 with a JSON body
+        // containing a specific error code. Documented codes:
+        //   234001 = invalid params, 234003 = file not in message,
+        //   234004 = app not in chat, 234037 = file exceeds 100 MB limit.
+        // The Lark SDK uses responseType:'stream', so err.response.data may be a
+        // ReadableStream, Buffer, string, or pre-parsed object — try all forms.
+        let reason = "download failed";
+        try {
+          // oxlint-disable-next-line typescript/no-explicit-any
+          const resp = (err as any)?.response;
+          if (resp) {
+            let code: number | undefined;
+            let feishuMsg: string | undefined;
+            const d = resp.data;
+            if (d && typeof d === "object" && typeof d.code === "number") {
+              code = d.code;
+              feishuMsg = d.msg;
+            } else {
+              let raw: string | undefined;
+              if (Buffer.isBuffer(d)) raw = d.toString("utf-8");
+              else if (typeof d === "string") raw = d;
+              else if (d && typeof d[Symbol.asyncIterator] === "function") {
+                const chunks: Buffer[] = [];
+                for await (const chunk of d as AsyncIterable<Buffer>) {
+                  chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));
+                }
+                raw = Buffer.concat(chunks).toString("utf-8");
+              }
+              if (raw) {
+                try {
+                  const p = JSON.parse(raw);
+                  code = p.code;
+                  feishuMsg = p.msg;
+                } catch {}
+              }
+            }
+            if (code === 234037) reason = "file too large (Feishu limits downloads to 100 MB)";
+            else if (code === 234001) reason = "invalid request parameters";
+            else if (code === 234003) reason = "resource does not belong to this message";
+            else if (code === 234004) reason = "bot is not in the chat";
+            else if (code) reason = feishuMsg ?? `Feishu error ${code}`;
+            else reason = `download failed (HTTP ${resp.status ?? "?"})`;
+          }
+        } catch {
+          // Parsing failed; keep generic reason.
+        }
+        if (msg.includes("exceeds")) reason = msg.replace(/^Error:\s*/, "");
         fileErrors.push({ name: fi.fileName, reason });
       }
     }
