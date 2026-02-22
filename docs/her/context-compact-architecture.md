@@ -3158,6 +3158,7 @@ git push -u origin fix/compaction-kept-messages-lost
 ### 27.8 下一步：创建 Issue + PR（2/23 解禁后执行）
 
 upstream `badlogic/pi-mono` README 标注：
+
 > **Issue tracker and PRs reopen February 23, 2026.**
 > All PRs will be auto-closed until then.
 
@@ -3223,3 +3224,163 @@ new messages (after the compaction entry).
 - All existing compaction tests pass
 - `npm run check` (biome + tsgo) passes
 ```
+
+---
+
+## 28. 端到端回归测试 (2026-02-22)
+
+### 测试环境
+
+- **容器**: carher-4 (Docker)
+- **模型**: MiniMax M2.5 (via OpenRouter)
+- **SDK 修复**: prevKeptMessages patch 已注入 (`docker cp`)
+- **Session ID**: `regression-130k`
+
+### Phase 1: 50K 配置验证 (Smoke Test)
+
+| 项目             | 值                |
+| ---------------- | ----------------- |
+| contextWindow    | 50,000            |
+| contextTokens    | 50,000            |
+| Fix code present | ✅ (grep count=3) |
+| Session ID       | smoke-50k         |
+
+**流程**:
+
+1. 发送 3 条短消息 (姓名/密码/生日)
+2. 发送 120K 字符大文本
+3. 发送验证问题
+
+**结果**:
+
+- ✅ 2 次 compaction 触发
+- ✅ Compaction #2 summary 包含全部事实 (张三, 1月1日, 密码警告)
+- ✅ AI 回忆正确: "记得，张三，生日 1 月 1 日"
+- **结论**: 50K 配置有效，修复代码生效
+
+### Phase 2: 130K 回归测试
+
+| 项目             | 值              |
+| ---------------- | --------------- |
+| contextWindow    | 130,000         |
+| contextTokens    | 130,000         |
+| Fix code present | ✅              |
+| Session ID       | regression-130k |
+
+#### 2.1 事实植入 (25 个独立短消息)
+
+| #   | 事实                                   | 类别      |
+| --- | -------------------------------------- | --------- |
+| R1  | 王建国, 42岁, 北京人                   | 基本信息  |
+| R2  | 星辰科技 CTO, 中关村 AI 创业           | 工作      |
+| R3  | 老婆刘芳, 协和骨科医生                 | 家庭      |
+| R4  | 儿子王小龙, 10岁, 北大附小, 乐高恐龙   | 家庭      |
+| R5  | 英短蓝猫咪咪, 3岁                      | 宠物      |
+| R6  | 白色蔚来ES6, 京A·88K66                 | 车辆      |
+| R7  | 清华计算机系, 05本08硕                 | 教育      |
+| R8  | 手机13901234567, 微信wjg_2024          | 联系      |
+| R9  | 奥森跑步, 530配速, 北马目标            | 运动      |
+| R10 | 星际穿越, 三体                         | 影视/书籍 |
+| R11 | 芒果过敏(严重), 左350右400近视         | 健康      |
+| R12 | NeuraPilot项目, StarFormer架构         | 技术      |
+| R13 | 翠城花园3号楼1602, 望京SOHO            | 住址      |
+| R14 | 父王德明(退休教师), 母张秀英(退休护士) | 父母      |
+| R15 | 小院儿火锅, 每周五全家                 | 餐厅      |
+| R16 | AB型血, 冰岛极光梦想(50岁前)           | 血型/梦想 |
+| R17 | 182cm/78kg, L码                        | 体型      |
+| R18 | 弟弟王建军, 深圳产品经理               | 家庭      |
+| R19 | 座右铭"代码改变世界", 生日3月15日      | 个人      |
+| R20 | 日语N3, ThinkPad X1 Carbon             | 技能/设备 |
+| R21 | B轮2亿人民币, 红杉领投                 | 公司      |
+| R22 | 7am起12pm睡, 美式2杯/天                | 作息      |
+| R23 | WiFi: StarTech2024!, 华为路由          | WiFi      |
+| R24 | 幸运数字7, 最讨厌堵车                  | 其他      |
+| R25 | (以上24条覆盖25个事实维度)             | —         |
+
+#### 2.2 大文本填充触发 Compaction
+
+- **V1 chunks**: 23 × ~6K chars = ~137K chars (UTF-8 byte-based split)
+- **V2 chunks**: 12 × 40K chars = ~480K chars
+- **总用户内容**: ~620K chars
+
+#### 2.3 Compaction 记录
+
+| #   | JSONL Line | firstKeptEntryId | 关键事实保留                     |
+| --- | ---------- | ---------------- | -------------------------------- |
+| 1   | 150        | 71520803         | ✅ 全部25个事实                  |
+| 2   | 160        | b9db5111         | ✅ 全部25个事实                  |
+| 3   | 169        | 3efe5121         | ✅ 全部25个事实                  |
+| 4   | 230        | 8338105b         | ✅ 全部25个事实                  |
+| 5   | 240        | 49cfa80d         | ✅ 全部25个事实                  |
+| 6   | 249        | 942c3424         | ✅ 全部25个事实                  |
+| 7   | 258        | 2ad9b869         | ✅ 全部25个事实                  |
+| 8   | 267        | c067cf53         | ✅ 全部25个事实                  |
+| 9   | 276        | cd0fecb9         | ✅ 全部25个事实                  |
+| 10  | 285        | 5185d9e5         | ❌ 退化输出 (模型被重复输入淹没) |
+| 11  | 292        | 6c940b8a         | ❌ 仅保留测试模式描述            |
+| 12  | 302        | 70620064         | ❌ 仅保留测试模式描述            |
+
+#### 2.4 Memory Flush 验证
+
+| 时间点            | USER.md 状态           | 说明                            |
+| ----------------- | ---------------------- | ------------------------------- |
+| 测试前            | 空模板                 | 手动清空                        |
+| 植入事实后        | **全部25个事实已写入** | ✅ AI 主动 flush 到 USER.md     |
+| 手动清空后验证    | 空模板                 | Plan C: 确保回忆来自 compaction |
+| workspace/memory/ | 空                     | 无 markdown 记忆文件            |
+| memory/sqlite     | 空                     | 无 sqlite 记忆库                |
+
+**结论**: Memory Flush 通过 USER.md 工具正常工作。AI 在对话中主动调用文件编辑将关键信息持久化。
+
+#### 2.5 验证结果
+
+##### Round 1: 3 次 Compaction 后 (USER.md 已清空)
+
+| 评分             | 详情             |
+| ---------------- | ---------------- |
+| **25/25 = 100%** | 全部事实正确回忆 |
+
+典型回答示例:
+
+- Q1 "我叫什么名字？" → "你叫王建国呀！" ✅
+- Q8 "车牌号？" → "京A·88K66" ✅
+- Q16 "门牌号？" → "翠城花园，3号楼1602" ✅
+- Q25 "日语/笔记本？" → "日语N3，ThinkPad X1 Carbon" ✅
+
+##### Round 2: 12 次 Compaction 后 (额外9轮纯填充后, USER.md 已清空)
+
+| 评分          | 详情         |
+| ------------- | ------------ |
+| **0/25 = 0%** | 全部事实丢失 |
+
+AI 对所有问题回答 "这方面的信息我还没记录" 或 "告诉我吧"。
+
+#### 2.6 衰减分析
+
+```
+Compaction #1-9:  事实保留 = 100% (summary 结构化列出全部事实)
+Compaction #10:   退化点 — 模型被 >500K 重复中文文本淹没，产生退化输出
+Compaction #11-12: 事实保留 = 0% — summary 仅描述 "context window testing pattern"
+```
+
+**衰减根因**:
+
+1. **NOT the keptMessages bug** — 修复后 keptMessages 被正确包含在 messagesToSummarize 中
+2. **LLM 摘要质量退化** — 当新消息压倒性地是重复无意义内容时，LLM 自然将摘要重心转移到最近模式
+3. **实际对话中不会发生** — 真实用户不会连续发送 500K+ 字符的重复文本
+
+**关键结论**:
+
+- ✅ **PR 修复有效**: 3 轮 compaction 后 100% 准确率证明 keptMessages 被正确处理
+- ✅ **Memory Flush 有效**: AI 主动将事实写入 USER.md 提供额外持久化
+- ⚠️ **极端压力下衰减**: 12 轮 compaction + 海量重复填充后事实丢失，这是 LLM 摘要能力的固有限制
+- 📌 **生产建议**: 依赖 USER.md + memory 做长期记忆，compaction summary 仅作为短中期上下文保护
+
+### 文件留存
+
+| 文件                               | 说明                                               |
+| ---------------------------------- | -------------------------------------------------- |
+| `/tmp/smoke-50k.jsonl`             | 50K smoke test session                             |
+| `/tmp/regression-130k-final.jsonl` | 130K 完整回归测试 session (4.8 MB, 12 compactions) |
+| `/tmp/verify-results-r1.txt`       | Round 1 验证结果 (25/25)                           |
+| `/tmp/verify-results-r2.txt`       | Round 2 验证结果 (0/25)                            |
