@@ -65,6 +65,18 @@ git merge v2026.X.Y --no-edit
 pnpm install --no-frozen-lockfile
 ```
 
+### Step 3.5: 验证 pnpm patch 自动应用
+
+`pnpm install` 后必须验证 `pnpm.patchedDependencies` 中的所有 patch 已生效：
+
+```bash
+# Patch 4: compaction keptMessages 修复
+grep -c 'prevKeptMessages' node_modules/@mariozechner/pi-coding-agent/dist/core/compaction/compaction.js
+# 期望输出: 3。如果输出 0，说明 pnpm patch 未生效，立即排查。
+```
+
+如果 npm 包版本号变了（不再是 `0.54.0`），patch 会失效。此时需要检查新版本是否已内置修复，若未内置则重新生成 patch（见 Patch 4 说明）。
+
 ### Step 4: 全量检查
 
 ```bash
@@ -123,6 +135,7 @@ upstream 可能改变 `dist/` 输出结构。`realtime` 插件通过 `dist/exten
 ### 检查清单
 
 ```
+- [ ] pnpm patch 生效（grep prevKeptMessages 返回 3）
 - [ ] pnpm build 通过
 - [ ] pnpm check 通过
 - [ ] pnpm test 通过
@@ -178,6 +191,21 @@ upstream 可能改变 `dist/` 输出结构。`realtime` 插件通过 `dist/exten
 - **影响**: 92 个 `.reset` 文件（37.9MB）未被索引，占总对话内容的 68%+
 - **修改计划**: 放宽过滤条件，让 `.jsonl.reset.*` 也被列入
 - **升级时**: 如果 upstream 修复了此问题则直接用 upstream 版本；否则需要在 merge 后应用本地 patch
+
+### Patch 4: `@mariozechner/pi-coding-agent` compaction.js — keptMessages dead zone 修复（pnpm patch 管理）
+
+- **来源**: 用户的 upstream PR [#1585](https://github.com/badlogic/pi-mono/pull/1585)
+- **问题**: `prepareCompaction()` 中 `boundaryStart = prevCompactionIndex + 1` 跳过了上一轮 keptMessages，导致它们永远不会被 summarize，信息永久丢失（"dead zone" bug）
+- **修改**: 新增 Phase 1 收集 `prevKeptMessages`（从 `firstKeptEntryId` 到 `prevCompactionIndex`），合并到 `messagesToSummarize`
+- **管理方式**: `pnpm patch`，patch 文件在 `patches/@mariozechner__pi-coding-agent@0.54.0.patch`，`package.json` 的 `pnpm.patchedDependencies` 已注册
+- **自动应用**: 每次 `pnpm install` 自动应用，无需手动操作
+- **验证命令**: `grep -c 'prevKeptMessages' node_modules/@mariozechner/pi-coding-agent/dist/core/compaction/compaction.js` 应返回 `3`
+- **MD5**: `64f05e55fe7370f22051f18e6c72df49`
+- **升级时检查**: 如果 upstream npm 包版本升级（不再是 `0.54.0`），需要：
+  1. 检查新版本是否已包含此修复（grep prevKeptMessages）
+  2. 如已包含 → 删除 `patches/` 文件和 `pnpm.patchedDependencies` 条目
+  3. 如未包含 → 重新生成 patch：`pnpm patch @mariozechner/pi-coding-agent@<新版本>`，拷入修复，`pnpm patch-commit`
+- **历史教训**: 2026-02-22 升级时因 `pnpm install` 覆盖 node_modules 导致此 patch 丢失，当时只能从 Docker 4 容器拷回。现已通过 pnpm patch 彻底解决。
 
 ## 风险与回退
 

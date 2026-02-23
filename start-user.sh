@@ -43,6 +43,7 @@ resolve_model() {
     gpt-4o)                echo "openrouter/openai/gpt-4o" ;;
     gpt-4o-mini)           echo "openrouter/openai/gpt-4o-mini" ;;
     minimax|minimax-m2.5)  echo "openrouter/minimax/minimax-m2.5" ;;
+    glm|glm-5)             echo "openrouter/z-ai/glm-5" ;;
     *)                     echo "$1" ;;
   esac
 }
@@ -449,6 +450,7 @@ if provider == 'anthropic':
         'openrouter/anthropic/claude-sonnet-4.6': {'alias': 'or-sonnet'},
         'openrouter/google/gemini-3.1-pro-preview': {'alias': 'gemini'},
         'openrouter/minimax/minimax-m2.5': {'alias': 'minimax'},
+        'openrouter/z-ai/glm-5': {'alias': 'glm'},
     }
 else:
     agents['defaults']['models'] = {
@@ -458,6 +460,7 @@ else:
         'anthropic/claude-sonnet-4-6': {'alias': 'or-sonnet'},
         'openrouter/google/gemini-3.1-pro-preview': {'alias': 'gemini'},
         'openrouter/minimax/minimax-m2.5': {'alias': 'minimax'},
+        'openrouter/z-ai/glm-5': {'alias': 'glm'},
     }
 if agents['defaults']:
     cfg['agents'] = agents

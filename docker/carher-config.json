@@ -102,12 +102,25 @@
             "api": "openai-completions",
             "reasoning": false,
             "input": ["text"],
-            "contextWindow": 50000,
+            "contextWindow": 80000,
             "maxTokens": 16384,
             "cost": {
               "input": 0.3,
               "output": 1.1,
               "cacheRead": 0.15
+            }
+          },
+          {
+            "id": "z-ai/glm-5",
+            "name": "GLM-5",
+            "api": "openai-completions",
+            "reasoning": true,
+            "input": ["text"],
+            "contextWindow": 204800,
+            "maxTokens": 131072,
+            "cost": {
+              "input": 0.95,
+              "output": 2.55
             }
           }
         ]

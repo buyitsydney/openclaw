@@ -6,15 +6,20 @@ settings:
 
 overrides:
   hono: 4.11.10
+  fast-xml-parser: 5.3.6
   request: npm:@cypress/request@3.0.10
   request-promise: npm:@cypress/request-promise@5.0.0
-  fast-xml-parser: 5.3.6
   form-data: 2.5.4
   minimatch: 10.2.1
   qs: 6.14.2
   '@sinclair/typebox': 0.34.48
   tar: 7.5.9
   tough-cookie: 4.1.3
+
+patchedDependencies:
+  '@mariozechner/pi-coding-agent@0.54.0':
+    hash: 15eae2301b983411335184f79a397bb058b296971d729c2699f169b9a387ff73
+    path: patches/@mariozechner__pi-coding-agent@0.54.0.patch
 
 importers:
 
@@ -61,7 +66,7 @@ importers:
         version: 0.54.0(ws@8.19.0)(zod@4.3.6)
       '@mariozechner/pi-coding-agent':
         specifier: 0.54.0
-        version: 0.54.0(ws@8.19.0)(zod@4.3.6)
+        version: 0.54.0(patch_hash=15eae2301b983411335184f79a397bb058b296971d729c2699f169b9a387ff73)(ws@8.19.0)(zod@4.3.6)
       '@mariozechner/pi-tui':
         specifier: 0.54.0
         version: 0.54.0
@@ -7192,7 +7197,7 @@ snapshots:
       - ws
       - zod
 
-  '@mariozechner/pi-coding-agent@0.54.0(ws@8.19.0)(zod@4.3.6)':
+  '@mariozechner/pi-coding-agent@0.54.0(patch_hash=15eae2301b983411335184f79a397bb058b296971d729c2699f169b9a387ff73)(ws@8.19.0)(zod@4.3.6)':
     dependencies:
       '@mariozechner/jiti': 2.6.5
       '@mariozechner/pi-agent-core': 0.54.0(ws@8.19.0)(zod@4.3.6)
