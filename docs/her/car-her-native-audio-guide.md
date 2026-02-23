@@ -602,12 +602,12 @@ AI 会通过 WS 连接 1 发送工具调用。有两种工具：`openclaw_help`�
 
 ```kotlin
 // functionCall 是 toolCall.functionCalls[] 数组中的单个元素
-// ⚠️ Gemini Live 返回的 functionCall 只有 name 和 args，没有 id 字段
+// Gemini Live 的 functionCall 可能包含 id 字段，也可能没有
+// 优先使用 Gemini 返回的 id，没有则自行生成 UUID
 fun handleToolCall(functionCall: JSONObject) {
     val name = functionCall.getString("name")
     val args = functionCall.optJSONObject("args") ?: JSONObject()
-    // App 自行生成 callId 用于关联 WS2 的 help 请求/响应
-    val callId = UUID.randomUUID().toString()
+    val callId = functionCall.optString("id").ifEmpty { UUID.randomUUID().toString() }
 
     when (name) {
         "openclaw_help" -> handleOpenClawHelp(args.optString("request"), callId)
