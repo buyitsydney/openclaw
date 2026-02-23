@@ -1321,6 +1321,106 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     return; // /quota is a command, don't forward to AI
   }
 
+  // /summary — show latest compaction report; /summary all — list all
+  if (cleanText === "/summary" || cleanText === "/summary all") {
+    try {
+      const {
+        readLatestReport,
+        listReportFiles,
+        formatMarkdown,
+        formatSummaryList,
+        buildReportFromSessionFile,
+        buildAllReportsFromSessionFile,
+      } = await import("./compaction-report.js");
+      const { existsSync, readdirSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const { homedir } = await import("node:os");
+
+      const compactionCfg = config as Record<string, unknown> | undefined;
+      const agentsCfg = (compactionCfg?.agents as Record<string, unknown> | undefined)?.defaults as
+        | Record<string, unknown>
+        | undefined;
+      const compCfg = agentsCfg?.compaction as Record<string, unknown> | undefined;
+      const reportOpts = {
+        reserveTokens: compCfg?.reserveTokens as number | undefined,
+        reserveTokensFloor: compCfg?.reserveTokensFloor as number | undefined,
+        keepRecentTokens: compCfg?.keepRecentTokens as number | undefined,
+        maxHistoryShare: compCfg?.maxHistoryShare as number | undefined,
+        contextTokens: agentsCfg?.contextTokens as number | undefined,
+        compactionMode: compCfg?.mode as string | undefined,
+      };
+
+      const sessionsDir = join(homedir(), ".openclaw", "agents", "main", "sessions");
+      const findSessionFile = (): string | undefined => {
+        if (!existsSync(sessionsDir)) return undefined;
+        const jsonls = readdirSync(sessionsDir).filter((f) => f === "main.jsonl");
+        if (jsonls.length > 0) return join(sessionsDir, jsonls[0]!);
+        const all = readdirSync(sessionsDir)
+          .filter((f) => f.endsWith(".jsonl"))
+          .sort()
+          .reverse();
+        return all.length > 0 ? join(sessionsDir, all[0]!) : undefined;
+      };
+
+      if (cleanText === "/summary all") {
+        const savedFiles = listReportFiles();
+        if (savedFiles.length > 0) {
+          const lines = [`**Compaction History** (${savedFiles.length} reports)\n`];
+          for (const f of savedFiles.slice(0, 20)) {
+            lines.push(`- \`${f}\``);
+          }
+          if (savedFiles.length > 20) lines.push(`\n... and ${savedFiles.length - 20} more`);
+          await sendFeishuRichText({ account, chatId, text: lines.join("\n") });
+        } else {
+          const sf = findSessionFile();
+          if (sf) {
+            const reports = buildAllReportsFromSessionFile(sf, reportOpts);
+            if (reports.length > 0) {
+              await sendFeishuRichText({ account, chatId, text: formatSummaryList(reports) });
+            } else {
+              await sendFeishuText({ account, chatId, text: "暂无 compaction 记录。" });
+            }
+          } else {
+            await sendFeishuText({ account, chatId, text: "暂无 compaction 记录。" });
+          }
+        }
+      } else {
+        let content = readLatestReport();
+        if (!content) {
+          const sf = findSessionFile();
+          if (sf) {
+            const report = buildReportFromSessionFile(sf, reportOpts);
+            if (report) content = formatMarkdown(report);
+          }
+        }
+        if (!content) {
+          await sendFeishuText({
+            account,
+            chatId,
+            text: "暂无 compaction 记录。触发 compaction 后将自动生成报告。",
+          });
+        } else {
+          const truncated =
+            content.length > 4000 ? content.slice(0, 4000) + "\n\n... (truncated)" : content;
+          await sendFeishuRichText({ account, chatId, text: truncated });
+        }
+      }
+      log?.info(`[${account.accountId}] summary report sent to ${senderId}`);
+    } catch (err) {
+      log?.error(`[${account.accountId}] summary command failed: ${String(err)}`);
+      try {
+        await sendFeishuText({
+          account,
+          chatId,
+          text: `Summary 查询失败: ${String(err).slice(0, 200)}`,
+        });
+      } catch {
+        /* ignore */
+      }
+    }
+    return;
+  }
+
   // ── Resolve sender display name (best-effort, non-blocking) ──
   let senderDisplayName: string | undefined;
   try {
