@@ -206,10 +206,19 @@ source ~/.bashrc
 
 ```json
 {
-  "$include": "/app/docker/carher-config.json",
+  "$include": "./carher-config.json",
   "agents": {
     "defaults": {
-      "model": { "primary": "openrouter/anthropic/claude-sonnet-4.6" }
+      "model": { "primary": "openrouter/anthropic/claude-sonnet-4.6" },
+      "models": {
+        "openrouter/anthropic/claude-opus-4.6": { "alias": "opus" },
+        "openrouter/anthropic/claude-sonnet-4.6": { "alias": "sonnet" },
+        "anthropic/claude-opus-4-6": { "alias": "or-opus" },
+        "anthropic/claude-sonnet-4-6": { "alias": "or-sonnet" },
+        "openrouter/google/gemini-3.1-pro-preview": { "alias": "gemini" },
+        "openrouter/minimax/minimax-m2.5": { "alias": "minimax" },
+        "openrouter/z-ai/glm-5": { "alias": "glm" }
+      }
     }
   },
   "channels": {
@@ -228,7 +237,6 @@ source ~/.bashrc
   },
   "plugins": {
     "entries": {
-      "feishu": { "enabled": true },
       "realtime": {
         "config": {
           "gemini": {
@@ -242,7 +250,7 @@ source ~/.bashrc
 }
 ```
 
-`$include` 自动引入以下共享配置（来自 `carher-config.json` + `shared-config.json5`）：gateway（bind=lan, auth）、browser（headless Chromium）、tools（web search）、commands、messages（TTS）、models（Sonnet 4.6 + Opus 4.6 定义，双 provider）、agents（contextTokens 240K, compaction, memorySearch）。
+`$include` 自动引入以下共享配置（来自 `carher-config.json` + `shared-config.json5`）：gateway（bind=lan, auth）、browser（headless Chromium）、tools（web search + Groq STT）、commands、messages（TTS）、models（7 个模型定义：Sonnet 4.6、Opus 4.6、Gemini 3.1 Pro、MiniMax M2.5、GLM-5，双 provider：anthropic + openrouter）、agents（contextTokens 240K, compaction, memorySearch）、plugins（feishu-her 扩展）、channels（飞书基础配置）。
 
 > **注意事项**：
 >
@@ -260,7 +268,7 @@ source ~/.bashrc
 > **Context Window 240K 保护（2026-02-15 新增）**：
 >
 > - `shared-config.json5` 已预配置 `agents.defaults.contextTokens: 240000` + `compaction.mode: "safeguard"`，限制每个用户的最大上下文窗口为 240K token
-> - `models.providers` 定义了 Sonnet 4.6 和 Opus 4.6 两个模型（双 provider：anthropic + openrouter），均设 `contextWindow: 240000`，确保 compaction 在接近上限时自动触发
+> - `models.providers` 定义了 7 个模型（Sonnet 4.6、Opus 4.6、Gemini 3.1 Pro、MiniMax M2.5、GLM-5），双 provider（anthropic 直连 contextWindow: 200000，openrouter contextWindow: 240000），确保 compaction 在接近上限时自动触发
 > - **关键**: `contextTokens` 和 `contextWindow` 必须对齐，否则 compaction 不会触发（已实测验证）
 > - 每条 AI 回复的飞书卡片底部自动显示模型名 + context 用量 + 压缩次数（CardKit 状态 footer）
 > - 这是防止单个用户在长对话中无限消耗 token 导致高额费用的关键保护措施
@@ -303,6 +311,7 @@ source ~/.bashrc
     ├── users.csv                ← 用户注册表（飞书凭证，.gitignore 不入库）
     ├── shared-config.json5      ← 共享功能配置（所有环境通用：tools、messages、agent defaults）
     ├── carher-config.json       ← Docker 基础配置（$include shared + Docker 特有覆盖）
+    ├── user-configs/            ← start-user.sh 自动生成的 per-user 配置（.gitignore 不入库）
     └── workspace/               ← workspace 模板文件（SOUL.md 等，启动时自动同步到容器）
 ```
 
@@ -318,7 +327,16 @@ carher-config.json           ← Docker 基础配置（+ browser/gateway/models 
 per-user.json / openclaw.json ← 每个环境的最终配置（+ secrets/channels 覆盖）
 ```
 
-**所有环境使用相同的配置结构**：`$include` 指向 `carher-config.json` + 环境特有覆盖作为 sibling keys。修改 `shared-config.json5` 中的功能配置（如添加 web search、调整 TTS 语音），rebuild 镜像后所有容器自动生效，无需修改 per-user 配置。
+**容器内配置文件布局**：`start-user.sh` 将三个配置文件 bind mount 到 `/data/.openclaw/`：
+
+```
+/data/.openclaw/
+├── openclaw.json          ← per-user 配置（自 docker/user-configs/carher-config-N.json）
+├── carher-config.json     ← 基础配置（自 docker/carher-config.json）
+└── shared-config.json5    ← 共享配置（自 docker/shared-config.json5）
+```
+
+所有 `$include` 使用**相对路径**（如 `"./carher-config.json"`），相对于各自文件所在目录解析。修改 `shared-config.json5` 中的功能配置（如添加 web search、调整 TTS 语音），rebuild 镜像后所有容器自动生效，无需修改 per-user 配置。
 
 > **重要**：realtime 插件的 Gemini 配置（`plugins.entries.realtime.config.gemini`）必须作为 sibling key 写在 per-user 配置主文件中（不能放在被 `$include` 的文件里），因为 realtime 插件的 bootstrap 接口直接用 `JSON.parse()` 读取主配置文件。`start-user.sh` 已自动处理此约束。
 
