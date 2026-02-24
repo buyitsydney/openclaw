@@ -93,6 +93,7 @@ logs/
 docker/users.csv
 docker/user-configs/
 docker/servers.txt
+docker/server.env
 docker/*.bak*
 ._*
 # Workspace templates may contain personal tokens

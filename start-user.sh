@@ -19,6 +19,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# 加载服务器本地配置（TUNNEL_HOST_PREFIX 等），gitignored，各服务器独立
+[ -f "$SCRIPT_DIR/docker/server.env" ] && source "$SCRIPT_DIR/docker/server.env"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'

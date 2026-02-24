@@ -309,6 +309,8 @@ source ~/.bashrc
 │   └── carher-entrypoint.sh     ← 容器入口脚本
 └── docker/
     ├── users.csv                ← 用户注册表（飞书凭证，.gitignore 不入库）
+    ├── servers.txt              ← 服务器凭证 + token 集中管理（.gitignore 不入库）
+    ├── server.env               ← 服务器本地环境变量（.gitignore 不入库，见下方说明）
     ├── shared-config.json5      ← 共享功能配置（所有环境通用：tools、messages、agent defaults）
     ├── carher-config.json       ← Docker 基础配置（$include shared + Docker 特有覆盖）
     ├── user-configs/            ← start-user.sh 自动生成的 per-user 配置（.gitignore 不入库）
@@ -337,6 +339,19 @@ per-user.json / openclaw.json ← 每个环境的最终配置（+ secrets/channe
 ```
 
 所有 `$include` 使用**相对路径**（如 `"./carher-config.json"`），相对于各自文件所在目录解析。修改 `shared-config.json5` 中的功能配置（如添加 web search、调整 TTS 语音），rebuild 镜像后所有容器自动生效，无需修改 per-user 配置。
+
+#### 服务器本地环境变量（docker/server.env）
+
+每台服务器需要创建 `docker/server.env` 文件（gitignored，不入库），`start-user.sh` 启动时自动 source 该文件。用于存放服务器特有的环境变量，当前唯一变量是 Cloudflare Tunnel 域名前缀：
+
+| 机器     | `docker/server.env` 内容   | 效果                               |
+| -------- | -------------------------- | ---------------------------------- |
+| Mac 本地 | 不需要（文件不存在即可）   | 域名无前缀：`u3-fe.carher.net`     |
+| S1 (186) | `TUNNEL_HOST_PREFIX="s1-"` | 域名加前缀：`s1-u3-fe.carher.net`  |
+| S2 (187) | `TUNNEL_HOST_PREFIX="s2-"` | 域名加前缀：`s2-u6-fe.carher.net`  |
+| S3 (188) | `TUNNEL_HOST_PREFIX="s3-"` | 域名加前缀：`s3-u10-fe.carher.net` |
+
+**设计原则**：代码统一（`start-user.sh` 入 git），配置分离（`server.env` 不入 git）。与 `users.csv`、`servers.txt` 模式一致。Mac 永远是代码的唯一源头。
 
 > **重要**：realtime 插件的 Gemini 配置（`plugins.entries.realtime.config.gemini`）必须作为 sibling key 写在 per-user 配置主文件中（不能放在被 `$include` 的文件里），因为 realtime 插件的 bootstrap 接口直接用 `JSON.parse()` 读取主配置文件。`start-user.sh` 已自动处理此约束。
 

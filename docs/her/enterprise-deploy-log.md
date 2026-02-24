@@ -337,6 +337,29 @@ S3: `http://10.68.13.188:<PORT>?token=<见 servers.txt:WEBCHAT_TOKEN>`
 | --- | ------------ | ------- | ------- |
 | 10  | 徐协邦(运营) | 29091   | 29093   |
 
+#### Git 同步 + 敏感信息清理（2026-02-24 20:30）
+
+- [x] GitHub Deploy Keys 配置（S1/S2/S3 三台服务器只读 deploy key）
+- [x] `docker/servers.txt` 集中管理所有 token（Webchat、Admin、Voice per-container）
+- [x] `enterprise-deploy-log.md` 脱敏（真实 token 替换为 `<见 servers.txt>` 引用）
+- [x] `compaction-param-sweep-test.md` 脱敏（token 替换为 `<CONTAINER_TOKEN>` 占位符）
+- [x] `.gitignore` 新增 `docker/*.bak*`、`._*`、`docker/server.env` 规则
+- [x] git rm 误入库的 bak 文件（含飞书 App Secret 的 users.csv.bak）
+- [x] S1: git remote → GitHub，`git pull` 对齐到 Mac HEAD
+- [x] S2: git 重建（删旧 .git → clone origin/dev），代码同步完成
+- [ ] S2: 5 容器重启（carher-6~9,11）with `TUNNEL_HOST_PREFIX=s2-`
+- [ ] S3: git 重建 + 1 容器重启（carher-10）
+
+**server.env 机制**（代码统一，配置分离）：
+
+`start-user.sh` 启动时自动 `source docker/server.env`（gitignored），取代之前的 `.bashrc export` hack。各服务器独立配置，Mac 无需该文件。
+
+| 服务器 | `docker/server.env`        |
+| ------ | -------------------------- |
+| S1     | `TUNNEL_HOST_PREFIX="s1-"` |
+| S2     | `TUNNEL_HOST_PREFIX="s2-"` |
+| S3     | `TUNNEL_HOST_PREFIX="s3-"` |
+
 #### 待完成
 
 - [ ] 董事长数据迁移（Phase 5: Mac carher-3 → 企业 carher-1）
