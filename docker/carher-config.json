@@ -152,7 +152,11 @@
       "realtime": {
         "enabled": true,
         "config": {
-          "port": 18790
+          "port": 18790,
+          "gemini": {
+            "projectId": "gen-lang-client-0519229117",
+            "model": "gemini-live-2.5-flash-native-audio"
+          }
         }
       }
     }

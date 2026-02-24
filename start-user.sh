@@ -229,9 +229,10 @@ if [ "$ACTION" = "voice-reset" ]; then
   echo -e "  新 Token: ${YELLOW}${NEW_TOKEN}${NC}"
   echo ""
   # Print updated vendor URLs with real token
+  TP="${TUNNEL_HOST_PREFIX:-}"
   case "$USER_ID" in
-    2) NAMED_PROXY_HOST="vendor-proxy.carher.net"; NAMED_FE_HOST="vendor-fe.carher.net" ;;
-    *) NAMED_PROXY_HOST="u${USER_ID}-proxy.carher.net"; NAMED_FE_HOST="u${USER_ID}-fe.carher.net" ;;
+    2) NAMED_PROXY_HOST="${TP}vendor-proxy.carher.net"; NAMED_FE_HOST="${TP}vendor-fe.carher.net" ;;
+    *) NAMED_PROXY_HOST="${TP}u${USER_ID}-proxy.carher.net"; NAMED_FE_HOST="${TP}u${USER_ID}-fe.carher.net" ;;
   esac
   echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
   echo -e "${CYAN}  厂商对接信息（直接复制发给厂商）${NC}"
@@ -543,9 +544,10 @@ if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
 fi
 
 # --- Resolve domain names (needed for VOICE env vars and URL display) ---
+TP="${TUNNEL_HOST_PREFIX:-}"
 case "$USER_ID" in
-  2) NAMED_RT_HOST="vendor.carher.net"; NAMED_PROXY_HOST="vendor-proxy.carher.net"; NAMED_FE_HOST="vendor-fe.carher.net" ;;
-  *) NAMED_RT_HOST="u${USER_ID}.carher.net"; NAMED_PROXY_HOST="u${USER_ID}-proxy.carher.net"; NAMED_FE_HOST="u${USER_ID}-fe.carher.net" ;;
+  2) NAMED_RT_HOST="${TP}vendor.carher.net"; NAMED_PROXY_HOST="${TP}vendor-proxy.carher.net"; NAMED_FE_HOST="${TP}vendor-fe.carher.net" ;;
+  *) NAMED_RT_HOST="${TP}u${USER_ID}.carher.net"; NAMED_PROXY_HOST="${TP}u${USER_ID}-proxy.carher.net"; NAMED_FE_HOST="${TP}u${USER_ID}-fe.carher.net" ;;
 esac
 
 echo -e "${YELLOW}启动容器 ${CONTAINER_NAME}...${NC}"
@@ -566,6 +568,7 @@ docker run -d \
   --name "$CONTAINER_NAME" \
   --init \
   --restart unless-stopped \
+  --memory=2g \
   -e HOME=/data \
   "${ENV_ARGS[@]}" \
   -e GOOGLE_APPLICATION_CREDENTIALS=/gcloud/application_default_credentials.json \
