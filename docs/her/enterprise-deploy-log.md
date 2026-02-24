@@ -192,7 +192,7 @@ docker run --rm \
   - [x] carher-13 (卜弋天): opus 模型，Gateway 29s 就绪，飞书 ws 已连接，端口 GW=29121
   - [x] 内存限制 2GB/容器（start-user.sh 加 --memory=2g）
   - [x] **飞书消息收发验证通过！**（IT 配置长连接 + 发布 Bot 后两个 Bot 都能正常对话）
-  - Webchat 访问需带 token: http://10.68.13.186:<PORT>?token=carher-container-token
+  - Webchat 访问需带 token: http://10.68.13.186:<PORT>?token=<见 servers.txt:WEBCHAT_TOKEN>
   - WARNING: GEMINI_PROJECT_ID 未配置（语音功能暂不可用，需补 gemini 配置）
 - 实测资源占用:
   - 单容器内存: ~560 MiB（2GB 限制内）
@@ -218,7 +218,7 @@ docker run --rm \
 
 #### Webchat URL（已运行容器）
 
-所有 URL 格式: `http://10.68.13.186:<PORT>?token=carher-container-token`
+所有 URL 格式: `http://10.68.13.186:<PORT>?token=<见 servers.txt:WEBCHAT_TOKEN>`
 
 | ID  | 姓名   | 端口  |
 | --- | ------ | ----- |
@@ -237,7 +237,7 @@ docker run --rm \
 | -------- | --------------------------------------------------------------- |
 | 运行方式 | `nohup node dist/index.js gateway run` (PID 161057)             |
 | 模型     | Claude Sonnet 4.6 (openrouter)                                  |
-| Webchat  | `http://10.68.13.186:18789/?token=carher-admin-2026`            |
+| Webchat  | `http://10.68.13.186:18789/?token=<见 servers.txt:ADMIN_TOKEN>` |
 | 端口     | 18789（与 Docker 容器 29xxx 不冲突）                            |
 | 配置     | `~/.openclaw/openclaw.json`（`$include` shared-config.json5）   |
 | 日志     | `/tmp/admin-her.log`                                            |
@@ -310,7 +310,7 @@ docker run --rm \
 
 #### Webchat URL 汇总
 
-S1: `http://10.68.13.186:<PORT>?token=carher-container-token`
+S1: `http://10.68.13.186:<PORT>?token=<见 servers.txt:WEBCHAT_TOKEN>`
 
 | ID  | 姓名   | GW 端口 | FE 端口 |
 | --- | ------ | ------- | ------- |
@@ -321,7 +321,7 @@ S1: `http://10.68.13.186:<PORT>?token=carher-container-token`
 | 12  | test   | 29111   | 29113   |
 | 13  | 卜弋天 | 29121   | 29123   |
 
-S2: `http://10.68.13.187:<PORT>?token=carher-container-token`
+S2: `http://10.68.13.187:<PORT>?token=<见 servers.txt:WEBCHAT_TOKEN>`
 
 | ID  | 姓名       | GW 端口 | FE 端口 |
 | --- | ---------- | ------- | ------- |
@@ -331,7 +331,7 @@ S2: `http://10.68.13.187:<PORT>?token=carher-container-token`
 | 9   | 洪源(车联) | 29081   | 29083   |
 | 11  | 商文胜     | 29101   | 29103   |
 
-S3: `http://10.68.13.188:<PORT>?token=carher-container-token`
+S3: `http://10.68.13.188:<PORT>?token=<见 servers.txt:WEBCHAT_TOKEN>`
 
 | ID  | 姓名         | GW 端口 | FE 端口 |
 | --- | ------------ | ------- | ------- |
@@ -347,7 +347,7 @@ S3: `http://10.68.13.188:<PORT>?token=carher-container-token`
 - [x] ~~补充 GEMINI_PROJECT_ID 到 ~/.openclaw/openclaw.json（语音功能）~~ → 已完成
 - [ ] start-user.sh webchat URL 不显示 token 的 bug 修复
 - [ ] Admin Her 配置开机自启（systemd service 或 crontab @reboot）
-- [ ] per-container 独立随机 token（当前所有容器共享 `carher-container-token`）
+- [ ] per-container 独立随机 token（当前所有容器共享同一 webchat token）
 - [x] ~~其他容器（carher-2~5, 13）重启以启用 voice 和新域名前缀~~ → 已完成（2026-02-24 18:30）
 - [ ] S2/S3 cloudflared 部署（复制 S1 方案）
 - [ ] S2/S3 容器内存限制统一设为 2GB（S2/S3 的 start-user.sh 需确认已包含 --memory=2g）
@@ -414,7 +414,7 @@ carher-13 实际语音会话测试（2026-02-24 18:25）：
 | -------------------------- | --------------------------------------------------------- |
 | Realtime 插件              | ✅ 已启动（port 18790）                                   |
 | Bootstrap API              | ✅ 外网可用（完整 Gemini 配置）                           |
-| `.voice-token`             | ✅ `07449d9fed40449cbdd79592763ae93c`                     |
+| `.voice-token`             | ✅ 见 `servers.txt:VOICE_TOKEN_ADMIN`                     |
 | Python WS 代理 (server.py) | ✅ 运行中（8000/8080）                                    |
 | Cloudflare 隧道路由        | ✅ `s1-admin-fe.carher.net` / `s1-admin-proxy.carher.net` |
 | VOICE 环境变量             | ✅ `VOICE_FE_HOST=s1-admin-fe.carher.net`                 |
@@ -427,7 +427,7 @@ carher-13 实际语音会话测试（2026-02-24 18:25）：
 - Bootstrap API with wrong token → 401 Unauthorized
 - `https://s1-admin-proxy.carher.net/` → 426（WS 升级预期，隧道路由正确）
 
-语音 URL：`https://s1-admin-fe.carher.net/?token=07449d9fed40449cbdd79592763ae93c`
+语音 URL：`https://s1-admin-fe.carher.net/?token=<见 servers.txt:VOICE_TOKEN_ADMIN>`
 
 > Admin Her 无飞书 bot，语音通过直接 URL 访问。
 > 启动脚本：`/tmp/start-admin-her.sh`，tmux session `admin-her`。

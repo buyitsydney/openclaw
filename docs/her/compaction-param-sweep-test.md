@@ -137,7 +137,7 @@ shouldRunMemoryFlush（memory-flush.ts:129）:
     "bind": "lan",
     "auth": {
       "mode": "token",
-      "token": "carher-container-token"
+      "token": "<CONTAINER_TOKEN>"
     },
     "controlUi": { "allowInsecureAuth": true }
   },
@@ -329,7 +329,7 @@ Gateway WS 端口: 18789 (容器内) → 29031 (host, Docker4: BASE=29030+1)
 import asyncio, json, uuid, websockets
 
 WS_URL = "ws://localhost:29031"  # 无 path，直接连 gateway 根路径
-TOKEN = "carher-container-token"
+TOKEN = "<CONTAINER_TOKEN>"
 PROTOCOL_VERSION = 3
 
 async def send_webchat(message: str, session_key: str = "main"):
