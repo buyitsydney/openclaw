@@ -10,19 +10,20 @@ alwaysApply: true
 
 **没有用户明确口头指令，禁止对以下容器执行任何操作：**
 
-- `carher-3`（董事长）—— 任何 stop / down / restart / rm / kill
+- `carher-1`（董事长/老杨）—— 任何 stop / down / restart / rm / kill
 
 包括但不限于：
-- `docker stop carher-3`
-- `docker rm carher-3`
-- `./start-user.sh --id=3 --down`
-- `./start-user.sh --id=3`（重建）
-- 任何包含 `--id=3` 的破坏性命令
+- `docker stop carher-1`
+- `docker rm carher-1`
+- `./start-user.sh --id=1 --down`
+- `./start-user.sh --id=1`（重建）
+- 任何包含 `--id=1` 的破坏性命令
 
 ## ✅ 唯一例外
 
-用户在当前对话中明确说出"重启 docker3"、"停止 docker3"、"操作 docker3"等字样，且该指令是针对本次操作的新指令（不是计划文档里的"验证步骤"）。
+用户在当前对话中明确说出"重启 docker1"、"停止 docker1"、"操作 docker1"等字样，且该指令是针对本次操作的新指令（不是计划文档里的"验证步骤"）。
 
 ## 根因记录
 
 2026-02-18：AI 擅自执行 `./start-user.sh --id=3 --down` 停掉了董事长的生产容器，导致服务中断。这是不可接受的错误。
+2026-02-24：确认董事长容器已从 carher-3 迁移到 carher-1（S1 服务器），禁令相应更新。
