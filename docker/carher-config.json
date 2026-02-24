@@ -15,6 +15,7 @@
     "providers": {
       "anthropic": {
         "baseUrl": "https://api.anthropic.com",
+        "apiKey": "sk-ant-not-used-on-server",
         "models": [
           {
             "id": "claude-opus-4-6",
