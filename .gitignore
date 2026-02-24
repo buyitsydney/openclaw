@@ -91,6 +91,7 @@ logs/
 
 # Per-user credentials (contains secrets)
 docker/users.csv
+docker/user-configs/
 # Workspace templates may contain personal tokens
 docker/workspace/
 

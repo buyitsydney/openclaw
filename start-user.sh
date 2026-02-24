@@ -423,7 +423,8 @@ fi
 # Per-user config uses $include to reference Docker base config (which itself
 # $includes shared-config.json5). This ensures all environments share the same
 # functional config and only per-user/per-env overrides live here.
-CUSTOM_CONFIG="/tmp/carher-config-${USER_ID}.json"
+CUSTOM_CONFIG="${SCRIPT_DIR}/docker/user-configs/carher-config-${USER_ID}.json"
+mkdir -p "${SCRIPT_DIR}/docker/user-configs"
 
 # Always generate a per-user config (may inject feishu credentials)
 python3 -c "

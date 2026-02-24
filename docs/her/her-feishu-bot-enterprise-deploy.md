@@ -367,7 +367,7 @@ git checkout v旧版本
 | --- | --------------------- | ------------------------------------------- |
 | 1   | 创建应用 + 启用机器人 | 创建应用，添加「机器人」能力                |
 | 2   | 记录凭证              | 复制 App ID + App Secret                    |
-| 3   | 批量导入权限          | 粘贴 JSON 导入 26 个权限                    |
+| 3   | 批量导入权限          | 粘贴 JSON 导入 68 个权限                    |
 | 4   | 第一次发布            | 可用范围 = 指定人员，只选一人（见下方说明） |
 | 5   | 确认 Bot 可见         | 让目标员工搜索 Bot，确认能找到              |
 | 6   | 交给部署者            | 等部署者确认 WSClient connected             |
@@ -411,11 +411,40 @@ git checkout v旧版本
   "scopes": {
     "tenant": [
       "bitable:app",
+      "bitable:app:readonly",
       "board:whiteboard:node:create",
       "board:whiteboard:node:read",
       "cardkit:card:write",
       "contact:contact.base:readonly",
       "docs:doc",
+      "docs:document.comment:create",
+      "docs:document.comment:read",
+      "docs:document.comment:update",
+      "docs:document.comment:write_only",
+      "docs:document.content:read",
+      "docs:document.media:download",
+      "docs:document.media:upload",
+      "docs:document.subscription",
+      "docs:document.subscription:read",
+      "docs:document:copy",
+      "docs:document:export",
+      "docs:document:import",
+      "docs:event.document_deleted:read",
+      "docs:event.document_edited:read",
+      "docs:event.document_opened:read",
+      "docs:event:subscribe",
+      "docs:permission.member",
+      "docs:permission.member:auth",
+      "docs:permission.member:create",
+      "docs:permission.member:delete",
+      "docs:permission.member:readonly",
+      "docs:permission.member:retrieve",
+      "docs:permission.member:transfer",
+      "docs:permission.member:update",
+      "docs:permission.setting",
+      "docs:permission.setting:read",
+      "docs:permission.setting:readonly",
+      "docs:permission.setting:write_only",
       "docx:document",
       "docx:document.block:convert",
       "docx:document:create",
@@ -424,7 +453,17 @@ git checkout v旧版本
       "drive:drive",
       "drive:drive.metadata:readonly",
       "drive:drive.search:readonly",
+      "drive:drive:readonly",
+      "drive:drive:version",
       "drive:drive:version:readonly",
+      "drive:export:readonly",
+      "drive:file",
+      "drive:file.like:readonly",
+      "drive:file.meta.sec_label.read_only",
+      "drive:file:download",
+      "drive:file:readonly",
+      "drive:file:upload",
+      "drive:file:view_record:readonly",
       "im:chat:readonly",
       "im:message",
       "im:message.group_msg",
@@ -433,6 +472,10 @@ git checkout v旧版本
       "im:message.reactions:write_only",
       "im:message:send_as_bot",
       "im:resource",
+      "space:document:delete",
+      "space:document:move",
+      "space:document:retrieve",
+      "space:document:shortcut",
       "wiki:wiki",
       "wiki:wiki:readonly"
     ],
@@ -443,13 +486,23 @@ git checkout v旧版本
 
 点击「下一步，确认新增权限」→ 确认即可。已开通的权限不会重复添加。
 
-> **权限分类（共 25 个，全部为 tenant 级别）**：
+> **权限分类（共 68 个，全部为 tenant 级别）**：
 >
 > - **消息基础**（6 个）：`im:message`、`im:message:send_as_bot`、`im:message.group_msg`、`im:message.p2p_msg:readonly`、`im:chat:readonly`、`im:resource` — 消息收发 + 图片 + 群聊归档
 > - **卡片流式回复**（1 个）：`cardkit:card:write` — AI 打字机效果
 > - **Emoji 表情**（2 个）：`im:message.reactions:read`、`im:message.reactions:write_only` — AI 自动 Get 回应 + 点赞
 > - **联系人**（1 个）：`contact:contact.base:readonly` — 获取发送者姓名
-> - **文档/知识库**（15 个）：`docs:doc`、`docx:document*`（5 个）、`drive:drive`（云盘读写）、`drive:drive.metadata:readonly`（文件元数据）、`drive:drive.search:readonly`（搜索）、`drive:drive:version:readonly`（版本查看）、`wiki:wiki*`（2 个）、`board:whiteboard:node:*`（2 个）、`bitable:app`（多维表格读写） — AI 读写飞书文档、Wiki、白板、多维表格、云盘
+> - **文档核心**（6 个）：`docs:doc`、`docx:document`、`docx:document.block:convert`、`docx:document:create`、`docx:document:readonly`、`docx:document:write_only` — 旧版 + 新版文档读写
+> - **文档评论**（4 个）：`docs:document.comment:*` — 创建/读取/更新评论
+> - **文档内容/媒体/订阅**（5 个）：`docs:document.content:read`、`docs:document.media:download`、`docs:document.media:upload`、`docs:document.subscription`、`docs:document.subscription:read` — 文档内容读取、媒体上传下载、订阅通知
+> - **文档复制/导出/导入**（3 个）：`docs:document:copy`、`docs:document:export`、`docs:document:import`
+> - **文档事件**（4 个）：`docs:event.document_deleted:read`、`docs:event.document_edited:read`、`docs:event.document_opened:read`、`docs:event:subscribe` — 文档变更事件监听
+> - **文档权限管理**（12 个）：`docs:permission.member*`（8 个）+ `docs:permission.setting*`（4 个） — 文档成员权限和权限设置的完整 CRUD
+> - **云盘**（14 个）：`drive:drive*`（6 个）+ `drive:export:readonly` + `drive:file*`（7 个） — 云盘读写/搜索/版本、文件上传下载/元数据/查看记录
+> - **多维表格**（2 个）：`bitable:app`、`bitable:app:readonly` — 多维表格读写
+> - **白板**（2 个）：`board:whiteboard:node:create`、`board:whiteboard:node:read`
+> - **Wiki 知识库**（2 个）：`wiki:wiki`、`wiki:wiki:readonly`
+> - **空间文档管理**（4 个）：`space:document:delete`、`space:document:move`、`space:document:retrieve`、`space:document:shortcut` — 知识空间内文档的移动/删除/快捷方式
 
 **步骤 5：第一次发布（让 Bot 在飞书客户端可见 + 使长连接可用）**
 
