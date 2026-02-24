@@ -1042,13 +1042,53 @@ Her 是专属私人秘书，**绝对不可以对外和主人以外的任何人�
   Her → 通过 skill/tool 读取归档文件 → 总结返回给主人
 ```
 
-### 主人身份识别
+### 主人身份识别（Owner 机制）
 
-通过配置指定主人的飞书 open_id：
+> **重大认知（2026-02-24 实验验证）：** Owner 身份决定 AI 是否拥有 cron、gateway 等高权限工具。
+> 源码中 `cron` 等工具标记 `ownerOnly: true`（见 `src/agents/tools/cron-tool.ts`），
+> 非 owner 发送者的工具列表会被 `applyOwnerOnlyToolPolicy` 过滤（见 `src/agents/tool-policy.ts`）。
+> CLI `agent` 命令硬编码 `senderIsOwner: true`（见 `src/commands/agent.ts:162`），因此 CLI 测试无法验证此机制。
 
-- 优先使用 `groups.ownerIds: ["ou_xxx"]`
-- 如果未配置，fallback 到 `dm.allowFrom`（单聊白名单，通常就是主人）
-- 大部分用户只需配 `dm.allowFrom` 即可，群聊自动复用
+#### 三层配置与优先级
+
+| 配置                              | 位置   | 作用                                                           | 影响范围         |
+| --------------------------------- | ------ | -------------------------------------------------------------- | ---------------- |
+| `channels.feishu.dm.allowFrom`    | 频道级 | 单聊白名单（谁能发消息）+ **副作用：白名单成员被识别为 owner** | 访问控制 + owner |
+| `channels.feishu.groups.ownerIds` | 频道级 | 群聊中的主人 ID（@bot 才回复）                                 | 仅群聊           |
+| `commands.ownerAllowFrom`         | 全局级 | **显式声明 owner**（优先级最高，独立于频道白名单）             | 所有频道         |
+
+**Owner 判定逻辑**（源码 `src/auto-reply/command-auth.ts`）：
+
+```
+1. 如果 commands.ownerAllowFrom 有具体 ID → 匹配则 senderIsOwner=true
+2. 否则 fallback 到 dm.allowFrom 列表 → 匹配则 senderIsOwner=true
+3. 两者都为空/不匹配 → senderIsOwner=false → ownerOnly 工具被过滤
+```
+
+**关键陷阱：`["*"]` 不等于所有人是 owner！**
+
+| 配置值                       | 效果                                                                        |
+| ---------------------------- | --------------------------------------------------------------------------- |
+| `dm.allowFrom: ["ou_xxx"]`   | 只有 ou_xxx 能聊天，且 ou_xxx 是 owner                                      |
+| `dm.allowFrom: []` 或未设    | 所有人能聊天，但**无人是 owner**                                            |
+| `dm.allowFrom: ["*"]`        | 所有人能聊天，但**无人是 owner**（`*` 触发 allowAll 路径，跳过 owner 匹配） |
+| `ownerAllowFrom: ["ou_xxx"]` | ou_xxx 是 owner（不影响谁能聊天）                                           |
+| `ownerAllowFrom: ["*"]`      | **无人是 owner**（同理，`*` 不匹配任何具体 ID）                             |
+
+#### 企业部署场景
+
+| 场景                      | 推荐配置                                                                                   |
+| ------------------------- | ------------------------------------------------------------------------------------------ |
+| 一人一 Bot（专属 Her）    | `dm.allowFrom: ["ou_主人"]` — 同时限制访问 + 识别 owner                                    |
+| 多人共享 Bot（测试/演示） | `dm.allowFrom` 留空（不限制访问）+ `commands.ownerAllowFrom: ["ou_管理员1", "ou_管理员2"]` |
+| 群聊主人与 DM 主人不同    | 额外设 `groups.ownerIds: ["ou_群主人"]`，否则 fallback 到 `dm.allowFrom`                   |
+
+#### 实验记录（2026-02-24，本地 carher-1）
+
+| 测试 | dm.allowFrom | ownerAllowFrom    | AI 使用 cron 的方式                         | 结论                       |
+| ---- | ------------ | ----------------- | ------------------------------------------- | -------------------------- |
+| A    | 空           | 无                | `Exec: run openclaw cron`（fallback，失败） | 无 owner → cron 工具不可见 |
+| B    | 空           | `["ou_e5e4e..."]` | `⏰ Cron`（原生工具，成功）                 | ownerAllowFrom 独立生效    |
 
 ### 归档存储
 

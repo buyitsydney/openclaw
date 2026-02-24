@@ -351,7 +351,7 @@ per-user.json / openclaw.json ← 每个环境的最终配置（+ secrets/channe
 | S2 (187) | `TUNNEL_HOST_PREFIX="s2-"` | 域名加前缀：`s2-u6-fe.carher.net`  |
 | S3 (188) | `TUNNEL_HOST_PREFIX="s3-"` | 域名加前缀：`s3-u10-fe.carher.net` |
 
-**设计原则**：代码统一（`start-user.sh` 入 git），配置分离（`server.env` 不入 git）。与 `users.csv`、`servers.txt` 模式一致。Mac 永远是代码的唯一源头。
+**设计原则**：代码统一（`start-user.sh` 入 git），配置分离（`server.env` 不入 git）。Mac 是**代码**的唯一源头（通过 git push/pull 同步）。`users.csv`、`servers.txt`、`server.env` 等含密钥的配置文件 **不入 git**，各服务器独立维护。
 
 > **重要**：realtime 插件的 Gemini 配置（`plugins.entries.realtime.config.gemini`）必须作为 sibling key 写在 per-user 配置主文件中（不能放在被 `$include` 的文件里），因为 realtime 插件的 bootstrap 接口直接用 `JSON.parse()` 读取主配置文件。`start-user.sh` 已自动处理此约束。
 
@@ -598,13 +598,22 @@ git checkout v旧版本
 
 > 搜索到但没有回复？确认事件订阅已保存 + 已创建第二个版本并发布。
 
-**步骤 11：记录用户 open_id（用于单聊白名单和群聊主人识别）**
+**步骤 11：记录用户 open_id（必须！影响 AI 工具权限）**
+
+> **⚠️ 不可跳过！** 不配置 Owner → 发送者不被识别为 Owner → **cron（定时任务）、gateway（网关管理）等高权限工具被过滤，AI 完全看不到这些工具。**
+>
+> 源码依据：`cron` 等工具标记 `ownerOnly: true`（`src/agents/tools/cron-tool.ts`），
+> 非 Owner 发送者的工具列表被 `applyOwnerOnlyToolPolicy` 过滤（`src/agents/tool-policy.ts`）。
+> 详见 [Owner 机制说明](./her-feishu-bot-architecture.md#主人身份识别owner-机制)。
 
 员工第一次给 Bot 发消息后：
 
 1. 部署者查看日志：`./start-user.sh --id=N --logs`，搜索 `from=ou_`，记录完整的 `ou_xxx` 值
-2. 编辑 `docker/users.csv`，将 `ou_xxx` 填入该用户行的 `feishu_owner_open_id` 列
-3. 重启容器：`./start-user.sh --id=N --local`，白名单即刻生效
+2. 编辑 `docker/users.csv`：
+   - **专属 Bot**（1人1bot）：将 `ou_xxx` 填入 `feishu_owner_open_id` 列
+   - **共享 Bot**（多人共用）：将管理员 open_id 填入 `owner_allow_from` 列（多人用 `|` 分隔）
+3. 重启容器：`./start-user.sh --id=N`，Owner 身份即刻生效
+4. 验证：让用户发 "列出你所有工具名称"，确认回复中包含 `cron`
 
 #### 飞书 Bot 常见问题
 
@@ -635,30 +644,62 @@ git checkout v旧版本
 用户凭证集中管理在 `docker/users.csv`（已加入 .gitignore 不入库）：
 
 ```csv
-# id, 姓名, 模型, feishu_app_id, feishu_app_secret, feishu_owner_open_id, provider, 备注
-1,张三,sonnet,cli_aaa111,secret111,ou_xxx111,openrouter,测试用户
-2,厂商A,opus,,,,anthropic,"厂商演示（无飞书）"
-3,王五,sonnet,cli_bbb222,secret222,ou_xxx222,,
+# id, 姓名, 模型, feishu_app_id, feishu_app_secret, feishu_owner_open_id, provider, 备注, owner_allow_from
+1,张三,sonnet,cli_aaa111,secret111,ou_xxx111,openrouter,测试用户,
+2,厂商A,opus,,,,anthropic,"厂商演示（无飞书）",
+3,王五,sonnet,cli_bbb222,secret222,ou_xxx222,,,
+12,测试Bot,sonnet,cli_ccc333,secret333,,openrouter,多人共享,ou_admin1|ou_admin2
 ```
 
-| 字段                   | 说明                                                          |
-| ---------------------- | ------------------------------------------------------------- |
-| `id`                   | 用户编号（1-999）                                             |
-| `姓名`                 | 显示名                                                        |
-| `模型`                 | AI 模型（留空用默认 sonnet）                                  |
-| `feishu_app_id`        | 飞书 Bot 的 App ID（留空不启用飞书）                          |
-| `feishu_app_secret`    | 飞书 Bot 的 App Secret                                        |
-| `feishu_owner_open_id` | 用户的飞书 open_id（`ou_xxx`），用于单聊白名单 + 群聊主人识别 |
-| `provider`             | `anthropic` 或 `openrouter`（留空默认 `openrouter`）          |
-| `备注`                 | 备注信息                                                      |
+| 字段                   | 说明                                                                                                                                                      |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                   | 用户编号（1-999）                                                                                                                                         |
+| `姓名`                 | 显示名                                                                                                                                                    |
+| `模型`                 | AI 模型（留空用默认 sonnet）                                                                                                                              |
+| `feishu_app_id`        | 飞书 Bot 的 App ID（留空不启用飞书）                                                                                                                      |
+| `feishu_app_secret`    | 飞书 Bot 的 App Secret                                                                                                                                    |
+| `feishu_owner_open_id` | 用户的飞书 open_id（`ou_xxx`）。**专属 bot 必填！** 不填则 cron 等高权限工具不可用（见步骤 11）。生成 `dm.allowFrom`（限制只有此人能聊天 + 识别为 Owner） |
+| `provider`             | `anthropic` 或 `openrouter`（留空默认 `openrouter`）                                                                                                      |
+| `备注`                 | 备注信息                                                                                                                                                  |
+| `owner_allow_from`     | 显式指定 Owner（多人用 `\|` 分隔）。生成 `commands.ownerAllowFrom`。**用于共享 bot**：不限制谁能聊天，但指定谁有 cron 等高权限工具。专属 bot 不需要填此列 |
 
-`feishu_owner_open_id` 获取方法：用户给 Bot 发一条消息，从容器日志中找 `from=ou_xxx`。
+**两列的区别和使用场景：**
+
+| 场景                 | `feishu_owner_open_id` | `owner_allow_from`            | 效果                           |
+| -------------------- | ---------------------- | ----------------------------- | ------------------------------ |
+| 专属 Bot（1人1bot）  | 填用户 open_id         | 留空                          | 只有该用户能聊天 + 是 Owner    |
+| 共享 Bot（多人共用） | 留空                   | 填管理员 open_id（`\|` 分隔） | 所有人能聊天，仅指定人是 Owner |
+
+获取 open_id 的方法：用户给 Bot 发一条消息，从容器日志中找 `from=ou_xxx`。
 
 `start-user.sh` 从 CSV 自动生成完整配置，包括：
 
 - 飞书通道 + 插件启用
-- `dm.allowFrom`（单聊白名单 = 主人身份）
+- `feishu_owner_open_id` → `dm.allowFrom`（单聊白名单 = Owner 身份 = 高权限工具访问）
+- `owner_allow_from` → `commands.ownerAllowFrom`（显式 Owner 声明，优先级高于 `dm.allowFrom`）
 - `groups.enabled` + `groups.archive`（群聊归档，默认启用）
+
+> **注意**：`ownerAllowFrom: ["*"]` **不会**让所有人成为 Owner（`*` 触发 allowAll 路径，跳过 Owner 匹配）。必须填具体 open_id。
+
+#### CSV 工作流
+
+CSV 含密钥，已加入 `.gitignore`，**不通过 git 同步**。
+
+**Mac 与服务器的 CSV 是独立的：**
+
+| 位置            | 路径                            | 用途                              |
+| --------------- | ------------------------------- | --------------------------------- |
+| Mac             | `docker/users.csv`              | 本地开发测试（不同的 Feishu App） |
+| S1/S2/S3 服务器 | `/Data/CarHer/docker/users.csv` | 生产部署（企业 Feishu App）       |
+
+> **注意**：Mac 和服务器的 CSV 管理的是完全不同的飞书 App 和环境，不存在"同步"关系。
+> 修改生产配置（如填写 open_id）应直接在对应服务器上编辑。
+
+**生产 CSV 编辑流程：**
+
+1. SSH 到服务器，编辑 `/Data/CarHer/docker/users.csv`
+2. 运行 `./start-user.sh --id=N` 重建容器（从本地 CSV 读取配置）
+3. 如果多台服务器需要相同变更（如 `carher-config.json` 更新），通过 `git pull` 同步代码后各服务器独立重建
 
 ```bash
 ./start-user.sh --id=1               # 模型和飞书凭证从 CSV 自动读取

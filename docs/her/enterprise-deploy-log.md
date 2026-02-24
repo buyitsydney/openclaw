@@ -347,8 +347,8 @@ S3: `http://10.68.13.188:<PORT>?token=<见 servers.txt:WEBCHAT_TOKEN>`
 - [x] git rm 误入库的 bak 文件（含飞书 App Secret 的 users.csv.bak）
 - [x] S1: git remote → GitHub，`git pull` 对齐到 Mac HEAD
 - [x] S2: git 重建（删旧 .git → clone origin/dev），代码同步完成
-- [ ] S2: 5 容器重启（carher-6~9,11）with `TUNNEL_HOST_PREFIX=s2-`
-- [ ] S3: git 重建 + 1 容器重启（carher-10）
+- [x] S2: 5 容器重启（carher-6~9,11）with `TUNNEL_HOST_PREFIX=s2-` ✅
+- [x] S3: git 重建 + 1 容器重启（carher-10）✅
 
 **server.env 机制**（代码统一，配置分离）：
 
@@ -359,6 +359,18 @@ S3: `http://10.68.13.188:<PORT>?token=<见 servers.txt:WEBCHAT_TOKEN>`
 | S1     | `TUNNEL_HOST_PREFIX="s1-"` |
 | S2     | `TUNNEL_HOST_PREFIX="s2-"` |
 | S3     | `TUNNEL_HOST_PREFIX="s3-"` |
+
+端到端验证通过（2026-02-24 20:45）：
+
+| 项目           | S1 (186)       | S2 (187)       | S3 (188)       |
+| -------------- | -------------- | -------------- | -------------- |
+| git HEAD       | `9f2cdad8c` ✅ | `9f2cdad8c` ✅ | `9f2cdad8c` ✅ |
+| server.env     | `s1-` ✅       | `s2-` ✅       | `s3-` ✅       |
+| 容器数         | 7 运行 ✅      | 5 运行 ✅      | 1 运行 ✅      |
+| --memory=2g    | 2GB ✅         | 2GB ✅         | 2GB ✅         |
+| VOICE 域名前缀 | `s1-` ✅       | `s2-` ✅       | `s3-` ✅       |
+
+- [x] ~~S2/S3 容器内存限制统一设为 2GB~~ → 已完成（所有容器 2147483648 bytes = 2GB）
 
 #### 待完成
 
@@ -373,7 +385,7 @@ S3: `http://10.68.13.188:<PORT>?token=<见 servers.txt:WEBCHAT_TOKEN>`
 - [ ] per-container 独立随机 token（当前所有容器共享同一 webchat token）
 - [x] ~~其他容器（carher-2~5, 13）重启以启用 voice 和新域名前缀~~ → 已完成（2026-02-24 18:30）
 - [ ] S2/S3 cloudflared 部署（复制 S1 方案）
-- [ ] S2/S3 容器内存限制统一设为 2GB（S2/S3 的 start-user.sh 需确认已包含 --memory=2g）
+- [x] ~~S2/S3 容器内存限制统一设为 2GB~~ → 已完成（2026-02-24 20:45，git sync 重启时一并生效）
 
 #### Cloudflare Tunnel（S1，2026-02-24 18:00）
 
@@ -455,5 +467,97 @@ carher-13 实际语音会话测试（2026-02-24 18:25）：
 > Admin Her 无飞书 bot，语音通过直接 URL 访问。
 > 启动脚本：`/tmp/start-admin-her.sh`，tmux session `admin-her`。
 > ⚠️ 注意：Admin Her 开机不会自启，需手动 `tmux new-session -d -s admin-her "bash /tmp/start-admin-her.sh"`。
+
+---
+
+## 2026-02-24：Owner 机制发现与修复
+
+### 问题现象
+
+carher-12（测试共享 bot）用户反馈 cron 不可用。AI 回复"没有 cron 工具"，被迫用 `exec` 执行 `openclaw cron list` 作为 fallback（也失败了）。
+
+### 根因分析（两层独立问题）
+
+| 层                      | 问题                                   | 影响                                            | 修复                                                   |
+| ----------------------- | -------------------------------------- | ----------------------------------------------- | ------------------------------------------------------ |
+| Layer 1：Device Pairing | `paired.json` 缺少完整 operator scopes | 所有 gateway 工具失败（"pairing required"）     | `docker/fix-device-pairing.js`（已集成 start-user.sh） |
+| Layer 2：Owner 身份     | 发送者未被识别为 Owner                 | cron/gateway 等 ownerOnly 工具被过滤，AI 看不到 | `dm.allowFrom` 或 `commands.ownerAllowFrom`            |
+
+Layer 1 在上一轮修复完成。Layer 2 是本次发现的新问题。
+
+### 关键发现
+
+1. `cron` 等工具标记 `ownerOnly: true`，非 Owner 的发送者工具列表会被过滤
+2. Owner 身份由 `dm.allowFrom` 或 `commands.ownerAllowFrom` 中的具体 open_id 匹配决定
+3. **`["*"]` 不等于所有人是 Owner** — `*` 触发 allowAll 路径，跳过 Owner 匹配
+4. CLI `agent` 命令硬编码 `senderIsOwner: true`，因此 CLI 测试无法验证此机制
+5. 配置为空 → 所有人都能聊天 → 但无人是 Owner → cron 不可见
+
+### 实验验证（本地 Mac carher-1）
+
+| 测试 | dm.allowFrom | ownerAllowFrom    | AI 行为                                    | 结论                    |
+| ---- | ------------ | ----------------- | ------------------------------------------ | ----------------------- |
+| A    | 空           | 无                | `Exec: run openclaw cron`（fallback 失败） | 无 Owner → cron 不可见  |
+| B    | 空           | `["ou_e5e4e..."]` | `⏰ Cron` 原生工具调用成功                 | ownerAllowFrom 独立生效 |
+
+### 受影响容器清单
+
+| 容器      | 用户         | dm.allowFrom     | 状态        |
+| --------- | ------------ | ---------------- | ----------- |
+| carher-1  | 董事长(老杨) | `ou_c66285bd...` | ✅ 有 Owner |
+| carher-2  | 金龙         | 空               | ❌ 缺 Owner |
+| carher-3  | 董事长(迁移) | `ou_286e0c02...` | ✅ 有 Owner |
+| carher-4  | 振华         | `ou_c4f9a66b...` | ✅ 有 Owner |
+| carher-5  | 哲人         | 空               | ❌ 缺 Owner |
+| carher-6  | 乾军         | 空               | ❌ 缺 Owner |
+| carher-7  | 百林         | 空               | ❌ 缺 Owner |
+| carher-8  | 徐敏         | 空               | ❌ 缺 Owner |
+| carher-9  | 车联(洪源)   | 空               | ❌ 缺 Owner |
+| carher-10 | 运营(徐协邦) | 空               | ❌ 缺 Owner |
+| carher-11 | 文胜         | 空               | ❌ 缺 Owner |
+| carher-12 | 测试(共享)   | 空               | ❌ 缺 Owner |
+| carher-13 | 弋天         | `ou_b338bb3d...` | ✅ 有 Owner |
+
+### 修复方案
+
+- **专属 Bot（carher-2/5/6/7/8/9/10/11）**：收集每个用户的 open_id → 填入 CSV `feishu_owner_open_id` 列 → 重建容器
+- **共享 Bot（carher-12）**：填入 CSV `owner_allow_from` 列（管理员 open_id，`|` 分隔）→ 重建容器
+- 收集方法：用户给 bot 发一条消息 → 从日志取 `from=ou_xxx`
+- 文档已更新：`her-feishu-bot-architecture.md`（Owner 机制详解）、`her-feishu-bot-enterprise-deploy.md`（步骤 11 + CSV 字段说明 + 共享 bot 配置）
+
+### CSV 工具化改造（2026-02-24 实施）
+
+**问题**：之前共享 bot 需要手动编辑 `openclaw.json` 添加 `commands.ownerAllowFrom`，`start-user.sh` 重建会覆盖手动修改。
+
+**方案**：CSV 新增第 9 列 `owner_allow_from`，`start-user.sh` 自动生成 `commands.ownerAllowFrom`。
+
+**改动文件**：
+
+- `docker/users.csv` — 新增第 9 列 `owner_allow_from`（`|` 分隔多个 open_id）
+- `start-user.sh` — 读取第 9 列，非空时生成 `commands.ownerAllowFrom`
+
+**本地 Mac 实验验证（carher-1）**：
+
+| 测试   | feishu_owner_open_id | owner_allow_from | dm.allowFrom    | ownerAllowFrom  | AI 有 cron？              | 结论                    |
+| ------ | -------------------- | ---------------- | --------------- | --------------- | ------------------------- | ----------------------- |
+| Case A | `ou_e5e4e...`        | 空               | `[ou_e5e4e...]` | 不生成          | ✅ `⏰ Cron` 工具调用成功 | dm.allowFrom 识别 Owner |
+| Case B | 空                   | `ou_e5e4e...`    | 不生成          | `[ou_e5e4e...]` | ✅ `cron.add` 被调用      | ownerAllowFrom 独立生效 |
+| Case C | 空                   | 空               | 不生成          | 不生成          | ❌ "没有 cron tool"       | 无 Owner → cron 被过滤  |
+
+**向后兼容性**：旧 CSV（8列）+ 新 `start-user.sh` → 第 9 列为空 → 不生成 ownerAllowFrom → 行为不变。
+
+### 待办
+
+- [ ] 收集 9 个缺 Owner 容器的用户 open_id
+- [ ] 服务器 CSV 填入 open_id 并重建容器
+- [ ] carher-12 在服务器 CSV 填入 `owner_allow_from` 并重建
+
+### 部署步骤
+
+1. Mac push 代码到 dev（`start-user.sh` + 文档）
+2. S1/S2/S3 `git pull` 获取新的 `start-user.sh`
+3. 各服务器手动编辑 CSV，添加第 9 列 `owner_allow_from`（专属 bot 留空，共享 bot 填管理员 open_id）
+4. 收集缺失的用户 open_id → 填入 CSV `feishu_owner_open_id` 列
+5. `./start-user.sh --id=N` 重建受影响的容器
 
 <!-- 后续操作记录追加在这里 -->

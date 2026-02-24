@@ -120,7 +120,7 @@ if [ "$ACTION" = "list" ]; then
   echo ""
   echo -e "${CYAN}ID  姓名          模型      Provider    飞书Bot           主人OpenID                              容器状态    备注${NC}"
   echo -e "${CYAN}──  ────          ────      ────────    ───────           ──────────                              ────────    ────${NC}"
-  while IFS=',' read -r uid uname umodel ufeishu_id ufeishu_secret ufeishu_owner uprovider unote; do
+  while IFS=',' read -r uid uname umodel ufeishu_id ufeishu_secret ufeishu_owner uprovider unote uowner_allow_from; do
     [[ "$uid" =~ ^[[:space:]]*# ]] && continue
     [[ -z "$uid" ]] && continue
     uid=$(echo "$uid" | xargs)
@@ -385,9 +385,10 @@ CSV_FEISHU_SECRET=""
 CSV_FEISHU_OWNER=""
 CSV_PROVIDER=""
 CSV_NOTE=""
+CSV_OWNER_ALLOW_FROM=""
 
 if [ -f "$USERS_CSV" ]; then
-  while IFS=',' read -r uid uname umodel ufeishu_id ufeishu_secret ufeishu_owner uprovider unote; do
+  while IFS=',' read -r uid uname umodel ufeishu_id ufeishu_secret ufeishu_owner uprovider unote uowner_allow_from; do
     [[ "$uid" =~ ^[[:space:]]*# ]] && continue
     [[ -z "$uid" ]] && continue
     uid=$(echo "$uid" | xargs)
@@ -399,6 +400,7 @@ if [ -f "$USERS_CSV" ]; then
       CSV_FEISHU_OWNER=$(echo "$ufeishu_owner" | xargs)
       CSV_PROVIDER=$(echo "$uprovider" | xargs)
       CSV_NOTE=$(echo "$unote" | xargs)
+      CSV_OWNER_ALLOW_FROM=$(echo "$uowner_allow_from" | xargs)
       break
     fi
   done < "$USERS_CSV"
@@ -496,6 +498,7 @@ else:
 feishu_id = '${CSV_FEISHU_ID}'
 feishu_secret = '${CSV_FEISHU_SECRET}'
 feishu_owner = '${CSV_FEISHU_OWNER}'
+owner_allow_from_raw = '${CSV_OWNER_ALLOW_FROM}'
 if feishu_id and feishu_secret:
     feishu_cfg = {
         'enabled': True,
@@ -509,6 +512,12 @@ if feishu_id and feishu_secret:
         'archive': True,
     }
     cfg.setdefault('channels', {})['feishu'] = feishu_cfg
+
+# commands.ownerAllowFrom from CSV (pipe-separated open_ids)
+if owner_allow_from_raw:
+    owner_ids = [x.strip() for x in owner_allow_from_raw.split('|') if x.strip()]
+    if owner_ids:
+        cfg.setdefault('commands', {})['ownerAllowFrom'] = owner_ids
 
 json.dump(cfg, sys.stdout, indent=2)
 " > "$CUSTOM_CONFIG"
@@ -645,6 +654,14 @@ fi
 
 # Auto-sync workspace templates on startup
 sync_workspace "$CONTAINER_NAME"
+
+# --- Ensure device pairing has full operator scopes (idempotent) ---
+PAIRING_SCRIPT="${SCRIPT_DIR}/docker/fix-device-pairing.js"
+if [ -f "$PAIRING_SCRIPT" ]; then
+  docker cp "$PAIRING_SCRIPT" "${CONTAINER_NAME}:/tmp/fix-device-pairing.js" 2>/dev/null
+  PAIRING_OUT=$(docker exec "$CONTAINER_NAME" node /tmp/fix-device-pairing.js 2>&1) || true
+  echo -e "${GREEN}  ✓ ${PAIRING_OUT:-device pairing OK}${NC}"
+fi
 
 # --- Auto-generate voice token if not exists (idempotent; preserves token across restarts) ---
 VOICE_TOKEN=$(docker exec "$CONTAINER_NAME" bash -c '
