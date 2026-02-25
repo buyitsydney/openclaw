@@ -7,7 +7,7 @@
 
 **最终方案：200 Bot + 200 Docker（每人一个独立 OpenClaw 容器）**
 
-**验证状态 (2026-02-15)：飞书并发测试通过、数据隔离已确认、Webchat 隔离已确认、自动镜像重建已实现、Web Search (Perplexity) 已验证、Browser Use (Chromium headless) 已验证、Context Window 240K 保护已配置、CardKit 状态 Footer 已实现、Config $include 零分叉架构已验证（本地 + Docker 全环境 0 error）、语音 Gemini Live 已验证（本地 + Docker）**（均为本地 Mac 验证，Ubuntu 企业部署尚未执行）
+**验证状态 (2026-02-25 更新)：飞书并发测试通过、数据隔离已确认、Webchat 隔离已确认、自动镜像重建已实现、Web Search (Perplexity) 已验证、Browser Use (Chromium headless) 已验证、Context Window 240K 保护已配置、CardKit 状态 Footer 已实现、Config $include 零分叉架构已验证（本地 + Docker 全环境 0 error）、语音 Gemini Live 已验证（本地 + Docker）、@mention 发送已验证（本地 + Docker，需 contact:user.base:readonly 权限）**（均为本地 Mac 验证，Ubuntu 企业部署尚未执行）
 
 ---
 
@@ -400,7 +400,7 @@ git checkout v旧版本
 | --- | --------------------- | ------------------------------------------------------------ |
 | 1   | 创建应用 + 启用机器人 | 命名格式：`{人名}的her`（如：老杨的her），添加「机器人」能力 |
 | 2   | 记录凭证              | 复制 App ID + App Secret                                     |
-| 3   | 批量导入权限          | 粘贴 JSON 导入 68 个权限                                     |
+| 3   | 批量导入权限          | 粘贴 JSON 导入 70 个权限                                     |
 | 4   | 第一次发布            | 可用范围 = 指定人员，只选一人（见下方说明）                  |
 | 5   | 确认 Bot 可见         | 让目标员工搜索 Bot，确认能找到                               |
 | 6   | 交给部署者            | 等部署者确认 WSClient connected                              |
@@ -449,6 +449,8 @@ git checkout v旧版本
       "board:whiteboard:node:read",
       "cardkit:card:write",
       "contact:contact.base:readonly",
+      "contact:department.base:readonly",
+      "contact:user.base:readonly",
       "docs:doc",
       "docs:document.comment:create",
       "docs:document.comment:read",
@@ -519,12 +521,12 @@ git checkout v旧版本
 
 点击「下一步，确认新增权限」→ 确认即可。已开通的权限不会重复添加。
 
-> **权限分类（共 68 个，全部为 tenant 级别）**：
+> **权限分类（共 70 个，全部为 tenant 级别）**：
 >
 > - **消息基础**（6 个）：`im:message`、`im:message:send_as_bot`、`im:message.group_msg`、`im:message.p2p_msg:readonly`、`im:chat:readonly`、`im:resource` — 消息收发 + 图片 + 群聊归档
 > - **卡片流式回复**（1 个）：`cardkit:card:write` — AI 打字机效果
 > - **Emoji 表情**（2 个）：`im:message.reactions:read`、`im:message.reactions:write_only` — AI 自动 Get 回应 + 点赞
-> - **联系人**（1 个）：`contact:contact.base:readonly` — 获取发送者姓名
+> - **联系人**（3 个）：`contact:contact.base:readonly`、`contact:user.base:readonly`、`contact:department.base:readonly` — 获取发送者姓名 + @mention 用户名查询 + 按部门查人
 > - **文档核心**（6 个）：`docs:doc`、`docx:document`、`docx:document.block:convert`、`docx:document:create`、`docx:document:readonly`、`docx:document:write_only` — 旧版 + 新版文档读写
 > - **文档评论**（4 个）：`docs:document.comment:*` — 创建/读取/更新评论
 > - **文档内容/媒体/订阅**（5 个）：`docs:document.content:read`、`docs:document.media:download`、`docs:document.media:upload`、`docs:document.subscription`、`docs:document.subscription:read` — 文档内容读取、媒体上传下载、订阅通知

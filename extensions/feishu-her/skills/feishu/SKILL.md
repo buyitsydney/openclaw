@@ -160,6 +160,45 @@ Workflow: `list_blocks` 找到目标 block → `update_block` + `find/replace_wi
 2. 检查主要 heading 顺序
 3. 然后报告成功
 
+## @提及用户（@mention）
+
+在飞书消息中 @提及某人，必须使用飞书 `<at>` 标签语法，**不能**只写 `@名字`（纯文本 @ 不会触发飞书通知）。
+
+### 语法格式
+
+```
+<at user_id="ou_xxx">姓名</at>
+```
+
+- `user_id` 必须是有效的 `open_id`（`ou_` 开头）
+- @所有人：`<at user_id="all">所有人</at>`
+
+### 操作流程
+
+1. **获取目标用户的 open_id**：
+   - 从群成员获取：`feishu_chat(action="members", chat_id="oc_xxx")` — 返回成员列表含 `member_id`（即 open_id）和 `name`
+   - 从通讯录获取：`feishu_directory(action="list_users")` — 返回用户列表含 `open_id` 和 `name`
+   - 从通讯录查单人：`feishu_directory(action="get_user", user_id="ou_xxx")`
+
+2. **在消息文本中使用 `<at>` 标签**：
+
+   ```
+   message(action="send", channel="feishu", target="oc_xxx",
+           message="<at user_id=\"ou_abc123\">张三</at> 请查收这份文档")
+   ```
+
+3. **@所有人**：
+   ```
+   message(action="send", channel="feishu", target="oc_xxx",
+           message="<at user_id=\"all\">所有人</at> 请注意以下通知")
+   ```
+
+### 注意事项
+
+- **先查 open_id 再 @**：不要凭空编造 open_id，必须先用 `feishu_chat` 或 `feishu_directory` 查到真实 ID
+- **可以和 Markdown 混用**：`**重要通知** <at user_id="ou_xxx">张三</at> 请处理` — 系统会正确解析
+- **@所有人需要群权限**：群必须开启了"允许 @所有人"功能
+
 ## 操作指南
 
 ### 发送消息

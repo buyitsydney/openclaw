@@ -107,6 +107,7 @@ type PostElement = {
   style?: string[];
   href?: string;
   language?: string;
+  user_id?: string;
 };
 
 /** Convert a Markdown string to Feishu Post content structure.
@@ -189,15 +190,16 @@ export function markdownToPost(md: string): { zh_cn: { content: PostElement[][] 
 }
 
 /** Parse a single line of Markdown text into Feishu Post inline elements.
- *  Supports: **bold**, *italic*, `inline code`, [text](url).
+ *  Supports: **bold**, *italic*, `inline code`, [text](url), <at user_id="xxx">name</at>.
  *  If `forceBold` is true, the whole line is rendered bold (for headings). */
 function parseInlineElements(text: string, forceBold = false): PostElement[][] {
   const elements: PostElement[] = [];
 
   // Regex to match inline Markdown tokens in order of precedence.
-  // Bold+italic (***), bold (**), italic (*/_), inline code (`), link [text](url).
+  // Bold+italic (***), bold (**), italic (*/_), inline code (`), link [text](url),
+  // Feishu @mention: <at user_id="xxx">name</at>
   const inlineRegex =
-    /(\*\*\*(.+?)\*\*\*|\*\*(.+?)\*\*|\*(.+?)\*|_(.+?)_|`(.+?)`|\[([^\]]+)\]\(([^)]+)\))/g;
+    /(\*\*\*(.+?)\*\*\*|\*\*(.+?)\*\*|\*(.+?)\*|_(.+?)_|`(.+?)`|\[([^\]]+)\]\(([^)]+)\)|<at\s+user_id="([^"]+)">([^<]*)<\/at>)/g;
 
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -233,6 +235,9 @@ function parseInlineElements(text: string, forceBold = false): PostElement[][] {
     } else if (match[7] && match[8]) {
       // [text](url)
       elements.push({ tag: "a", text: match[7], href: match[8] });
+    } else if (match[9]) {
+      // <at user_id="xxx">name</at> → Feishu Post @mention element
+      elements.push({ tag: "at", user_id: match[9] });
     }
 
     lastIndex = match.index + match[0].length;

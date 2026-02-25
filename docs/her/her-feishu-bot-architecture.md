@@ -2,7 +2,7 @@
 
 通过飞书（Lark）机器人与 OpenClaw 对话，让用户在飞书客户端内获得 AI 助手体验。
 
-**状态：已实现并验证通过 (2026-02-14)**（含 Web Search + Browser Use 能力）
+**状态：已实现并验证通过 (2026-02-25 更新)**（含 Web Search + Browser Use + @mention 能力）
 
 ## 核心结论
 
@@ -47,7 +47,7 @@
 
 1. 在飞书开放平台（open.feishu.cn）创建一个自建应用，启用机器人能力
 2. 获取 `app_id` + `app_secret`
-3. 添加权限（批量导入 22 个，见企业部署文档）
+3. 添加权限（批量导入 70 个，见企业部署文档）
 4. **第一次发布**：创建版本 → 设置可用范围 → 发布（让 Bot 在飞书客户端可见）
 5. 去飞书客户端搜索 Bot，确认能找到（此时无法聊天，正常）
 6. 在 OpenClaw config 中配置 `channels.feishu.appId` + `channels.feishu.appSecret`
@@ -301,7 +301,7 @@ outbound: {
 
 ### 5. 权限需求
 
-在飞书开放平台配置以下 7 个权限：
+在飞书开放平台配置以下 9 个核心权限：
 
 - `im:message` -- 获取与发送单聊、群组消息
 - `im:message:send_as_bot` -- 以应用身份发消息
@@ -310,6 +310,8 @@ outbound: {
 - `im:message.p2p_msg:readonly` -- 读取用户发给机器人的单聊消息
 - `im:chat:readonly` -- 获取群信息（获取群名，归档索引用）
 - `cardkit:card:write` -- 创建与更新卡片（AI 流式回复打字机效果）
+- `contact:user.base:readonly` -- 读取用户基本信息（**@mention 必需**，用于通过 open_id 查用户姓名，不配则 `sender name lookup` 返回空）
+- `contact:department.base:readonly` -- 读取部门信息（通讯录按部门查人时需要）
 
 事件订阅：
 
@@ -510,6 +512,37 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 ---
 
 ## 已修复的问题
+
+### @mention 支持（AI 可 @提及用户和 @所有人）(2026-02-25)
+
+**问题**：AI 在飞书群聊或私聊中无法 @提及用户。尝试 @某人时，输出的是原始 `<at user_id="xxx"></at>` 标签文本，飞书不解析为 @mention 蓝标。同时 `sender name lookup` 无法查到用户姓名，只返回 `open_id`/`union_id`。
+
+**根因（两个独立问题）**：
+
+1. **`markdownToPost` 不解析 `<at>` 标签**：`parseInlineElements` 的正则只匹配 `**粗体**`、`*斜体*`、`` `code` ``、`[链接](url)`，没有匹配 Feishu 的 `<at user_id="xxx">Name</at>` 语法。当 AI 输出包含 `<at>` 的 Markdown 并通过 `sendFeishuRichText` 发送 Post 消息时，`<at>` 标签被当成普通文本输出。
+2. **缺少通讯录权限**：飞书应用未配置 `contact:user.base:readonly` 和 `contact:department.base:readonly`，导致 `resolveFeishuSenderName` 调用 `client.contact.user.get()` 时 API 返回的 user 对象只有 `open_id`/`union_id`/`mobile_visible`，没有 `name` 字段。
+
+**修复（三处改动）**：
+
+1. **`outbound.ts` — `PostElement` 类型**：新增 `user_id?: string` 字段，支持 `{ tag: "at", user_id: "ou_xxx" }` 元素
+2. **`outbound.ts` — `parseInlineElements` 正则**：新增 `<at\s+user_id="([^"]+)">([^<]*)</at>` 匹配，检测到后生成 `{ tag: "at", user_id: match[9] }` Post 元素
+3. **`skills/feishu/SKILL.md`**：新增「@提及用户」章节，指导 AI 先用 `feishu_chat(action="members")` 或 `feishu_directory` 获取 open_id，再在 `message` 工具参数中使用 `<at user_id="ou_xxx">Name</at>` 语法
+
+**权限要求**：
+
+| 权限                               | 用途                                                                      |
+| ---------------------------------- | ------------------------------------------------------------------------- |
+| `contact:user.base:readonly`       | 通过 open_id 查询用户姓名（sender name lookup + @mention 前获取 open_id） |
+| `contact:department.base:readonly` | 按部门查询用户列表                                                        |
+
+**验证（2026-02-25 本地 Her + Docker 1 双路实测）**：
+
+- 本地 Her 日志：`sender resolved: ou_4e2a42036050d192b367829818e700d5 -> 卜弋天`（权限生效后姓名正常返回）
+- Docker 1 日志：`sender resolved: ou_e5e4e73b7658b1169b8dcb7aa43c9348 -> 卜弋天`
+- AI 成功在群聊中 @提及个人（蓝标显示）和 @所有人
+- text 格式消息中 `<at user_id="xxx">` 原生透传，Post 格式消息中 `<at>` 标签正确转为 `{ tag: "at", user_id }` 元素
+
+**注意**：`contact:user.base:readonly` 在飞书个人版仍无法返回姓名（平台限制），企业版/旗舰版正常。
 
 ### 文件下载错误码解析（飞书 API 400 精准诊断）(2026-02-22)
 
@@ -1013,6 +1046,7 @@ cardkit.v1.card.settings({
 8. ~~**Context Window 自动约束**~~：已实现（2026-02-15）-- 默认限制 context window 为 240K token（`contextTokens` + `contextWindow` 对齐），防止用户无感知地大量消耗 token 导致高额费用。详见 [context-window-architecture.md](context-window-architecture.md)
 9. ~~**飞书端 Context Window 可视化**~~：已实现（2026-02-15）-- 每条 AI 回复的 CardKit 卡片底部自动追加状态行，格式: `🧠 **模型名** · 📊 Xk/240k (Y%) · 🧹 N次压缩`，数据源复用 `/status` session store，>=70% 自动警告。实现位于 `extensions/feishu-her/src/gateway.ts`
 10. ~~**Claude Max 用量查询 `/quota`**~~：已实现（2026-02-19）-- 飞书输入 `/quota` 实时查询 Anthropic Claude Max 订阅用量。原理：发送一个最小 API 请求（`max_tokens: 1`），从响应头提取 `anthropic-ratelimit-unified-*` 系列 headers，展示 5h/7d 滚动窗口 utilization、重置时间、降级阈值、安全评估。与当前使用的 AI 模型无关（即使 primary 设为 OpenRouter，只要环境变量 `ANTHROPIC_OAUTH_TOKEN` 存在就能查询）。详见 [anthropic-max-enterprise.md](anthropic-max-enterprise.md)
+11. ~~**@mention 发送**~~：已实现（2026-02-25）-- AI 可在飞书消息中 @提及用户（`<at user_id="ou_xxx">Name</at>`）和 @所有人（`<at user_id="all">`）。`markdownToPost` 解析 `<at>` 标签生成 Post `{ tag: "at", user_id }` 元素，text 格式原生透传。需要 `contact:user.base:readonly` + `contact:department.base:readonly` 权限
 
 ---
 
@@ -1259,7 +1293,7 @@ npm 上至少有 4 个飞书相关包：
 | **多维表格 Bitable**               | ❌                               | ✅ 461 行                | 20+ 字段类型，筛选/排序/分页                                                             |
 | **权限管理 Perm**                  | ❌                               | ✅ 173 行                | 协作者 CRUD                                                                              |
 | **通讯录 Directory**               | ❌                               | ✅ 177 行                | 列出企业用户/群组                                                                        |
-| **@mention 转发**                  | ❌                               | ✅ 126 行                | 群里 @bot+@张三 → 回复自动 @张三                                                         |
+| **@mention 发送**                  | ✅ 已实现（2026-02-25）          | ✅ 126 行                | AI 可在消息中 @提及用户和 @所有人。text 原生透传 + Post 格式 `<at>` 标签解析             |
 | **引用消息获取**                   | ❌                               | ✅                       | `getMessageFeishu` 获取被引用的原消息内容                                                |
 | **Emoji 表情回应**                 | ✅ 已实现                        | ✅ 160 行                | 消息 reaction，我们支持双机制（自动 ACK + AI 主动 react）                                |
 | **Typing 提示**                    | CardKit 流式卡片 + Get emoji ACK | Emoji reaction 加/移除   | 双重方案：CardKit 流式打字 + Get emoji 收到即反馈                                        |
@@ -1338,33 +1372,35 @@ npm 上至少有 4 个飞书相关包：
 
 **已开通（2026-02-15 更新，共 25 个 tenant 级别权限）：**
 
-| 权限 scope                        | 用途         | 需要的功能                                                                         |
-| --------------------------------- | ------------ | ---------------------------------------------------------------------------------- |
-| `im:message`                      | 发送消息     | 基础消息收发                                                                       |
-| `im:message:send_as_bot`          | Bot 发送消息 | 基础消息收发                                                                       |
-| `im:message.group_msg`            | 群消息       | 群聊                                                                               |
-| `im:message.p2p_msg:readonly`     | 单聊消息     | 私聊                                                                               |
-| `im:chat:readonly`                | 读取群信息   | 群名获取                                                                           |
-| `im:resource`                     | 消息资源     | 图片下载                                                                           |
-| `cardkit:card:write`              | 卡片写入     | CardKit 流式卡片                                                                   |
-| `contact:contact.base:readonly`   | 通讯录读取   | 发送者姓名解析（已开通，API 调用成功但个人版不返回 name 字段——平台限制，需企业版） |
-| `docs:doc`                        | 旧版文档     | 兼容                                                                               |
-| `docx:document`                   | 新版文档完整 | 文档读写                                                                           |
-| `docx:document:readonly`          | 文档只读     | 文档读取                                                                           |
-| `docx:document:write_only`        | 文档写入     | 文档追加/写入                                                                      |
-| `docx:document:create`            | 创建文档     | 新建文档                                                                           |
-| `docx:document.block:convert`     | Block 转换   | Markdown→Block                                                                     |
-| `drive:drive`                     | 云盘读写     | 云盘文件列表/创建文件夹（2026-02-15 升级）                                         |
-| `drive:drive.metadata:readonly`   | 文件元数据   | 云空间文件元数据查看（2026-02-15 新增）                                            |
-| `drive:drive.search:readonly`     | 搜索云文档   | 云文档搜索（2026-02-15 新增）                                                      |
-| `drive:drive:version:readonly`    | 文档版本查看 | 查看文档版本信息（2026-02-15 新增）                                                |
-| `wiki:wiki`                       | 知识库完整   | Wiki 读写                                                                          |
-| `wiki:wiki:readonly`              | 知识库只读   | Wiki 导航/读取                                                                     |
-| `board:whiteboard:node:create`    | 画板节点创建 | 画板内容创建                                                                       |
-| `board:whiteboard:node:read`      | 画板节点读取 | 画板导出为 PNG 图片（P1 #8，已验证）                                               |
-| `bitable:app`                     | 多维表格读写 | 多维表格记录读取/创建/更新（P1 #4，2026-02-15 升级并验证）                         |
-| `im:message.reactions:read`       | 表情回应读取 | 读取消息上的 emoji 回应列表                                                        |
-| `im:message.reactions:write_only` | 表情回应写入 | Emoji reaction 自动 ACK + AI 主动 react（P1 #9）                                   |
+| 权限 scope                         | 用途         | 需要的功能                                                                                                     |
+| ---------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------- |
+| `im:message`                       | 发送消息     | 基础消息收发                                                                                                   |
+| `im:message:send_as_bot`           | Bot 发送消息 | 基础消息收发                                                                                                   |
+| `im:message.group_msg`             | 群消息       | 群聊                                                                                                           |
+| `im:message.p2p_msg:readonly`      | 单聊消息     | 私聊                                                                                                           |
+| `im:chat:readonly`                 | 读取群信息   | 群名获取                                                                                                       |
+| `im:resource`                      | 消息资源     | 图片下载                                                                                                       |
+| `cardkit:card:write`               | 卡片写入     | CardKit 流式卡片                                                                                               |
+| `contact:contact.base:readonly`    | 通讯录读取   | 发送者姓名解析（已开通，API 调用成功但个人版不返回 name 字段——平台限制，需企业版）                             |
+| `contact:user.base:readonly`       | 用户基本信息 | **@mention 必需**：通过 open_id 查询用户姓名，AI 构建 `<at>` 标签前需获取 open_id→name 映射（2026-02-25 新增） |
+| `contact:department.base:readonly` | 部门信息     | 通讯录按部门查人（2026-02-25 新增）                                                                            |
+| `docs:doc`                         | 旧版文档     | 兼容                                                                                                           |
+| `docx:document`                    | 新版文档完整 | 文档读写                                                                                                       |
+| `docx:document:readonly`           | 文档只读     | 文档读取                                                                                                       |
+| `docx:document:write_only`         | 文档写入     | 文档追加/写入                                                                                                  |
+| `docx:document:create`             | 创建文档     | 新建文档                                                                                                       |
+| `docx:document.block:convert`      | Block 转换   | Markdown→Block                                                                                                 |
+| `drive:drive`                      | 云盘读写     | 云盘文件列表/创建文件夹（2026-02-15 升级）                                                                     |
+| `drive:drive.metadata:readonly`    | 文件元数据   | 云空间文件元数据查看（2026-02-15 新增）                                                                        |
+| `drive:drive.search:readonly`      | 搜索云文档   | 云文档搜索（2026-02-15 新增）                                                                                  |
+| `drive:drive:version:readonly`     | 文档版本查看 | 查看文档版本信息（2026-02-15 新增）                                                                            |
+| `wiki:wiki`                        | 知识库完整   | Wiki 读写                                                                                                      |
+| `wiki:wiki:readonly`               | 知识库只读   | Wiki 导航/读取                                                                                                 |
+| `board:whiteboard:node:create`     | 画板节点创建 | 画板内容创建                                                                                                   |
+| `board:whiteboard:node:read`       | 画板节点读取 | 画板导出为 PNG 图片（P1 #8，已验证）                                                                           |
+| `bitable:app`                      | 多维表格读写 | 多维表格记录读取/创建/更新（P1 #4，2026-02-15 升级并验证）                                                     |
+| `im:message.reactions:read`        | 表情回应读取 | 读取消息上的 emoji 回应列表                                                                                    |
+| `im:message.reactions:write_only`  | 表情回应写入 | Emoji reaction 自动 ACK + AI 主动 react（P1 #9）                                                               |
 
 **尚未开通（需要时申请）：**
 
@@ -1387,9 +1423,9 @@ npm 上至少有 4 个飞书相关包：
 
 ### P3 — 按需
 
-| #   | 任务              | 参考文件             | 工作量 | 说明                                                            |
-| --- | ----------------- | -------------------- | ------ | --------------------------------------------------------------- |
-| 14  | **@mention 转发** | `mention.ts` ~126 行 | 1 天   | 群里 @bot + @人类同事 -> bot 回复自动 @张三。场景较少，优先级低 |
+| #   | 任务              | 参考文件                | 工作量 | 说明                                                                                                                                                                            |
+| --- | ----------------- | ----------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 14  | **@mention 发送** | ✅ 已实现（2026-02-25） | —      | AI 可在消息中 @提及用户（`<at user_id="ou_xxx">Name</at>`）和 @所有人。`markdownToPost` 解析 `<at>` 标签生成 Post 元素，text 格式原生透传。需 `contact:user.base:readonly` 权限 |
 
 ### 自研独有，不在开源版本中（持续维护）
 
