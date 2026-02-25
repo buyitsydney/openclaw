@@ -33,6 +33,7 @@ async function listUsers(
   const res: any = await client.contact.user.findByDepartment({
     params: {
       department_id: departmentId ?? "0",
+      department_id_type: "department_id",
       page_size: pageSize ?? 50,
       ...(pageToken && { page_token: pageToken }),
     },
@@ -97,6 +98,7 @@ async function listDepartments(
   const res: any = await client.contact.department.list({
     params: {
       parent_department_id: parentDepartmentId ?? "0",
+      department_id_type: "department_id",
       page_size: pageSize ?? 50,
       fetch_child: true,
       ...(pageToken && { page_token: pageToken }),
