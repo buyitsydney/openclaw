@@ -1,6 +1,6 @@
 ---
 name: feishu
-description: Feishu (飞书) comprehensive guide covering messaging, groups, contacts, documents, wiki, bitable, drive, group archives, and voice. Use when interacting with Feishu in any way. Triggers on keywords like 飞书, feishu, 转发, 分享文档, share document, forward, 群, group, 通讯录, contacts, directory, 文档, 知识空间, wiki, 多维表格, bitable, 群聊归档, group archive, 语音, voice, audio.
+description: Feishu (飞书) comprehensive guide covering messaging, groups, contacts, documents, wiki, bitable, drive, calendar, group archives, and voice. Use when interacting with Feishu in any way. Triggers on keywords like 飞书, feishu, 转发, 分享文档, share document, forward, 群, group, 通讯录, contacts, directory, 文档, 知识空间, wiki, 多维表格, bitable, 日历, calendar, 忙闲, 有空吗, 建会, 群聊归档, group archive, 语音, voice, audio.
 metadata: { "openclaw": { "emoji": "📨" } }
 ---
 
@@ -26,6 +26,8 @@ metadata: { "openclaw": { "emoji": "📨" } }
 | **多维表格写** | create_record、update_record                        | `feishu_bitable`   | ✅               |
 | **云盘**       | list、info、create_folder、move、delete             | `feishu_drive`     | ✅ Bot 限制见下  |
 | **群聊归档**   | 本地 JSONL 归档读取和总结                           | `exec` (jq)        | ✅               |
+| **日历建会**   | 建会+自动邀请参会人（对方日历自动收到）             | `feishu_calendar`  | ✅               |
+| **日历忙闲**   | 查任何人忙碌时间段（无需共享）                      | `feishu_calendar`  | ✅               |
 | **删除**       | —                                                   | —                  | ❌ 无权限（403） |
 
 ## ⚠️ 重要限制（必读！）
@@ -252,6 +254,25 @@ Workflow: `list_blocks` 找到范围的起止 block ID → `delete_range`。注�
 - **先查 open_id 再 @**：不要凭空编造 open_id，必须先用 `feishu_chat` 或 `feishu_directory` 查到真实 ID
 - **可以和 Markdown 混用**：`**重要通知** <at user_id="ou_xxx">张三</at> 请处理` — 系统会正确解析
 - **@所有人需要群权限**：群必须开启了"允许 @所有人"功能
+
+## 日历（feishu_calendar）
+
+### 能做什么
+
+1. **建会 + 自动邀请**：`create_event` 在 bot 日历创建事件，通过 `attendee_ids` 添加参会人 → **参会人飞书日历自动收到邀请**，跟人工建会效果一样
+2. **查忙闲**：`check_freebusy` 查**任何人**的忙碌时间段（只需 open_id，无需共享），返回具体时间区间列表
+3. **管理 bot 自己的事件**：`list_events` / `get_event` / `update_event` / `delete_event`，含参会人接受状态（`accepted`/`tentative`/`declined`）
+
+### 不能做什么
+
+- **看不到别人日历上的会议标题/内容** — `check_freebusy` 只返回时间段，不含标题。要看详情需对方共享日历给 bot
+- 时间格式统一 ISO 8601：`2026-02-25T14:00:00+08:00`
+
+### 场景路由
+
+- "帮我约个会" → `get_primary` → `create_event`（加 `attendee_ids` 邀请参会人）
+- "某人今天有空吗" → `check_freebusy`（先查 open_id）
+- "我今天有什么会" → `check_freebusy` 看忙碌时段 + `list_events` 看 bot 创建的事件
 
 ## 操作指南
 
