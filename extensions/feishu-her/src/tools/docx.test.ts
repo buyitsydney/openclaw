@@ -30,6 +30,8 @@ describe("feishu-her feishu_doc anti-regression", () => {
   const blockGetMock = vi.hoisted(() => vi.fn());
   const rawContentMock = vi.hoisted(() => vi.fn());
   const batchDeleteMock = vi.hoisted(() => vi.fn());
+  const childrenGetMock = vi.hoisted(() => vi.fn());
+  const childrenCreateMock = vi.hoisted(() => vi.fn());
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -60,6 +62,8 @@ describe("feishu-her feishu_doc anti-regression", () => {
         },
         documentBlockChildren: {
           batchDelete: batchDeleteMock,
+          get: childrenGetMock,
+          create: childrenCreateMock,
         },
       },
     });
@@ -90,6 +94,17 @@ describe("feishu-her feishu_doc anti-regression", () => {
       data: { content: "old content" },
     });
     batchDeleteMock.mockResolvedValue({ code: 0 });
+    childrenGetMock.mockResolvedValue({
+      code: 0,
+      data: {
+        items: [
+          { block_id: "c1", block_type: 2 },
+          { block_id: "c2", block_type: 4 },
+          { block_id: "c3", block_type: 2 },
+        ],
+      },
+    });
+    childrenCreateMock.mockResolvedValue({ code: 0, data: { children: [] } });
     downloadWhiteboardImageMock.mockResolvedValue(null);
   });
 
@@ -240,5 +255,87 @@ describe("feishu-her feishu_doc anti-regression", () => {
     expect(details.success).toBe(true);
     expect(details.blocks_deleted).toBe(2);
     expect(details.blocks_added).toBe(1);
+  });
+
+  it("insert_blocks should compute correct index from after_block_id", async () => {
+    blockListMock.mockResolvedValue({ code: 0, data: { items: [] } });
+
+    const tool = registerAndGetTool();
+    const result = await tool.execute("tool-call", {
+      action: "insert_blocks",
+      doc_token: "doc_1",
+      after_block_id: "c1",
+      content: "inserted paragraph",
+    });
+
+    expect(childrenGetMock).toHaveBeenCalledWith({
+      path: { document_id: "doc_1", block_id: "doc_1" },
+    });
+    // c1 is at index 0, so insert index should be 1.
+    expect(descendantCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ index: 1 }),
+      }),
+    );
+    const details = result.details as { success: boolean; insert_position: number };
+    expect(details.success).toBe(true);
+    expect(details.insert_position).toBe(1);
+  });
+
+  it("insert_blocks should compute correct index from before_block_id", async () => {
+    blockListMock.mockResolvedValue({ code: 0, data: { items: [] } });
+
+    const tool = registerAndGetTool();
+    const result = await tool.execute("tool-call", {
+      action: "insert_blocks",
+      doc_token: "doc_1",
+      before_block_id: "c3",
+      content: "before c3",
+    });
+
+    // c3 is at index 2, so insert index should be 2 (before c3).
+    expect(descendantCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ index: 2 }),
+      }),
+    );
+    const details = result.details as { success: boolean; insert_position: number };
+    expect(details.success).toBe(true);
+    expect(details.insert_position).toBe(2);
+  });
+
+  it("delete_range should compute correct start/end indices", async () => {
+    const tool = registerAndGetTool();
+    const result = await tool.execute("tool-call", {
+      action: "delete_range",
+      doc_token: "doc_1",
+      start_block_id: "c1",
+      end_block_id: "c2",
+    });
+
+    expect(childrenGetMock).toHaveBeenCalledWith({
+      path: { document_id: "doc_1", block_id: "doc_1" },
+    });
+    // c1=index 0, c2=index 1 → batchDelete(0, 2)
+    expect(batchDeleteMock).toHaveBeenCalledWith({
+      path: { document_id: "doc_1", block_id: "doc_1" },
+      data: { start_index: 0, end_index: 2 },
+    });
+    const details = result.details as { success: boolean; blocks_deleted: number };
+    expect(details.success).toBe(true);
+    expect(details.blocks_deleted).toBe(2);
+  });
+
+  it("delete_range should error when block not found", async () => {
+    const tool = registerAndGetTool();
+    const result = await tool.execute("tool-call", {
+      action: "delete_range",
+      doc_token: "doc_1",
+      start_block_id: "nonexistent",
+      end_block_id: "c2",
+    });
+
+    const details = result.details as { error?: string };
+    expect(details.error).toContain("not found");
   });
 });

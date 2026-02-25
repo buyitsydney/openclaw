@@ -1469,25 +1469,28 @@ npm 上至少有 4 个飞书相关包：
 
 基于最新实测与复盘，后续任务按优先级如下：
 
-1. **删除/微改默认走块级操作（P0）**
-   - 规则：用户只删一段/改一段时，优先 `list_blocks -> delete_block / update_block`，禁止默认走全量 `write`。
-   - 目标：避免“删一段却整篇重写”的高风险操作。
+1. **~~删除/微改默认走块级操作（P0）~~ ✅ 已完成（2026-02-25）**
+   - 通过 SKILL.md 编辑策略升级实现：6 级优先级，`write` 降至最后手段。
+   - AI 现在优先使用 `find/replace` > `update_block` > `insert_blocks` > `delete_block/delete_range` > `append` > `write`。
 
-2. **补齐中间插入能力（P0）**
-   - 新增 `insert_before` / `insert_after`（或等价 action），支持在指定 block 附近插入内容。
-   - 目标：避免“文档中间加一段只能全量重写”。
+2. **~~补齐中间插入能力（P0）~~ ✅ 已完成（2026-02-25）**
+   - 新增 `insert_blocks` action，支持 `after_block_id` / `before_block_id` 定位。
+   - 底层 `insertBlocksWithTables()` 支持 `insertIndex` 参数。
+   - API 实测验证：嵌套结构（列表、表格）均可在任意位置插入。
 
-3. **补齐范围删除/批量删除（P1）**
-   - 新增 `delete_range`（from_block_id -> to_block_id）或 `delete_blocks[]`。
-   - 目标：删除整章时不再逐块调用，降低失败率和耗时。
+3. **~~补齐范围删除/批量删除（P1）~~ ✅ 已完成（2026-02-25）**
+   - 新增 `delete_range` action，接受 `start_block_id` + `end_block_id`（均含）。
+   - 底层调用 `documentBlockChildren.batchDelete` 一次性删除范围内所有 block。
 
 4. **写后强校验标准化（P0）**
    - 写后必须做 `list_blocks` 校验：表格数、空单元格、关键标题顺序。
    - 禁止仅凭 `read/rawContent` 宣称“0 diff”。
+   - SKILL.md 已有验证 SOP 指导。
 
 5. **回归测试补齐（P1）**
    - 为 `update_block` 的整块 `content` 覆盖模式补测试（含格式影响）。
    - 保留并持续执行“同源文件 + 同 destination”脚本回归，确保真实场景稳定。
+   - 已为 `insert_blocks` 和 `delete_range` 补充 4 个单元测试（2026-02-25）。
 
 #### 回归防回退测试状态（2026-02-17）
 

@@ -220,6 +220,7 @@ async function createAndFillTable(
   docToken: string,
   // oxlint-disable-next-line typescript/no-explicit-any
   tableData: { rowSize: number; columnSize: number; cellElements: any[][] },
+  insertIndex?: number,
   // oxlint-disable-next-line typescript/no-explicit-any
 ): Promise<any[]> {
   const { rowSize, columnSize, cellElements } = tableData;
@@ -248,6 +249,7 @@ async function createAndFillTable(
             },
           },
         ],
+        ...(insertIndex != null && { index: insertIndex }),
       } as any, // column_width not in SDK types but accepted by API
     });
   } catch (err) {
@@ -409,6 +411,7 @@ async function insertBlocksWithTables(
   // oxlint-disable-next-line typescript/no-explicit-any
   blocks: any[],
   firstLevelBlockIds: string[],
+  insertIndex?: number,
 ): Promise<{ children: any[]; tablesCreated: number }> {
   // oxlint-disable-next-line typescript/no-explicit-any
   const blockMap = new Map<string, any>();
@@ -417,6 +420,8 @@ async function insertBlocksWithTables(
   const allInserted: any[] = [];
   let tablesCreated = 0;
   let currentBatch: string[] = [];
+  // Track insertion position so multiple batches land in order.
+  let currentIndex = insertIndex;
 
   // Flush accumulated non-table blocks via descendant API.
   async function flushBatch() {
@@ -427,10 +432,15 @@ async function insertBlocksWithTables(
         // oxlint-disable-next-line typescript/no-explicit-any
         const res: any = await client.docx.documentBlockDescendant.create({
           path: { document_id: docToken, block_id: docToken },
-          data: { children_id: childrenId, descendants },
+          data: {
+            children_id: childrenId,
+            descendants,
+            ...(currentIndex != null && { index: currentIndex }),
+          },
         });
         if (res.code !== 0) throw new Error(describeLarkError(res.code, res.msg));
         allInserted.push(...(res.data?.children ?? []));
+        if (currentIndex != null) currentIndex += childrenId.length;
       } catch (err) {
         const { code, msg } = extractLarkError(err);
         throw new Error(
@@ -447,9 +457,10 @@ async function insertBlocksWithTables(
       // Flush pending non-table blocks, then create the table.
       await flushBatch();
       const tableData = extractTableData(blockMap, flId);
-      const created = await createAndFillTable(client, docToken, tableData);
+      const created = await createAndFillTable(client, docToken, tableData, currentIndex);
       allInserted.push(...created);
       tablesCreated++;
+      if (currentIndex != null) currentIndex += 1;
     } else {
       currentBatch.push(flId);
     }
@@ -860,6 +871,8 @@ const DOC_ACTIONS = [
   "get_block",
   "update_block",
   "delete_block",
+  "insert_blocks",
+  "delete_range",
 ] as const;
 
 const FeishuDocSchema = Type.Object({
@@ -886,6 +899,18 @@ const FeishuDocSchema = Type.Object({
   folder_token: Type.Optional(Type.String({ description: "Target folder token (for create)" })),
   block_id: Type.Optional(
     Type.String({ description: "Block ID (for get_block/update_block/delete_block)" }),
+  ),
+  after_block_id: Type.Optional(
+    Type.String({ description: "Insert content after this block (for insert_blocks)" }),
+  ),
+  before_block_id: Type.Optional(
+    Type.String({ description: "Insert content before this block (for insert_blocks)" }),
+  ),
+  start_block_id: Type.Optional(
+    Type.String({ description: "Range start block ID, inclusive (for delete_range)" }),
+  ),
+  end_block_id: Type.Optional(
+    Type.String({ description: "Range end block ID, inclusive (for delete_range)" }),
   ),
   find: Type.Optional(
     Type.String({
@@ -944,7 +969,7 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
       name: "feishu_doc",
       label: "Feishu Doc",
       description:
-        "Feishu document operations. Actions: read, write, append, create, list_blocks, get_block, update_block, delete_block",
+        "Feishu document operations. Actions: read, write, append, create, list_blocks, get_block, update_block, delete_block, insert_blocks, delete_range",
       parameters: FeishuDocSchema,
       // oxlint-disable-next-line typescript/no-explicit-any
       async execute(_toolCallId: string, params: any) {
@@ -1090,6 +1115,95 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
                 data: { start_index: index, end_index: index + 1 },
               });
               return json({ success: true, deleted_block_id: params.block_id });
+            }
+            case "insert_blocks": {
+              if (!params.after_block_id && !params.before_block_id) {
+                throw new Error(
+                  "Either after_block_id or before_block_id is required for insert_blocks",
+                );
+              }
+              const content = resolveContent(params);
+              const childrenRes = await client.docx.documentBlockChildren.get({
+                path: { document_id: params.doc_token, block_id: params.doc_token },
+              });
+              // oxlint-disable-next-line typescript/no-explicit-any
+              const childItems = (childrenRes as any).data?.items ?? [];
+
+              let insertIndex: number;
+              if (params.after_block_id) {
+                const idx = childItems.findIndex(
+                  // oxlint-disable-next-line typescript/no-explicit-any
+                  (item: any) => item.block_id === params.after_block_id,
+                );
+                if (idx === -1) throw new Error(`Block ${params.after_block_id} not found`);
+                insertIndex = idx + 1;
+              } else {
+                const idx = childItems.findIndex(
+                  // oxlint-disable-next-line typescript/no-explicit-any
+                  (item: any) => item.block_id === params.before_block_id,
+                );
+                if (idx === -1) throw new Error(`Block ${params.before_block_id} not found`);
+                insertIndex = idx;
+              }
+
+              const { blocks, firstLevelBlockIds } = await convertMarkdown(client, content);
+              if (blocks.length === 0) throw new Error("Content is empty");
+
+              const { children: inserted, tablesCreated } = await insertBlocksWithTables(
+                client,
+                params.doc_token,
+                blocks,
+                firstLevelBlockIds,
+                insertIndex,
+              );
+              const imageResult = await processImages(client, params.doc_token, content, inserted);
+              return json({
+                success: true,
+                blocks_inserted: inserted.length,
+                insert_position: insertIndex,
+                images_processed: imageResult.processed,
+                // oxlint-disable-next-line typescript/no-explicit-any
+                block_ids: inserted.map((b: any) => b.block_id),
+                ...(tablesCreated > 0 && { tables_created: tablesCreated }),
+                ...(imageResult.errors.length > 0 && { image_errors: imageResult.errors }),
+              });
+            }
+            case "delete_range": {
+              if (!params.start_block_id || !params.end_block_id) {
+                throw new Error(
+                  "Both start_block_id and end_block_id are required for delete_range",
+                );
+              }
+              const childrenRes = await client.docx.documentBlockChildren.get({
+                path: { document_id: params.doc_token, block_id: params.doc_token },
+              });
+              // oxlint-disable-next-line typescript/no-explicit-any
+              const childItems = (childrenRes as any).data?.items ?? [];
+              const startIdx = childItems.findIndex(
+                // oxlint-disable-next-line typescript/no-explicit-any
+                (item: any) => item.block_id === params.start_block_id,
+              );
+              if (startIdx === -1)
+                throw new Error(`Start block ${params.start_block_id} not found`);
+              const endIdx = childItems.findIndex(
+                // oxlint-disable-next-line typescript/no-explicit-any
+                (item: any) => item.block_id === params.end_block_id,
+              );
+              if (endIdx === -1) throw new Error(`End block ${params.end_block_id} not found`);
+              if (endIdx < startIdx) {
+                throw new Error("end_block_id must come after start_block_id in the document");
+              }
+              const count = endIdx - startIdx + 1;
+              await client.docx.documentBlockChildren.batchDelete({
+                path: { document_id: params.doc_token, block_id: params.doc_token },
+                data: { start_index: startIdx, end_index: endIdx + 1 },
+              });
+              return json({
+                success: true,
+                blocks_deleted: count,
+                start_index: startIdx,
+                end_index: endIdx,
+              });
             }
             default:
               return json({ error: `Unknown action: ${params.action}` });

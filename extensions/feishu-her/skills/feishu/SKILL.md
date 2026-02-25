@@ -10,22 +10,23 @@ metadata: { "openclaw": { "emoji": "📨" } }
 
 ## 能力总览
 
-| 类别           | 能力                                               | 工具               | 状态             |
-| -------------- | -------------------------------------------------- | ------------------ | ---------------- |
-| **消息**       | 发送消息（群/个人）                                | `message`          | ✅               |
-| **文件发送**   | 发送本地文件到飞书聊天（PPT/PDF/DOCX等，≤30MB）    | `message` + media  | ✅               |
-| **群聊**       | 列表、详情、成员                                   | `feishu_chat`      | ✅               |
-| **通讯录**     | 用户、部门                                         | `feishu_directory` | ✅ 企业版含姓名  |
-| **知识空间**   | 列空间、遍历节点、节点详情                         | `feishu_wiki`      | ✅               |
-| **Wiki 管理**  | 创建节点（docx/bitable/sheet）、重命名、移动       | `feishu_wiki`      | ✅               |
-| **文档读取**   | 读正文、表格、代码、画板（自动导出 PNG）           | `feishu_doc`       | ✅               |
-| **文档写入**   | write（覆盖）、append（追加）、create（新建）      | `feishu_doc`       | ✅               |
-| **Block 操作** | list_blocks、get_block、update_block、delete_block | `feishu_doc`       | ✅               |
-| **多维表格读** | get_meta、list_fields、list_records、get_record    | `feishu_bitable`   | ✅               |
-| **多维表格写** | create_record、update_record                       | `feishu_bitable`   | ✅               |
-| **云盘**       | list、info、create_folder、move、delete            | `feishu_drive`     | ✅ Bot 限制见下  |
-| **群聊归档**   | 本地 JSONL 归档读取和总结                          | `exec` (jq)        | ✅               |
-| **删除**       | —                                                  | —                  | ❌ 无权限（403） |
+| 类别           | 能力                                                | 工具               | 状态             |
+| -------------- | --------------------------------------------------- | ------------------ | ---------------- |
+| **消息**       | 发送消息（群/个人）                                 | `message`          | ✅               |
+| **文件发送**   | 发送本地文件到飞书聊天（PPT/PDF/DOCX等，≤30MB）     | `message` + media  | ✅               |
+| **群聊**       | 列表、详情、成员                                    | `feishu_chat`      | ✅               |
+| **通讯录**     | 用户、部门                                          | `feishu_directory` | ✅ 企业版含姓名  |
+| **知识空间**   | 列空间、遍历节点、节点详情                          | `feishu_wiki`      | ✅               |
+| **Wiki 管理**  | 创建节点（docx/bitable/sheet）、重命名、移动        | `feishu_wiki`      | ✅               |
+| **文档读取**   | 读正文、表格、代码、画板（自动导出 PNG）            | `feishu_doc`       | ✅               |
+| **文档写入**   | write（覆盖）、append（追加）、create（新建）       | `feishu_doc`       | ✅               |
+| **增量编辑**   | insert_blocks（中间插入）、delete_range（批量删除） | `feishu_doc`       | ✅               |
+| **Block 操作** | list_blocks、get_block、update_block、delete_block  | `feishu_doc`       | ✅               |
+| **多维表格读** | get_meta、list_fields、list_records、get_record     | `feishu_bitable`   | ✅               |
+| **多维表格写** | create_record、update_record                        | `feishu_bitable`   | ✅               |
+| **云盘**       | list、info、create_folder、move、delete             | `feishu_drive`     | ✅ Bot 限制见下  |
+| **群聊归档**   | 本地 JSONL 归档读取和总结                           | `exec` (jq)        | ✅               |
+| **删除**       | —                                                   | —                  | ❌ 无权限（403） |
 
 ## ⚠️ 重要限制（必读！）
 
@@ -109,7 +110,9 @@ message(action="send", channel="feishu", target="<当前聊天>", media="/path/t
 - 文档 URL `https://xxx.feishu.cn/docx/ABC123def` → `doc_token` = `ABC123def`
 - Wiki URL `https://xxx.feishu.cn/wiki/ABC123def` → 先 `feishu_wiki get` → 取 `obj_token`
 
-### 编辑策略（按优先级）
+### 编辑策略（按优先级，必须严格遵守！）
+
+**核心原则：用户只删/改一段时，禁止默认走全量 `write`。只有"完全重写整个文档"才用 `write`。**
 
 **Priority 1: find/replace**（最安全，保留格式）
 
@@ -135,7 +138,54 @@ Workflow: `list_blocks` 找到目标 block → `update_block` + `find/replace_wi
 
 会丢失格式（粗体、链接变纯文本），仅在整个 block 需要改变时使用。
 
-**Priority 3: append**（追加到末尾）
+**Priority 3: insert_blocks**（中间位置插入，支持 Markdown）
+
+在指定 block 之前或之后插入新内容，支持嵌套结构（列表、表格）：
+
+```json
+{
+  "action": "insert_blocks",
+  "doc_token": "xxx",
+  "after_block_id": "doxcnXXX",
+  "content": "## 新章节\n\n新段落内容"
+}
+```
+
+或在某 block 之前插入：
+
+```json
+{
+  "action": "insert_blocks",
+  "doc_token": "xxx",
+  "before_block_id": "doxcnXXX",
+  "source_file": "/path/to/section.md"
+}
+```
+
+Workflow: `list_blocks` 找到定位 block → `insert_blocks` + `after_block_id`/`before_block_id`。
+
+**Priority 4: delete_block / delete_range**（精准删除）
+
+删除单个 block：
+
+```json
+{ "action": "delete_block", "doc_token": "xxx", "block_id": "doxcnXXX" }
+```
+
+删除连续多个 block（整章/整节）：
+
+```json
+{
+  "action": "delete_range",
+  "doc_token": "xxx",
+  "start_block_id": "doxcnAAA",
+  "end_block_id": "doxcnZZZ"
+}
+```
+
+Workflow: `list_blocks` 找到范围的起止 block ID → `delete_range`。注意 start 和 end 都是**包含的**。
+
+**Priority 5: append**（追加到末尾）
 
 ```json
 { "action": "append", "doc_token": "xxx", "source_file": "/path/to/content.md" }
@@ -143,7 +193,7 @@ Workflow: `list_blocks` 找到目标 block → `update_block` + `find/replace_wi
 
 短内容可用 `content` 参数。
 
-**Priority 4: write**（最后手段，破坏性）
+**Priority 6: write**（最后手段，破坏性）
 
 删除全部现有内容后重写。自动备份到 `~/.openclaw/feishu-doc-backups/`。
 
