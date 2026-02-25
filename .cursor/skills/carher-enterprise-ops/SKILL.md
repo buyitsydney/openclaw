@@ -82,15 +82,24 @@ sshpass -p 'PWD' ssh USER@IP "cd /Data/CarHer && ./start-user.sh --id=N 2>&1 | t
 - `fix-device-pairing.js`（修复设备配对 scopes）
 - 从 CSV 生成 `openclaw.json`（含 Owner 配置）
 
-### 代码更新
+### 代码更新（必须走 git 标准流程！）
 
 ```bash
-# 先在 Mac push 到 dev（用 --no-verify）
+# 1. 本地提交（等用户确认后）
+git add <changed-files>
+git commit -m "描述"
+
+# 2. 推送到远程
 git push --no-verify
 
-# 然后各服务器 pull
+# 3. 各服务器 pull
 sshpass -p 'PWD' ssh USER@IP "cd /Data/CarHer && git pull"
+
+# 4. 需要时重建相关容器
+sshpass -p 'PWD' ssh USER@IP "cd /Data/CarHer && ./start-user.sh --id=N"
 ```
+
+**禁止用 scp 或 ssh 直接修改服务器上的代码文件！详见"代码同步铁律"章节。**
 
 ### 收集用户 open_id
 
@@ -126,6 +135,33 @@ sshpass -p 'PWD' ssh USER@IP "grep '^ID,' /Data/CarHer/docker/users.csv"
 | 共享 Bot（多人共用） | `owner_allow_from`（`\|` 分隔） | `commands.ownerAllowFrom` | 不限制访问，仅指定 Owner |
 
 无 Owner → AI 看不到 cron/gateway 等 `ownerOnly` 工具。
+
+## 🚫 代码同步铁律：永远走 git 标准流程
+
+**任何脚本/代码修改同步到服务器，必须严格遵循：**
+
+```
+本地修改 → git commit → git push → 服务器 git pull
+```
+
+**绝对禁止：**
+
+- `scp` 直接推文件到服务器
+- `ssh` + `cat/echo/sed` 直接在服务器上改代码文件
+- 任何绕过 git 的文件传输方式
+
+**原因：** 绕过 git 会导致本地和服务器版本不一致，下次 `git pull` 可能冲突覆盖，且没有变更记录可追溯。
+
+**唯一例外：** 服务器本地的 `users.csv`（含密钥，不在 git 中）可直接 `sed` 编辑。
+
+## Admin Her（原生进程，非 Docker）
+
+S1 上有一个**原生 Admin Her**，不是 Docker 容器：
+
+- 配置文件：`~/.openclaw/openclaw.json`（S1 上）
+- 运行方式：tmux session `admin-her`，`node dist/index.js gateway run --port 18789 --bind lan --force`
+- **不要**用 `start-user.sh` 管理，不要在 `users.csv` 中添加 Admin Her 行
+- 修改配置后需要重启：先 `tmux kill-session -t admin-her`，再重新创建 tmux session 启动
 
 ## 安全规则
 

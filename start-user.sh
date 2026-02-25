@@ -506,7 +506,8 @@ if feishu_id and feishu_secret:
         'appSecret': feishu_secret,
     }
     if feishu_owner:
-        feishu_cfg['dm'] = {'allowFrom': [feishu_owner]}
+        owner_list = [x.strip() for x in feishu_owner.split('|') if x.strip()]
+        feishu_cfg['dm'] = {'allowFrom': owner_list}
     feishu_cfg['groups'] = {
         'enabled': True,
         'archive': True,
