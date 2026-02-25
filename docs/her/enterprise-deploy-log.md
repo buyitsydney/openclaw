@@ -633,4 +633,58 @@ console.log('opus contextWindow:', m?.contextWindow);
 | 服务器 docker13（修复前） | `Provider anthropic: "apiKey" is required` | 196608 (内置)      | 180224               | 22979            | ❌ 0次         |
 | 服务器 docker13（修复后） | NONE                                       | 18000 (18K test)   | 14000                | 20079            | ✅ 1次 compact |
 
+---
+
+## 2026-02-25 飞书日历工具 (feishu_calendar)
+
+### 概述
+
+为 feishu-her 插件新增 `feishu_calendar` 工具，支持 10 个 action：
+
+| Action               | 说明                         | 状态        |
+| -------------------- | ---------------------------- | ----------- |
+| `get_primary`        | 获取 bot 自身的主日历        | ✅ 已验证   |
+| `list_calendars`     | 列出 bot 可访问的所有日历    | ✅ 已验证   |
+| `search_calendars`   | 搜索公开日历/用户主日历      | ✅ 已验证   |
+| `subscribe_calendar` | 订阅公开/共享日历            | ✅ 代码完成 |
+| `list_events`        | 列出日程（支持时间范围过滤） | ✅ 已验证   |
+| `get_event`          | 获取单个日程详情             | ✅ 已验证   |
+| `create_event`       | 创建日程                     | ✅ 已验证   |
+| `update_event`       | 修改日程                     | ✅ 已验证   |
+| `delete_event`       | 删除日程                     | ✅ 已验证   |
+| `check_freebusy`     | 查询任意同组织用户的忙闲     | ✅ 已验证   |
+
+### 已知限制（瑕疵）
+
+**核心问题：bot 使用 `tenant_access_token`（应用身份），只能操作 bot 自己的日历，无法读取用户的个人日历事件详情。**
+
+- `check_freebusy` 可以查到用户的忙闲时间段（如 14:00-14:30 忙），但看不到日程标题/描述/参与者
+- 飞书 UI 的「日历共享」功能是面向人的，bot app 在搜索里找不到，通过群组绕行也不会授予 API 访问权
+- `list_calendars` / `search_calendars` / `subscribe_calendar` 只能发现和订阅**公开**日历
+
+### TODO：实现 user_access_token OAuth 授权流程
+
+飞书官方文档确认：用 `user_access_token` 调用日历 API = 用户身份，用户对自己日历是 `owner`，**100% 能看到所有日程详情**。
+
+实现步骤：
+
+1. 飞书开发者后台 → 安全设置 → 配置重定向 URL（callback）
+2. 在 feishu-her 插件中建 OAuth 回调端点（需公网可达，可用 Cloudflare tunnel）
+3. bot 发送授权链接 → 用户点击一次 → 获取 `user_access_token`
+4. 存储 token + `refresh_token`，每 2h 自动刷新
+5. calendar.ts 改为：有 user_token 时用它调 API，没有时降级用 freebusy
+
+优先级：P1（当前 freebusy 可用，不阻塞基本功能）
+
+### 修复记录
+
+- 飞书 `list_events` API 的 `page_size` 最小值为 50（官方未在文档中说明），传小于 50 会返回 400 错误
+- 飞书 `freebusy` API 的时间参数要求 RFC 3339 格式（如 `2026-02-25T14:00:00Z`），不接受 Unix timestamp
+- 改进了 Axios 错误处理，提取飞书 API 的 `code`、`msg`、`field_violations` 详细信息
+
+### 文件变更
+
+- `extensions/feishu-her/src/tools/calendar.ts` — 新建，日历工具完整实现
+- `extensions/feishu-her/src/tools/index.ts` — +3 行，注册日历工具
+
 <!-- 后续操作记录追加在这里 -->
