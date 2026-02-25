@@ -560,4 +560,77 @@ Layer 1 在上一轮修复完成。Layer 2 是本次发现的新问题。
 4. 收集缺失的用户 open_id → 填入 CSV `feishu_owner_open_id` 列
 5. `./start-user.sh --id=N` 重建受影响的容器
 
+---
+
+## 2026-02-25：Compaction 不触发 — P0 Bug 修复
+
+### 问题现象
+
+服务器所有 Docker 容器的 AI 对话永远不触发 compaction（context 压缩），无论对话多长。本地 Mac 正常。
+
+### Root Cause（已 100% 实验确认）
+
+`carher-config.json` 中 `anthropic` provider 定义了 `models` 但**缺少 `apiKey`**。
+
+SDK 的 `ModelRegistry.validateConfig()` 要求：**有 models 就必须有 apiKey**。缺少时直接 throw，导致**整个 models.json 的自定义模型全部被丢弃**（静默失败，仅在 `registry.getError()` 可见）。
+
+后果链：
+
+1. `carher-config.json` 中配置的 `contextWindow: 240000` 全部被忽略
+2. SDK 回退到内置模型数据库（opus contextWindow=196608）
+3. compaction threshold = 196608 - 16384 = **180,224 tokens**
+4. 正常对话几万 tokens 永远到不了 180K → compaction 永远不触发
+
+### 修复
+
+在 `anthropic` provider 加 dummy `apiKey`:
+
+```json
+"anthropic": {
+  "baseUrl": "https://api.anthropic.com",
+  "apiKey": "sk-ant-not-used-on-server",
+  "models": [...]
+}
+```
+
+- 服务器所有人走 openrouter，dummy key 永远不会被调用
+- 本地 Mac 有真 key 在 auth.json，可直联 anthropic（省钱）
+- 所有模型 contextWindow 统一为 200000
+
+### 快速诊断方法
+
+如果怀疑 compaction 不工作，在容器内执行：
+
+```bash
+docker exec carher-N node -e "
+const { ModelRegistry } = require('/app/node_modules/@mariozechner/pi-coding-agent/dist/core/model-registry.js');
+const { AuthStorage } = require('/app/node_modules/@mariozechner/pi-coding-agent/dist/core/auth-storage.js');
+const auth = new AuthStorage('/data/.openclaw/agents/main/agent/auth.json');
+const registry = new ModelRegistry(auth, '/data/.openclaw/agents/main/agent/models.json');
+console.log('loadError:', registry.getError() ?? 'NONE');
+const m = registry.find('openrouter', 'anthropic/claude-opus-4.6');
+console.log('opus contextWindow:', m?.contextWindow);
+"
+```
+
+- `loadError: NONE` = 正常
+- `loadError: Failed to load models.json: ...` = **models.json 被丢弃，compaction 用的是内置值！**
+- `opus contextWindow: 200000` = 正确
+- `opus contextWindow: 196608` = 用了内置值，配置没生效
+
+### 教训
+
+1. **SDK 的 models.json 加载失败是静默的** — 不会 crash，不会有明显日志，只能通过 `registry.getError()` 查到
+2. **`anthropic` provider 如果定义了 models，必须有 apiKey** — 即使服务器不走 anthropic 直联
+3. **`contextTokens` 和 `contextWindow` 是两个独立的值** — `contextTokens` 只影响 OpenClaw 层（/status 显示），`contextWindow` 才影响 SDK 的 compaction 判断
+4. **所有模型的 contextWindow 必须统一设为 200000** — 不能用实际模型的原始窗口大小（如 gemini 1M、minimax 80K），否则 compaction 阈值不一致
+
+### 实验证据
+
+| 环境                      | loadError                                  | opus contextWindow | compaction threshold | 实际 tokens      | 结果           |
+| ------------------------- | ------------------------------------------ | ------------------ | -------------------- | ---------------- | -------------- |
+| Mac docker1（修复前）     | NONE                                       | 200000             | 183616               | 16677 (18K test) | ✅ 3次 compact |
+| 服务器 docker13（修复前） | `Provider anthropic: "apiKey" is required` | 196608 (内置)      | 180224               | 22979            | ❌ 0次         |
+| 服务器 docker13（修复后） | NONE                                       | 18000 (18K test)   | 14000                | 20079            | ✅ 1次 compact |
+
 <!-- 后续操作记录追加在这里 -->

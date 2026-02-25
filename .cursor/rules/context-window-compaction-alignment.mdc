@@ -1,12 +1,12 @@
 ---
-description: Enforces contextTokens and contextWindow alignment when modifying OpenClaw context/compaction config. Triggered by keywords: contextTokens, contextWindow, compaction, compact, context window, 上下文.
+description: Enforces contextTokens and contextWindow alignment when modifying OpenClaw context/compaction config. Triggered by keywords: contextTokens, contextWindow, compaction, compact, context window, 上下文, models.json, ModelRegistry.
 globs:
 alwaysApply: false
 ---
 
 # contextTokens 与 contextWindow 必须对齐（铁律）
 
-## 架构断层（已实测确认 2026-02-15）
+## 架构断层（已实测确认 2026-02-15，P0 事故确认 2026-02-25）
 
 OpenClaw 的 context window 管理分两层，**互不相通**：
 
@@ -19,13 +19,49 @@ OpenClaw 的 context window 管理分两层，**互不相通**：
 
 ## 铁律
 
-**修改 `contextTokens` 时，必须同时修改对应模型的 `contextWindow` 为相同值。否则 compaction 永远不会按预期触发。**
+**修改 `contextTokens` 时，必须同时修改所有模型的 `contextWindow` 为相同值。否则 compaction 永远不会按预期触发。**
+
+当前标准值：**全部 200000**（contextTokens + 所有模型 contextWindow）。
 
 修改流程：
 1. 确定当前使用的模型 ID（`agents.defaults.model.primary`）
 2. 找到该模型在 `models.providers.<provider>.models[]` 中的条目
 3. 将 `contextWindow` 改为与 `contextTokens` 相同的值
-4. 两个值必须完全一致
+4. **所有模型**的 contextWindow 必须统一（不能用实际模型的原始窗口大小如 gemini 1M、minimax 80K）
+
+## P0 陷阱：anthropic provider 必须有 apiKey（2026-02-25 事故）
+
+**如果 `carher-config.json` 中 provider 定义了 `models` 数组但缺少 `apiKey`，SDK 会静默丢弃整个 models.json！**
+
+```json
+// ❌ 致命错误 — 整个 models.json 被丢弃
+"anthropic": {
+  "baseUrl": "https://api.anthropic.com",
+  "models": [{ "id": "claude-opus-4-6", "contextWindow": 200000 }]
+}
+
+// ✅ 正确 — 服务器不用 anthropic 直联也必须有 dummy key
+"anthropic": {
+  "baseUrl": "https://api.anthropic.com",
+  "apiKey": "sk-ant-not-used-on-server",
+  "models": [{ "id": "claude-opus-4-6", "contextWindow": 200000 }]
+}
+```
+
+后果链：models.json 丢弃 → 所有 contextWindow 用 SDK 内置值（opus=196608）→ compaction threshold=180K → 永远不触发。
+
+**快速诊断**：
+```bash
+docker exec carher-N node -e "
+const { ModelRegistry } = require('/app/node_modules/@mariozechner/pi-coding-agent/dist/core/model-registry.js');
+const { AuthStorage } = require('/app/node_modules/@mariozechner/pi-coding-agent/dist/core/auth-storage.js');
+const auth = new AuthStorage('/data/.openclaw/agents/main/agent/auth.json');
+const registry = new ModelRegistry(auth, '/data/.openclaw/agents/main/agent/models.json');
+console.log('loadError:', registry.getError() ?? 'NONE');
+"
+```
+- `loadError: NONE` = 正常
+- 任何其他值 = **models.json 被丢弃，compaction 不工作！**
 
 ## 反例（会导致 compaction 永远不触发）
 
@@ -44,14 +80,21 @@ OpenClaw 的 context window 管理分两层，**互不相通**：
 
 ```json
 {
-  "agents": { "defaults": { "contextTokens": 50000 } },
-  "models": { "providers": { "anthropic": { "models": [
-    { "id": "claude-sonnet-4-6", "contextWindow": 50000 }
-  ]}}}
+  "agents": { "defaults": { "contextTokens": 200000 } },
+  "models": { "providers": {
+    "anthropic": {
+      "apiKey": "sk-ant-not-used-on-server",
+      "models": [{ "id": "claude-sonnet-4-6", "contextWindow": 200000 }]
+    },
+    "openrouter": {
+      "models": [{ "id": "anthropic/claude-opus-4.6", "contextWindow": 200000 }]
+    }
+  }}
 }
 ```
 
 ## 参考文档
 
+- `docs/her/enterprise-deploy-log.md` — 2026-02-25 P0 事故完整记录和实验证据
 - `docs/her/context-window-architecture.md` — 完整架构分析和实测记录
 - `docs/her/context-compact-architecture.md` — compact 系统架构设计

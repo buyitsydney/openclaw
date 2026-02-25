@@ -5,6 +5,22 @@ description: CarHer 企业 Docker 容器运维操作。Use when the user mention
 
 # CarHer 企业容器运维
 
+## ⚠️ 容器身份映射（Mac 本地 vs 服务器 ID 不同！）
+
+**Mac 本地**（`docker/users.csv`）：
+
+- `carher-1` = **测试容器**（卜弋天个人飞书 `cli_a9031535e3fa9cef`）→ 可随意实验
+- `carher-3` = **董事长**（`cli_a9054f702c789bd9`）→ 🚫 禁止操作
+- `carher-4` = 浏览器测试
+
+**服务器 S1**（10.68.13.186，CSV 在服务器本地）：
+
+- `carher-1` = **董事长老杨**（`cli_a9054f702c789bd9`）→ 🚫 禁止操作
+- `carher-12` = 测试容器（卜弋天）
+- `carher-13` = **卜弋天个人**（`cli_a917e5525178dbb3`）
+
+**关键区别**：Mac 的 docker1 是测试，服务器的 docker1 是董事长！ID 不同！
+
 ## 快速定位流程
 
 ### 1. 找到服务器和密码
