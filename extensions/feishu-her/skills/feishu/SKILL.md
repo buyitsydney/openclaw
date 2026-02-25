@@ -262,6 +262,7 @@ Workflow: `list_blocks` 找到范围的起止 block ID → `delete_range`。注�
 1. **建会 + 自动邀请**：`create_event` 在 bot 日历创建事件，通过 `attendee_ids` 添加参会人 → **参会人飞书日历自动收到邀请**，跟人工建会效果一样
 2. **查忙闲**：`check_freebusy` 查**任何人**的忙碌时间段（只需 open_id，无需共享），返回具体时间区间列表
 3. **管理 bot 自己的事件**：`list_events` / `get_event` / `update_event` / `delete_event`，含参会人接受状态（`accepted`/`tentative`/`declined`）
+4. **修改事件时追加参会人**：`update_event` 支持 `attendee_ids` 参数，可以给已有事件补加参会人
 
 ### 不能做什么
 

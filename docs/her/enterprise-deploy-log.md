@@ -650,7 +650,7 @@ console.log('opus contextWindow:', m?.contextWindow);
 | `list_events`        | 列出日程（支持时间范围过滤） | ✅ 已验证   |
 | `get_event`          | 获取单个日程详情             | ✅ 已验证   |
 | `create_event`       | 创建日程                     | ✅ 已验证   |
-| `update_event`       | 修改日程                     | ✅ 已验证   |
+| `update_event`       | 修改日程 + 追加参会人        | ✅ 已验证   |
 | `delete_event`       | 删除日程                     | ✅ 已验证   |
 | `check_freebusy`     | 查询任意同组织用户的忙闲     | ✅ 已验证   |
 
@@ -687,5 +687,8 @@ console.log('opus contextWindow:', m?.contextWindow);
 
 - `extensions/feishu-her/src/tools/calendar.ts` — 新建，日历工具完整实现
 - `extensions/feishu-her/src/tools/index.ts` — +3 行，注册日历工具
+
+- **[2026-02-25] 增强 `update_event` 支持追加参会人**：`updateEvent` 新增 `attendee_ids` 参数，调用 `addAttendees` 给已有事件补加参会人并发送通知；修复了之前 AI 调用 `update_event` 传 `attendee_ids` 被静默忽略的问题
+- **[2026-02-25] 验证通过**：本地 docker1 (Sonnet) 端到端验证 `update_event` + `attendee_ids` 成功追加参会人；本地 Her (Opus) 验证 `create_event` + `attendee_ids` 一步建会邀请成功
 
 <!-- 后续操作记录追加在这里 -->

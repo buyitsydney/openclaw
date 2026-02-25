@@ -255,6 +255,7 @@ async function updateEvent(
   description?: string,
   location?: string,
   timezone?: string,
+  attendeeIds?: string[],
 ) {
   const tz = timezone ?? "Asia/Shanghai";
   // oxlint-disable-next-line typescript/no-explicit-any
@@ -265,14 +266,27 @@ async function updateEvent(
   if (endTime) data.end_time = { timestamp: toTimestamp(endTime), timezone: tz };
   if (location) data.location = { name: location };
 
+  if (Object.keys(data).length > 0) {
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const res: any = await client.calendar.calendarEvent.patch({
+      path: { calendar_id: calendarId, event_id: eventId },
+      data,
+      params: { user_id_type: "open_id" },
+    });
+    if (res.code !== 0) throw new Error(res.msg);
+  }
+
+  if (attendeeIds && attendeeIds.length > 0) {
+    await addAttendees(client, calendarId, eventId, attendeeIds);
+  }
+
   // oxlint-disable-next-line typescript/no-explicit-any
-  const res: any = await client.calendar.calendarEvent.patch({
+  const verify: any = await client.calendar.calendarEvent.get({
     path: { calendar_id: calendarId, event_id: eventId },
-    data,
-    params: { user_id_type: "open_id" },
+    params: { need_attendee: true, user_id_type: "open_id" },
   });
-  if (res.code !== 0) throw new Error(res.msg);
-  return { event: formatEvent(res.data?.event ?? {}) };
+  if (verify.code !== 0) throw new Error(verify.msg);
+  return { event: formatEvent(verify.data?.event ?? {}) };
 }
 
 async function deleteEvent(client: Lark.Client, calendarId: string, eventId: string) {
@@ -310,7 +324,7 @@ const FeishuCalendarSchema = Type.Object({
       "list_events (list events with optional time range), " +
       "get_event (single event detail), " +
       "create_event (create new event), " +
-      "update_event (modify existing event), " +
+      "update_event (modify existing event fields and/or add attendees), " +
       "delete_event (remove event), " +
       "check_freebusy (check any user's busy/free time by open_id — no calendar sharing needed)",
   }),
@@ -342,7 +356,7 @@ const FeishuCalendarSchema = Type.Object({
   attendee_ids: Type.Optional(
     Type.Array(Type.String(), {
       description:
-        "Array of attendee open_ids (create_event only). Use feishu_directory to look up IDs.",
+        "Array of attendee open_ids (create_event / update_event). Use feishu_directory to look up IDs.",
     }),
   ),
   user_open_id: Type.Optional(
@@ -465,6 +479,7 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
                   params.description,
                   params.location,
                   params.timezone,
+                  params.attendee_ids,
                 ),
               );
             }
