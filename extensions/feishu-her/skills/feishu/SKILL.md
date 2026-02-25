@@ -6,7 +6,7 @@ metadata: { "openclaw": { "emoji": "📨" } }
 
 # Feishu Skill — 全功能操作指南
 
-> 最后验证：2026-02-15。所有能力均经过实测。
+> 最后验证：2026-02-25。所有能力均经过实测（含 @mention + 企业通讯录）。
 
 ## 能力总览
 
@@ -15,7 +15,7 @@ metadata: { "openclaw": { "emoji": "📨" } }
 | **消息**       | 发送消息（群/个人）                                | `message`          | ✅               |
 | **文件发送**   | 发送本地文件到飞书聊天（PPT/PDF/DOCX等，≤30MB）    | `message` + media  | ✅               |
 | **群聊**       | 列表、详情、成员                                   | `feishu_chat`      | ✅               |
-| **通讯录**     | 用户、部门                                         | `feishu_directory` | ✅ 个人版无姓名  |
+| **通讯录**     | 用户、部门                                         | `feishu_directory` | ✅ 企业版含姓名  |
 | **知识空间**   | 列空间、遍历节点、节点详情                         | `feishu_wiki`      | ✅               |
 | **Wiki 管理**  | 创建节点（docx/bitable/sheet）、重命名、移动       | `feishu_wiki`      | ✅               |
 | **文档读取**   | 读正文、表格、代码、画板（自动导出 PNG）           | `feishu_doc`       | ✅               |
@@ -33,9 +33,13 @@ metadata: { "openclaw": { "emoji": "📨" } }
 
 Bot 没有删除权限。Wiki 节点、文档、多维表格记录均无法通过 API 删除。**创建前要确认，创建后无法撤销**（需用户手动删除）。
 
-### 2. 通讯录个人版限制
+### 2. 通讯录 API 行为（实测）
 
-飞书个人版通讯录 API 不返回用户姓名，只有 open_id + status。**获取用户姓名的替代方案**：用 `feishu_chat(action="members")` 从群成员列表获取——群成员接口会返回姓名。
+- **企业版**：`feishu_directory` 返回完整用户信息（name、department_ids、email、mobile 等）
+- **个人版**：只返回 open_id + status，不含姓名。替代方案：用 `feishu_chat(action="members")` 从群成员列表获取姓名
+- **`list_users(department_id='0')`（根部门）在多数企业返回空数组** — 用户归属于具体子部门，不在根部门下
+- **没有按姓名搜索的 API** — 需通过 `list_departments` + 逐部门 `list_users` 来查找特定用户
+- **`feishu_chat(action="members")` 是更快的替代路径** — 如果目标用户在 bot 已加入的群中，1 次调用即可获取 open_id 和姓名
 
 ### 3. 云盘 vs 知识空间
 
@@ -227,11 +231,12 @@ message(action="send", channel="feishu", target="<oc_xxx 或 ou_xxx>", message="
 - `feishu_chat(action="members", chat_id="oc_xxx")` — 群成员（**含姓名**）
 - 已归档群消息：查 `~/.openclaw/feishu-groups/index.json`
 
-**联系人：**
+**联系人（企业通讯录）：**
 
-- `feishu_directory(action="list_users")` — 用户列表
-- `feishu_directory(action="get_user", user_id="ou_xxx")` — 用户详情
-- `feishu_directory(action="list_departments")` — 部门列表
+- `feishu_directory(action="list_departments")` — 部门列表（`department_id='0'` 为根，返回所有一级部门）
+- `feishu_directory(action="list_users", department_id="xxx")` — 指定部门的用户列表（注意：`department_id='0'` 通常返回空，用户归属于具体子部门）
+- `feishu_directory(action="get_user", user_id="ou_xxx")` — 单个用户详情
+- 需要 `contact:user.base:readonly` + `contact:department.base:readonly` 权限，且飞书后台"通讯录权限范围"需设为"全部成员"
 
 ### 知识空间（Wiki）
 

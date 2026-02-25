@@ -47,7 +47,7 @@
 
 1. 在飞书开放平台（open.feishu.cn）创建一个自建应用，启用机器人能力
 2. 获取 `app_id` + `app_secret`
-3. 添加权限（批量导入 70 个，见企业部署文档）
+3. 添加权限（批量导入 86 个，见企业部署文档）
 4. **第一次发布**：创建版本 → 设置可用范围 → 发布（让 Bot 在飞书客户端可见）
 5. 去飞书客户端搜索 Bot，确认能找到（此时无法聊天，正常）
 6. 在 OpenClaw config 中配置 `channels.feishu.appId` + `channels.feishu.appSecret`
@@ -543,6 +543,16 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 - text 格式消息中 `<at user_id="xxx">` 原生透传，Post 格式消息中 `<at>` 标签正确转为 `{ tag: "at", user_id }` 元素
 
 **注意**：`contact:user.base:readonly` 在飞书个人版仍无法返回姓名（平台限制），企业版/旗舰版正常。
+
+### feishu_directory department_id_type 修复 (2026-02-25)
+
+**问题**：企业通讯录权限配置正确后，`feishu_directory(action="list_users", department_id="xxx")` 仍返回 `400 Bad Request`（code 99992357, "Invalid ids"）。
+
+**根因**：`directory.ts` 中 `listUsers` 和 `listDepartments` 调用飞书 API 时未指定 `department_id_type` 参数。飞书 API 默认按 `open_department_id`（`od-` 前缀）解析，但代码传入的是 `department_id`（如 `5f6991e2a129dg7g`），格式不匹配导致 400。
+
+**修复**：在 `findByDepartment` 和 `department.list` 的 `params` 中显式添加 `department_id_type: "department_id"`。
+
+**实测验证（docker13）**：修复后 24 次 `feishu_directory` 调用全部成功（零 400/403 错误），成功查询 50+ 部门、遍历用户、按 open_id 查个人信息并发送私聊消息。
 
 ### 文件下载错误码解析（飞书 API 400 精准诊断）(2026-02-22)
 

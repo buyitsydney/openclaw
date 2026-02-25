@@ -400,7 +400,7 @@ git checkout v旧版本
 | --- | --------------------- | ------------------------------------------------------------ |
 | 1   | 创建应用 + 启用机器人 | 命名格式：`{人名}的her`（如：老杨的her），添加「机器人」能力 |
 | 2   | 记录凭证              | 复制 App ID + App Secret                                     |
-| 3   | 批量导入权限          | 粘贴 JSON 导入 70 个权限                                     |
+| 3   | 批量导入权限          | 粘贴 JSON 导入 86 个权限                                     |
 | 4   | 第一次发布            | 可用范围 = 指定人员，只选一人（见下方说明）                  |
 | 5   | 确认 Bot 可见         | 让目标员工搜索 Bot，确认能找到                               |
 | 6   | 交给部署者            | 等部署者确认 WSClient connected                              |
@@ -447,6 +447,22 @@ git checkout v旧版本
       "bitable:app:readonly",
       "board:whiteboard:node:create",
       "board:whiteboard:node:read",
+      "calendar:calendar",
+      "calendar:calendar.acl:create",
+      "calendar:calendar.acl:delete",
+      "calendar:calendar.acl:read",
+      "calendar:calendar.event:create",
+      "calendar:calendar.event:delete",
+      "calendar:calendar.event:read",
+      "calendar:calendar.event:reply",
+      "calendar:calendar.event:update",
+      "calendar:calendar.free_busy:read",
+      "calendar:calendar:create",
+      "calendar:calendar:delete",
+      "calendar:calendar:read",
+      "calendar:calendar:readonly",
+      "calendar:calendar:subscribe",
+      "calendar:calendar:update",
       "cardkit:card:write",
       "contact:contact.base:readonly",
       "contact:department.base:readonly",
@@ -521,11 +537,12 @@ git checkout v旧版本
 
 点击「下一步，确认新增权限」→ 确认即可。已开通的权限不会重复添加。
 
-> **权限分类（共 70 个，全部为 tenant 级别）**：
+> **权限分类（共 86 个，全部为 tenant 级别）**：
 >
 > - **消息基础**（6 个）：`im:message`、`im:message:send_as_bot`、`im:message.group_msg`、`im:message.p2p_msg:readonly`、`im:chat:readonly`、`im:resource` — 消息收发 + 图片 + 群聊归档
 > - **卡片流式回复**（1 个）：`cardkit:card:write` — AI 打字机效果
 > - **Emoji 表情**（2 个）：`im:message.reactions:read`、`im:message.reactions:write_only` — AI 自动 Get 回应 + 点赞
+> - **日历**（16 个）：`calendar:calendar*` — 日历/日程 CRUD、ACL 权限、忙闲查询、订阅（`feishu_calendar` 工具）
 > - **联系人**（3 个）：`contact:contact.base:readonly`、`contact:user.base:readonly`、`contact:department.base:readonly` — 获取发送者姓名 + @mention 用户名查询 + 按部门查人
 > - **文档核心**（6 个）：`docs:doc`、`docx:document`、`docx:document.block:convert`、`docx:document:create`、`docx:document:readonly`、`docx:document:write_only` — 旧版 + 新版文档读写
 > - **文档评论**（4 个）：`docs:document.comment:*` — 创建/读取/更新评论
