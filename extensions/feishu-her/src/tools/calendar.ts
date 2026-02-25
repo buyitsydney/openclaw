@@ -245,6 +245,40 @@ async function addAttendees(
   return res.data;
 }
 
+async function removeAttendees(
+  client: Lark.Client,
+  calendarId: string,
+  eventId: string,
+  attendeeIds: string[],
+) {
+  // First list current attendees to find their attendee_ids by open_id
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const listRes: any = await (client.calendar as any).calendarEventAttendee.list({
+    path: { calendar_id: calendarId, event_id: eventId },
+    params: { user_id_type: "open_id", page_size: 50 },
+  });
+  if (listRes.code !== 0) throw new Error(listRes.msg);
+
+  const items: { attendee_id: string; user_id?: string }[] = listRes.data?.items ?? [];
+  const toRemove = items
+    .filter((a) => attendeeIds.includes(a.user_id ?? ""))
+    .map((a) => ({ type: "user" as const, attendee_id: a.attendee_id }));
+  if (toRemove.length === 0) {
+    return { removed: 0, message: "No matching attendees found to remove" };
+  }
+
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const res: any = await (client.calendar as any).calendarEventAttendee.batchDelete({
+    path: { calendar_id: calendarId, event_id: eventId },
+    data: {
+      attendee_ids: toRemove.map((a) => a.attendee_id),
+      need_notification: true,
+    },
+  });
+  if (res.code !== 0) throw new Error(res.msg);
+  return { removed: toRemove.length };
+}
+
 async function updateEvent(
   client: Lark.Client,
   calendarId: string,
@@ -311,6 +345,7 @@ const CALENDAR_ACTIONS = [
   "create_event",
   "update_event",
   "delete_event",
+  "remove_attendees",
   "check_freebusy",
 ] as const;
 
@@ -326,6 +361,7 @@ const FeishuCalendarSchema = Type.Object({
       "create_event (create new event), " +
       "update_event (modify existing event fields and/or add attendees), " +
       "delete_event (remove event), " +
+      "remove_attendees (remove specific attendees from event by open_id), " +
       "check_freebusy (check any user's busy/free time by open_id — no calendar sharing needed)",
   }),
   calendar_id: Type.Optional(
@@ -356,7 +392,7 @@ const FeishuCalendarSchema = Type.Object({
   attendee_ids: Type.Optional(
     Type.Array(Type.String(), {
       description:
-        "Array of attendee open_ids (create_event / update_event). Use feishu_directory to look up IDs.",
+        "Array of attendee open_ids (create_event / update_event / remove_attendees). Use feishu_directory to look up IDs.",
     }),
   ),
   user_open_id: Type.Optional(
@@ -488,6 +524,21 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
               if (!params.calendar_id || !params.event_id)
                 return json({ error: "calendar_id and event_id are required" });
               return json(await deleteEvent(client, params.calendar_id, params.event_id));
+            }
+
+            case "remove_attendees": {
+              if (!params.calendar_id || !params.event_id || !params.attendee_ids?.length)
+                return json({
+                  error: "calendar_id, event_id, and attendee_ids are required",
+                });
+              return json(
+                await removeAttendees(
+                  client,
+                  params.calendar_id,
+                  params.event_id,
+                  params.attendee_ids,
+                ),
+              );
             }
 
             case "check_freebusy": {

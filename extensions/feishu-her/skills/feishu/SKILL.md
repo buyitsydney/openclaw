@@ -263,15 +263,22 @@ Workflow: `list_blocks` 找到范围的起止 block ID → `delete_range`。注�
 2. **查忙闲**：`check_freebusy` 查**任何人**的忙碌时间段（只需 open_id，无需共享），返回具体时间区间列表
 3. **管理 bot 自己的事件**：`list_events` / `get_event` / `update_event` / `delete_event`，含参会人接受状态（`accepted`/`tentative`/`declined`）
 4. **修改事件时追加参会人**：`update_event` 支持 `attendee_ids` 参数，可以给已有事件补加参会人
+5. **移除参会人**：`remove_attendees` 传 `attendee_ids`（open_id 数组），从事件中移除指定参会人并通知
 
 ### 不能做什么
 
 - **看不到别人日历上的会议标题/内容** — `check_freebusy` 只返回时间段，不含标题。要看详情需对方共享日历给 bot
 - 时间格式统一 ISO 8601：`2026-02-25T14:00:00+08:00`
 
+### 🔴 建会流程（CRITICAL — 必须遵守！）
+
+1. **立即创建**：用户说建会就建，不要多问。`create_event` 时 **必须** 传 `attendee_ids` 把用户自己和提到的人都加进去
+2. **创建后查忙闲**：建完后立即 `check_freebusy` 检查所有参会人（含用户自己）在该时段的忙碌情况
+3. **告知冲突**：如果有人该时段有冲突，在回复中说明（如"注意：你 19:00-20:00 有另一个日程冲突，需要改时间吗？"）。用户可以忽略此消息，不需要回复
+
 ### 场景路由
 
-- "帮我约个会" → `get_primary` → `create_event`（加 `attendee_ids` 邀请参会人）
+- "帮我约个会" → `get_primary` → `create_event`（**必须**加 `attendee_ids`）→ `check_freebusy` 告知冲突
 - "某人今天有空吗" → `check_freebusy`（先查 open_id）
 - "我今天有什么会" → `check_freebusy` 看忙碌时段 + `list_events` 看 bot 创建的事件
 
