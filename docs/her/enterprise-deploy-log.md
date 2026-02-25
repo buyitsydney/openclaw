@@ -681,6 +681,7 @@ console.log('opus contextWindow:', m?.contextWindow);
 - 飞书 `list_events` API 的 `page_size` 最小值为 50（官方未在文档中说明），传小于 50 会返回 400 错误
 - 飞书 `freebusy` API 的时间参数要求 RFC 3339 格式（如 `2026-02-25T14:00:00Z`），不接受 Unix timestamp
 - 改进了 Axios 错误处理，提取飞书 API 的 `code`、`msg`、`field_violations` 详细信息
+- **[2026-02-25] 修复日历参会人不可见问题**：`create_event` 加 `attendee_ability: "can_see_others"`（默认 `none` 导致参会人互相看不到）；`addAttendees` 加 `need_notification: true`（确保参会人收到日历通知）
 
 ### 文件变更
 

@@ -205,6 +205,8 @@ async function createEvent(
     summary,
     start_time: { timestamp: toTimestamp(startTime), timezone: tz },
     end_time: { timestamp: toTimestamp(endTime), timezone: tz },
+    attendee_ability: "can_see_others",
+    need_notification: true,
     ...(description && { description }),
     ...(location && { location: { name: location } }),
   };
@@ -235,6 +237,7 @@ async function addAttendees(
     path: { calendar_id: calendarId, event_id: eventId },
     data: {
       attendees: attendeeIds.map((id) => ({ type: "user", user_id: id })),
+      need_notification: true,
     },
     params: { user_id_type: "open_id" },
   });
