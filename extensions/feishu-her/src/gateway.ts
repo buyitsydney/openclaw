@@ -310,26 +310,86 @@ async function resolveFeishuSenderName(params: {
   }
 }
 
-// ── Card text cache ─────────────────────────────────────────────────────
+// ── Card text cache (persistent) ────────────────────────────────────────
 // CardKit streaming cards: im.message.get returns degraded body (image placeholder)
 // instead of the actual markdown text. We cache messageId -> finalText when the
 // stream completes so quoted-message lookups return the real content.
+// The cache is persisted to disk so it survives gateway restarts.
 
 const cardTextCache = new Map<string, { text: string; ts: number }>();
 const CARD_CACHE_MAX = 500;
-const CARD_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+const CARD_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const CARD_CACHE_FILE = join(homedir(), ".openclaw", "feishu-card-text-cache.json");
 
-function cacheCardText(messageId: string, text: string): void {
-  // Evict expired entries when over limit.
-  if (cardTextCache.size >= CARD_CACHE_MAX) {
+let cardCacheDiskLoaded = false;
+
+function loadCardCacheFromDisk(): void {
+  if (cardCacheDiskLoaded) return;
+  cardCacheDiskLoaded = true;
+  try {
+    if (!existsSync(CARD_CACHE_FILE)) return;
+    const raw = readFileSync(CARD_CACHE_FILE, "utf-8");
+    const entries: Array<[string, { text: string; ts: number }]> = JSON.parse(raw);
     const now = Date.now();
+    for (const [k, v] of entries) {
+      if (now - v.ts < CARD_CACHE_TTL_MS) {
+        cardTextCache.set(k, v);
+      }
+    }
+  } catch {
+    // Corrupt or missing file — start fresh.
+  }
+}
+
+let cardCacheFlushTimer: ReturnType<typeof setTimeout> | undefined;
+
+function flushCardCacheToDisk(): void {
+  try {
+    const now = Date.now();
+    // Purge expired entries before writing to keep the file lean.
     for (const [k, v] of cardTextCache) {
       if (now - v.ts > CARD_CACHE_TTL_MS) {
         cardTextCache.delete(k);
       }
     }
+    const dir = dirname(CARD_CACHE_FILE);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const entries = [...cardTextCache.entries()];
+    writeFileSync(CARD_CACHE_FILE, JSON.stringify(entries), "utf-8");
+  } catch {
+    // Best-effort persistence.
+  }
+}
+
+function scheduleCardCacheFlush(): void {
+  if (cardCacheFlushTimer) return;
+  cardCacheFlushTimer = setTimeout(() => {
+    cardCacheFlushTimer = undefined;
+    flushCardCacheToDisk();
+  }, 2000);
+}
+
+function cacheCardText(messageId: string, text: string): void {
+  loadCardCacheFromDisk();
+  if (cardTextCache.size >= CARD_CACHE_MAX) {
+    const now = Date.now();
+    // First pass: evict expired entries.
+    for (const [k, v] of cardTextCache) {
+      if (now - v.ts > CARD_CACHE_TTL_MS) {
+        cardTextCache.delete(k);
+      }
+    }
+    // Second pass: if still over limit, drop oldest entries.
+    if (cardTextCache.size >= CARD_CACHE_MAX) {
+      const sorted = [...cardTextCache.entries()].sort((a, b) => a[1].ts - b[1].ts);
+      const toDrop = sorted.slice(0, sorted.length - CARD_CACHE_MAX + 1);
+      for (const [k] of toDrop) {
+        cardTextCache.delete(k);
+      }
+    }
   }
   cardTextCache.set(messageId, { text, ts: Date.now() });
+  scheduleCardCacheFlush();
 }
 
 // ── Quoted message content retrieval (im.message.get) ───────────────────
@@ -373,6 +433,7 @@ async function getQuotedMessageContent(params: {
       } else if (item.msg_type === "interactive") {
         // CardKit streaming cards return degraded body via im.message.get.
         // Primary: look up cached final text (we cached it when the stream finished).
+        loadCardCacheFromDisk();
         const cached = cardTextCache.get(parentMessageId);
         if (cached) {
           content = cached.text;
@@ -1449,11 +1510,13 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
   // ── Fetch quoted message content (if this is a reply) ──
   let quotedContext = "";
+  let quotedBodyForReply: string | undefined;
   if (parentId) {
     try {
       const quoted = await getQuotedMessageContent({ account, parentMessageId: parentId, log });
       if (quoted?.content) {
         quotedContext = `\n[Quoted message: "${quoted.content.slice(0, 500)}"]`;
+        quotedBodyForReply = quoted.content.slice(0, 2000);
         log?.info(
           `[${account.accountId}] quoted msg fetched: ${parentId} -> ${quoted.content.slice(0, 80)}`,
         );
@@ -1543,7 +1606,8 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     Surface: "feishu",
     MessageSid: messageId,
     MessageSidFull: messageId,
-    ReplyToId: messageId,
+    ReplyToId: parentId || messageId,
+    ReplyToBody: quotedBodyForReply,
     OriginatingChannel: "feishu",
     OriginatingTo: `feishu:${chatId}`,
     // Private bot: all senders are authorized to use commands (/new, /reset, etc.).
