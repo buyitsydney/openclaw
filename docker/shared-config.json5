@@ -11,7 +11,7 @@
   // Agent 默认配置
   agents: {
     defaults: {
-      contextTokens: 240000,
+      contextTokens: 200000,
       compaction: { mode: "safeguard" },
       // 语义搜索记忆 — apiKey 通过环境变量注入
       memorySearch: {

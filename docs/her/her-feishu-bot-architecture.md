@@ -2,7 +2,7 @@
 
 通过飞书（Lark）机器人与 OpenClaw 对话，让用户在飞书客户端内获得 AI 助手体验。
 
-**状态：已实现并验证通过 (2026-02-25 更新)**（含 Web Search + Browser Use + @mention 能力）
+**状态：飞书消息通道已实现并验证通过；飞书待办（Task v2）进入设计阶段 (2026-02-26 更新)**（含 Web Search + Browser Use + @mention 能力）
 
 ## 核心结论
 
@@ -142,6 +142,48 @@ extensions/feishu-her/outbound.ts
   ↓
 飞书用户（收到回复）
 ```
+
+---
+
+## 飞书待办（Task v2）设计
+
+### 概念边界：Task vs Tasklist
+
+- **Task（任务）**：一条具体待办，核心是“做什么”，包含标题、描述、截止时间、负责人、完成状态等字段。
+- **Tasklist（任务清单）**：任务容器，核心是“按什么维度组织任务”，包含清单名称、成员、owner、归档状态等字段。
+- **关系**：Task 是执行单元，Tasklist 是组织与协作单元。一个任务可以被放入清单，清单负责协作可见性与管理。
+
+### 目标能力（规划）
+
+- 第一阶段（最小可用）：`feishu_task_create/get/update/delete` + `feishu_tasklist_create/get/list`
+- 第二阶段（协作）：`feishu_tasklist_update` + `feishu_tasklist_add_members/remove_members` + `feishu_task_add_tasklist/remove_tasklist`
+- 第三阶段（增强）：`feishu_task_comment_*` + `feishu_task_attachment_*`
+
+### 与现有 feishu-her 的隔离原则
+
+- 不替换现有 `gateway.ts` 消息收发链路，不改变私聊/群聊路由行为。
+- 待办能力仅以新增工具形式接入（`extensions/feishu-her/src/tools/`），避免影响聊天主流程稳定性。
+- 工具按账号配置灰度启用，默认可关闭，先小范围验证再全面放开。
+
+### 需要的飞书权限（按能力分层）
+
+- **最小权限（阶段一）**
+  - `task:task:read`
+  - `task:task:write`
+  - `task:tasklist:read`
+  - `task:tasklist:write`
+- **增强权限（阶段三）**
+  - `task:comment:read` / `task:comment:write`
+  - `task:attachment:read` / `task:attachment:write`
+
+说明：权限与工具能力一一对应，遵循最小权限原则，避免一次性开过多高敏权限。
+
+### 风险评估（待办专项）
+
+- **兼容风险（中）**：社区 task 模块依赖其 own `tools-common` 执行框架，直接整包搬迁容易与当前 `feishu-her` 定制实现冲突。
+- **权限风险（中）**：缺少任一 Task v2 scope 会导致工具调用失败（403/permission denied）。
+- **行为风险（低-中）**：新增工具会改变 Agent 工具选择空间，需通过清晰 schema 与技能约束防止误调用。
+- **稳定性风险（低）**：若仅新增工具层并保持网关链路不变，对现有收发与会话行为影响可控。
 
 ---
 
@@ -1465,7 +1507,7 @@ npm 上至少有 4 个飞书相关包：
 | 群消息           | 正常处理+归档                                                                     | "我无法主动搜索或读取群组的历史聊天记录"            |
 | 插件健康度       | 无警告                                                                            | 大量 `duplicate plugin id detected` 警告            |
 
-#### 下一步任务（2026-02-17）
+#### 下一步任务（2026-02-17，含 2026-02-26 待办专项）
 
 基于最新实测与复盘，后续任务按优先级如下：
 
@@ -1491,6 +1533,19 @@ npm 上至少有 4 个飞书相关包：
    - 为 `update_block` 的整块 `content` 覆盖模式补测试（含格式影响）。
    - 保留并持续执行“同源文件 + 同 destination”脚本回归，确保真实场景稳定。
    - 已为 `insert_blocks` 和 `delete_range` 补充 4 个单元测试（2026-02-25）。
+
+6. **飞书待办最小能力落地（P0，2026-02-26 新增）**
+   - 新增 task 最小工具集：`create/get/update/delete`。
+   - 新增 tasklist 最小工具集：`create/get/list`。
+   - 保持 `gateway.ts` 零改动，确保消息通道行为不回归。
+
+7. **飞书待办权限灰度与验收（P0，2026-02-26 新增）**
+   - 飞书后台先开最小 4 个 task scope（task/tasklist read+write）。
+   - 单账号灰度验证工具调用、错误码和可见性，再推广到全账号。
+
+8. **飞书待办增强能力（二期，P1，2026-02-26 新增）**
+   - 按需补齐 tasklist 协作成员管理、任务与清单关联能力。
+   - 评估并按需引入 comment/attachment 能力，避免一次性扩大权限面。
 
 #### 回归防回退测试状态（2026-02-17）
 
