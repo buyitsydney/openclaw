@@ -2,7 +2,7 @@
 
 通过飞书（Lark）机器人与 OpenClaw 对话，让用户在飞书客户端内获得 AI 助手体验。
 
-**状态：飞书消息通道已实现并验证通过；飞书待办（Task v2）进入设计阶段 (2026-02-26 更新)**（含 Web Search + Browser Use + @mention 能力）
+**状态：飞书消息通道已实现并验证通过；飞书待办（Task v2）P0 主链路已落地并完成回归 (2026-02-27 更新)**（含 Web Search + Browser Use + @mention 能力）
 
 ## 核心结论
 
@@ -1555,29 +1555,33 @@ npm 上至少有 4 个飞书相关包：
    - 保留并持续执行“同源文件 + 同 destination”脚本回归，确保真实场景稳定。
    - 已为 `insert_blocks` 和 `delete_range` 补充 4 个单元测试（2026-02-25）。
 
-6. **飞书待办最小能力落地（P0，2026-02-26 新增）**
-   - 新增 task 最小工具集：`create/get/update/delete`。
-   - 新增 tasklist 最小工具集：`create/get/list`。
-   - 保持 `gateway.ts` 零改动，确保消息通道行为不回归。
+6. **~~飞书待办最小能力落地（P0，2026-02-26 新增）~~ ✅ 已完成（2026-02-27）**
+   - task 工具已落地：`create/get/update/delete` + `subtask_create` + `add_tasklist/remove_tasklist`。
+   - tasklist 工具已落地：`create/get/list/update/add_members/remove_members/delete`。
+   - 保持 `gateway.ts` 零改动，消息通道行为无回退。
 
-7. **飞书待办权限灰度与验收（P0，2026-02-26 新增）**
-   - 飞书后台先开最小 4 个 task scope（task/tasklist read+write）。
-   - 单账号灰度验证工具调用、错误码和可见性，再推广到全账号。
+7. **~~飞书待办权限灰度与验收（P0，2026-02-26 新增）~~ ✅ 已完成（2026-02-27）**
+   - 飞书后台最小 4 个 task scope（task/tasklist read+write）已验证可覆盖 P0 全链路。
+   - 单账号灰度已完成，错误码与可见性链路可复查。
 
 8. **飞书待办增强能力（二期，P1，2026-02-26 新增）**
-   - 按需补齐 tasklist 协作成员管理、任务与清单关联能力。
-   - 评估并按需引入 comment/attachment 能力，避免一次性扩大权限面。
+   - tasklist 协作成员管理、任务与清单关联能力已完成。
+   - 待补齐项收敛为：comment / attachment 能力（按权限面灰度推进）。
 
-9. **Bot-first 协作范式固化（P0，2026-02-27 新增）**
-   - 在 skill 与运行手册中明确“统一由 bot 创建并分配任务”的组织规范。
-   - 给出 A->B 派单模板（必须带 assignee + user_id_type）。
-   - 验收标准：新任务流转不再依赖“用户私有任务被 bot 读取”。
+9. **~~Bot-first 协作范式固化（P0，2026-02-27 新增）~~ ✅ 已完成（2026-02-27）**
+   - skill 与运行口径已明确“统一由 bot 创建并分配任务”。
+   - A->B 派单路径已固定：显式 assignee + `user_id_type=open_id`。
 
-10. **可见性防踩坑自动化（P0，2026-02-27 新增）**
+10. **~~可见性防踩坑自动化（P0，2026-02-27 新增）~~ ✅ 已完成（2026-02-27）**
 
-- 增加确定性测试脚本：验证 bot 自建可见、未分配不可见、分配后可见。
-- 对关键失败场景固定断言（invalid open_id、无权限、未分配导致不可见）。
-- 验收标准：脚本失败即退出，输出统一 PASS/FAIL 报告可复查。
+- 已新增确定性验收脚本：`extensions/feishu-her/src/tools/task-acceptance-log-check.ts`。
+- 关键失败场景（invalid open_id / 权限错误 / owner 约束）已有可复查日志断言。
+- 验收标准：脚本输出统一 PASS/FAIL JSON，失败即非零退出。
+
+11. **Task/Tasklist API 限制前置校验（P0，2026-02-27 新增）**
+
+- 已在 schema+action 层前置限制：`members.role` 仅 `editor/viewer`，`owner.type` 仅 `user`。
+- 目的：把飞书 400 转为本地确定性报错，减少线上试错成本。
 
 #### 回归防回退测试状态（2026-02-17）
 

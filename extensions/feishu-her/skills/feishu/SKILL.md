@@ -1,40 +1,44 @@
 ---
 name: feishu
-description: Feishu (飞书) comprehensive guide covering messaging, groups, contacts, documents, wiki, bitable, drive, calendar, group archives, and voice. Use when interacting with Feishu in any way. Triggers on keywords like 飞书, feishu, 转发, 分享文档, share document, forward, 群, group, 通讯录, contacts, directory, 文档, 知识空间, wiki, 多维表格, bitable, 日历, calendar, 忙闲, 有空吗, 建会, 群聊归档, group archive, 语音, voice, audio.
+description: Feishu (飞书) comprehensive guide covering messaging, groups, contacts, documents, wiki, bitable, drive, calendar, task, tasklist, group archives, and voice. Use when interacting with Feishu in any way. Triggers on keywords like 飞书, feishu, 转发, 分享文档, share document, forward, 群, group, 通讯录, contacts, directory, 文档, 知识空间, wiki, 多维表格, bitable, 日历, calendar, 待办, task, tasklist, 任务清单, 忙闲, 有空吗, 建会, 群聊归档, group archive, 语音, voice, audio.
 metadata: { "openclaw": { "emoji": "📨" } }
 ---
 
 # Feishu Skill — 全功能操作指南
 
-> 最后验证：2026-02-25。所有能力均经过实测（含 @mention + 企业通讯录）。
+> 最后验证：2026-02-27。所有能力均经过实测（含 @mention + 企业通讯录 + Task 协作 P0）。
 
 ## 能力总览
 
-| 类别           | 能力                                                | 工具               | 状态             |
-| -------------- | --------------------------------------------------- | ------------------ | ---------------- |
-| **消息**       | 发送消息（群/个人）                                 | `message`          | ✅               |
-| **文件发送**   | 发送本地文件到飞书聊天（PPT/PDF/DOCX等，≤30MB）     | `message` + media  | ✅               |
-| **群聊**       | 列表、详情、成员                                    | `feishu_chat`      | ✅               |
-| **通讯录**     | 用户、部门                                          | `feishu_directory` | ✅ 企业版含姓名  |
-| **知识空间**   | 列空间、遍历节点、节点详情                          | `feishu_wiki`      | ✅               |
-| **Wiki 管理**  | 创建节点（docx/bitable/sheet）、重命名、移动        | `feishu_wiki`      | ✅               |
-| **文档读取**   | 读正文、表格、代码、画板（自动导出 PNG）            | `feishu_doc`       | ✅               |
-| **文档写入**   | write（覆盖）、append（追加）、create（新建）       | `feishu_doc`       | ✅               |
-| **增量编辑**   | insert_blocks（中间插入）、delete_range（批量删除） | `feishu_doc`       | ✅               |
-| **Block 操作** | list_blocks、get_block、update_block、delete_block  | `feishu_doc`       | ✅               |
-| **多维表格读** | get_meta、list_fields、list_records、get_record     | `feishu_bitable`   | ✅               |
-| **多维表格写** | create_record、update_record                        | `feishu_bitable`   | ✅               |
-| **云盘**       | list、info、create_folder、move、delete             | `feishu_drive`     | ✅ Bot 限制见下  |
-| **群聊归档**   | 本地 JSONL 归档读取和总结                           | `exec` (jq)        | ✅               |
-| **日历建会**   | 建会+自动邀请参会人（对方日历自动收到）             | `feishu_calendar`  | ✅               |
-| **日历忙闲**   | 查任何人忙碌时间段（无需共享）                      | `feishu_calendar`  | ✅               |
-| **删除**       | —                                                   | —                  | ❌ 无权限（403） |
+| 类别           | 能力                                                | 工具                | 状态             |
+| -------------- | --------------------------------------------------- | ------------------- | ---------------- |
+| **消息**       | 发送消息（群/个人）                                 | `message`           | ✅               |
+| **文件发送**   | 发送本地文件到飞书聊天（PPT/PDF/DOCX等，≤30MB）     | `message` + media   | ✅               |
+| **群聊**       | 列表、详情、成员                                    | `feishu_chat`       | ✅               |
+| **通讯录**     | 用户、部门                                          | `feishu_directory`  | ✅ 企业版含姓名  |
+| **知识空间**   | 列空间、遍历节点、节点详情                          | `feishu_wiki`       | ✅               |
+| **Wiki 管理**  | 创建节点（docx/bitable/sheet）、重命名、移动        | `feishu_wiki`       | ✅               |
+| **文档读取**   | 读正文、表格、代码、画板（自动导出 PNG）            | `feishu_doc`        | ✅               |
+| **文档写入**   | write（覆盖）、append（追加）、create（新建）       | `feishu_doc`        | ✅               |
+| **增量编辑**   | insert_blocks（中间插入）、delete_range（批量删除） | `feishu_doc`        | ✅               |
+| **Block 操作** | list_blocks、get_block、update_block、delete_block  | `feishu_doc`        | ✅               |
+| **多维表格读** | get_meta、list_fields、list_records、get_record     | `feishu_bitable`    | ✅               |
+| **多维表格写** | create_record、update_record                        | `feishu_bitable`    | ✅               |
+| **云盘**       | list、info、create_folder、move、delete             | `feishu_drive`      | ✅ Bot 限制见下  |
+| **群聊归档**   | 本地 JSONL 归档读取和总结                           | `exec` (jq)         | ✅               |
+| **日历建会**   | 建会+自动邀请参会人（对方日历自动收到）             | `feishu_calendar`   | ✅               |
+| **日历忙闲**   | 查任何人忙碌时间段（无需共享）                      | `feishu_calendar`   | ✅               |
+| **待办任务**   | 创建/查询/更新/删除/子任务/挂清单                   | `feishu_task_*`     | ✅ 协作 P0       |
+| **任务清单**   | 创建/查询/列出/更新/成员增删                        | `feishu_tasklist_*` | ✅ 协作 P0       |
+| **删除限制**   | 文档/Wiki/Bitable 删除                              | —                   | ❌ 无权限（403） |
 
 ## ⚠️ 重要限制（必读！）
 
-### 1. 无法删除任何内容
+### 1. 无法删除文档/Wiki/Bitable内容
 
-Bot 没有删除权限。Wiki 节点、文档、多维表格记录均无法通过 API 删除。**创建前要确认，创建后无法撤销**（需用户手动删除）。
+Bot 对 Wiki 节点、文档、多维表格记录没有删除权限，无法通过 API 删除。**创建前要确认，创建后无法撤销**（需用户手动删除）。
+
+> 说明：Task v2 已支持任务删除（`feishu_task_delete`），该限制不适用于待办任务。
 
 ### 2. 通讯录 API 行为（实测）
 
@@ -54,6 +58,12 @@ Bot 没有删除权限。Wiki 节点、文档、多维表格记录均无法通�
 ### 4. 多维表格字段格式
 
 Bitable 的 Text 字段直接传字符串即可（如 `{"字段名": "值"}`），不需要数组包裹。SingleSelect 也直接传字符串。DateTime 传 unix 毫秒时间戳。
+
+### 5. 待办（Task v2）可见性与归属
+
+- 用户只有在任务成员（assignee）中时，才容易在个人视图看到任务。
+- 创建任务清单时，建议保持清单 owner 为 bot，本人作为成员加入，避免 bot 丢失后续管理权限。
+- Task 与 Tasklist 关系：Task 是具体待办项，Tasklist 是组织容器。先建 Tasklist，再将任务放入清单会更稳定。
 
 ## 🔴 语音消息（CRITICAL）
 
@@ -281,6 +291,51 @@ Workflow: `list_blocks` 找到范围的起止 block ID → `delete_range`。注�
 - "帮我约个会" → `get_primary` → `create_event`（**必须**加 `attendee_ids`）→ `check_freebusy` 告知冲突
 - "某人今天有空吗" → `check_freebusy`（先查 open_id）
 - "我今天有什么会" → `check_freebusy` 看忙碌时段 + `list_events` 看 bot 创建的事件
+
+## 待办（Task v2）
+
+### 能做什么（协作 P0）
+
+1. 创建任务：`feishu_task_create`
+2. 创建子任务：`feishu_task_subtask_create`
+3. 任务挂到清单：`feishu_task_add_tasklist`
+4. 任务从清单移除：`feishu_task_remove_tasklist`
+5. 查询任务：`feishu_task_get`
+6. 更新任务：`feishu_task_update`
+7. 删除任务：`feishu_task_delete`
+8. 创建任务清单：`feishu_tasklist_create`
+9. 查询任务清单：`feishu_tasklist_get`
+10. 列出任务清单：`feishu_tasklist_list`
+11. 更新任务清单：`feishu_tasklist_update`
+12. 任务清单加成员：`feishu_tasklist_add_members`
+13. 任务清单移除成员：`feishu_tasklist_remove_members`
+14. 删除任务清单：`feishu_tasklist_delete`
+
+### Agent 执行策略（仅供 Her 决策）
+
+1. 处理“派任务给某人”时，优先走 `feishu_task_create`，并显式传 `members`（`role=assignee`）与 `user_id_type=open_id`。
+2. 处理“协作清单”时，优先走 `feishu_tasklist_create` + `feishu_tasklist_add_members` + `feishu_task_add_tasklist`。
+3. 处理“用户说看不到任务”时，优先检查该用户是否在任务 assignee 中，必要时用 `feishu_task_update` 修正。
+4. 不向用户输出部署口径（如权限列表）；仅在调用失败（403）时提示“请管理员检查 Task 相关权限配置”。
+
+### 推荐调用顺序
+
+1. 先 `feishu_tasklist_create` 建立清单（如“工作待办”）
+2. 再 `feishu_task_create` 创建任务（协作任务要显式传 assignee）
+3. 协作时用 `feishu_tasklist_add_members` 加成员，再用 `feishu_task_add_tasklist` 归档到清单
+4. 需要变更时用 `feishu_task_update`/`feishu_tasklist_update`（支持自动推导 `update_fields`）
+5. 完成后可 `feishu_task_delete` 清理任务
+6. 测试/临时清单结束后用 `feishu_tasklist_delete` 清理清单
+7. 用 `feishu_tasklist_list`/`get` 做状态核对
+
+### 常见坑
+
+- `task_guid` 与 `tasklist_guid` 不能混用，更新/删除必须传对应 guid。
+- `feishu_task_update` 若显式传 `update_fields`，字段名必须合法；否则会报 unsupported。
+- `feishu_task_subtask_create` 仅对 bot 当前可见的父任务稳定可用。
+- `feishu_tasklist_add_members` / `remove_members` 的 `role` 只支持 `editor` / `viewer`（不支持 `owner`）。
+- `feishu_tasklist_update` 转移 owner 时，`owner.type` 只支持 `user`（不支持 `app`，无法转回 bot）。
+- 灰度期间先单账号验证，避免一次性放开到所有账号。
 
 ## 操作指南
 
