@@ -310,6 +310,17 @@ Workflow: `list_blocks` 找到范围的起止 block ID → `delete_range`。注�
 12. 任务清单加成员：`feishu_tasklist_add_members`
 13. 任务清单移除成员：`feishu_tasklist_remove_members`
 14. 删除任务清单：`feishu_tasklist_delete`
+15. 创建任务评论：`feishu_task_comment_create`
+16. 列出任务评论：`feishu_task_comment_list`
+17. 查询任务评论：`feishu_task_comment_get`
+18. 更新任务评论：`feishu_task_comment_update`
+19. 删除任务评论：`feishu_task_comment_delete`
+20. 上传任务附件：`feishu_task_attachment_upload`
+21. 列出任务附件：`feishu_task_attachment_list`
+22. 查询任务附件：`feishu_task_attachment_get`
+23. 删除任务附件：`feishu_task_attachment_delete`
+24. 列出清单任务：`feishu_tasklist_tasks`
+25. 列出分组任务：`feishu_section_tasks`
 
 ### Agent 执行策略（仅供 Her 决策）
 
@@ -327,6 +338,8 @@ Workflow: `list_blocks` 找到范围的起止 block ID → `delete_range`。注�
 5. 完成后可 `feishu_task_delete` 清理任务
 6. 测试/临时清单结束后用 `feishu_tasklist_delete` 清理清单
 7. 用 `feishu_tasklist_list`/`get` 做状态核对
+8. 评论流转优先走 `feishu_task_comment_*`，附件流转优先走 `feishu_task_attachment_*`
+9. 清单结构化核对时优先 `feishu_tasklist_tasks`，按分组核对用 `feishu_section_tasks`
 
 ### 常见坑
 
@@ -335,6 +348,7 @@ Workflow: `list_blocks` 找到范围的起止 block ID → `delete_range`。注�
 - `feishu_task_subtask_create` 仅对 bot 当前可见的父任务稳定可用。
 - `feishu_tasklist_add_members` / `remove_members` 的 `role` 只支持 `editor` / `viewer`（不支持 `owner`）。
 - `feishu_tasklist_update` 转移 owner 时，`owner.type` 只支持 `user`（不支持 `app`，无法转回 bot）。
+- `feishu_task_attachment_upload` 必须二选一：`file_path` 或 `file_url`，不能同时传、也不能都不传。
 - 灰度期间先单账号验证，避免一次性放开到所有账号。
 
 ## 操作指南

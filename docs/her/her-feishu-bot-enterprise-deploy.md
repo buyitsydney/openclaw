@@ -7,7 +7,7 @@
 
 **最终方案：200 Bot + 200 Docker（每人一个独立 OpenClaw 容器）**
 
-**验证状态 (2026-02-25 更新)：飞书并发测试通过、数据隔离已确认、Webchat 隔离已确认、自动镜像重建已实现、Web Search (Perplexity) 已验证、Browser Use (Chromium headless) 已验证、Context Window 240K 保护已配置、CardKit 状态 Footer 已实现、Config $include 零分叉架构已验证（本地 + Docker 全环境 0 error）、语音 Gemini Live 已验证（本地 + Docker）、@mention 发送已验证（本地 + Docker，需 contact:user.base:readonly 权限）**（均为本地 Mac 验证，Ubuntu 企业部署尚未执行）
+**验证状态 (2026-02-27 更新)：飞书并发测试通过、数据隔离已确认、Webchat 隔离已确认、自动镜像重建已实现、Web Search (Perplexity) 已验证、Browser Use (Chromium headless) 已验证、Context Window 240K 保护已配置、CardKit 状态 Footer 已实现、Config $include 零分叉架构已验证（本地 + Docker 全环境 0 error）、语音 Gemini Live 已验证（本地 + Docker）、@mention 发送已验证（本地 + Docker，需 contact:user.base:readonly 权限）、飞书待办 Task v2 P1 全量能力已验证（本机 Her + docker1 Her 双端通过）**（均为本地 Mac 验证，Ubuntu 企业部署尚未执行）
 
 ---
 

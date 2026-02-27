@@ -7,6 +7,17 @@ import type {
   CreateTaskParams,
   CreateTasklistParams,
   DeleteTasklistParams,
+  CreateTaskCommentParams,
+  ListTaskCommentsParams,
+  GetTaskCommentParams,
+  UpdateTaskCommentParams,
+  DeleteTaskCommentParams,
+  UploadTaskAttachmentParams,
+  ListTaskAttachmentsParams,
+  GetTaskAttachmentParams,
+  DeleteTaskAttachmentParams,
+  ListTasklistTasksParams,
+  ListSectionTasksParams,
   DeleteTaskParams,
   GetTaskParams,
   GetTasklistParams,
@@ -17,6 +28,9 @@ import type {
   UpdateTasklistParams,
 } from "./task-schemas.js";
 import { TASK_UPDATE_FIELD_VALUES, TASKLIST_UPDATE_FIELD_VALUES } from "./task-schemas.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 const TASK_UPDATE_FIELD_SET = new Set<string>(TASK_UPDATE_FIELD_VALUES);
 const TASKLIST_UPDATE_FIELD_SET = new Set<string>(TASKLIST_UPDATE_FIELD_VALUES);
@@ -94,6 +108,70 @@ function formatTasklist(tasklist: Record<string, unknown> | undefined) {
     created_at: tasklist.created_at,
     updated_at: tasklist.updated_at,
     archive_msec: tasklist.archive_msec,
+  };
+}
+
+function formatComment(comment: Record<string, unknown> | undefined) {
+  if (!comment) return undefined;
+  return {
+    comment_id: comment.id,
+    content: comment.content,
+    created_at: comment.created_at,
+    updated_at: comment.updated_at,
+    creator: comment.creator,
+    task_guid: comment.resource_id,
+    reply_to_comment_id: comment.reply_to_comment_id,
+  };
+}
+
+function formatAttachment(attachment: Record<string, unknown> | undefined) {
+  if (!attachment) return undefined;
+  return {
+    guid: attachment.guid,
+    file_token: attachment.file_token,
+    name: attachment.name,
+    size: attachment.size,
+    uploader: attachment.uploader,
+    is_cover: attachment.is_cover,
+    uploaded_at: attachment.uploaded_at,
+    url: attachment.url,
+    resource: attachment.resource,
+  };
+}
+
+function ensureAttachmentSource(params: UploadTaskAttachmentParams) {
+  const hasPath = !!params.file_path;
+  const hasUrl = !!params.file_url;
+  if ((hasPath && hasUrl) || (!hasPath && !hasUrl)) {
+    throw new Error("attachment upload requires exactly one of file_path or file_url");
+  }
+}
+
+async function downloadToTempFile(fileUrl: string, filename?: string) {
+  const res = await fetch(fileUrl);
+  if (!res.ok) {
+    throw new Error(`failed to download file_url: HTTP ${res.status}`);
+  }
+  const arr = await res.arrayBuffer();
+  const buffer = Buffer.from(arr);
+  const parsedName = (() => {
+    try {
+      return path.basename(new URL(fileUrl).pathname);
+    } catch {
+      return "";
+    }
+  })();
+  const name = (filename?.trim() || parsedName || "attachment.bin").replace(/[^\w.\-]/g, "_");
+  const tmpPath = path.join(
+    os.tmpdir(),
+    `feishu-task-attachment-${Date.now()}-${Math.random().toString(16).slice(2)}-${name}`,
+  );
+  await fs.promises.writeFile(tmpPath, buffer);
+  return {
+    path: tmpPath,
+    cleanup: async () => {
+      await fs.promises.unlink(tmpPath).catch(() => undefined);
+    },
   };
 }
 
@@ -389,4 +467,237 @@ export async function deleteTasklist(client: TaskClient, params: DeleteTasklistP
     }),
   );
   return { success: true, tasklist_guid: params.tasklist_guid };
+}
+
+export async function createTaskComment(client: TaskClient, params: CreateTaskCommentParams) {
+  const c = client as unknown as {
+    task: { v2: { comment: { create: (args: unknown) => Promise<Record<string, unknown>> } } };
+  };
+  const res = await runTaskApiCall("task.v2.comment.create", () =>
+    c.task.v2.comment.create({
+      data: omitUndefined({
+        resource_type: "task",
+        resource_id: params.task_guid,
+        content: params.content,
+        reply_to_comment_id: params.reply_to_comment_id,
+      }),
+      params: omitUndefined({ user_id_type: params.user_id_type }),
+    }),
+  );
+  return {
+    comment: formatComment((res.data as { comment?: Record<string, unknown> } | undefined)?.comment),
+  };
+}
+
+export async function listTaskComments(client: TaskClient, params: ListTaskCommentsParams) {
+  const c = client as unknown as {
+    task: { v2: { comment: { list: (args: unknown) => Promise<Record<string, unknown>> } } };
+  };
+  const res = await runTaskApiCall("task.v2.comment.list", () =>
+    c.task.v2.comment.list({
+      params: omitUndefined({
+        resource_type: "task",
+        resource_id: params.task_guid,
+        page_size: params.page_size,
+        page_token: params.page_token,
+        direction: params.direction,
+        user_id_type: params.user_id_type,
+      }),
+    }),
+  );
+  const data = res.data as
+    | {
+        items?: Record<string, unknown>[];
+        page_token?: string;
+        has_more?: boolean;
+      }
+    | undefined;
+  return {
+    items: (data?.items ?? []).map((i) => formatComment(i)),
+    page_token: data?.page_token,
+    has_more: data?.has_more,
+  };
+}
+
+export async function getTaskComment(client: TaskClient, params: GetTaskCommentParams) {
+  const c = client as unknown as {
+    task: { v2: { comment: { get: (args: unknown) => Promise<Record<string, unknown>> } } };
+  };
+  const res = await runTaskApiCall("task.v2.comment.get", () =>
+    c.task.v2.comment.get({
+      path: { comment_id: params.comment_id },
+      params: omitUndefined({ user_id_type: params.user_id_type }),
+    }),
+  );
+  return {
+    comment: formatComment((res.data as { comment?: Record<string, unknown> } | undefined)?.comment),
+  };
+}
+
+export async function updateTaskComment(client: TaskClient, params: UpdateTaskCommentParams) {
+  const c = client as unknown as {
+    task: { v2: { comment: { patch: (args: unknown) => Promise<Record<string, unknown>> } } };
+  };
+  const commentBody = omitUndefined(params.comment as Record<string, unknown>);
+  const updateFields =
+    params.update_fields?.length && params.update_fields.length > 0
+      ? params.update_fields
+      : Object.keys(commentBody);
+  if (Object.keys(commentBody).length === 0) {
+    throw new Error("task comment update payload is empty");
+  }
+  if (updateFields.length === 0) {
+    throw new Error("no valid update_fields provided or inferred from comment payload");
+  }
+  const res = await runTaskApiCall("task.v2.comment.patch", () =>
+    c.task.v2.comment.patch({
+      path: { comment_id: params.comment_id },
+      data: { comment: commentBody, update_fields: updateFields },
+      params: omitUndefined({ user_id_type: params.user_id_type }),
+    }),
+  );
+  return {
+    comment: formatComment((res.data as { comment?: Record<string, unknown> } | undefined)?.comment),
+    update_fields: updateFields,
+  };
+}
+
+export async function deleteTaskComment(client: TaskClient, params: DeleteTaskCommentParams) {
+  const c = client as unknown as {
+    task: { v2: { comment: { delete: (args: unknown) => Promise<Record<string, unknown>> } } };
+  };
+  await runTaskApiCall("task.v2.comment.delete", () =>
+    c.task.v2.comment.delete({
+      path: { comment_id: params.comment_id },
+    }),
+  );
+  return { success: true, comment_id: params.comment_id };
+}
+
+export async function uploadTaskAttachment(client: TaskClient, params: UploadTaskAttachmentParams) {
+  ensureAttachmentSource(params);
+  const c = client as unknown as {
+    task: { v2: { attachment: { upload: (args: unknown) => Promise<Record<string, unknown>> } } };
+  };
+  let uploadPath = params.file_path;
+  let cleanup: (() => Promise<void>) | undefined;
+  if (params.file_url) {
+    const tmp = await downloadToTempFile(params.file_url, params.filename);
+    uploadPath = tmp.path;
+    cleanup = tmp.cleanup;
+  }
+
+  try {
+    const res = await runTaskApiCall("task.v2.attachment.upload", () =>
+      c.task.v2.attachment.upload({
+        data: {
+          resource_type: "task",
+          resource_id: params.task_guid,
+          file: fs.createReadStream(uploadPath!),
+        },
+        params: omitUndefined({ user_id_type: params.user_id_type }),
+      }),
+    );
+    const data = res as { items?: Record<string, unknown>[] } | undefined;
+    return { items: (data?.items ?? []).map((i) => formatAttachment(i)) };
+  } finally {
+    if (cleanup) await cleanup();
+  }
+}
+
+export async function listTaskAttachments(client: TaskClient, params: ListTaskAttachmentsParams) {
+  const c = client as unknown as {
+    task: { v2: { attachment: { list: (args: unknown) => Promise<Record<string, unknown>> } } };
+  };
+  const res = await runTaskApiCall("task.v2.attachment.list", () =>
+    c.task.v2.attachment.list({
+      params: omitUndefined({
+        resource_type: "task",
+        resource_id: params.task_guid,
+        page_size: params.page_size,
+        page_token: params.page_token,
+        updated_mesc: params.updated_mesc,
+        user_id_type: params.user_id_type,
+      }),
+    }),
+  );
+  const data = res.data as { items?: Record<string, unknown>[]; page_token?: string; has_more?: boolean } | undefined;
+  return {
+    items: (data?.items ?? []).map((i) => formatAttachment(i)),
+    page_token: data?.page_token,
+    has_more: data?.has_more,
+  };
+}
+
+export async function getTaskAttachment(client: TaskClient, params: GetTaskAttachmentParams) {
+  const c = client as unknown as {
+    task: { v2: { attachment: { get: (args: unknown) => Promise<Record<string, unknown>> } } };
+  };
+  const res = await runTaskApiCall("task.v2.attachment.get", () =>
+    c.task.v2.attachment.get({
+      path: { attachment_guid: params.attachment_guid },
+      params: omitUndefined({ user_id_type: params.user_id_type }),
+    }),
+  );
+  return {
+    attachment: formatAttachment(
+      (res.data as { attachment?: Record<string, unknown> } | undefined)?.attachment,
+    ),
+  };
+}
+
+export async function deleteTaskAttachment(client: TaskClient, params: DeleteTaskAttachmentParams) {
+  const c = client as unknown as {
+    task: { v2: { attachment: { delete: (args: unknown) => Promise<Record<string, unknown>> } } };
+  };
+  await runTaskApiCall("task.v2.attachment.delete", () =>
+    c.task.v2.attachment.delete({
+      path: { attachment_guid: params.attachment_guid },
+    }),
+  );
+  return { success: true, attachment_guid: params.attachment_guid };
+}
+
+export async function listTasklistTasks(client: TaskClient, params: ListTasklistTasksParams) {
+  const c = client as unknown as {
+    task: { v2: { tasklist: { tasks: (args: unknown) => Promise<Record<string, unknown>> } } };
+  };
+  const res = await runTaskApiCall("task.v2.tasklist.tasks", () =>
+    c.task.v2.tasklist.tasks({
+      path: { tasklist_guid: params.tasklist_guid },
+      params: omitUndefined({
+        page_size: params.page_size,
+        page_token: params.page_token,
+        user_id_type: params.user_id_type,
+      }),
+    }),
+  );
+  const data = res.data as { items?: Record<string, unknown>[]; page_token?: string; has_more?: boolean } | undefined;
+  return {
+    items: (data?.items ?? []).map((i) => formatTask(i)),
+    page_token: data?.page_token,
+    has_more: data?.has_more,
+  };
+}
+
+export async function listSectionTasks(client: TaskClient, params: ListSectionTasksParams) {
+  const c = client as unknown as {
+    task: { v2: { section: { tasks: (args: unknown) => Promise<Record<string, unknown>> } } };
+  };
+  const res = await runTaskApiCall("task.v2.section.tasks", () =>
+    c.task.v2.section.tasks({
+      path: { section_guid: params.section_guid },
+      params: omitUndefined({
+        page_size: params.page_size,
+        page_token: params.page_token,
+        user_id_type: params.user_id_type,
+      }),
+    }),
+  );
+  const data = res.data as { items?: Record<string, unknown>[]; page_token?: string; has_more?: boolean } | undefined;
+  return {
+    items: (data?.items ?? []).map((i) => formatTask(i)),
+    page_token: data?.page_token,
+    has_more: data?.has_more,
+  };
 }

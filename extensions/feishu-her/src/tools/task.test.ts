@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 const listEnabledFeishuAccountsMock = vi.hoisted(() => vi.fn());
 const getFeishuClientMock = vi.hoisted(() => vi.fn());
@@ -33,6 +36,17 @@ describe("feishu-her task tools", () => {
   const tasklistAddMembersMock = vi.hoisted(() => vi.fn());
   const tasklistRemoveMembersMock = vi.hoisted(() => vi.fn());
   const tasklistDeleteMock = vi.hoisted(() => vi.fn());
+  const taskCommentCreateMock = vi.hoisted(() => vi.fn());
+  const taskCommentListMock = vi.hoisted(() => vi.fn());
+  const taskCommentGetMock = vi.hoisted(() => vi.fn());
+  const taskCommentPatchMock = vi.hoisted(() => vi.fn());
+  const taskCommentDeleteMock = vi.hoisted(() => vi.fn());
+  const taskAttachmentUploadMock = vi.hoisted(() => vi.fn());
+  const taskAttachmentListMock = vi.hoisted(() => vi.fn());
+  const taskAttachmentGetMock = vi.hoisted(() => vi.fn());
+  const taskAttachmentDeleteMock = vi.hoisted(() => vi.fn());
+  const tasklistTasksMock = vi.hoisted(() => vi.fn());
+  const sectionTasksMock = vi.hoisted(() => vi.fn());
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -66,6 +80,23 @@ describe("feishu-her task tools", () => {
             addMembers: tasklistAddMembersMock,
             removeMembers: tasklistRemoveMembersMock,
             delete: tasklistDeleteMock,
+            tasks: tasklistTasksMock,
+          },
+          comment: {
+            create: taskCommentCreateMock,
+            list: taskCommentListMock,
+            get: taskCommentGetMock,
+            patch: taskCommentPatchMock,
+            delete: taskCommentDeleteMock,
+          },
+          attachment: {
+            upload: taskAttachmentUploadMock,
+            list: taskAttachmentListMock,
+            get: taskAttachmentGetMock,
+            delete: taskAttachmentDeleteMock,
+          },
+          section: {
+            tasks: sectionTasksMock,
           },
         },
       },
@@ -105,6 +136,29 @@ describe("feishu-her task tools", () => {
       data: { tasklist: { guid: "tl_1", members: [] } },
     });
     tasklistDeleteMock.mockResolvedValue({ code: 0 });
+    taskCommentCreateMock.mockResolvedValue({ code: 0, data: { comment: { id: "c_1" } } });
+    taskCommentListMock.mockResolvedValue({
+      code: 0,
+      data: { items: [{ id: "c_1" }], has_more: false },
+    });
+    taskCommentGetMock.mockResolvedValue({ code: 0, data: { comment: { id: "c_1" } } });
+    taskCommentPatchMock.mockResolvedValue({ code: 0, data: { comment: { id: "c_1" } } });
+    taskCommentDeleteMock.mockResolvedValue({ code: 0 });
+    taskAttachmentUploadMock.mockResolvedValue({ items: [{ guid: "a_1" }] });
+    taskAttachmentListMock.mockResolvedValue({
+      code: 0,
+      data: { items: [{ guid: "a_1" }], has_more: false },
+    });
+    taskAttachmentGetMock.mockResolvedValue({ code: 0, data: { attachment: { guid: "a_1" } } });
+    taskAttachmentDeleteMock.mockResolvedValue({ code: 0 });
+    tasklistTasksMock.mockResolvedValue({
+      code: 0,
+      data: { items: [{ guid: "t_1" }], has_more: false },
+    });
+    sectionTasksMock.mockResolvedValue({
+      code: 0,
+      data: { items: [{ guid: "t_1" }], has_more: false },
+    });
   });
 
   function registerAndGetTools() {
@@ -141,6 +195,17 @@ describe("feishu-her task tools", () => {
       "feishu_tasklist_add_members",
       "feishu_tasklist_remove_members",
       "feishu_tasklist_delete",
+      "feishu_task_comment_create",
+      "feishu_task_comment_list",
+      "feishu_task_comment_get",
+      "feishu_task_comment_update",
+      "feishu_task_comment_delete",
+      "feishu_task_attachment_upload",
+      "feishu_task_attachment_list",
+      "feishu_task_attachment_get",
+      "feishu_task_attachment_delete",
+      "feishu_tasklist_tasks",
+      "feishu_section_tasks",
     ]);
   });
 
@@ -281,5 +346,59 @@ describe("feishu-her task tools", () => {
 
     expect((res.details as { error?: string }).error).toContain("only user is allowed");
     expect(tasklistPatchMock).not.toHaveBeenCalled();
+  });
+
+  it("comment/attachment/section tools work", async () => {
+    const { tools } = registerAndGetTools();
+    const createCommentTool = getTool(tools, "feishu_task_comment_create");
+    const listCommentTool = getTool(tools, "feishu_task_comment_list");
+    const getCommentTool = getTool(tools, "feishu_task_comment_get");
+    const updateCommentTool = getTool(tools, "feishu_task_comment_update");
+    const deleteCommentTool = getTool(tools, "feishu_task_comment_delete");
+    const uploadAttachmentTool = getTool(tools, "feishu_task_attachment_upload");
+    const listAttachmentTool = getTool(tools, "feishu_task_attachment_list");
+    const getAttachmentTool = getTool(tools, "feishu_task_attachment_get");
+    const deleteAttachmentTool = getTool(tools, "feishu_task_attachment_delete");
+    const listTasklistTasksTool = getTool(tools, "feishu_tasklist_tasks");
+    const listSectionTasksTool = getTool(tools, "feishu_section_tasks");
+
+    const tmpFile = path.join(os.tmpdir(), "feishu-task-upload-test.txt");
+    fs.writeFileSync(tmpFile, "ok");
+    await createCommentTool.execute("tc19", { task_guid: "t_1", content: "hello" });
+    await listCommentTool.execute("tc20", { task_guid: "t_1" });
+    await getCommentTool.execute("tc21", { comment_id: "c_1" });
+    await updateCommentTool.execute("tc22", { comment_id: "c_1", comment: { content: "new" } });
+    await deleteCommentTool.execute("tc23", { comment_id: "c_1" });
+    await uploadAttachmentTool.execute("tc24", { task_guid: "t_1", file_path: tmpFile });
+    await listAttachmentTool.execute("tc25", { task_guid: "t_1" });
+    await getAttachmentTool.execute("tc26", { attachment_guid: "a_1" });
+    await deleteAttachmentTool.execute("tc27", { attachment_guid: "a_1" });
+    await listTasklistTasksTool.execute("tc28", { tasklist_guid: "tl_1" });
+    await listSectionTasksTool.execute("tc29", { section_guid: "sec_1" });
+
+    expect(taskCommentCreateMock).toHaveBeenCalledTimes(1);
+    expect(taskCommentListMock).toHaveBeenCalledTimes(1);
+    expect(taskCommentGetMock).toHaveBeenCalledTimes(1);
+    expect(taskCommentPatchMock).toHaveBeenCalledTimes(1);
+    expect(taskCommentDeleteMock).toHaveBeenCalledTimes(1);
+    expect(taskAttachmentUploadMock).toHaveBeenCalledTimes(1);
+    expect(taskAttachmentListMock).toHaveBeenCalledTimes(1);
+    expect(taskAttachmentGetMock).toHaveBeenCalledTimes(1);
+    expect(taskAttachmentDeleteMock).toHaveBeenCalledTimes(1);
+    expect(tasklistTasksMock).toHaveBeenCalledTimes(1);
+    expect(sectionTasksMock).toHaveBeenCalledTimes(1);
+
+    const createCommentArg = taskCommentCreateMock.mock.calls[0]?.[0] as {
+      data: { resource_type: string; resource_id: string; content: string };
+    };
+    expect(createCommentArg.data.resource_type).toBe("task");
+    expect(createCommentArg.data.resource_id).toBe("t_1");
+    expect(createCommentArg.data.content).toBe("hello");
+
+    const listCommentArg = taskCommentListMock.mock.calls[0]?.[0] as {
+      params: { resource_type: string; resource_id: string };
+    };
+    expect(listCommentArg.params.resource_type).toBe("task");
+    expect(listCommentArg.params.resource_id).toBe("t_1");
   });
 });

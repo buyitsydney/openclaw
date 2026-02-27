@@ -2,7 +2,7 @@
 
 通过飞书（Lark）机器人与 OpenClaw 对话，让用户在飞书客户端内获得 AI 助手体验。
 
-**状态：飞书消息通道已实现并验证通过；飞书待办（Task v2）P0 主链路已落地并完成回归 (2026-02-27 更新)**（含 Web Search + Browser Use + @mention 能力）
+**状态：飞书消息通道已实现并验证通过；飞书待办（Task v2）P1 增强能力已落地并完成双 Her 回归通过 (2026-02-27 更新)**（含 Web Search + Browser Use + @mention 能力）
 
 ## 核心结论
 
@@ -1511,9 +1511,14 @@ npm 上至少有 4 个飞书相关包：
    - 飞书后台最小 4 个 task scope（task/tasklist read+write）已验证可覆盖 P0 全链路。
    - 单账号灰度已完成，错误码与可见性链路可复查。
 
-8. **飞书待办增强能力（二期，P1，2026-02-26 新增）**
-   - tasklist 协作成员管理、任务与清单关联能力已完成。
-   - 待补齐项收敛为：comment / attachment 能力（按权限面灰度推进）。
+8. **~~飞书待办增强能力（二期，P1，2026-02-26 新增）~~ ✅ 已完成（2026-02-27）**
+   - 已完成 comment / attachment / tasklist_tasks / section_tasks 全量接入。
+   - 本机 Her + docker1 Her 最新 run 均通过 `task-acceptance-log-check.ts --profile p1`。
+   - 已确认修复：`comment_create 1470500`、`comment_list 99992402`、`attachment_upload 返回空 items`。
+
+12. **上线策略（2026-02-27 新增）**
+   - 建议先灰度上线（单账号 24h）再全量。
+   - 灰度期间重点监控：`1470500`、`99992402`、`99991672`。
 
 9. **~~Bot-first 协作范式固化（P0，2026-02-27 新增）~~ ✅ 已完成（2026-02-27）**
    - skill 与运行口径已明确“统一由 bot 创建并分配任务”。

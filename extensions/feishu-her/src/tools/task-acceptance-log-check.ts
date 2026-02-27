@@ -6,7 +6,7 @@ type ToolEvent = {
   tool: string;
 };
 
-const REQUIRED_TOOLS = [
+const REQUIRED_TOOLS_P0 = [
   "feishu_tasklist_create",
   "feishu_tasklist_get",
   "feishu_tasklist_list",
@@ -23,6 +23,21 @@ const REQUIRED_TOOLS = [
   "feishu_task_remove_tasklist",
 ] as const;
 
+const REQUIRED_TOOLS_P1 = [
+  ...REQUIRED_TOOLS_P0,
+  "feishu_task_comment_create",
+  "feishu_task_comment_list",
+  "feishu_task_comment_get",
+  "feishu_task_comment_update",
+  "feishu_task_comment_delete",
+  "feishu_task_attachment_upload",
+  "feishu_task_attachment_list",
+  "feishu_task_attachment_get",
+  "feishu_task_attachment_delete",
+  "feishu_tasklist_tasks",
+  "feishu_section_tasks",
+] as const;
+
 function parseArgs() {
   const argv = process.argv.slice(2);
   const args = new Map<string, string>();
@@ -31,7 +46,7 @@ function parseArgs() {
     const v = argv[i + 1];
     if (!k?.startsWith("--") || !v || v.startsWith("--")) {
       throw new Error(
-        "Usage: bun extensions/feishu-her/src/tools/task-acceptance-log-check.ts --log <path> --run-id <runId>",
+        "Usage: bun extensions/feishu-her/src/tools/task-acceptance-log-check.ts --log <path> --run-id <runId> [--profile p0|p1]",
       );
     }
     args.set(k, v);
@@ -42,7 +57,11 @@ function parseArgs() {
   if (!logPath || !runId) {
     throw new Error("Missing required arguments. Usage: --log <path> --run-id <runId>");
   }
-  return { logPath: resolve(logPath), runId };
+  const profile = args.get("--profile") ?? "p0";
+  if (profile !== "p0" && profile !== "p1") {
+    throw new Error("Invalid --profile value. Allowed: p0 | p1");
+  }
+  return { logPath: resolve(logPath), runId, profile: profile as "p0" | "p1" };
 }
 
 function pickField(line: string, key: string): string | undefined {
@@ -81,7 +100,7 @@ function collectEvents(logText: string, runId: string) {
   return { events, failLines };
 }
 
-function summarize(events: ToolEvent[]) {
+function summarize(events: ToolEvent[], requiredTools: readonly string[]) {
   const startCount = new Map<string, number>();
   const endCount = new Map<string, number>();
   for (const e of events) {
@@ -89,7 +108,7 @@ function summarize(events: ToolEvent[]) {
     target.set(e.tool, (target.get(e.tool) ?? 0) + 1);
   }
 
-  const missingRequired = REQUIRED_TOOLS.filter(
+  const missingRequired = requiredTools.filter(
     (tool) => (startCount.get(tool) ?? 0) === 0 || (endCount.get(tool) ?? 0) === 0,
   );
 
@@ -101,10 +120,11 @@ function summarize(events: ToolEvent[]) {
 }
 
 function main() {
-  const { logPath, runId } = parseArgs();
+  const { logPath, runId, profile } = parseArgs();
+  const requiredTools = profile === "p1" ? REQUIRED_TOOLS_P1 : REQUIRED_TOOLS_P0;
   const text = readFileSync(logPath, "utf8");
   const { events, failLines } = collectEvents(text, runId);
-  const { startCount, endCount, missingRequired, unclosed } = summarize(events);
+  const { startCount, endCount, missingRequired, unclosed } = summarize(events, requiredTools);
 
   const pass =
     events.length > 0 && failLines === 0 && missingRequired.length === 0 && unclosed.length === 0;
@@ -112,6 +132,7 @@ function main() {
   const result = {
     pass,
     runId,
+    profile,
     logPath,
     totals: {
       events: events.length,

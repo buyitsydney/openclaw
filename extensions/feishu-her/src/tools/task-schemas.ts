@@ -201,6 +201,81 @@ export const DeleteTasklistSchema = Type.Object({
   tasklist_guid: Type.String({ description: "Tasklist GUID to delete" }),
 });
 
+export const CreateTaskCommentSchema = Type.Object({
+  task_guid: Type.String({ description: "Task GUID to comment on" }),
+  content: Type.String({ description: "Comment content" }),
+  reply_to_comment_id: Type.Optional(Type.String({ description: "Reply target comment id" })),
+  user_id_type: Type.Optional(Type.String({ description: "open_id/user_id/union_id" })),
+});
+
+export const ListTaskCommentsSchema = Type.Object({
+  task_guid: Type.String({ description: "Task GUID to list comments for" }),
+  page_size: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
+  page_token: Type.Optional(Type.String()),
+  direction: Type.Optional(stringEnum(["asc", "desc"] as const)),
+  user_id_type: Type.Optional(Type.String({ description: "open_id/user_id/union_id" })),
+});
+
+export const GetTaskCommentSchema = Type.Object({
+  comment_id: Type.String({ description: "Comment ID to query" }),
+  user_id_type: Type.Optional(Type.String({ description: "open_id/user_id/union_id" })),
+});
+
+export const UpdateTaskCommentSchema = Type.Object({
+  comment_id: Type.String({ description: "Comment ID to update" }),
+  comment: Type.Object(
+    {
+      content: Type.Optional(Type.String()),
+    },
+    { minProperties: 1 },
+  ),
+  update_fields: Type.Optional(Type.Array(Type.String(), { minItems: 1, uniqueItems: true })),
+  user_id_type: Type.Optional(Type.String({ description: "open_id/user_id/union_id" })),
+});
+
+export const DeleteTaskCommentSchema = Type.Object({
+  comment_id: Type.String({ description: "Comment ID to delete" }),
+});
+
+export const UploadTaskAttachmentSchema = Type.Object({
+  task_guid: Type.String({ description: "Task GUID to upload attachment to" }),
+  file_path: Type.Optional(Type.String({ description: "Local file path on host" })),
+  file_url: Type.Optional(Type.String({ description: "Remote file url to download and upload" })),
+  filename: Type.Optional(Type.String({ description: "Optional filename override (for file_url)" })),
+  user_id_type: Type.Optional(Type.String({ description: "open_id/user_id/union_id" })),
+});
+
+export const ListTaskAttachmentsSchema = Type.Object({
+  task_guid: Type.String({ description: "Task GUID to list attachments for" }),
+  page_size: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
+  page_token: Type.Optional(Type.String()),
+  updated_mesc: Type.Optional(Type.String({ description: "Updated timestamp filter" })),
+  user_id_type: Type.Optional(Type.String({ description: "open_id/user_id/union_id" })),
+});
+
+export const GetTaskAttachmentSchema = Type.Object({
+  attachment_guid: Type.String({ description: "Attachment GUID to query" }),
+  user_id_type: Type.Optional(Type.String({ description: "open_id/user_id/union_id" })),
+});
+
+export const DeleteTaskAttachmentSchema = Type.Object({
+  attachment_guid: Type.String({ description: "Attachment GUID to delete" }),
+});
+
+export const ListTasklistTasksSchema = Type.Object({
+  tasklist_guid: Type.String({ description: "Tasklist GUID to list tasks for" }),
+  page_size: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
+  page_token: Type.Optional(Type.String()),
+  user_id_type: Type.Optional(Type.String({ description: "open_id/user_id/union_id" })),
+});
+
+export const ListSectionTasksSchema = Type.Object({
+  section_guid: Type.String({ description: "Section GUID to list tasks for" }),
+  page_size: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
+  page_token: Type.Optional(Type.String()),
+  user_id_type: Type.Optional(Type.String({ description: "open_id/user_id/union_id" })),
+});
+
 export type CreateTaskParams = {
   summary: string;
   description?: string;
@@ -273,6 +348,65 @@ export type RemoveTasklistMembersParams = {
 };
 export type DeleteTasklistParams = {
   tasklist_guid: string;
+};
+export type CreateTaskCommentParams = {
+  task_guid: string;
+  content: string;
+  reply_to_comment_id?: string;
+  user_id_type?: string;
+};
+export type ListTaskCommentsParams = {
+  task_guid: string;
+  page_size?: number;
+  page_token?: string;
+  direction?: "asc" | "desc";
+  user_id_type?: string;
+};
+export type GetTaskCommentParams = {
+  comment_id: string;
+  user_id_type?: string;
+};
+export type UpdateTaskCommentParams = {
+  comment_id: string;
+  comment: { content?: string };
+  update_fields?: string[];
+  user_id_type?: string;
+};
+export type DeleteTaskCommentParams = {
+  comment_id: string;
+};
+export type UploadTaskAttachmentParams = {
+  task_guid: string;
+  file_path?: string;
+  file_url?: string;
+  filename?: string;
+  user_id_type?: string;
+};
+export type ListTaskAttachmentsParams = {
+  task_guid: string;
+  page_size?: number;
+  page_token?: string;
+  updated_mesc?: string;
+  user_id_type?: string;
+};
+export type GetTaskAttachmentParams = {
+  attachment_guid: string;
+  user_id_type?: string;
+};
+export type DeleteTaskAttachmentParams = {
+  attachment_guid: string;
+};
+export type ListTasklistTasksParams = {
+  tasklist_guid: string;
+  page_size?: number;
+  page_token?: string;
+  user_id_type?: string;
+};
+export type ListSectionTasksParams = {
+  section_guid: string;
+  page_size?: number;
+  page_token?: string;
+  user_id_type?: string;
 };
 
 export const TASK_UPDATE_FIELD_VALUES = UPDATE_FIELDS;
