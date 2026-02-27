@@ -426,7 +426,7 @@ export async function startRealtimeServer(params: {
 
   wss.on("connection", (ws, req) => {
     const agentId = resolveAgentIdFromUrl(req.url, defaultAgentId);
-    const sessionId = `realtime:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const sessionId = `realtime:${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
     const client: RealtimeClient = {
       ws,
       sessionId,

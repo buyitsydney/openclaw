@@ -1,8 +1,8 @@
 import { execSync } from "node:child_process";
 import { writeFileSync, readFileSync, unlinkSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as Lark from "@larksuiteoapi/node-sdk";
+import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 
 // Cache Lark clients per appId to avoid redundant token fetches.
@@ -459,7 +459,7 @@ function convertToOpus(buffer: Buffer): Buffer {
   ) {
     return buffer;
   }
-  const dir = mkdtempSync(join(tmpdir(), "feishu-audio-"));
+  const dir = mkdtempSync(join(resolvePreferredOpenClawTmpDir(), "feishu-audio-"));
   const inFile = join(dir, "input.mp3");
   const outFile = join(dir, "output.ogg");
   try {

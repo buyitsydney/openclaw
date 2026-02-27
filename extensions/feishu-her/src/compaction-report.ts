@@ -35,7 +35,7 @@ export interface SessionMessage {
   timestamp: string;
   message: {
     role: "user" | "assistant" | "system";
-    content: unknown[];
+    content: unknown[] | string;
     timestamp?: number;
     api?: string;
     provider?: string;

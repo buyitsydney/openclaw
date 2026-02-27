@@ -1,3 +1,7 @@
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk";
 import type { TaskClient } from "./task-common.js";
 import { runTaskApiCall } from "./task-common.js";
 import type {
@@ -28,9 +32,6 @@ import type {
   UpdateTasklistParams,
 } from "./task-schemas.js";
 import { TASK_UPDATE_FIELD_VALUES, TASKLIST_UPDATE_FIELD_VALUES } from "./task-schemas.js";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 
 const TASK_UPDATE_FIELD_SET = new Set<string>(TASK_UPDATE_FIELD_VALUES);
 const TASKLIST_UPDATE_FIELD_SET = new Set<string>(TASKLIST_UPDATE_FIELD_VALUES);
@@ -163,8 +164,8 @@ async function downloadToTempFile(fileUrl: string, filename?: string) {
   })();
   const name = (filename?.trim() || parsedName || "attachment.bin").replace(/[^\w.\-]/g, "_");
   const tmpPath = path.join(
-    os.tmpdir(),
-    `feishu-task-attachment-${Date.now()}-${Math.random().toString(16).slice(2)}-${name}`,
+    resolvePreferredOpenClawTmpDir(),
+    `feishu-task-attachment-${Date.now()}-${crypto.randomBytes(8).toString("hex")}-${name}`,
   );
   await fs.promises.writeFile(tmpPath, buffer);
   return {
@@ -485,7 +486,9 @@ export async function createTaskComment(client: TaskClient, params: CreateTaskCo
     }),
   );
   return {
-    comment: formatComment((res.data as { comment?: Record<string, unknown> } | undefined)?.comment),
+    comment: formatComment(
+      (res.data as { comment?: Record<string, unknown> } | undefined)?.comment,
+    ),
   };
 }
 
@@ -530,7 +533,9 @@ export async function getTaskComment(client: TaskClient, params: GetTaskCommentP
     }),
   );
   return {
-    comment: formatComment((res.data as { comment?: Record<string, unknown> } | undefined)?.comment),
+    comment: formatComment(
+      (res.data as { comment?: Record<string, unknown> } | undefined)?.comment,
+    ),
   };
 }
 
@@ -557,7 +562,9 @@ export async function updateTaskComment(client: TaskClient, params: UpdateTaskCo
     }),
   );
   return {
-    comment: formatComment((res.data as { comment?: Record<string, unknown> } | undefined)?.comment),
+    comment: formatComment(
+      (res.data as { comment?: Record<string, unknown> } | undefined)?.comment,
+    ),
     update_fields: updateFields,
   };
 }
@@ -621,7 +628,9 @@ export async function listTaskAttachments(client: TaskClient, params: ListTaskAt
       }),
     }),
   );
-  const data = res.data as { items?: Record<string, unknown>[]; page_token?: string; has_more?: boolean } | undefined;
+  const data = res.data as
+    | { items?: Record<string, unknown>[]; page_token?: string; has_more?: boolean }
+    | undefined;
   return {
     items: (data?.items ?? []).map((i) => formatAttachment(i)),
     page_token: data?.page_token,
@@ -672,7 +681,9 @@ export async function listTasklistTasks(client: TaskClient, params: ListTasklist
       }),
     }),
   );
-  const data = res.data as { items?: Record<string, unknown>[]; page_token?: string; has_more?: boolean } | undefined;
+  const data = res.data as
+    | { items?: Record<string, unknown>[]; page_token?: string; has_more?: boolean }
+    | undefined;
   return {
     items: (data?.items ?? []).map((i) => formatTask(i)),
     page_token: data?.page_token,
@@ -694,7 +705,9 @@ export async function listSectionTasks(client: TaskClient, params: ListSectionTa
       }),
     }),
   );
-  const data = res.data as { items?: Record<string, unknown>[]; page_token?: string; has_more?: boolean } | undefined;
+  const data = res.data as
+    | { items?: Record<string, unknown>[]; page_token?: string; has_more?: boolean }
+    | undefined;
   return {
     items: (data?.items ?? []).map((i) => formatTask(i)),
     page_token: data?.page_token,

@@ -241,7 +241,9 @@ export const UploadTaskAttachmentSchema = Type.Object({
   task_guid: Type.String({ description: "Task GUID to upload attachment to" }),
   file_path: Type.Optional(Type.String({ description: "Local file path on host" })),
   file_url: Type.Optional(Type.String({ description: "Remote file url to download and upload" })),
-  filename: Type.Optional(Type.String({ description: "Optional filename override (for file_url)" })),
+  filename: Type.Optional(
+    Type.String({ description: "Optional filename override (for file_url)" }),
+  ),
   user_id_type: Type.Optional(Type.String({ description: "open_id/user_id/union_id" })),
 });
 
