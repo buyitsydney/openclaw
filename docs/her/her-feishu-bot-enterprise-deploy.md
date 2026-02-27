@@ -400,7 +400,7 @@ git checkout v旧版本
 | --- | --------------------- | ------------------------------------------------------------ |
 | 1   | 创建应用 + 启用机器人 | 命名格式：`{人名}的her`（如：老杨的her），添加「机器人」能力 |
 | 2   | 记录凭证              | 复制 App ID + App Secret                                     |
-| 3   | 批量导入权限          | 粘贴 JSON 导入 86 个权限                                     |
+| 3   | 批量导入权限          | 粘贴 JSON 导入 100 个权限                                     |
 | 4   | 第一次发布            | 可用范围 = 指定人员，只选一人（见下方说明）                  |
 | 5   | 确认 Bot 可见         | 让目标员工搜索 Bot，确认能找到                               |
 | 6   | 交给部署者            | 等部署者确认 WSClient connected                              |
@@ -527,6 +527,20 @@ git checkout v旧版本
       "space:document:move",
       "space:document:retrieve",
       "space:document:shortcut",
+      "task:attachment:read",
+      "task:attachment:write",
+      "task:comment",
+      "task:comment:read",
+      "task:comment:readonly",
+      "task:comment:write",
+      "task:section:read",
+      "task:section:write",
+      "task:task:read",
+      "task:task:readonly",
+      "task:task:write",
+      "task:task:writeonly",
+      "task:tasklist:read",
+      "task:tasklist:write",
       "wiki:wiki",
       "wiki:wiki:readonly"
     ],
@@ -537,7 +551,7 @@ git checkout v旧版本
 
 点击「下一步，确认新增权限」→ 确认即可。已开通的权限不会重复添加。
 
-> **权限分类（共 86 个，全部为 tenant 级别）**：
+> **权限分类（共 100 个，全部为 tenant 级别）**：
 >
 > - **消息基础**（6 个）：`im:message`、`im:message:send_as_bot`、`im:message.group_msg`、`im:message.p2p_msg:readonly`、`im:chat:readonly`、`im:resource` — 消息收发 + 图片 + 群聊归档
 > - **卡片流式回复**（1 个）：`cardkit:card:write` — AI 打字机效果
@@ -555,6 +569,7 @@ git checkout v旧版本
 > - **白板**（2 个）：`board:whiteboard:node:create`、`board:whiteboard:node:read`
 > - **Wiki 知识库**（2 个）：`wiki:wiki`、`wiki:wiki:readonly`
 > - **空间文档管理**（4 个）：`space:document:delete`、`space:document:move`、`space:document:retrieve`、`space:document:shortcut` — 知识空间内文档的移动/删除/快捷方式
+> - **待办任务**（14 个）：`task:task:read/write/readonly/writeonly`（4 个）+ `task:tasklist:read/write`（2 个）+ `task:comment/read/readonly/write`（4 个）+ `task:attachment:read/write`（2 个）+ `task:section:read/write`（2 个） — 任务 CRUD、清单管理、评论、附件、分组
 
 **步骤 5：第一次发布（让 Bot 在飞书客户端可见 + 使长连接可用）**
 

@@ -47,7 +47,7 @@
 
 1. 在飞书开放平台（open.feishu.cn）创建一个自建应用，启用机器人能力
 2. 获取 `app_id` + `app_secret`
-3. 添加权限（批量导入 86 个，见企业部署文档）
+3. 添加权限（批量导入 100 个，见企业部署文档）
 4. **第一次发布**：创建版本 → 设置可用范围 → 发布（让 Bot 在飞书客户端可见）
 5. 去飞书客户端搜索 Bot，确认能找到（此时无法聊天，正常）
 6. 在 OpenClaw config 中配置 `channels.feishu.appId` + `channels.feishu.appSecret`
@@ -165,18 +165,9 @@ extensions/feishu-her/outbound.ts
 - 待办能力仅以新增工具形式接入（`extensions/feishu-her/src/tools/`），避免影响聊天主流程稳定性。
 - 工具按账号配置灰度启用，默认可关闭，先小范围验证再全面放开。
 
-### 需要的飞书权限（按能力分层）
+### 需要的飞书权限
 
-- **最小权限（阶段一）**
-  - `task:task:read`
-  - `task:task:write`
-  - `task:tasklist:read`
-  - `task:tasklist:write`
-- **增强权限（阶段三）**
-  - `task:comment:read` / `task:comment:write`
-  - `task:attachment:read` / `task:attachment:write`
-
-说明：权限与工具能力一一对应，遵循最小权限原则，避免一次性开过多高敏权限。
+待办相关共 14 个 task 权限，已全部开通并包含在标准 100 个权限中（详见 [企业部署文档 · 权限分类](her-feishu-bot-enterprise-deploy.md#步骤-4批量导入权限)）。
 
 ### 风险评估（待办专项）
 
@@ -199,7 +190,7 @@ extensions/feishu-her/outbound.ts
 
 ### 灰度开通与验收清单（阶段一）
 
-1. 在飞书后台仅开通最小 4 个权限：`task:task:read/write` + `task:tasklist:read/write`。
+1. 在飞书后台确认 14 个 task 权限已全部开通（见 [企业部署文档 · 权限分类](her-feishu-bot-enterprise-deploy.md#步骤-4批量导入权限)中「待办任务」分类）。
 2. 只对单个测试账号灰度，确认工具调用稳定后再扩展到其他账号。
 3. 按链路验收：创建任务 -> 查询任务 -> 更新任务 -> 删除任务。
 4. 按清单验收：创建清单 -> 查询清单 -> 列出清单分页。
@@ -364,17 +355,7 @@ outbound: {
 
 ### 5. 权限需求
 
-在飞书开放平台配置以下 9 个核心权限：
-
-- `im:message` -- 获取与发送单聊、群组消息
-- `im:message:send_as_bot` -- 以应用身份发消息
-- `im:resource` -- 获取与上传图片或文件资源（图片收发所需）
-- `im:message.group_msg` -- 获取群组中所有消息（敏感权限，群聊归档用）
-- `im:message.p2p_msg:readonly` -- 读取用户发给机器人的单聊消息
-- `im:chat:readonly` -- 获取群信息（获取群名，归档索引用）
-- `cardkit:card:write` -- 创建与更新卡片（AI 流式回复打字机效果）
-- `contact:user.base:readonly` -- 读取用户基本信息（**@mention 必需**，用于通过 open_id 查用户姓名，不配则 `sender name lookup` 返回空）
-- `contact:department.base:readonly` -- 读取部门信息（通讯录按部门查人时需要）
+在飞书开放平台批量导入 100 个 tenant 级别权限（完整 JSON 及分类说明见 [企业部署文档](her-feishu-bot-enterprise-deploy.md#步骤-4批量导入权限)，为唯一信源）。
 
 事件订阅：
 
@@ -1101,7 +1082,7 @@ cardkit.v1.card.settings({
 
 **接入 TypingController**：走 OpenClaw 内置的 `ReplyDispatcherWithTypingOptions.onReplyStart` 回调。typing 由 `TypingSignaler.signalRunStart()` 触发——在 `runReplyAgent` 内部（已进入 session lane 之后）才触发，不会为排队中的消息发 typing。解决了 v1 的"多 placeholder"问题。
 
-**额外权限**：需要 `cardkit:card:write`（创建与更新卡片实例），已包含在 7 个标准权限中
+**额外权限**：需要 `cardkit:card:write`（创建与更新卡片实例），已包含在标准权限中
 
 ---
 
@@ -1443,41 +1424,7 @@ npm 上至少有 4 个飞书相关包：
 
 #### 飞书开发者后台权限清单
 
-**已开通（2026-02-15 更新，共 25 个 tenant 级别权限）：**
-
-| 权限 scope                         | 用途         | 需要的功能                                                                                                     |
-| ---------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------- |
-| `im:message`                       | 发送消息     | 基础消息收发                                                                                                   |
-| `im:message:send_as_bot`           | Bot 发送消息 | 基础消息收发                                                                                                   |
-| `im:message.group_msg`             | 群消息       | 群聊                                                                                                           |
-| `im:message.p2p_msg:readonly`      | 单聊消息     | 私聊                                                                                                           |
-| `im:chat:readonly`                 | 读取群信息   | 群名获取                                                                                                       |
-| `im:resource`                      | 消息资源     | 图片下载                                                                                                       |
-| `cardkit:card:write`               | 卡片写入     | CardKit 流式卡片                                                                                               |
-| `contact:contact.base:readonly`    | 通讯录读取   | 发送者姓名解析（已开通，API 调用成功但个人版不返回 name 字段——平台限制，需企业版）                             |
-| `contact:user.base:readonly`       | 用户基本信息 | **@mention 必需**：通过 open_id 查询用户姓名，AI 构建 `<at>` 标签前需获取 open_id→name 映射（2026-02-25 新增） |
-| `contact:department.base:readonly` | 部门信息     | 通讯录按部门查人（2026-02-25 新增）                                                                            |
-| `docs:doc`                         | 旧版文档     | 兼容                                                                                                           |
-| `docx:document`                    | 新版文档完整 | 文档读写                                                                                                       |
-| `docx:document:readonly`           | 文档只读     | 文档读取                                                                                                       |
-| `docx:document:write_only`         | 文档写入     | 文档追加/写入                                                                                                  |
-| `docx:document:create`             | 创建文档     | 新建文档                                                                                                       |
-| `docx:document.block:convert`      | Block 转换   | Markdown→Block                                                                                                 |
-| `drive:drive`                      | 云盘读写     | 云盘文件列表/创建文件夹（2026-02-15 升级）                                                                     |
-| `drive:drive.metadata:readonly`    | 文件元数据   | 云空间文件元数据查看（2026-02-15 新增）                                                                        |
-| `drive:drive.search:readonly`      | 搜索云文档   | 云文档搜索（2026-02-15 新增）                                                                                  |
-| `drive:drive:version:readonly`     | 文档版本查看 | 查看文档版本信息（2026-02-15 新增）                                                                            |
-| `wiki:wiki`                        | 知识库完整   | Wiki 读写                                                                                                      |
-| `wiki:wiki:readonly`               | 知识库只读   | Wiki 导航/读取                                                                                                 |
-| `board:whiteboard:node:create`     | 画板节点创建 | 画板内容创建                                                                                                   |
-| `board:whiteboard:node:read`       | 画板节点读取 | 画板导出为 PNG 图片（P1 #8，已验证）                                                                           |
-| `bitable:app`                      | 多维表格读写 | 多维表格记录读取/创建/更新（P1 #4，2026-02-15 升级并验证）                                                     |
-| `im:message.reactions:read`        | 表情回应读取 | 读取消息上的 emoji 回应列表                                                                                    |
-| `im:message.reactions:write_only`  | 表情回应写入 | Emoji reaction 自动 ACK + AI 主动 react（P1 #9）                                                               |
-
-**尚未开通（需要时申请）：**
-
-（当前所有已知需要的权限均已开通）
+共 100 个 tenant 级别权限，完整 JSON 及按类别分组说明见 [企业部署文档 · 步骤 4：批量导入权限](her-feishu-bot-enterprise-deploy.md#步骤-4批量导入权限)（唯一信源，此处不再重复）。
 
 **资源级权限（非 API scope，在飞书 UI 中配置）：**
 
