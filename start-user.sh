@@ -56,7 +56,12 @@ USER_ID=""
 MODE=""  # 默认不开隧道（隧道由 cloudflared Docker 容器管理）
 ACTION="start"
 MODEL_ARG=""
-HOST_ARG="localhost"  # Webchat URL base host（默认 localhost，企业部署用内网 IP）
+# 自动探测本机 LAN IP（Linux: hostname -I, macOS: ipconfig getifaddr en0）
+if command -v hostname >/dev/null && hostname -I >/dev/null 2>&1; then
+  HOST_ARG=$(hostname -I | awk '{print $1}')
+else
+  HOST_ARG=$(ipconfig getifaddr en0)
+fi
 NO_REBUILD=""  # 跳过自动重建检查
 DEV_MODE=""    # --dev: bind mount 源码，跳过镜像重建（秒级启动）
 
@@ -542,13 +547,10 @@ fi
 # --- Compute webchat URL from token + port (before docker run) ---
 AUTH_TOKEN=$(python3 -c "
 import json
-with open('${CUSTOM_CONFIG}') as f:
-    print(json.load(f).get('gateway', {}).get('auth', {}).get('token', ''))
-" 2>/dev/null || true)
-WEBCHAT_URL=""
-if [ -n "$AUTH_TOKEN" ]; then
-  WEBCHAT_URL="http://${HOST_ARG}:${PORT_GW}?token=${AUTH_TOKEN}"
-fi
+with open('${SCRIPT_DIR}/docker/carher-config.json') as f:
+    print(json.load(f)['gateway']['auth']['token'])
+")
+WEBCHAT_URL="http://${HOST_ARG}:${PORT_GW}?token=${AUTH_TOKEN}"
 
 # --- Always clean start: stop old container if exists ---
 if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
