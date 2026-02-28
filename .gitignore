@@ -133,3 +133,6 @@ dist/protocol.schema.json
 
 # Synthing
 **/.stfolder/
+
+# Her investigation reports (contain server-specific data)
+docs/her/network-connection-lost-investigation.md

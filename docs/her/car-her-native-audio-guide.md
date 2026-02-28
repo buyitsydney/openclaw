@@ -114,13 +114,13 @@
 
 ```
   BOOTSTRAP_URL (App 启动时 HTTP GET 调用一次):
-    https://vendor-fe.carher.net/api/realtime/bootstrap?token=e404454a6c254a5e8128208211865626
+    https://s1-u12-fe.carher.net/api/realtime/bootstrap?token=d797792d4ed14132b6862ff5309318bc
 
   PROXY_URL (WS 连接 1 — 音频双向流):
-    wss://vendor-proxy.carher.net
+    wss://s1-u12-proxy.carher.net
 
   OPENCLAW_URL (WS 连接 2 — 后台 AI):
-    wss://vendor-fe.carher.net/ws?token=e404454a6c254a5e8128208211865626
+    wss://s1-u12-fe.carher.net/ws?token=d797792d4ed14132b6862ff5309318bc
 ```
 
 > 这些 URL 通过 Cloudflare 命名隧道映射到我方服务器，域名固定不变，重启服务后 URL 和 Token 均不变。
@@ -215,7 +215,7 @@ import org.json.JSONObject
 /**
  * 调用 Bootstrap 获取 AI 配置。
  * @param bootstrapUrl 我方提供的 BOOTSTRAP_URL（含 token），如
- *   "https://vendor-fe.carher.net/api/realtime/bootstrap?token=e404454a..."
+ *   "https://s1-u12-fe.carher.net/api/realtime/bootstrap?token=d797792d..."
  * @return 解析后的 JSON 对象
  */
 fun fetchBootstrap(bootstrapUrl: String): JSONObject {
@@ -231,7 +231,7 @@ fun fetchBootstrap(bootstrapUrl: String): JSONObject {
 
 // 使用示例（token 从 App 配置读取，不要硬编码）:
 // val token = AppConfig.getVoiceToken()
-// val config = fetchBootstrap("https://vendor-fe.carher.net/api/realtime/bootstrap?token=$token")
+// val config = fetchBootstrap("https://s1-u12-fe.carher.net/api/realtime/bootstrap?token=$token")
 // val serviceSetup: JSONObject = config.getJSONObject("geminiProxy").getJSONObject("serviceSetup")
 // val sessionSetup: JSONObject = config.getJSONObject("geminiProxy").getJSONObject("sessionSetup")
 ```
@@ -275,7 +275,7 @@ val sessionSetup: JSONObject = config.getJSONObject("geminiProxy").getJSONObject
 ```kotlin
 import okhttp3.*
 
-// OPENCLAW_URL 由我方提供，含 token，如 "wss://vendor-fe.carher.net/ws?token=e404454a..."
+// OPENCLAW_URL 由我方提供，含 token，如 "wss://s1-u12-fe.carher.net/ws?token=d797792d..."
 val openclawWs: WebSocket = OkHttpClient().newWebSocket(
     Request.Builder().url(OPENCLAW_URL).build(),
     object : WebSocketListener() {
@@ -301,7 +301,7 @@ val openclawWs: WebSocket = OkHttpClient().newWebSocket(
 ### Step 3: 连接 PROXY_URL（WS 连接 1）
 
 ```kotlin
-// PROXY_URL 由我方提供，如 "wss://vendor-proxy.carher.net"
+// PROXY_URL 由我方提供，如 "wss://s1-u12-proxy.carher.net"
 val proxyWs: WebSocket = OkHttpClient().newWebSocket(
     Request.Builder().url(PROXY_URL).build(),
     object : WebSocketListener() {
