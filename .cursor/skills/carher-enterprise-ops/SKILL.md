@@ -72,7 +72,13 @@ sshpass -p 'PWD' ssh USER@IP "docker exec carher-N cat /tmp/openclaw/openclaw-\$
 
 ### 重建容器
 
+**铁律：重建前必须确认最近 15 分钟无交互！**
+
 ```bash
+# 1. 先检查活跃状态（>0 则等待）
+sshpass -p 'PWD' ssh USER@IP "docker logs carher-N --since=15m 2>&1 | grep -c 'deliver:'"
+
+# 2. 确认无活动后才重建
 sshpass -p 'PWD' ssh USER@IP "cd /Data/CarHer && ./start-user.sh --id=N 2>&1 | tail -5"
 ```
 
@@ -152,7 +158,34 @@ sshpass -p 'PWD' ssh USER@IP "grep '^ID,' /Data/CarHer/docker/users.csv"
 
 **原因：** 绕过 git 会导致本地和服务器版本不一致，下次 `git pull` 可能冲突覆盖，且没有变更记录可追溯。
 
-**唯一例外：** 服务器本地的 `users.csv`（含密钥，不在 git 中）可直接 `sed` 编辑。
+**唯一例外：** 服务器本地的 `users.csv`、`servers.txt`（含密钥，不在 git 中）可直接编辑/scp。
+
+### servers.txt 同步
+
+`servers.txt` 是全局真相，修改后（新增用户、修改分布、更新 token）必须同步到所有服务器：
+
+```bash
+scp docker/servers.txt cltx@IP:/Data/CarHer/docker/servers.txt
+```
+
+验证：4 台机器 `md5sum` 一致。
+
+## 新用户部署 Checklist
+
+每次添加新用户，严格按此清单：
+
+1. 服务器 CSV 添行（9 列，末尾逗号）→ `./start-user.sh --id=N`
+2. 验证容器 config：App ID/Secret、models providers、groups、gateway dangerously\* 配置
+3. 确认 WSClient connected
+4. 更新本地 Mac `docker/servers.txt` → scp 同步到所有服务器
+5. 通知 IT：配置长连接 → 添加事件 `im.message.receive_v1` → 第二次发布
+6. 用户首次对话后：从 session 日志提取 open_id → 更新 CSV → 重建（先检查活跃！）→ 验证 `dm.allowFrom`
+
+### 群聊 vs 单聊判断
+
+- CSV 备注含"共用"/"运营部" → 群聊，用 `owner_allow_from`
+- session unique senders = 1 → 单聊，用 `feishu_owner_open_id`
+- session unique senders >> 1 → 群聊或被拉群，需确认
 
 ## Admin Her（原生进程，非 Docker）
 

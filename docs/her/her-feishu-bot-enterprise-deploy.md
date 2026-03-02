@@ -355,6 +355,18 @@ per-user.json / openclaw.json ← 每个环境的最终配置（+ secrets/channe
 
 > **重要**：realtime 插件的 Gemini 配置（`plugins.entries.realtime.config.gemini`）必须作为 sibling key 写在 per-user 配置主文件中（不能放在被 `$include` 的文件里），因为 realtime 插件的 bootstrap 接口直接用 `JSON.parse()` 读取主配置文件。`start-user.sh` 已自动处理此约束。
 
+### 重建/重启安全规则
+
+> **铁律：重建任何生产容器前，必须确认最近 15 分钟无用户交互。**
+>
+> ```bash
+> # 检查最近 15 分钟有无消息交互
+> docker logs carher-N --since=15m 2>&1 | grep -c "deliver:"
+> # 若 > 0，等待至无活动后再重建。此规则无例外。
+> ```
+>
+> 重建会导致正在进行的对话中断，用户体验极差。
+
 ### 升级/回滚
 
 ```bash
@@ -597,9 +609,12 @@ git checkout v旧版本
 
 部署者收到 App ID + App Secret 后：
 
-1. 编辑 `docker/users.csv`，新增一行：`N,董事长,sonnet,cli_xxx,secret_xxx,,openrouter,董事长专属Bot`
+1. 编辑 `docker/users.csv`，新增一行：`N,董事长,sonnet,cli_xxx,secret_xxx,,openrouter,董事长专属Bot,`
 2. 运行 `./start-user.sh --id=N --local`
-3. 确认日志出现 `Feishu WSClient connected` 后通知 IT 继续
+3. 验证容器内 config 正确性（App ID/Secret、models providers、groups.enabled、gateway dangerously\* 配置）
+4. 确认日志出现 `Feishu WSClient connected` 后通知 IT 继续
+5. 更新本地 Mac `docker/servers.txt`（Bot 列表 + 容器分布总览 + 总计数）
+6. 同步 `servers.txt` 到所有服务器：`scp docker/servers.txt cltx@IP:/Data/CarHer/docker/servers.txt`
 
 #### 阶段 C：IT 配置事件订阅 + 第二次发布（约 5 分钟）
 
