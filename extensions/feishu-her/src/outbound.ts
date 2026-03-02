@@ -278,13 +278,15 @@ export async function sendFeishuRichText(params: {
   account: ResolvedFeishuAccount;
   chatId: string;
   text: string;
-}): Promise<void> {
+}): Promise<string | undefined> {
   const client = getFeishuClient(params.account);
   const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
 
+  // oxlint-disable-next-line typescript/no-explicit-any
+  let resp: any;
   if (hasMarkdown(params.text)) {
     const postContent = markdownToPost(params.text);
-    await client.im.message.create({
+    resp = await client.im.message.create({
       params: { receive_id_type: receiveIdType },
       data: {
         receive_id: receiveId,
@@ -293,8 +295,7 @@ export async function sendFeishuRichText(params: {
       },
     });
   } else {
-    // No Markdown -> send as plain text (simpler, no unnecessary post wrapper).
-    await client.im.message.create({
+    resp = await client.im.message.create({
       params: { receive_id_type: receiveIdType },
       data: {
         receive_id: receiveId,
@@ -303,6 +304,7 @@ export async function sendFeishuRichText(params: {
       },
     });
   }
+  return resp?.data?.message_id;
 }
 
 /** Send a plain text message to a Feishu chat or user (no Markdown conversion). */
@@ -310,10 +312,11 @@ export async function sendFeishuText(params: {
   account: ResolvedFeishuAccount;
   chatId: string;
   text: string;
-}): Promise<void> {
+}): Promise<string | undefined> {
   const client = getFeishuClient(params.account);
   const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
-  await client.im.message.create({
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const resp: any = await client.im.message.create({
     params: { receive_id_type: receiveIdType },
     data: {
       receive_id: receiveId,
@@ -321,6 +324,7 @@ export async function sendFeishuText(params: {
       msg_type: "text",
     },
   });
+  return resp?.data?.message_id;
 }
 
 /** Send a reply to a specific message (quote-reply).
@@ -329,11 +333,13 @@ export async function sendFeishuReply(params: {
   account: ResolvedFeishuAccount;
   messageId: string;
   text: string;
-}): Promise<void> {
+}): Promise<string | undefined> {
   const client = getFeishuClient(params.account);
+  // oxlint-disable-next-line typescript/no-explicit-any
+  let resp: any;
   if (hasMarkdown(params.text)) {
     const postContent = markdownToPost(params.text);
-    await client.im.message.reply({
+    resp = await client.im.message.reply({
       path: { message_id: params.messageId },
       data: {
         content: JSON.stringify(postContent),
@@ -341,7 +347,7 @@ export async function sendFeishuReply(params: {
       },
     });
   } else {
-    await client.im.message.reply({
+    resp = await client.im.message.reply({
       path: { message_id: params.messageId },
       data: {
         content: JSON.stringify({ text: params.text }),
@@ -349,6 +355,7 @@ export async function sendFeishuReply(params: {
       },
     });
   }
+  return resp?.data?.message_id;
 }
 
 /** Upload an image buffer to Feishu and return the image_key.
@@ -534,23 +541,25 @@ export async function sendFeishuAudio(params: {
   chatId: string;
   fileKey: string;
   replyToMessageId?: string;
-}): Promise<void> {
+}): Promise<string | undefined> {
   const client = getFeishuClient(params.account);
   const content = JSON.stringify({ file_key: params.fileKey });
 
+  // oxlint-disable-next-line typescript/no-explicit-any
+  let resp: any;
   if (params.replyToMessageId) {
-    await client.im.message.reply({
+    resp = await client.im.message.reply({
       path: { message_id: params.replyToMessageId },
       data: { content, msg_type: "audio" },
     });
-    return;
+  } else {
+    const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
+    resp = await client.im.message.create({
+      params: { receive_id_type: receiveIdType },
+      data: { receive_id: receiveId, content, msg_type: "audio" },
+    });
   }
-
-  const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
-  await client.im.message.create({
-    params: { receive_id_type: receiveIdType },
-    data: { receive_id: receiveId, content, msg_type: "audio" },
-  });
+  return resp?.data?.message_id;
 }
 
 // ── File upload/send (PPT, PDF, DOCX, etc.) ─────────────────────────────
@@ -629,23 +638,25 @@ export async function sendFeishuVideo(params: {
   chatId: string;
   fileKey: string;
   replyToMessageId?: string;
-}): Promise<void> {
+}): Promise<string | undefined> {
   const client = getFeishuClient(params.account);
   const content = JSON.stringify({ file_key: params.fileKey });
 
+  // oxlint-disable-next-line typescript/no-explicit-any
+  let resp: any;
   if (params.replyToMessageId) {
-    await client.im.message.reply({
+    resp = await client.im.message.reply({
       path: { message_id: params.replyToMessageId },
       data: { content, msg_type: "media" },
     });
-    return;
+  } else {
+    const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
+    resp = await client.im.message.create({
+      params: { receive_id_type: receiveIdType },
+      data: { receive_id: receiveId, content, msg_type: "media" },
+    });
   }
-
-  const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
-  await client.im.message.create({
-    params: { receive_id_type: receiveIdType },
-    data: { receive_id: receiveId, content, msg_type: "media" },
-  });
+  return resp?.data?.message_id;
 }
 
 /** Send a file message to a Feishu chat or user.
@@ -655,23 +666,25 @@ export async function sendFeishuFile(params: {
   chatId: string;
   fileKey: string;
   replyToMessageId?: string;
-}): Promise<void> {
+}): Promise<string | undefined> {
   const client = getFeishuClient(params.account);
   const content = JSON.stringify({ file_key: params.fileKey });
 
+  // oxlint-disable-next-line typescript/no-explicit-any
+  let resp: any;
   if (params.replyToMessageId) {
-    await client.im.message.reply({
+    resp = await client.im.message.reply({
       path: { message_id: params.replyToMessageId },
       data: { content, msg_type: "file" },
     });
-    return;
+  } else {
+    const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
+    resp = await client.im.message.create({
+      params: { receive_id_type: receiveIdType },
+      data: { receive_id: receiveId, content, msg_type: "file" },
+    });
   }
-
-  const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
-  await client.im.message.create({
-    params: { receive_id_type: receiveIdType },
-    data: { receive_id: receiveId, content, msg_type: "file" },
-  });
+  return resp?.data?.message_id;
 }
 
 /** Send an image message to a Feishu chat or user. */
@@ -680,10 +693,11 @@ export async function sendFeishuImage(params: {
   chatId: string;
   imageKey: string;
   caption?: string;
-}): Promise<void> {
+}): Promise<string | undefined> {
   const client = getFeishuClient(params.account);
   const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
-  await client.im.message.create({
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const resp: any = await client.im.message.create({
     params: { receive_id_type: receiveIdType },
     data: {
       receive_id: receiveId,
@@ -691,7 +705,6 @@ export async function sendFeishuImage(params: {
       msg_type: "image",
     },
   });
-  // Send caption as a follow-up text message if provided.
   if (params.caption) {
     await client.im.message.create({
       params: { receive_id_type: receiveIdType },
@@ -702,6 +715,7 @@ export async function sendFeishuImage(params: {
       },
     });
   }
+  return resp?.data?.message_id;
 }
 
 // ── Board / Whiteboard API (raw HTTP — SDK has no board namespace) ───────
@@ -1039,4 +1053,22 @@ export async function removeFeishuReaction(params: {
     },
   });
   return res?.code === 0;
+}
+
+// ── Message Recall (Delete) ─────────────────────────────────────────────
+
+/** Recall (delete) a Feishu message by message_id.
+ *  Bot can recall its own messages within 24h, or group-owner can recall
+ *  any member's messages within 1 year.
+ *  Uses DELETE /open-apis/im/v1/messages/{message_id}. */
+export async function deleteFeishuMessage(params: {
+  account: ResolvedFeishuAccount;
+  messageId: string;
+}): Promise<{ ok: boolean; code?: number; msg?: string }> {
+  const client = getFeishuClient(params.account);
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const resp: any = await client.im.message.delete({
+    path: { message_id: params.messageId },
+  });
+  return { ok: resp?.code === 0, code: resp?.code, msg: resp?.msg };
 }

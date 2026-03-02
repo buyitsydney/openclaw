@@ -1,12 +1,12 @@
 ---
 name: feishu
-description: Feishu (飞书) comprehensive guide covering messaging, groups, contacts, documents, wiki, bitable, drive, calendar, task, tasklist, group archives, and voice. Use when interacting with Feishu in any way. Triggers on keywords like 飞书, feishu, 转发, 分享文档, share document, forward, 群, group, 通讯录, contacts, directory, 文档, 知识空间, wiki, 多维表格, bitable, 日历, calendar, 待办, task, tasklist, 任务清单, 忙闲, 有空吗, 建会, 群聊归档, group archive, 语音, voice, audio.
+description: Feishu (飞书) comprehensive guide covering messaging, groups, contacts, documents, wiki, bitable, drive, calendar, task, tasklist, group archives, voice, and message recall. Use when interacting with Feishu in any way. Triggers on keywords like 飞书, feishu, 转发, 分享文档, share document, forward, 群, group, 通讯录, contacts, directory, 文档, 知识空间, wiki, 多维表格, bitable, 日历, calendar, 待办, task, tasklist, 任务清单, 忙闲, 有空吗, 建会, 群聊归档, group archive, 语音, voice, audio, 撤回, recall, delete message, unsend.
 metadata: { "openclaw": { "emoji": "📨" } }
 ---
 
 # Feishu Skill — 全功能操作指南
 
-> 最后验证：2026-02-27。所有能力均经过实测（含 @mention + 企业通讯录 + Task 协作 P0）。
+> 最后验证：2026-03-02。所有能力均经过实测（含 @mention + 企业通讯录 + Task 协作 P0 + 消息撤回）。
 
 ## 能力总览
 
@@ -30,6 +30,7 @@ metadata: { "openclaw": { "emoji": "📨" } }
 | **日历忙闲**   | 查任何人忙碌时间段（无需共享）                      | `feishu_calendar`   | ✅               |
 | **待办任务**   | 创建/查询/更新/删除/子任务/挂清单                   | `feishu_task_*`     | ✅ 协作 P0       |
 | **任务清单**   | 创建/查询/列出/更新/成员增删                        | `feishu_tasklist_*` | ✅ 协作 P0       |
+| **消息撤回**   | 撤回 bot 24h 内发送的消息（含文字/卡片/图片/文件）  | `feishu_message`    | ✅               |
 | **删除限制**   | 文档/Wiki/Bitable 删除                              | —                   | ❌ 无权限（403） |
 
 ## ⚠️ 重要限制（必读！）
@@ -361,6 +362,47 @@ message(action="send", channel="feishu", target="<oc_xxx 或 ou_xxx>", message="
 
 - `oc_` 开头：群聊 chat_id
 - `ou_` 开头：个人 open_id
+
+### 消息撤回（feishu_message）
+
+Bot 可以撤回自己在 24h 内发送的消息（文字、卡片、图片、音频、视频、文件）。
+所有 bot 发送路径（正常回复 + `message(action="send")` 主动发送）的 message_id 均会被自动记录，`list_sent` 能查到全部消息。
+
+**场景 1：用户引用消息说"撤回"**
+
+用户引用（回复）了一条 bot 消息并说"撤回"。此时上下文中已包含被引用消息的 `message_id`：
+
+```
+[Quoted message (message_id=om_xxx): "消息内容..."]
+```
+
+直接用这个 `message_id` 调用 delete，不需要 list_sent：
+
+```
+feishu_message(action="delete", message_id="om_xxx")
+```
+
+**场景 2：用户说"撤回上一条"（无引用）**
+
+先用 `list_sent` 查最近消息（会返回 preview 摘要），找到目标后 delete：
+
+```
+feishu_message(action="list_sent", chat_id="oc_xxx", count=5)
+```
+
+返回含 `message_id`、`sent_at`、`preview`（消息前 60 字摘要），据此精确定位后撤回。
+
+**场景 3：撤回失败处理**
+
+- `code=230001`：消息不存在或已超 24h → 告知用户"已超过撤回时限"
+- 其他错误 → 告知用户具体原因
+
+**行为准则**
+
+- 撤回成功后，消息会自动从 `list_sent` 中移除（不需要手动清理）
+- 撤回后建议补发一条正确消息，不要让对话断掉
+- 不要在没有确认目标的情况下批量撤回
+- 撤回成功时简短确认（如"撤了 ✅"），不要长篇大论
 
 ### 分享/转发文档
 

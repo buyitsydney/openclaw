@@ -19,7 +19,7 @@ import {
   resolveFeishuAccount,
   type ResolvedFeishuAccount,
 } from "./accounts.js";
-import { startFeishuGateway } from "./gateway.js";
+import { startFeishuGateway, recordSentMessage } from "./gateway.js";
 import {
   sendFeishuText,
   sendFeishuRichText,
@@ -32,6 +32,7 @@ import {
   sendFeishuVideo,
   addFeishuReaction,
   removeFeishuReaction,
+  deleteFeishuMessage,
 } from "./outbound.js";
 import { getFeishuRuntime } from "./runtime.js";
 
@@ -189,10 +190,24 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
       if (gate("reactions")) {
         actions.add("react");
       }
+      if (gate("deleteMessage")) {
+        actions.add("delete");
+      }
       return Array.from(actions);
     },
-    supportsAction: ({ action }) => action === "react",
+    supportsAction: ({ action }) => action === "react" || action === "delete",
     handleAction: async ({ action, params, cfg, accountId }) => {
+      if (action === "delete") {
+        const account = resolveFeishuAccount({ cfg, accountId });
+        const messageId = readStringParam(params, "messageId", { required: true });
+        const result = await deleteFeishuMessage({ account, messageId });
+        return jsonResult({
+          ok: result.ok,
+          deleted: messageId,
+          code: result.code,
+          msg: result.msg,
+        });
+      }
       if (action !== "react") {
         throw new Error(`Action "${action}" is not supported for Feishu.`);
       }
@@ -243,18 +258,17 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
     },
     sendText: async ({ to, text, accountId, cfg }) => {
       const account = resolveFeishuAccount({ cfg, accountId });
-      // Use rich-text Post format to render Markdown properly in Feishu.
-      await sendFeishuRichText({ account, chatId: to, text });
-      return { channel: "feishu", messageId: "" };
+      const mid = await sendFeishuRichText({ account, chatId: to, text });
+      if (mid) recordSentMessage(to, mid, text);
+      return { channel: "feishu", messageId: mid ?? "" };
     },
     sendMedia: async ({ to, text, mediaUrl, accountId, cfg }) => {
       const account = resolveFeishuAccount({ cfg, accountId });
+      let lastMid: string | undefined;
       if (mediaUrl) {
         try {
           const { loadWebMedia } = await import("openclaw/plugin-sdk");
           const { readFile } = await import("node:fs/promises");
-          // Feishu IM file upload limit is 30MB; pass it as maxBytes so
-          // loadWebMedia doesn't reject large audio/video with its 16MB default.
           const FEISHU_MAX_BYTES = 30 * 1024 * 1024;
           const media = await loadWebMedia(mediaUrl, {
             maxBytes: FEISHU_MAX_BYTES,
@@ -265,29 +279,30 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
           if (media?.buffer) {
             if (media.contentType?.startsWith("audio/")) {
               const fileKey = await uploadFeishuAudio({ account, buffer: media.buffer });
-              await sendFeishuAudio({ account, chatId: to, fileKey });
+              lastMid = await sendFeishuAudio({ account, chatId: to, fileKey });
+              if (lastMid) recordSentMessage(to, lastMid, "[audio]");
             } else if (media.contentType?.startsWith("video/")) {
-              // Video requires msg_type "media" (not "file"); error 230055 otherwise.
               const fileName =
                 mediaUrl.split("/").pop()?.split("?")[0] ?? `video-${Date.now()}.mp4`;
               const fileKey = await uploadFeishuFile({ account, buffer: media.buffer, fileName });
-              await sendFeishuVideo({ account, chatId: to, fileKey });
+              lastMid = await sendFeishuVideo({ account, chatId: to, fileKey });
+              if (lastMid) recordSentMessage(to, lastMid, "[video]");
             } else if (media.contentType?.startsWith("image/")) {
               const imageKey = await uploadFeishuImage({ account, buffer: media.buffer });
-              await sendFeishuImage({ account, chatId: to, imageKey });
+              lastMid = await sendFeishuImage({ account, chatId: to, imageKey });
+              if (lastMid) recordSentMessage(to, lastMid, "[image]");
             } else {
-              // Non-audio/non-video/non-image → send as file (PPT, PDF, DOCX, etc.)
               const fileName = mediaUrl.split("/").pop()?.split("?")[0] ?? `file-${Date.now()}`;
               const fileKey = await uploadFeishuFile({
                 account,
                 buffer: media.buffer,
                 fileName,
               });
-              await sendFeishuFile({ account, chatId: to, fileKey });
+              lastMid = await sendFeishuFile({ account, chatId: to, fileKey });
+              if (lastMid) recordSentMessage(to, lastMid, `[file] ${fileName}`);
             }
           }
         } catch (err) {
-          // Re-throw actionable errors so the AI gets useful feedback.
           const msg = err instanceof Error ? err.message : String(err);
           if (
             msg.includes("文件太大") ||
@@ -299,14 +314,21 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
           ) {
             throw new Error(msg);
           }
-          // Other failures: send URL as text fallback.
-          await sendFeishuText({ account, chatId: to, text: `[media] ${mediaUrl}` });
+          const mid = await sendFeishuText({ account, chatId: to, text: `[media] ${mediaUrl}` });
+          if (mid) {
+            lastMid = mid;
+            recordSentMessage(to, mid, `[media] ${mediaUrl}`);
+          }
         }
       }
       if (text) {
-        await sendFeishuRichText({ account, chatId: to, text });
+        const mid = await sendFeishuRichText({ account, chatId: to, text });
+        if (mid) {
+          lastMid = mid;
+          recordSentMessage(to, mid, text);
+        }
       }
-      return { channel: "feishu", messageId: "" };
+      return { channel: "feishu", messageId: lastMid ?? "" };
     },
   },
   status: {

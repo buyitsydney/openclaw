@@ -1420,6 +1420,8 @@ npm 上至少有 4 个飞书相关包：
 
 | 16 | **聊天文件/音频/视频发送** | ✅ 已实现（2026-02-17） | **AI 可通过 `message` tool 发送任意文件到飞书聊天**。实现：(1) `sendMedia` 调用 `loadWebMedia(maxBytes=30MB)` 加载本地/远程文件（`sandboxValidated + readFile` 绕过 localRoots 限制）；(2) 按 contentType 自动路由：`audio/*` → `convertToOpus` → `uploadFeishuAudio` → `sendFeishuAudio`（`msg_type: "audio"`），`video/*` → `uploadFeishuFile` → `sendFeishuVideo`（`msg_type: "media"`，飞书要求视频用 media 而非 file，否则 230055 错误），`image/*` → `uploadFeishuImage` → `sendFeishuImage`，其他 → `uploadFeishuFile` → `sendFeishuFile`（`msg_type: "file"`）；(3) 飞书 IM 文件上限 30MB，在 `loadWebMedia` 层和 `uploadFeishuFile` 层双重拦截；(4) 错误传播：catch 块匹配 size/format 错误（"exceeds"/"limit"/"文件太大"/"230055"）并 re-throw 给 AI，确保 AI 收到可操作反馈。`deliverFeishuReply`（gateway 路径）同样实现了完整的音频/视频/图片/文件路由。**E2E 脚本验证**：WAV 17.7MB 音频 + MP4 3.1MB 视频均成功发送到飞书。Docker 1 压力测试：10 个 <30MB 小文件全部成功，10 个 >30MB 大文件全部正确拦截并返回清晰错误。 |
 
+| 17 | **消息撤回（Recall/Unsend）** | ✅ 已实现（2026-03-02） | — | **AI 可撤回 bot 24h 内发送的任何消息**（文本、卡片、图片、音频、视频、文件）。实现：(1) `feishu_message` 工具，`delete`（按 message_id 撤回）+ `list_sent`（查询最近发送的消息列表，含 preview 摘要）；(2) 持久化 `feishu-sent-messages.json`（JSON 文件，按 chatId 分组，24h TTL，200 条上限，debounce 落盘），所有发送路径均自动记录 message_id——包括正常回复路径（`deliverFeishuReply`）和 AI 主动发送路径（`outbound.sendText/sendMedia`）；(3) 引用消息撤回：用户引用 bot 消息并说"撤回"时，context 中包含 `message_id=om_xxx`，AI 直接用该 ID 调用 delete，无需 list_sent；(4) 撤回成功后自动从 `list_sent` 中移除该条目（`removeSentMessage`），保证列表准确；(5) 错误处理：空错误字符串自动提取 Feishu error code，伪造 ID 返回 400，重复撤回幂等 ok。**两个 her 压力测试全通过**：本地 her（私聊 6 种类型 + 群聊引用撤回 + "撤回最近一条"），Docker1 her（私聊 6 种类型 + 群聊 + 批量撤回 + 边界测试）。需要 `im:message` 权限（已有）。 |
+
 注：**Markdown 卡片/表格渲染**已由 CardKit 流式卡片天然支持（schema 2.0 + `tag: "markdown"`），无需额外实现。实测 car her 表格渲染完美，社区版 post 模式反而渲染异常。
 
 #### 飞书开发者后台权限清单
@@ -1449,16 +1451,17 @@ npm 上至少有 4 个飞书相关包：
 
 ### 自研独有，不在开源版本中（持续维护）
 
-| 能力                  | 状态      | 说明                                                                                                                                                                                                   |
-| --------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| CardKit 流式卡片      | ✅ 已验证 | 官方打字机动画，~250 行核心，竞争条件已全部修复。天然支持 Markdown 表格渲染（社区版 post 模式反而异常）                                                                                                |
-| 群聊 JSONL 归档       | ✅ 已验证 | 本地归档 + index.json + skill 读取，~60 行。社区版完全没有此能力，群聊总结场景远远领先                                                                                                                 |
-| ACK 超时修复          | ✅ 已验证 | `void` 异步 + `trackMessageId` 去重。社区版 WebSocket 模式仍有此 bug                                                                                                                                   |
-| 企业 200 Bot 部署     | ✅ 已验证 | Docker 容器隔离 + CSV 用户管理 + 滚动升级                                                                                                                                                              |
-| 纯 @mention 回复      | ✅ 已验证 | 群聊中纯 @bot（不带文字）不再被丢弃，正常触发回复（2026-02-12）                                                                                                                                        |
-| 群聊管理 + 通讯录查询 | ✅ 已验证 | `feishu_chat`（群列表/群详情/群成员）+ `feishu_directory`（用户/部门查询）。19 项全量测试 18 项通过，唯一失败项为云盘 create_folder 工具层 bug（2026-02-15）                                           |
-| Wiki→Doc 全链路       | ✅ 已验证 | `feishu_wiki` 返回 hint 引导 AI 用 `feishu_doc` 读取正文。日志 11:32 确认 wiki(2次)→doc(3次) 全链路零报错、800 字总结（2026-02-12）                                                                    |
-| **画板/白板内容读取** | ✅ 已验证 | `feishu_doc` 的 `read` 自动检测 block type_43，Board API 导出 PNG + vision。日志 11:35/12:18/12:19 三次确认图片 resize + AI 2063 字总结。**社区版和所有已知飞书 bot 均未实现——独家优势**（2026-02-12） |
+| 能力                  | 状态      | 说明                                                                                                                                                                                                                                                                           |
+| --------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| CardKit 流式卡片      | ✅ 已验证 | 官方打字机动画，~250 行核心，竞争条件已全部修复。天然支持 Markdown 表格渲染（社区版 post 模式反而异常）                                                                                                                                                                        |
+| 群聊 JSONL 归档       | ✅ 已验证 | 本地归档 + index.json + skill 读取，~60 行。社区版完全没有此能力，群聊总结场景远远领先                                                                                                                                                                                         |
+| ACK 超时修复          | ✅ 已验证 | `void` 异步 + `trackMessageId` 去重。社区版 WebSocket 模式仍有此 bug                                                                                                                                                                                                           |
+| 企业 200 Bot 部署     | ✅ 已验证 | Docker 容器隔离 + CSV 用户管理 + 滚动升级                                                                                                                                                                                                                                      |
+| 纯 @mention 回复      | ✅ 已验证 | 群聊中纯 @bot（不带文字）不再被丢弃，正常触发回复（2026-02-12）                                                                                                                                                                                                                |
+| 群聊管理 + 通讯录查询 | ✅ 已验证 | `feishu_chat`（群列表/群详情/群成员）+ `feishu_directory`（用户/部门查询）。19 项全量测试 18 项通过，唯一失败项为云盘 create_folder 工具层 bug（2026-02-15）                                                                                                                   |
+| Wiki→Doc 全链路       | ✅ 已验证 | `feishu_wiki` 返回 hint 引导 AI 用 `feishu_doc` 读取正文。日志 11:32 确认 wiki(2次)→doc(3次) 全链路零报错、800 字总结（2026-02-12）                                                                                                                                            |
+| **画板/白板内容读取** | ✅ 已验证 | `feishu_doc` 的 `read` 自动检测 block type_43，Board API 导出 PNG + vision。日志 11:35/12:18/12:19 三次确认图片 resize + AI 2063 字总结。**社区版和所有已知飞书 bot 均未实现——独家优势**（2026-02-12）                                                                         |
+| **消息撤回**          | ✅ 已验证 | `feishu_message` 工具，AI 可撤回 bot 24h 内发的任何消息（文本/卡片/图片/音频/视频/文件）。所有发送路径（回复+主动发送）的 message_id 均自动记录并持久化。支持引用撤回（直接从 context 拿 message_id）和模糊撤回（list_sent 查 preview 定位）。**社区版无此能力**（2026-03-02） |
 
 #### 实测对比：本地 car her vs Docker 社区版（2026-02-12 12:45-12:49）
 
@@ -1600,7 +1603,7 @@ npm 上至少有 4 个飞书相关包：
 
 飞书通道本质上是在 OpenClaw 的通道体系中新增一个标准通道插件。它与 Her（realtime 语音通道）完全平行，与 Telegram/Slack/Discord 完全同构。
 
-- 实际新增代码 ~1,800 行，全部在 `extensions/feishu-her/` 内
+- 实际新增代码 ~2,000 行，全部在 `extensions/feishu-her/` 内
 - 不修改 OpenClaw 核心代码的任何一行
 - 不修改 Her（realtime 插件）的任何一行
 - 不修改任何已有扩展的任何一行

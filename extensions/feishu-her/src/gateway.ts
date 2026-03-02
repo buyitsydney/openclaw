@@ -392,6 +392,131 @@ function cacheCardText(messageId: string, text: string): void {
   scheduleCardCacheFlush();
 }
 
+// ── Sent message log (persistent) ────────────────────────────────────────
+// Track message IDs of bot-sent messages per chat so AI tools can recall them.
+// Same persistence pattern as cardTextCache: Map + debounce flush + load on start.
+
+type SentMessageEntry = { messageId: string; sentAt: number; preview?: string };
+const sentMessageLog = new Map<string, SentMessageEntry[]>();
+const SENT_MSG_MAX = 200;
+const SENT_MSG_TTL_MS = 24 * 60 * 60 * 1000; // 24h — matches Feishu's bot recall limit
+const SENT_MSG_FILE = join(homedir(), ".openclaw", "feishu-sent-messages.json");
+
+let sentMsgDiskLoaded = false;
+
+function loadSentMessageLog(): void {
+  if (sentMsgDiskLoaded) return;
+  sentMsgDiskLoaded = true;
+  try {
+    if (!existsSync(SENT_MSG_FILE)) return;
+    const raw = readFileSync(SENT_MSG_FILE, "utf-8");
+    const entries: Array<[string, SentMessageEntry[]]> = JSON.parse(raw);
+    const now = Date.now();
+    for (const [chatId, msgs] of entries) {
+      const valid = msgs.filter((m) => now - m.sentAt < SENT_MSG_TTL_MS);
+      if (valid.length > 0) sentMessageLog.set(chatId, valid);
+    }
+  } catch {
+    // Corrupt or missing file — start fresh.
+  }
+}
+
+let sentMsgFlushTimer: ReturnType<typeof setTimeout> | undefined;
+
+function flushSentMessageLog(): void {
+  try {
+    const now = Date.now();
+    for (const [chatId, msgs] of sentMessageLog) {
+      const valid = msgs.filter((m) => now - m.sentAt < SENT_MSG_TTL_MS);
+      if (valid.length === 0) sentMessageLog.delete(chatId);
+      else sentMessageLog.set(chatId, valid);
+    }
+    const dir = dirname(SENT_MSG_FILE);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(SENT_MSG_FILE, JSON.stringify([...sentMessageLog.entries()]), "utf-8");
+  } catch {
+    // Best-effort persistence.
+  }
+}
+
+function scheduleSentMsgFlush(): void {
+  if (sentMsgFlushTimer) return;
+  sentMsgFlushTimer = setTimeout(() => {
+    sentMsgFlushTimer = undefined;
+    flushSentMessageLog();
+  }, 2000);
+}
+
+export function recordSentMessage(chatId: string, messageId: string, preview?: string): void {
+  loadSentMessageLog();
+  let list = sentMessageLog.get(chatId);
+  if (!list) {
+    list = [];
+    sentMessageLog.set(chatId, list);
+  }
+  const trimmedPreview = preview?.slice(0, 60).replace(/\n/g, " ");
+  list.push({
+    messageId,
+    sentAt: Date.now(),
+    ...(trimmedPreview ? { preview: trimmedPreview } : {}),
+  });
+  // Enforce global max: count all entries across chats, drop oldest.
+  let total = 0;
+  for (const msgs of sentMessageLog.values()) total += msgs.length;
+  if (total > SENT_MSG_MAX) {
+    const all: Array<{ chatId: string; idx: number; sentAt: number }> = [];
+    for (const [cid, msgs] of sentMessageLog) {
+      for (let i = 0; i < msgs.length; i++)
+        all.push({ chatId: cid, idx: i, sentAt: msgs[i].sentAt });
+    }
+    all.sort((a, b) => a.sentAt - b.sentAt);
+    const toDrop = all.slice(0, total - SENT_MSG_MAX);
+    // Group drops by chatId for efficient removal.
+    const dropIndices = new Map<string, Set<number>>();
+    for (const d of toDrop) {
+      let s = dropIndices.get(d.chatId);
+      if (!s) {
+        s = new Set();
+        dropIndices.set(d.chatId, s);
+      }
+      s.add(d.idx);
+    }
+    for (const [cid, indices] of dropIndices) {
+      const msgs = sentMessageLog.get(cid);
+      if (!msgs) continue;
+      const kept = msgs.filter((_, i) => !indices.has(i));
+      if (kept.length === 0) sentMessageLog.delete(cid);
+      else sentMessageLog.set(cid, kept);
+    }
+  }
+  scheduleSentMsgFlush();
+}
+
+/** Get recent bot-sent message IDs for a chat (newest first). */
+export function getRecentSentMessages(chatId: string, count = 10): SentMessageEntry[] {
+  loadSentMessageLog();
+  const now = Date.now();
+  const list = (sentMessageLog.get(chatId) ?? []).filter((m) => now - m.sentAt < SENT_MSG_TTL_MS);
+  return list.slice(-Math.min(count, 50)).reverse();
+}
+
+/** Remove a message from the sent-message log (after successful recall).
+ *  If chatId is provided, searches only that chat; otherwise scans all chats. */
+export function removeSentMessage(chatId: string | undefined, messageId: string): void {
+  loadSentMessageLog();
+  const chatsToSearch = chatId ? [chatId] : Array.from(sentMessageLog.keys());
+  for (const cid of chatsToSearch) {
+    const list = sentMessageLog.get(cid);
+    if (!list) continue;
+    const idx = list.findIndex((m) => m.messageId === messageId);
+    if (idx === -1) continue;
+    list.splice(idx, 1);
+    if (list.length === 0) sentMessageLog.delete(cid);
+    scheduleSentMsgFlush();
+    return;
+  }
+}
+
 // ── Quoted message content retrieval (im.message.get) ───────────────────
 // When a user replies to a message, Feishu sends parent_id (the quoted msg).
 // We fetch its content so the AI has the full context of what was quoted.
@@ -1515,7 +1640,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     try {
       const quoted = await getQuotedMessageContent({ account, parentMessageId: parentId, log });
       if (quoted?.content) {
-        quotedContext = `\n[Quoted message: "${quoted.content.slice(0, 500)}"]`;
+        quotedContext = `\n[Quoted message (message_id=${parentId}): "${quoted.content.slice(0, 500)}"]`;
         quotedBodyForReply = quoted.content.slice(0, 2000);
         log?.info(
           `[${account.accountId}] quoted msg fetched: ${parentId} -> ${quoted.content.slice(0, 80)}`,
@@ -1841,6 +1966,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // (im.message.get returns a degraded placeholder for CardKit interactive messages).
   if (cardStream?.started && cardStream.messageId && cardStreamFinalText) {
     cacheCardText(cardStream.messageId, cardStreamFinalText);
+    recordSentMessage(chatId, cardStream.messageId, cardStreamFinalText);
   }
 }
 
@@ -1898,23 +2024,25 @@ async function deliverFeishuReply(params: {
       const isImage = media.contentType?.startsWith("image/");
       if (isAudio) {
         const fileKey = await uploadFeishuAudio({ account, buffer: media.buffer });
-        await sendFeishuAudio({ account, chatId, fileKey });
+        const mid = await sendFeishuAudio({ account, chatId, fileKey });
+        if (mid) recordSentMessage(chatId, mid, "[audio]");
         setStatus({ lastOutboundAt: Date.now() });
       } else if (isVideo) {
-        // Video requires msg_type "media" (not "file"); error 230055 otherwise.
         const fileName = url.split("/").pop()?.split("?")[0] ?? `video-${Date.now()}.mp4`;
         const fileKey = await uploadFeishuFile({ account, buffer: media.buffer, fileName });
-        await sendFeishuVideo({ account, chatId, fileKey });
+        const mid = await sendFeishuVideo({ account, chatId, fileKey });
+        if (mid) recordSentMessage(chatId, mid, "[video]");
         setStatus({ lastOutboundAt: Date.now() });
       } else if (isImage) {
         const imageKey = await uploadFeishuImage({ account, buffer: media.buffer });
-        await sendFeishuImage({ account, chatId, imageKey });
+        const mid = await sendFeishuImage({ account, chatId, imageKey });
+        if (mid) recordSentMessage(chatId, mid, "[image]");
         setStatus({ lastOutboundAt: Date.now() });
       } else {
-        // Non-audio/non-video/non-image → upload as file (PPT, PDF, DOCX, etc.)
         const fileName = url.split("/").pop()?.split("?")[0] ?? `file-${Date.now()}`;
         const fileKey = await uploadFeishuFile({ account, buffer: media.buffer, fileName });
-        await sendFeishuFile({ account, chatId, fileKey });
+        const mid = await sendFeishuFile({ account, chatId, fileKey });
+        if (mid) recordSentMessage(chatId, mid, `[file: ${fileName}]`);
         setStatus({ lastOutboundAt: Date.now() });
       }
     } catch (err) {
@@ -1934,12 +2062,17 @@ async function deliverFeishuReply(params: {
     const chunks = core.channel.text.chunkMarkdownTextWithMode(payload.text, chunkLimit, chunkMode);
     for (let ci = 0; ci < chunks.length; ci++) {
       try {
-        // In group chats, first chunk uses quote-reply to the original message.
+        let sentMsgId: string | undefined;
         if (isGroup && replyToMessageId && ci === 0) {
-          await sendFeishuReply({ account, messageId: replyToMessageId, text: chunks[ci] });
+          sentMsgId = await sendFeishuReply({
+            account,
+            messageId: replyToMessageId,
+            text: chunks[ci],
+          });
         } else {
-          await sendFeishuRichText({ account, chatId, text: chunks[ci] });
+          sentMsgId = await sendFeishuRichText({ account, chatId, text: chunks[ci] });
         }
+        if (sentMsgId) recordSentMessage(chatId, sentMsgId, chunks[ci]);
         setStatus({ lastOutboundAt: Date.now() });
       } catch (err) {
         log?.error(`Feishu send failed: ${String(err)}`);

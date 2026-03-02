@@ -10,10 +10,11 @@ import { registerFeishuChatTools } from "./chat.js";
 import { registerFeishuDirectoryTools } from "./directory.js";
 import { registerFeishuDocTools } from "./docx.js";
 import { registerFeishuDriveTools } from "./drive.js";
+import { registerFeishuMessageTools } from "./message.js";
 import { registerFeishuTaskTools } from "./task.js";
 import { registerFeishuWikiTools } from "./wiki.js";
 
-/** Register all feishu ecosystem tools (doc, wiki, drive, bitable, chat, directory, calendar, task). */
+/** Register all feishu ecosystem tools (doc, wiki, drive, bitable, chat, directory, calendar, task, message). */
 export function registerAllFeishuTools(api: OpenClawPluginApi): void {
   registerFeishuDocTools(api);
   registerFeishuWikiTools(api);
@@ -23,4 +24,5 @@ export function registerAllFeishuTools(api: OpenClawPluginApi): void {
   registerFeishuDirectoryTools(api);
   registerFeishuCalendarTools(api);
   registerFeishuTaskTools(api);
+  registerFeishuMessageTools(api);
 }
