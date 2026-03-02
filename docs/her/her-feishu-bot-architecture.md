@@ -2,7 +2,7 @@
 
 通过飞书（Lark）机器人与 OpenClaw 对话，让用户在飞书客户端内获得 AI 助手体验。
 
-**状态：飞书消息通道已实现并验证通过；飞书待办（Task v2）P1 增强能力已落地并完成双 Her 回归通过 (2026-02-27 更新)**（含 Web Search + Browser Use + @mention 能力）
+**状态：飞书消息通道已实现并验证通过；飞书待办（Task v2）P1 增强能力已落地并完成双 Her 回归通过 (2026-03-02 更新)**（含 Web Search + Browser Use + @mention + 消息撤回能力）
 
 ## 核心结论
 
@@ -1420,7 +1420,7 @@ npm 上至少有 4 个飞书相关包：
 
 | 16 | **聊天文件/音频/视频发送** | ✅ 已实现（2026-02-17） | **AI 可通过 `message` tool 发送任意文件到飞书聊天**。实现：(1) `sendMedia` 调用 `loadWebMedia(maxBytes=30MB)` 加载本地/远程文件（`sandboxValidated + readFile` 绕过 localRoots 限制）；(2) 按 contentType 自动路由：`audio/*` → `convertToOpus` → `uploadFeishuAudio` → `sendFeishuAudio`（`msg_type: "audio"`），`video/*` → `uploadFeishuFile` → `sendFeishuVideo`（`msg_type: "media"`，飞书要求视频用 media 而非 file，否则 230055 错误），`image/*` → `uploadFeishuImage` → `sendFeishuImage`，其他 → `uploadFeishuFile` → `sendFeishuFile`（`msg_type: "file"`）；(3) 飞书 IM 文件上限 30MB，在 `loadWebMedia` 层和 `uploadFeishuFile` 层双重拦截；(4) 错误传播：catch 块匹配 size/format 错误（"exceeds"/"limit"/"文件太大"/"230055"）并 re-throw 给 AI，确保 AI 收到可操作反馈。`deliverFeishuReply`（gateway 路径）同样实现了完整的音频/视频/图片/文件路由。**E2E 脚本验证**：WAV 17.7MB 音频 + MP4 3.1MB 视频均成功发送到飞书。Docker 1 压力测试：10 个 <30MB 小文件全部成功，10 个 >30MB 大文件全部正确拦截并返回清晰错误。 |
 
-| 17 | **消息撤回（Recall/Unsend）** | ✅ 已实现（2026-03-02） | — | **AI 可撤回 bot 24h 内发送的任何消息**（文本、卡片、图片、音频、视频、文件）。实现：(1) `feishu_message` 工具，`delete`（按 message_id 撤回）+ `list_sent`（查询最近发送的消息列表，含 preview 摘要）；(2) 持久化 `feishu-sent-messages.json`（JSON 文件，按 chatId 分组，24h TTL，200 条上限，debounce 落盘），所有发送路径均自动记录 message_id——包括正常回复路径（`deliverFeishuReply`）和 AI 主动发送路径（`outbound.sendText/sendMedia`）；(3) 引用消息撤回：用户引用 bot 消息并说"撤回"时，context 中包含 `message_id=om_xxx`，AI 直接用该 ID 调用 delete，无需 list_sent；(4) 撤回成功后自动从 `list_sent` 中移除该条目（`removeSentMessage`），保证列表准确；(5) 错误处理：空错误字符串自动提取 Feishu error code，伪造 ID 返回 400，重复撤回幂等 ok。**两个 her 压力测试全通过**：本地 her（私聊 6 种类型 + 群聊引用撤回 + "撤回最近一条"），Docker1 her（私聊 6 种类型 + 群聊 + 批量撤回 + 边界测试）。需要 `im:message` 权限（已有）。 |
+| 17 | **消息撤回（Recall/Unsend）** | ✅ 已实现（2026-03-02） | — | **AI 可撤回 bot 24h 内发送的任何消息**（文本、卡片、图片、音频、视频、文件）。实现：(1) `feishu_message` 工具，`delete`（按 message_id 撤回）+ `list_sent`（查询最近发送的消息列表，含 preview 摘要）；(2) 持久化 `feishu-sent-messages.json`（JSON 文件，按 chatId 分组，24h TTL，200 条上限，debounce 落盘），所有发送路径均自动记录 message_id——包括正常回复路径（`deliverFeishuReply`）和 AI 主动发送路径（`outbound.sendText/sendMedia`）；(3) 引用消息撤回：用户引用 bot 消息并说"撤回"时，群聊通过 metadata `reply_to_id` 传递 message_id，私聊通过 `quotedBodyForReply` 开头注入 `[message_id=om_xxx]`（因 core upstream 在私聊时过滤 reply_to_id），AI 直接用该 ID 调用 delete，无需 list_sent；(4) 撤回成功后自动从 `list_sent` 中移除该条目（`removeSentMessage`），保证列表准确；(5) 错误处理：空错误字符串自动提取 Feishu error code，伪造 ID 返回 400，重复撤回幂等 ok。**两个 her 压力测试全通过**：本地 her（私聊 6 种类型 + 群聊引用撤回 + "撤回最近一条"），Docker1 her（私聊 6 种类型 + 群聊 + 批量撤回 + 边界测试）。需要 `im:message` 权限（已有）。 |
 
 注：**Markdown 卡片/表格渲染**已由 CardKit 流式卡片天然支持（schema 2.0 + `tag: "markdown"`），无需额外实现。实测 car her 表格渲染完美，社区版 post 模式反而渲染异常。
 

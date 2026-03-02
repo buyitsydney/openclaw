@@ -1641,7 +1641,8 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       const quoted = await getQuotedMessageContent({ account, parentMessageId: parentId, log });
       if (quoted?.content) {
         quotedContext = `\n[Quoted message (message_id=${parentId}): "${quoted.content.slice(0, 500)}"]`;
-        quotedBodyForReply = quoted.content.slice(0, 2000);
+        // Prefix with message_id so AI can extract it even in DMs where core strips reply_to_id.
+        quotedBodyForReply = `[message_id=${parentId}]\n${quoted.content.slice(0, 2000)}`;
         log?.info(
           `[${account.accountId}] quoted msg fetched: ${parentId} -> ${quoted.content.slice(0, 80)}`,
         );

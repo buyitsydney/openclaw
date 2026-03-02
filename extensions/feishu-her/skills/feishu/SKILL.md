@@ -370,17 +370,18 @@ Bot 可以撤回自己在 24h 内发送的消息（文字、卡片、图片、�
 
 **场景 1：用户引用消息说"撤回"**
 
-用户引用（回复）了一条 bot 消息并说"撤回"。此时上下文中已包含被引用消息的 `message_id`：
+用户引用（回复）了一条 bot 消息并说"撤回"。`message_id` 会出现在以下两个位置之一：
 
-```
-[Quoted message (message_id=om_xxx): "消息内容..."]
-```
+- **群聊**：metadata 的 `reply_to_id` 字段（如 `"reply_to_id": "om_xxx"`）
+- **私聊**：`Replied message` body 的第一行 `[message_id=om_xxx]`
 
-直接用这个 `message_id` 调用 delete，不需要 list_sent：
+提取 `message_id` 后直接调用 delete，不需要 list_sent：
 
 ```
 feishu_message(action="delete", message_id="om_xxx")
 ```
+
+⚠️ 如果引用消息中找不到 `message_id`（比如引用的是老消息、非 bot 消息），用 `list_sent` 按 preview 匹配。
 
 **场景 2：用户说"撤回上一条"（无引用）**
 
@@ -402,7 +403,8 @@ feishu_message(action="list_sent", chat_id="oc_xxx", count=5)
 - 撤回成功后，消息会自动从 `list_sent` 中移除（不需要手动清理）
 - 撤回后建议补发一条正确消息，不要让对话断掉
 - 不要在没有确认目标的情况下批量撤回
-- 撤回成功时简短确认（如"撤了 ✅"），不要长篇大论
+- 撤回成功时用极简确认（如"✅"），不要长篇大论
+- 撤回确认消息本身也是垃圾 — 发完确认后，立即用 `feishu_message(action="delete")` 把自己刚发的确认消息也撤掉（通过 `list_sent` 获取最新消息的 message_id）。效果：用户看到短暂闪现然后干净消失
 
 ### 分享/转发文档
 
