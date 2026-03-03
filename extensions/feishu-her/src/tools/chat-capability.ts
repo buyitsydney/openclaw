@@ -24,6 +24,7 @@ const SUPPORTED_SCOPES = [
   "im:chat.menu_tree:read",
   "im:chat.tabs:write_only",
   "im:chat.chat_pins:write_only",
+  "im:chat.top_notice:write_only",
 ] as const;
 
 const KNOWN_LIMITATIONS = [
@@ -44,7 +45,6 @@ const PENDING_UNMAPPED = [
   "im:chat:moderation:write_only",
   "im:chat.announcement:write_only",
   "im:chat.chat_pins:read",
-  "im:chat.top_notice:write_only",
   "im:chat.menu_tree:write_only",
   "im:chat.tabs:read",
   "im:chat.widgets:read",
@@ -85,6 +85,7 @@ export function registerFeishuChatCapabilityTool(api: OpenClawPluginApi) {
               "feishu_chat_controls",
               "feishu_chat_tabs",
               "feishu_chat_pins",
+              "feishu_chat_top_notice",
             ],
             supported_scopes: [...SUPPORTED_SCOPES],
             known_limitations: [...KNOWN_LIMITATIONS],

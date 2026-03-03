@@ -12,6 +12,7 @@ import { registerFeishuChatManageTools } from "./chat-manage.js";
 import { registerFeishuChatMemberTools } from "./chat-members.js";
 import { registerFeishuChatPinTools } from "./chat-pins.js";
 import { registerFeishuChatTabTools } from "./chat-tabs.js";
+import { registerFeishuChatTopNoticeTools } from "./chat-top-notice.js";
 import { registerFeishuChatTools } from "./chat.js";
 import { registerFeishuDirectoryTools } from "./directory.js";
 import { registerFeishuDocTools } from "./docx.js";
@@ -32,6 +33,7 @@ export function registerAllFeishuTools(api: OpenClawPluginApi): void {
   registerFeishuChatControlTools(api);
   registerFeishuChatTabTools(api);
   registerFeishuChatPinTools(api);
+  registerFeishuChatTopNoticeTools(api);
   registerFeishuChatCapabilityTool(api);
   registerFeishuDirectoryTools(api);
   registerFeishuCalendarTools(api);

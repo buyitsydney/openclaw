@@ -767,7 +767,7 @@ def main() -> None:
             body={
                 "receive_id": temp_chat_id,
                 "msg_type": "text",
-                "content": json.dumps({"text": "pin permission test"}, ensure_ascii=False),
+                "content": json.dumps({"text": "pin/top_notice permission test"}, ensure_ascii=False),
             },
         )
         if classify_response(send_msg_resp) == "PASS":
@@ -800,12 +800,54 @@ def main() -> None:
             endpoint="/im/v1/pins/{message_id}",
             response=unpin_resp,
         )
+
+        top_notice_put_resp = request_json(
+            "POST",
+            f"/im/v1/chats/{temp_chat_id}/top_notice/put_top_notice",
+            token=token,
+            body={
+                "chat_top_notice": [
+                    {
+                        "action_type": "1",
+                        "message_id": message_id,
+                    }
+                ]
+            },
+        )
+        add_case_from_response(
+            cases,
+            scope="im:chat.top_notice:write_only",
+            capability="更新群顶部置顶（message）",
+            endpoint="/im/v1/chats/{chat_id}/top_notice/put_top_notice",
+            response=top_notice_put_resp,
+        )
+
+        top_notice_delete_resp = request_json(
+            "POST",
+            f"/im/v1/chats/{temp_chat_id}/top_notice/delete_top_notice",
+            token=token,
+        )
+        add_case_from_response(
+            cases,
+            scope="im:chat.top_notice:write_only",
+            capability="撤销群顶部置顶",
+            endpoint="/im/v1/chats/{chat_id}/top_notice/delete_top_notice",
+            response=top_notice_delete_resp,
+        )
     else:
         add_skip_case(
             cases,
             scope="im:chat.chat_pins:write_only",
             capability="Pin/Unpin 消息",
             endpoint="/im/v1/pins",
+            status="SKIP_DEPENDENCY",
+            note="缺少可用 message_id（发送消息失败或无权限）",
+        )
+        add_skip_case(
+            cases,
+            scope="im:chat.top_notice:write_only",
+            capability="更新/撤销群顶部置顶",
+            endpoint="/im/v1/chats/{chat_id}/top_notice/*",
             status="SKIP_DEPENDENCY",
             note="缺少可用 message_id（发送消息失败或无权限）",
         )
@@ -833,14 +875,6 @@ def main() -> None:
         endpoint="UNMAPPED",
         status="SKIP_UNMAPPED",
         note="官方读取接口路径未完成稳定映射",
-    )
-    add_skip_case(
-        cases,
-        scope="im:chat.top_notice:write_only",
-        capability="更新群置顶公告",
-        endpoint="UNMAPPED",
-        status="SKIP_UNMAPPED",
-        note="官方接口路径未完成稳定映射",
     )
     add_skip_case(
         cases,

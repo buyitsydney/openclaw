@@ -21,6 +21,7 @@ import { registerFeishuChatManageTools } from "./chat-manage.js";
 import { registerFeishuChatMemberTools } from "./chat-members.js";
 import { registerFeishuChatPinTools } from "./chat-pins.js";
 import { registerFeishuChatTabTools } from "./chat-tabs.js";
+import { registerFeishuChatTopNoticeTools } from "./chat-top-notice.js";
 
 type ToolDef = {
   name: string;
@@ -194,5 +195,46 @@ describe("feishu chat tools", () => {
 
     expect(details.ok).toBe(true);
     expect(details.data?.pending_unmapped).toContain("im:chat.widgets:read");
+  });
+
+  it("chat_top_notice put message routes correctly", async () => {
+    const { api, registerTool } = createApi();
+    registerFeishuChatTopNoticeTools(api);
+    const tool = getTool(registerTool, "feishu_chat_top_notice");
+
+    await tool.execute("tc8", {
+      action: "put",
+      chat_id: "oc_top_1",
+      notice_type: "message",
+      message_id: "om_top_1",
+    });
+
+    expect(callChatApiMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "POST",
+        endpoint: "/im/v1/chats/oc_top_1/top_notice/put_top_notice",
+        body: {
+          chat_top_notice: [{ action_type: "1", message_id: "om_top_1" }],
+        },
+      }),
+    );
+  });
+
+  it("chat_top_notice delete routes correctly", async () => {
+    const { api, registerTool } = createApi();
+    registerFeishuChatTopNoticeTools(api);
+    const tool = getTool(registerTool, "feishu_chat_top_notice");
+
+    await tool.execute("tc9", {
+      action: "delete",
+      chat_id: "oc_top_2",
+    });
+
+    expect(callChatApiMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "POST",
+        endpoint: "/im/v1/chats/oc_top_2/top_notice/delete_top_notice",
+      }),
+    );
   });
 });

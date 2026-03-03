@@ -25,6 +25,7 @@ metadata: { "openclaw": { "emoji": "📨" } }
 - 缺参就报错，先向用户补齐参数，不做猜测。
 - 不要臆造 `open_id`/`chat_id`，必须先查后写。
 - 不要把未实现能力伪装成成功。
+- 用户说“置顶/顶部公告/强提醒”默认用 `feishu_chat_top_notice`；只有明确说 `pin` 才用 `feishu_chat_pins`。
 
 ### 2) Chat 工具与 action 映射
 
@@ -36,6 +37,7 @@ metadata: { "openclaw": { "emoji": "📨" } }
 | `feishu_chat_controls`   | `get_moderation/get_menu_tree`            | 读取发言权限与群菜单                     |
 | `feishu_chat_tabs`       | `add/delete`                              | 会话标签页管理                           |
 | `feishu_chat_pins`       | `pin/unpin`                               | 消息置顶与取消置顶                       |
+| `feishu_chat_top_notice` | `put/delete`                              | 群顶部置顶（强提醒，不是 pin）           |
 | `feishu_chat_capability` | `status`                                  | 仅查询能力状态（已支持/已知限制/待映射） |
 
 ### 3) 高频调用模板（直接照用）
@@ -76,7 +78,19 @@ metadata: { "openclaw": { "emoji": "📨" } }
 }
 ```
 
-置顶消息：
+群顶部置顶（强提醒）：
+
+```json
+{ "action": "put", "chat_id": "oc_xxx", "notice_type": "message", "message_id": "om_xxx" }
+```
+
+撤销群顶部置顶：
+
+```json
+{ "action": "delete", "chat_id": "oc_xxx" }
+```
+
+Pin 消息（不是群顶部置顶）：
 
 ```json
 { "action": "pin", "message_id": "om_xxx" }
@@ -91,12 +105,13 @@ metadata: { "openclaw": { "emoji": "📨" } }
 - `im:chat.menu_tree:read`
 - `im:chat.tabs:write_only`
 - `im:chat.chat_pins:write_only`
+- `im:chat.top_notice:write_only`
 
 ### 5) 已知限制与待映射（只记录，不硬做）
 
 - 已知限制：`im:chat.announcement:read` 在当前群类型可能返回 `232097`（非 scope 缺失）。
 - 事件型权限：`im:chat.access_event.bot_p2p_chat:read` 是 Event Only，不是同步拉取接口。
-- 待映射：`im:chat:moderation:write_only`、`im:chat.announcement:write_only`、`im:chat.chat_pins:read`、`im:chat.top_notice:write_only`、`im:chat.menu_tree:write_only`、`im:chat.tabs:read`、`im:chat.widgets:*`、`im:chat.collab_plugins:*`。
+- 待映射：`im:chat:moderation:write_only`、`im:chat.announcement:write_only`、`im:chat.chat_pins:read`、`im:chat.menu_tree:write_only`、`im:chat.tabs:read`、`im:chat.widgets:*`、`im:chat.collab_plugins:*`。
 - 需要状态总览时，调用 `feishu_chat_capability(action="status")`。
 
 ### 6) 企业迁移常见坑
