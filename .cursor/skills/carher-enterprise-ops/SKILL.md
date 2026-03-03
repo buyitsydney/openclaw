@@ -72,14 +72,36 @@ sshpass -p 'PWD' ssh USER@IP "docker exec carher-N cat /tmp/openclaw/openclaw-\$
 
 ### 重建容器
 
-**铁律：重建前必须确认最近 15 分钟无交互！**
+**铁律 1：重建前必须确认最近 15 分钟无交互！**
+
+**铁律 2：严禁并行重建！必须逐个容器串行操作！**
+
+- 禁止同时对多台服务器并行执行 `start-user.sh`
+- 禁止在同一台服务器上同时重建多个容器
+- 正确流程：一台服务器上逐个容器操作完毕，再到下一台服务器
+- 每个容器重建前必须**即时**检查活跃状态（禁止提前批量检查后再批量重建，因为中间时间差会导致检查结果过期）
+
+**单个容器重建步骤（每个容器必须严格执行）：**
 
 ```bash
-# 1. 先检查活跃状态（>0 则等待）
+# 1. 即时检查该容器活跃状态（>0 则跳过，等下一轮）
 sshpass -p 'PWD' ssh USER@IP "docker logs carher-N --since=15m 2>&1 | grep -c 'deliver:'"
 
-# 2. 确认无活动后才重建
+# 2. 确认 0 条消息后，立即重建（不要插入其他容器的检查）
 sshpass -p 'PWD' ssh USER@IP "cd /Data/CarHer && ./start-user.sh --id=N 2>&1 | tail -5"
+
+# 3. 确认 WSClient connected 后，再处理下一个容器
+sshpass -p 'PWD' ssh USER@IP "docker logs carher-N --since=120s 2>&1 | grep 'WSClient connected'"
+```
+
+**批量升级正确流程示例（S1 有容器 1,3,4,5）：**
+
+```
+检查 carher-1 活跃 → 0 → 重建 carher-1 → 确认连接 →
+检查 carher-3 活跃 → 2条 → 跳过 →
+检查 carher-4 活跃 → 0 → 重建 carher-4 → 确认连接 →
+检查 carher-5 活跃 → 0 → 重建 carher-5 → 确认连接 →
+S1 完成，转 S2...
 ```
 
 重建会自动执行：
