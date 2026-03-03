@@ -18,6 +18,7 @@ import { registerFeishuDirectoryTools } from "./directory.js";
 import { registerFeishuDocTools } from "./docx.js";
 import { registerFeishuDriveTools } from "./drive.js";
 import { registerFeishuMessageTools } from "./message.js";
+import { registerFeishuSheetTools } from "./sheet.js";
 import { registerFeishuTaskTools } from "./task.js";
 import { registerFeishuWikiTools } from "./wiki.js";
 
@@ -27,6 +28,7 @@ export function registerAllFeishuTools(api: OpenClawPluginApi): void {
   registerFeishuWikiTools(api);
   registerFeishuDriveTools(api);
   registerFeishuBitableTools(api);
+  registerFeishuSheetTools(api);
   registerFeishuChatTools(api);
   registerFeishuChatManageTools(api);
   registerFeishuChatMemberTools(api);

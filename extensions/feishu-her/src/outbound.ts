@@ -277,6 +277,47 @@ function hasMarkdown(text: string): boolean {
   );
 }
 
+const OUTBOUND_URL_PATTERN = /https?:\/\/[^\s<>()]+/gi;
+const OPEN_FEISHU_HOST = "open.feishu.cn";
+const OPEN_FEISHU_DOCS_PREFIX = "/document/";
+
+function normalizeExtractedUrl(candidate: string): string {
+  return candidate.replace(/[),.;!?]+$/g, "");
+}
+
+/**
+ * Block open-platform URLs from user-facing messages unless they are official docs.
+ *
+ * Rule:
+ * - allowed: https://open.feishu.cn/document/...
+ * - forbidden: other https://open.feishu.cn/* links (open-apis/wiki/docx/drive/...)
+ */
+export function assertNoForbiddenOpenPlatformUrls(text: string): void {
+  const matches = text.match(OUTBOUND_URL_PATTERN);
+  if (!matches || matches.length === 0) {
+    return;
+  }
+  for (const raw of matches) {
+    const normalized = normalizeExtractedUrl(raw);
+    let parsed: URL;
+    try {
+      parsed = new URL(normalized);
+    } catch {
+      continue;
+    }
+    if (parsed.hostname.toLowerCase() !== OPEN_FEISHU_HOST) {
+      continue;
+    }
+    const path = parsed.pathname.toLowerCase();
+    if (path.startsWith(OPEN_FEISHU_DOCS_PREFIX)) {
+      continue;
+    }
+    throw new Error(
+      `禁止向用户发送 open.feishu.cn 非文档链接: ${normalized}。请改用用户可访问的 *.feishu.cn 分享链接，或仅发送 open.feishu.cn/document 官方文档链接。`,
+    );
+  }
+}
+
 /** Send a rich-text Post message to a Feishu chat or user.
  *  Converts Markdown to Feishu Post format for nice rendering.
  *  Falls back to plain text if the text has no Markdown formatting. */
@@ -285,6 +326,7 @@ export async function sendFeishuRichText(params: {
   chatId: string;
   text: string;
 }): Promise<string | undefined> {
+  assertNoForbiddenOpenPlatformUrls(params.text);
   const client = getFeishuClient(params.account);
   const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
 
@@ -319,6 +361,7 @@ export async function sendFeishuText(params: {
   chatId: string;
   text: string;
 }): Promise<string | undefined> {
+  assertNoForbiddenOpenPlatformUrls(params.text);
   const client = getFeishuClient(params.account);
   const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
   // oxlint-disable-next-line typescript/no-explicit-any
@@ -340,6 +383,7 @@ export async function sendFeishuReply(params: {
   messageId: string;
   text: string;
 }): Promise<string | undefined> {
+  assertNoForbiddenOpenPlatformUrls(params.text);
   const client = getFeishuClient(params.account);
   // oxlint-disable-next-line typescript/no-explicit-any
   let resp: any;
@@ -717,6 +761,7 @@ export async function sendFeishuImage(params: {
     },
   });
   if (params.caption) {
+    assertNoForbiddenOpenPlatformUrls(params.caption);
     await client.im.message.create({
       params: { receive_id_type: receiveIdType },
       data: {

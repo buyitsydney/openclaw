@@ -120,28 +120,28 @@ Pin 消息（不是群顶部置顶）：
 
 ## 能力总览
 
-| 类别           | 能力                                                | 工具                | 状态             |
-| -------------- | --------------------------------------------------- | ------------------- | ---------------- |
-| **消息**       | 发送消息（群/个人）                                 | `message`           | ✅               |
-| **文件发送**   | 发送本地文件到飞书聊天（PPT/PDF/DOCX等，≤30MB）     | `message` + media   | ✅               |
-| **群聊**       | 群管理、成员管理、菜单/发言权限、标签页、置顶       | `feishu_chat_*`     | ✅（见上方映射） |
-| **通讯录**     | 用户、部门                                          | `feishu_directory`  | ✅ 企业版含姓名  |
-| **知识空间**   | 列空间、遍历节点、节点详情                          | `feishu_wiki`       | ✅               |
-| **Wiki 管理**  | 创建节点（docx/bitable/sheet）、重命名、移动        | `feishu_wiki`       | ✅               |
-| **文档读取**   | 读正文、表格、代码、画板（自动导出 PNG）            | `feishu_doc`        | ✅               |
-| **文档写入**   | write（覆盖）、append（追加）、create（新建）       | `feishu_doc`        | ✅               |
-| **增量编辑**   | insert_blocks（中间插入）、delete_range（批量删除） | `feishu_doc`        | ✅               |
-| **Block 操作** | list_blocks、get_block、update_block、delete_block  | `feishu_doc`        | ✅               |
-| **多维表格读** | get_meta、list_fields、list_records、get_record     | `feishu_bitable`    | ✅               |
-| **多维表格写** | create_record、update_record                        | `feishu_bitable`    | ✅               |
-| **云盘**       | list、info、create_folder、move、delete             | `feishu_drive`      | ✅ Bot 限制见下  |
-| **群聊归档**   | 本地 JSONL 归档读取和总结                           | `exec` (jq)         | ✅               |
-| **日历建会**   | 建会+自动邀请参会人（对方日历自动收到）             | `feishu_calendar`   | ✅               |
-| **日历忙闲**   | 查任何人忙碌时间段（无需共享）                      | `feishu_calendar`   | ✅               |
-| **待办任务**   | 创建/查询/更新/删除/子任务/挂清单                   | `feishu_task_*`     | ✅ 协作 P0       |
-| **任务清单**   | 创建/查询/列出/更新/成员增删                        | `feishu_tasklist_*` | ✅ 协作 P0       |
-| **消息撤回**   | 撤回 bot 24h 内发送的消息（含文字/卡片/图片/文件）  | `feishu_message`    | ✅               |
-| **删除限制**   | 文档/Wiki/Bitable 删除                              | —                   | ❌ 无权限（403） |
+| 类别           | 能力                                                          | 工具                | 状态             |
+| -------------- | ------------------------------------------------------------- | ------------------- | ---------------- |
+| **消息**       | 发送消息（群/个人）                                           | `message`           | ✅               |
+| **文件发送**   | 发送本地文件到飞书聊天（PPT/PDF/DOCX等，≤30MB）               | `message` + media   | ✅               |
+| **群聊**       | 群管理、成员管理、菜单/发言权限、标签页、置顶                 | `feishu_chat_*`     | ✅（见上方映射） |
+| **通讯录**     | 用户、部门                                                    | `feishu_directory`  | ✅ 企业版含姓名  |
+| **知识空间**   | 列空间、遍历节点、节点详情                                    | `feishu_wiki`       | ✅               |
+| **Wiki 管理**  | 创建节点（docx/bitable/sheet）、重命名、移动                  | `feishu_wiki`       | ✅               |
+| **文档读取**   | 读正文、表格、代码、画板（自动导出 PNG）                      | `feishu_doc`        | ✅               |
+| **文档写入**   | write（覆盖）、append（追加）、create（新建）                 | `feishu_doc`        | ✅               |
+| **增量编辑**   | insert_blocks（中间插入）、delete_range（批量删除）           | `feishu_doc`        | ✅               |
+| **Block 操作** | list_blocks、get_block、update_block、delete_block            | `feishu_doc`        | ✅               |
+| **多维表格读** | get_meta、list_fields、list_records、get_record               | `feishu_bitable`    | ✅               |
+| **多维表格写** | create_record、update_record                                  | `feishu_bitable`    | ✅               |
+| **云盘**       | list、create_folder、create_online、move、delete、upload_file | `feishu_drive`      | ✅ Bot 限制见下  |
+| **群聊归档**   | 本地 JSONL 归档读取和总结                                     | `exec` (jq)         | ✅               |
+| **日历建会**   | 建会+自动邀请参会人（对方日历自动收到）                       | `feishu_calendar`   | ✅               |
+| **日历忙闲**   | 查任何人忙碌时间段（无需共享）                                | `feishu_calendar`   | ✅               |
+| **待办任务**   | 创建/查询/更新/删除/子任务/挂清单                             | `feishu_task_*`     | ✅ 协作 P0       |
+| **任务清单**   | 创建/查询/列出/更新/成员增删                                  | `feishu_tasklist_*` | ✅ 协作 P0       |
+| **消息撤回**   | 撤回 bot 24h 内发送的消息（含文字/卡片/图片/文件）            | `feishu_message`    | ✅               |
+| **删除限制**   | 文档/Wiki/Bitable 删除                                        | —                   | ❌ 无权限（403） |
 
 ## ⚠️ 重要限制（必读！）
 
@@ -164,13 +164,62 @@ Bot 对 Wiki 节点、文档、多维表格记录没有删除权限，无法通�
 - **知识空间（Wiki）**= 用户日常使用的"个人空间"，树状文档结构 → 用 `feishu_wiki`
 - **云盘（Drive）**= 独立的文件存储系统，类似百度网盘 → 用 `feishu_drive`
 - 它们是**完全独立的系统**。用户说"我的空间"通常指 Wiki，不是云盘
-- 云盘 Bot 没有根目录，只能访问被分享的文件夹。`create_folder` 不带 `folder_token` 会 400
+- **用户不可见 = 没有**：凡是用户看不到的应用私有空间资源，一律视为不可用，禁止对外表述为"你的云盘/你的文档"。
+- 已启用代码级保护：`feishu_drive(list/create_folder/create_online/move/upload_file)` 与 `feishu_doc(create)` 必须提供 `folder_token`；禁止 `folder_token=0` 和任何 root/app-space 默认写入。
 
-### 4. 多维表格字段格式
+### 4. 云盘分享记忆（CRITICAL）
 
-Bitable 的 Text 字段直接传字符串即可（如 `{"字段名": "值"}`），不需要数组包裹。SingleSelect 也直接传字符串。DateTime 传 unix 毫秒时间戳。
+- 任何用户发来的云盘分享信息（`/drive/folder/<token>` 链接、明文 `folder_token`、可解析出 token 的 URL）都视为**长期可复用资源**。
+- 一旦拿到 `folder_token`，必须**立刻**写入工作区 `MEMORY.md` 的 `## Drive Shares` 段落，**禁止只写 `TOOLS.md`**。
+- 写入字段最少包含：`folder_token`、`url`、`folder_name`、`shared_by`、`granted_scope`（`read`/`edit`/`unknown`）、`recorded_at`。
+- 去重规则：以 `folder_token` 为唯一键；已存在则更新字段，不重复新增。
+- 执行任何 `feishu_drive` 操作前，先读取 `MEMORY.md` 的 `Drive Shares`，优先复用已记录 token。
+- 只有用户明确要求“忘掉/删除某个分享”时，才删除对应记录；否则长期保留，避免 `/new` 后丢失。
+- 对 `feishu_drive(action="upload_file")`，必须同步维护 `MEMORY.md` 的 `## Drive Upload Tasks` 段落，记录每个上传任务的状态机。
+- `Drive Upload Tasks` 的最小字段：`task_id`、`folder_token`、`file_name`、`file_path`、`status`、`started_at`、`last_update_at`、`result_file_token`、`result_url`、`error`。
+- `status` 只允许：`pending`、`running`、`succeeded`、`failed`（禁止自定义模糊状态）。
+- `task_id` 必须稳定且可复述给用户（建议格式：`up-YYYYMMDD-HHMMSS-序号`）。
+- 重启后（或 `/new` 后）再次收到同一上传请求时，必须先查 `Drive Upload Tasks`：
+  - 若已有 `pending/running` 的同任务，禁止重复发起上传，必须复用并回报同一个 `task_id`。
+  - 若已有 `succeeded`，优先回传已记录的 `result_url` / `result_file_token`。
+  - 若已有 `failed`，明确告知失败原因，必要时在用户确认后重试并生成新 `task_id`。
 
-### 5. 待办（Task v2）可见性与归属
+`MEMORY.md` 建议记录格式（示例）：
+
+```md
+## Drive Shares
+
+- folder_token: QR5ufxNurlZMjydffWtcJ1BUnCb
+  folder_name: yitian
+  url: https://example.feishu.cn/drive/folder/QR5ufxNurlZMjydffWtcJ1BUnCb
+  shared_by: 用户名(ou_xxx)
+  granted_scope: edit
+  recorded_at: 2026-03-03
+
+## Drive Upload Tasks
+
+- task_id: up-20260303-123045-001
+  folder_token: QR5ufxNurlZMjydffWtcJ1BUnCb
+  file_name: 年报-200MB.pptx
+  file_path: /tmp/year-report-200mb.pptx
+  status: running
+  started_at: 2026-03-03T12:30:45+08:00
+  last_update_at: 2026-03-03T12:31:10+08:00
+  result_file_token:
+  result_url:
+  error:
+```
+
+### 5. 多维表格字段格式
+
+Bitable 的 `fields` 键名必须使用 `feishu_bitable(action="list_fields")` 返回的 `field_name` 原文（区分大小写），不能猜测或翻译。
+
+- 示例：默认主列常见为 `Text`，应写 `{"Text": "值"}`，不是 `{"文本": "值"}`
+- Text 字段值直接传字符串，不需要数组包裹
+- SingleSelect 字段值直接传字符串
+- DateTime 字段值传 unix 毫秒时间戳
+
+### 6. 待办（Task v2）可见性与归属
 
 - 用户只有在任务成员（assignee）中时，才容易在个人视图看到任务。
 - 创建任务清单时，建议保持清单 owner 为 bot，本人作为成员加入，避免 bot 丢失后续管理权限。
@@ -201,7 +250,8 @@ message(action="send", channel="feishu", target="<当前聊天>", media="/path/t
 
 ### 限制
 
-- 文件大小上限 **30MB**（飞书 API 限制）。超过 30MB 的文件无法上传，会报错。如果遇到文件过大的错误，**必须告知用户文件超过 30MB 限制**，并建议压缩或使用较小版本。
+- 文件大小上限 **30MB**（仅针对 `message` 聊天附件链路）。
+- 超过 30MB 时，**禁止**继续走 `message` 附件发送；必须切换到云盘分片上传：`feishu_drive(action="upload_file", ...)`。
 - 支持的文件类型：PPT/PPTX、DOC/DOCX、XLS/XLSX、PDF、MP4、TXT 等
 - 文件路径必须是绝对路径（以 `/` 开头）
 
@@ -521,8 +571,16 @@ feishu_message(action="list_sent", chat_id="oc_xxx", count=5)
 转发文档 = 发送文档链接。飞书会自动将链接渲染为文档卡片预览。
 
 1. 用 `feishu_wiki` 找到文档的 `node_token`
-2. 拼接链接：`https://<tenant>.feishu.cn/wiki/<node_token>`
-3. 用 `message(action="send", ...)` 发送链接
+2. 用 `feishu_wiki(action="resolve_url", token="<node_token>")` 拿链接（底层走 `drive/v1/metas/batch_query`）
+3. 用 `message(action="send", ...)` 发送这个 `url`
+
+硬规则（必须遵守）：
+
+- **禁止手工拼接** `https://<tenant>.feishu.cn/...`
+- **禁止发送** `https://open.feishu.cn/open-apis/...`、`https://open.feishu.cn/wiki/...`、`https://open.feishu.cn/docx/...`、`https://open.feishu.cn/drive/...`（这些都不是用户可直接访问的文档分享链接）
+- `open.feishu.cn` 仅允许 `https://open.feishu.cn/document/...` 官方文档链接；其余路径视为错误链接
+- 已启用代码级拦截：消息正文中出现 `open.feishu.cn` 非 `/document/` 链接会被直接拒绝发送
+- 拿不到 `url` 就直接报错，不做猜测、不做 fallback
 
 ### 查找群聊和联系人
 
@@ -547,20 +605,20 @@ feishu_message(action="list_sent", chat_id="oc_xxx", count=5)
 - `feishu_wiki(action="spaces")` — 列出所有知识空间
 - `feishu_wiki(action="nodes", space_id="xxx")` — 顶级节点
 - `feishu_wiki(action="nodes", space_id="xxx", parent_node_token="xxx")` — 子节点
-- `feishu_wiki(action="get", token="xxx")` — 节点详情（返回 `obj_token` 用于 `feishu_doc`）
+- `feishu_wiki(action="get", token="xxx")` — 节点详情（返回 `obj_token`）
+- `feishu_wiki(action="resolve_url", token="xxx")` — 只解析可访问链接（`share_url`）
 
 **创建（⚠️ 创建后无法通过 API 删除）：**
 
-- `feishu_wiki(action="create", space_id="xxx", title="xxx")` — 创建 docx
-- `feishu_wiki(action="create", ..., obj_type="bitable")` — 创建多维表格
-- `feishu_wiki(action="create", ..., parent_node_token="xxx")` — 在指定节点下创建
+- `feishu_wiki(action="create", space_id="xxx", parent_node_token="xxx", title="xxx", obj_type="docx")` — 在指定节点创建 docx
+- `feishu_wiki(action="create", space_id="xxx", parent_node_token="xxx", title="xxx", obj_type="bitable")` — 在指定节点创建多维表格
 
-`obj_type`: `docx`(默认), `sheet`, `bitable`, `mindnote`, `file`, `doc`, `slides`
+`obj_type`: `docx`, `sheet`, `bitable`（必须显式传）
 
 **管理：**
 
-- `feishu_wiki(action="rename", ...)` — 重命名
-- `feishu_wiki(action="move", ...)` — 移动
+- `feishu_wiki(action="rename", space_id="xxx", node_token="xxx", title="新标题")` — 重命名
+- `feishu_wiki(action="move", space_id="xxx", node_token="xxx", target_space_id="xxx", target_parent_token="xxx")` — 移动
 
 **Wiki-Doc 联动：** Wiki 页面本质是文档。用 `feishu_wiki get` 获取 `obj_token`，然后用 `feishu_doc` 的 `doc_token` 参数传入 `obj_token` 进行读写。
 
@@ -571,9 +629,35 @@ feishu_message(action="list_sent", chat_id="oc_xxx", count=5)
 - `feishu_doc(action="read", doc_token="xxx")` — 读取全文（含画板自动导出 PNG）。检查 `hint` 和 `block_types` 判断是否需要 `list_blocks`
 - `feishu_doc(action="list_blocks", doc_token="xxx")` — 完整 block 数据（含表格、图片）
 - `feishu_doc(action="get_block", doc_token="xxx", block_id="doxcnXXX")` — 单个 block
-- `feishu_doc(action="create", title="xxx")` — 新建文档
+- `feishu_doc(action="create", title="xxx", folder_token="fldcnXXX")` — 在用户可见文件夹中新建文档（必须传 `folder_token`）
 
 > doc_token 来自 `feishu_wiki` 返回的 `obj_token`（不是 node_token）
+
+### Sheet（电子表格）
+
+**读取/写入：**
+
+- `feishu_sheet(action="get_meta", spreadsheet_token="sht_xxx")` — 获取 `sheetId`
+- `feishu_sheet(action="read_range", range="sheetId!A1:B5", spreadsheet_token="sht_xxx")` — 读单范围
+- `feishu_sheet(action="read_ranges", ranges=[...], spreadsheet_token="sht_xxx")` — 批量读
+- `feishu_sheet(action="write_range", range="sheetId!A1:B5", values=[...], spreadsheet_token="sht_xxx")` — 写单范围
+- `feishu_sheet(action="write_ranges", value_ranges=[...], spreadsheet_token="sht_xxx")` — 批量写
+
+**`sheetId` 获取规则（必须遵守）：**
+
+- 先调用 `get_meta`，从返回的 `data.sheets[*].sheetId` 读取真实 `sheetId`
+- 再拼接 range（如 `babd43!A1:B5`），禁止猜测 `sheetId`
+- 禁止使用 `0!A1:B3`、`Sheet1!A1:B3` 这类非真实 `sheetId` 写法
+
+**分享链接：**
+
+- `feishu_sheet(action="get_share_url", spreadsheet_token="sht_xxx")` — 返回真实可访问链接（来自 Drive Meta URL）
+- 禁止手工拼接任何飞书域名链接
+
+**Append 严格规则（无例外）：**
+
+- `append` 的 `range` 必须是列范围：`sheetId!A:A` 或 `sheetId!A:J`
+- `sheetId!A1` / `sheetId!A1:J1` 一律视为非法参数，直接报错
 
 ### 多维表格（Bitable）
 
@@ -586,19 +670,60 @@ feishu_message(action="list_sent", chat_id="oc_xxx", count=5)
 
 **写入：**
 
-- `feishu_bitable(action="create_record", app_token="xxx", table_id="xxx", fields={"字段名": "值"})` — 新建
-- `feishu_bitable(action="update_record", ..., record_id="xxx", fields={"字段名": "新值"})` — 更新
+- `feishu_bitable(action="create_record", app_token="xxx", table_id="xxx", fields={"Text": "值"})` — 新建（示例）
+- `feishu_bitable(action="update_record", ..., record_id="xxx", fields={"Text": "新值"})` — 更新（示例）
 
-> fields 按字段名传值，Text 传字符串，SingleSelect 传字符串，DateTime 传毫秒时间戳
+> fields 的 key 必须来自 `list_fields` 返回的 `field_name` 原文。若报 `FieldNameNotFound`，先重新调用 `list_fields` 再写入。Text 传字符串，SingleSelect 传字符串，DateTime 传毫秒时间戳。
 
 ### 云盘（Drive）
 
-- `feishu_drive(action="list")` — 根目录
-- `feishu_drive(action="list", folder_token="fldcnXXX")` — 指定文件夹
-- `feishu_drive(action="info", file_token="xxx", type="docx")` — 文件信息
-- `feishu_drive(action="create_folder", name="xxx", folder_token="fldcnXXX")` — 创建文件夹
-- `feishu_drive(action="move", file_token="xxx", type="docx", folder_token="fldcnXXX")` — 移动
-- `feishu_drive(action="delete", file_token="xxx", type="docx")` — 删除
+- `feishu_drive(action="list", folder_token="fldcnXXX")` — 列指定文件夹（`folder_token` 必填）
+- `feishu_drive(action="create_folder", name="xxx", folder_token="fldcnXXX")` — 在指定可见目录下创建文件夹
+- `feishu_drive(action="create_online", folder_token="fldcnXXX", title="预算表", online_type="sheet")` — 在指定可见目录创建在线文件（`online_type`: `docx|sheet|bitable`）
+- `feishu_drive(action="move", file_token="xxx", file_type="docx", folder_token="fldcnXXX")` — 移动到指定可见目录
+- `feishu_drive(action="delete", file_token="xxx", file_type="docx")` — 删除
+- `feishu_drive(action="upload_file", folder_token="fldcnXXX", file_path="/absolute/path/report.pptx")` — 分片上传本地文件到云盘目录（支持大文件，自动 prepare/part/finish）
+- 收到新的文件夹链接时，先解析并写入 `MEMORY.md -> Drive Shares`，再执行 `feishu_drive`
+- 严禁无 `folder_token` 操作 Drive；若用户未提供可见目录 token，直接报错并要求分享链接。
+- 聊天附件发送（`message`）和云盘上传是两条链路：聊天附件仍受 30MB 限制；大文件必须走 `feishu_drive(action="upload_file", ...)`。
+- `upload_file` 是长耗时链路（prepare/part/finish）；**必须由 subagent 执行**，主会话禁止直传阻塞。
+- 已确认可用工具：`sessions_spawn` / `subagents`。上传任务必须走 `sessions_spawn(runtime="subagent")`。
+
+#### `upload_file` 异步两段式 SOP（必须严格执行）
+
+1. **受理前检查（必须）**
+   - 先读取 `MEMORY.md` 的 `Drive Shares` 与 `Drive Upload Tasks`。
+   - 必须确认 `folder_token`、`file_path`、`file_name`，缺一直接报错，禁止猜测。
+   - 若同任务已在 `pending/running`，禁止重复上传，直接回报既有 `task_id`。
+
+2. **第一段：立即回执（必须）**
+   - 在执行上传前，先给用户回执：
+   - `已受理上传任务 task_id=<task_id>，开始异步上传；完成后回传链接。`
+   - 同时写入 `Drive Upload Tasks`，状态设为 `pending`/`running`。
+
+3. **启动 subagent（必须）**
+   - 用 `sessions_spawn` 启动子会话，禁止主会话直接执行 `feishu_drive upload_file`。
+   - 推荐调用（示意）：
+   - `sessions_spawn(task="<上传任务描述>", label="drive-upload:<task_id>", runtime="subagent", mode="run", runTimeoutSeconds=1800)`
+   - `task` 必须包含：`task_id`、`folder_token`、`file_path`、`file_name`、成功/失败后的固定回执格式。
+   - 若 `sessions_spawn` 启动失败：直接报错并更新任务为 `failed`，**禁止**回退到主会话同步上传。
+
+4. **子会话执行上传（必须）**
+   - 子会话执行 `feishu_drive(action="upload_file", folder_token="...", file_path="...")`。
+   - 子会话必须更新 `Drive Upload Tasks` 状态（`running` -> `succeeded/failed`）。
+   - 执行期间不允许切换到 `message` 附件链路。
+
+5. **第二段：结果回执（必须）**
+   - 成功：更新任务为 `succeeded`，写入 `result_file_token`、`result_url`，并向用户返回 `task_id + url`。
+   - 失败：更新任务为 `failed`，写入精确 `error`（含 code/msg），并向用户返回 `task_id + 失败原因`。
+   - 使用 `sessions_spawn` 时，遵循其 completion 机制：子会话完成后自动回传，主会话不做阻塞轮询。
+
+6. **禁止项（零容忍）**
+   - 禁止把 >30MB 文件走 `message` 发送。
+   - 禁止在无 `folder_token` 时上传。
+   - 禁止主会话直接执行 `feishu_drive(action="upload_file")`（必须 subagent）。
+   - 禁止“可能成功了/你再试试”这类模糊话术。
+   - 禁止任何 fallback 行为（包括 silently ignore、自动改目的地、自动降级到其他链路）。
 
 ## 群聊归档
 

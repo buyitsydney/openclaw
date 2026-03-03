@@ -244,7 +244,7 @@ async function main() {
     test_parent_node_token: parentNodeToken,
     created_node_token: testNodeToken,
     created_doc_token: docToken,
-    created_doc_url: `https://my.feishu.cn/docx/${docToken}`,
+    created_doc_token_note: `Use drive/v1/metas/batch_query to resolve real share_url for ${docToken}`,
     write_result: writeDetails,
     metrics,
   };

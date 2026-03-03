@@ -14,6 +14,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { stringEnum } from "openclaw/plugin-sdk";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import { getFeishuClient, downloadWhiteboardImage } from "../outbound.js";
+import { resolveDriveShareUrl } from "./share-url.js";
 
 // ── Helpers ──
 
@@ -847,16 +848,32 @@ async function appendDoc(client: Lark.Client, docToken: string, markdown: string
   }
 }
 
-async function createDoc(client: Lark.Client, title: string, folderToken?: string) {
+async function createDoc(
+  account: ResolvedFeishuAccount,
+  client: Lark.Client,
+  title: string,
+  folderToken: string,
+) {
   // oxlint-disable-next-line typescript/no-explicit-any
   const res: any = await client.docx.document.create({
     data: { title, folder_token: folderToken },
   });
   if (res.code !== 0) throw new Error(res.msg);
+  const documentId =
+    typeof res.data?.document?.document_id === "string" ? res.data.document.document_id.trim() : "";
+  if (!documentId) {
+    throw new Error("create doc failed: missing document_id");
+  }
+  const shareResult = await resolveDriveShareUrl(account, documentId, "docx");
+  if (!shareResult.ok) {
+    throw new Error(
+      `create doc share_url resolve failed: token=${documentId} error=${shareResult.error}`,
+    );
+  }
   return {
-    document_id: res.data?.document?.document_id,
+    document_id: documentId,
     title: res.data?.document?.title,
-    url: `https://feishu.cn/docx/${res.data?.document?.document_id}`,
+    url: shareResult.share_url,
   };
 }
 
@@ -895,8 +912,13 @@ const FeishuDocSchema = Type.Object({
         "Absolute or relative to ~/.openclaw/workspace/.",
     }),
   ),
-  title: Type.Optional(Type.String({ description: "Document title (for create)" })),
-  folder_token: Type.Optional(Type.String({ description: "Target folder token (for create)" })),
+  title: Type.Optional(Type.String({ description: "Document title (for create, required)" })),
+  folder_token: Type.Optional(
+    Type.String({
+      description:
+        "Target folder token (for create, required). Root/app-space creation is disabled.",
+    }),
+  ),
   block_id: Type.Optional(
     Type.String({ description: "Block ID (for get_block/update_block/delete_block)" }),
   ),
@@ -987,7 +1009,18 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
               return json(await appendDoc(client, params.doc_token, content));
             }
             case "create": {
-              const created = await createDoc(client, params.title, params.folder_token);
+              const title = typeof params.title === "string" ? params.title.trim() : "";
+              if (!title) {
+                throw new Error("title is required for create");
+              }
+              const folderToken =
+                typeof params.folder_token === "string" ? params.folder_token.trim() : "";
+              if (!folderToken || folderToken === "0") {
+                throw new Error(
+                  "folder_token is required for create. Bot app root creation is disabled; provide a user-shared folder token.",
+                );
+              }
+              const created = await createDoc(firstAccount, client, title, folderToken);
               // If content or source_file was provided, write it into the newly created document.
               if (params.content || params.source_file) {
                 const content = resolveContent(params);

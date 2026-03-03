@@ -9,6 +9,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { stringEnum } from "openclaw/plugin-sdk";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import { getFeishuClient } from "../outbound.js";
+import { resolveDriveShareUrl } from "./share-url.js";
 
 function json(data: unknown) {
   return {
@@ -20,6 +21,34 @@ function json(data: unknown) {
 const WIKI_ACCESS_HINT =
   "To grant wiki access: Open wiki space -> Settings -> Members -> Add the bot. " +
   "See: https://open.feishu.cn/document/server-docs/docs/wiki-v2/wiki-qa#a40ad4ca";
+
+const WIKI_OBJ_TYPES = new Set(["docx", "sheet", "bitable"]);
+
+function requireStringParam(value: unknown, field: string): string {
+  if (typeof value !== "string") {
+    throw new Error(`${field} is required`);
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error(`${field} is required`);
+  }
+  return trimmed;
+}
+
+function requireWikiObjType(value: unknown): string {
+  const objType = requireStringParam(value, "obj_type");
+  if (!WIKI_OBJ_TYPES.has(objType)) {
+    throw new Error(`obj_type must be one of: docx, sheet, bitable`);
+  }
+  return objType;
+}
+
+function optionalStringParam(value: unknown, field: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  return requireStringParam(value, field);
+}
 
 // ── Actions ──
 
@@ -92,15 +121,15 @@ async function createNode(
   client: Lark.Client,
   spaceId: string,
   title: string,
-  objType?: string,
-  parentNodeToken?: string,
+  objType: string,
+  parentNodeToken: string,
 ) {
   // oxlint-disable-next-line typescript/no-explicit-any
   const res: any = await client.wiki.spaceNode.create({
     path: { space_id: spaceId },
     // oxlint-disable-next-line typescript/no-explicit-any
     data: {
-      obj_type: (objType as any) || "docx",
+      obj_type: objType as any,
       node_type: "origin" as const,
       title,
       parent_node_token: parentNodeToken,
@@ -120,13 +149,13 @@ async function moveNode(
   client: Lark.Client,
   spaceId: string,
   nodeToken: string,
-  targetSpaceId?: string,
-  targetParentToken?: string,
+  targetSpaceId: string,
+  targetParentToken: string,
 ) {
   // oxlint-disable-next-line typescript/no-explicit-any
   const res: any = await client.wiki.spaceNode.move({
     path: { space_id: spaceId, node_token: nodeToken },
-    data: { target_space_id: targetSpaceId || spaceId, target_parent_token: targetParentToken },
+    data: { target_space_id: targetSpaceId, target_parent_token: targetParentToken },
   });
   if (res.code !== 0) throw new Error(res.msg);
   return { success: true, node_token: res.data?.node?.node_token };
@@ -144,27 +173,31 @@ async function renameNode(client: Lark.Client, spaceId: string, nodeToken: strin
 
 // ── Schema ──
 
-const WIKI_ACTIONS = ["spaces", "nodes", "get", "create", "move", "rename"] as const;
+const WIKI_ACTIONS = ["spaces", "nodes", "get", "create", "move", "rename", "resolve_url"] as const;
 
 const FeishuWikiSchema = Type.Object({
   action: stringEnum(WIKI_ACTIONS, { description: "Wiki operation to perform" }),
   space_id: Type.Optional(
-    Type.String({ description: "Knowledge space ID (for nodes/create/move/rename)" }),
+    Type.String({ description: "Knowledge space ID (required for nodes/create/move/rename)" }),
   ),
   token: Type.Optional(
-    Type.String({ description: "Wiki node token from URL /wiki/XXX (for get)" }),
+    Type.String({
+      description: "Wiki node token from URL /wiki/XXX (required for get/resolve_url)",
+    }),
   ),
   parent_node_token: Type.Optional(
-    Type.String({ description: "Parent node token (for nodes/create)" }),
+    Type.String({ description: "Parent node token (for nodes/create). Required for create." }),
   ),
-  node_token: Type.Optional(Type.String({ description: "Node token (for move/rename)" })),
-  title: Type.Optional(Type.String({ description: "Node title (for create/rename)" })),
+  node_token: Type.Optional(Type.String({ description: "Node token (required for move/rename)" })),
+  title: Type.Optional(Type.String({ description: "Node title (required for create/rename)" })),
   obj_type: Type.Optional(
-    Type.String({ description: "Object type: docx, sheet, bitable (for create, default: docx)" }),
+    Type.String({ description: "Object type: docx, sheet, bitable (for create, required)" }),
   ),
-  target_space_id: Type.Optional(Type.String({ description: "Target space ID (for move)" })),
+  target_space_id: Type.Optional(
+    Type.String({ description: "Target space ID (for move, required)" }),
+  ),
   target_parent_token: Type.Optional(
-    Type.String({ description: "Target parent node token (for move)" }),
+    Type.String({ description: "Target parent node token (for move, required)" }),
   ),
 });
 
@@ -181,7 +214,7 @@ export function registerFeishuWikiTools(api: OpenClawPluginApi) {
       name: "feishu_wiki",
       label: "Feishu Wiki",
       description:
-        "Feishu knowledge base operations. Actions: spaces, nodes, get, create, move, rename. Note: this tool only returns node metadata (title, tokens). To read a document's full content including embedded whiteboards, use feishu_doc with action 'read' and the node's obj_token as doc_token.",
+        "Feishu knowledge base operations. Actions: spaces, nodes, get, create, move, rename, resolve_url. To read a document's full content including embedded whiteboards, use feishu_doc with action 'read' and the node's obj_token as doc_token.",
       parameters: FeishuWikiSchema,
       // oxlint-disable-next-line typescript/no-explicit-any
       async execute(_toolCallId: string, params: any) {
@@ -191,33 +224,63 @@ export function registerFeishuWikiTools(api: OpenClawPluginApi) {
             case "spaces":
               return json(await listSpaces(client));
             case "nodes":
-              return json(await listNodes(client, params.space_id, params.parent_node_token));
+              return json(
+                await listNodes(
+                  client,
+                  requireStringParam(params.space_id, "space_id"),
+                  optionalStringParam(params.parent_node_token, "parent_node_token"),
+                ),
+              );
             case "get":
-              return json(await getNode(client, params.token));
+              return json(await getNode(client, requireStringParam(params.token, "token")));
             case "create":
+              // Require explicit parent and object type to avoid implicit root/default creation.
               return json(
                 await createNode(
                   client,
-                  params.space_id,
-                  params.title,
-                  params.obj_type,
-                  params.parent_node_token,
+                  requireStringParam(params.space_id, "space_id"),
+                  requireStringParam(params.title, "title"),
+                  requireWikiObjType(params.obj_type),
+                  requireStringParam(params.parent_node_token, "parent_node_token"),
                 ),
               );
             case "move":
               return json(
                 await moveNode(
                   client,
-                  params.space_id,
-                  params.node_token,
-                  params.target_space_id,
-                  params.target_parent_token,
+                  requireStringParam(params.space_id, "space_id"),
+                  requireStringParam(params.node_token, "node_token"),
+                  requireStringParam(params.target_space_id, "target_space_id"),
+                  requireStringParam(params.target_parent_token, "target_parent_token"),
                 ),
               );
             case "rename":
               return json(
-                await renameNode(client, params.space_id, params.node_token, params.title),
+                await renameNode(
+                  client,
+                  requireStringParam(params.space_id, "space_id"),
+                  requireStringParam(params.node_token, "node_token"),
+                  requireStringParam(params.title, "title"),
+                ),
               );
+            case "resolve_url": {
+              if (!params.token) {
+                return json({ error: "token is required for resolve_url" });
+              }
+              const share = await resolveDriveShareUrl(firstAccount, params.token, "wiki");
+              if (!share.ok) {
+                return json({
+                  error: share.error,
+                  code: share.code,
+                  msg: share.msg,
+                  http_status: share.http_status,
+                });
+              }
+              return json({
+                token: params.token,
+                share_url: share.share_url,
+              });
+            }
             default:
               return json({ error: `Unknown action: ${params.action}` });
           }

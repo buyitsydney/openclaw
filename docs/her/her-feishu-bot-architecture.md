@@ -2,7 +2,7 @@
 
 通过飞书（Lark）机器人与 OpenClaw 对话，让用户在飞书客户端内获得 AI 助手体验。
 
-**状态：飞书消息通道已实现并验证通过；飞书待办（Task v2）P1 增强能力已落地并完成双 Her 回归通过 (2026-03-02 更新)**（含 Web Search + Browser Use + @mention + 消息撤回能力）
+**状态：飞书通道（消息 + 文档 + Wiki + Drive + Sheet + Bitable + Task v2 + Chat 管理全套）已完成本地 Her / docker1 双路回归并通过（2026-03-03 大升级）**（含 Chat 工具拆分 6 模块、云盘在线文件创建 docx/sheet/bitable、大文件分片上传、URL 统一走 resolveDriveShareUrl 零拼接、outbound URL 守卫、message 工具独立、异步上传 subagent 约束、delivery-recovery 永久错误识别）
 
 ## 核心结论
 
@@ -13,6 +13,23 @@
 - **实际新增代码：~1800 行**（包含 cron 直投修复 + 富文本解析修复 + 图片收发 + 图片接收（vision）+ 目标解析 + 命令授权修复 + 富文本回复 + CardKit 流式卡片 + 群聊归档）
 - **本次上线策略（2026-03-03）**：先上线已实现能力；企业多 Her 互拉群“产品化”列为下个迭代的 P0 TODO
 - **互拉群接口事实（已二次实测）**：`member_id_type=app_id` 可拉 bot 入群（`code=0`）；`members/list` 无法反查 bot（`member_id_type=app_id` 返回 `99992402`，`open_id` 列表仅返回人类）
+
+---
+
+## 2026-03-03 大升级验收
+
+- **用户验收**：已通过（天哥实测确认，文件可正常访问）
+- **双环境结果**：本地 Her 与 docker1 (tester) 均通过全量回归（Chat/Wiki/Doc/Sheet/Bitable/Drive/Calendar/Task/Tasklist）
+- **本次新增/改进**：
+  - **Chat 工具拆分**：原 `feishu_chat` 拆为 6 个独立工具（`feishu_chat`/`feishu_chat_manage`/`feishu_chat_members`/`feishu_chat_pins`/`feishu_chat_tabs`/`feishu_chat_controls`/`feishu_chat_capability`），含 `chat-api.ts` 公共鉴权层
+  - **message 工具独立**：从 `outbound.ts` 抽离为 `tools/message.ts`
+  - **Drive create_online**：云盘内直接创建 `docx`/`sheet`/`bitable` 在线文件
+  - **Drive upload_file**：大文件分片上传（prepare/part/finish），支持 200MB+
+  - **URL 统一**：所有文件 URL 全部走 `resolveDriveShareUrl`（`drive/v1/metas/batch_query`），零手动拼接
+  - **outbound URL 守卫**：`assertNoForbiddenOpenPlatformUrls` 阻止发送 `open.feishu.cn` 非文档链接
+  - **异步上传约束**：SKILL.md 强制大文件上传走 `sessions_spawn` subagent
+  - **SKILL.md 大幅更新**：Drive Shares 记忆、上传任务状态机、URL 规则、Bot 空间禁令
+- **升级结论**：可全量升级
 
 ---
 

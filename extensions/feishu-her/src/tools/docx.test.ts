@@ -25,6 +25,7 @@ type ToolDef = {
 
 describe("feishu-her feishu_doc anti-regression", () => {
   const convertMock = vi.hoisted(() => vi.fn());
+  const createDocMock = vi.hoisted(() => vi.fn());
   const descendantCreateMock = vi.hoisted(() => vi.fn());
   const blockListMock = vi.hoisted(() => vi.fn());
   const blockGetMock = vi.hoisted(() => vi.fn());
@@ -49,6 +50,7 @@ describe("feishu-her feishu_doc anti-regression", () => {
       docx: {
         document: {
           convert: convertMock,
+          create: createDocMock,
           rawContent: rawContentMock,
         },
         documentBlock: {
@@ -75,6 +77,15 @@ describe("feishu-her feishu_doc anti-regression", () => {
           { block_id: "b1", block_type: 2, text: { elements: [{ text_run: { content: "x" } }] } },
         ],
         first_level_block_ids: ["b1"],
+      },
+    });
+    createDocMock.mockResolvedValue({
+      code: 0,
+      data: {
+        document: {
+          document_id: "doc_created_1",
+          title: "created",
+        },
       },
     });
     descendantCreateMock.mockResolvedValue({
@@ -337,5 +348,17 @@ describe("feishu-her feishu_doc anti-regression", () => {
 
     const details = result.details as { error?: string };
     expect(details.error).toContain("not found");
+  });
+
+  it("create should reject missing folder_token to avoid app-root doc creation", async () => {
+    const tool = registerAndGetTool();
+    const result = await tool.execute("tool-call", {
+      action: "create",
+      title: "new doc",
+    });
+
+    expect(createDocMock).not.toHaveBeenCalled();
+    const details = result.details as { error?: string };
+    expect(details.error).toContain("folder_token is required for create");
   });
 });
