@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { writeFileSync, readFileSync, unlinkSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import * as Lark from "@larksuiteoapi/node-sdk";
-import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk";
+import { fetchWithSsrFGuard, resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 
 // Cache Lark clients per appId to avoid redundant token fetches.
@@ -13,6 +13,7 @@ const botOpenIdCache = new Map<string, string>();
 
 // Cache chat names per chatId (fetched once via GET /im/v1/chats/{chat_id}).
 const chatNameCache = new Map<string, string>();
+const FEISHU_ALLOWED_HOSTNAMES = ["open.feishu.cn"];
 
 export function getFeishuClient(account: ResolvedFeishuAccount): Lark.Client {
   const key = account.appId;
@@ -41,10 +42,15 @@ export async function getBotOpenId(account: ResolvedFeishuAccount): Promise<stri
     const token = await (client as any).tokenManager.getTenantAccessToken({});
     if (!token) return null;
 
-    const res = await fetch("https://open.feishu.cn/open-apis/bot/v3/info/", {
-      headers: { Authorization: `Bearer ${token}` },
+    const { response: res, release } = await fetchWithSsrFGuard({
+      url: "https://open.feishu.cn/open-apis/bot/v3/info/",
+      init: {
+        headers: { Authorization: `Bearer ${token}` },
+      },
+      policy: { allowedHostnames: FEISHU_ALLOWED_HOSTNAMES },
+      auditContext: "feishu-get-bot-open-id",
     });
-    const json = (await res.json()) as {
+    const json = (await res.json().finally(release)) as {
       ok?: boolean;
       bot?: { open_id?: string };
     };
@@ -376,12 +382,17 @@ export async function uploadFeishuImage(params: {
   form.append("image_type", "message");
   form.append("image", blob, "image.jpg");
 
-  const res = await fetch("https://open.feishu.cn/open-apis/im/v1/images", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-    body: form,
+  const { response: res, release } = await fetchWithSsrFGuard({
+    url: "https://open.feishu.cn/open-apis/im/v1/images",
+    init: {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    },
+    policy: { allowedHostnames: FEISHU_ALLOWED_HOSTNAMES },
+    auditContext: "feishu-upload-image",
   });
-  const json = await res.json();
+  const json = await res.json().finally(release);
   if (json.code !== 0 || !json.data?.image_key) {
     throw new Error(`Feishu image upload failed: code=${json.code} msg=${json.msg}`);
   }
@@ -733,15 +744,24 @@ export async function downloadWhiteboardImage(params: {
   if (!token) return null;
 
   const url = `https://open.feishu.cn/open-apis/board/v1/whiteboards/${params.whiteboardToken}/download_as_image`;
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
+  const { response: res, release } = await fetchWithSsrFGuard({
+    url,
+    init: {
+      headers: { Authorization: `Bearer ${token}` },
+    },
+    policy: { allowedHostnames: FEISHU_ALLOWED_HOSTNAMES },
+    auditContext: "feishu-download-whiteboard-image",
   });
-  if (!res.ok) return null;
+  try {
+    if (!res.ok) return null;
 
-  const contentType = res.headers.get("content-type") ?? "image/png";
-  const buffer = Buffer.from(await res.arrayBuffer());
-  if (buffer.length === 0) return null;
-  return { buffer, contentType };
+    const contentType = res.headers.get("content-type") ?? "image/png";
+    const buffer = Buffer.from(await res.arrayBuffer());
+    if (buffer.length === 0) return null;
+    return { buffer, contentType };
+  } finally {
+    await release();
+  }
 }
 
 // ── CardKit Streaming (typing / typewriter effect) ───────────────────────

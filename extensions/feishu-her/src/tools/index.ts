@@ -6,6 +6,12 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { registerFeishuBitableTools } from "./bitable.js";
 import { registerFeishuCalendarTools } from "./calendar.js";
+import { registerFeishuChatCapabilityTool } from "./chat-capability.js";
+import { registerFeishuChatControlTools } from "./chat-controls.js";
+import { registerFeishuChatManageTools } from "./chat-manage.js";
+import { registerFeishuChatMemberTools } from "./chat-members.js";
+import { registerFeishuChatPinTools } from "./chat-pins.js";
+import { registerFeishuChatTabTools } from "./chat-tabs.js";
 import { registerFeishuChatTools } from "./chat.js";
 import { registerFeishuDirectoryTools } from "./directory.js";
 import { registerFeishuDocTools } from "./docx.js";
@@ -21,6 +27,12 @@ export function registerAllFeishuTools(api: OpenClawPluginApi): void {
   registerFeishuDriveTools(api);
   registerFeishuBitableTools(api);
   registerFeishuChatTools(api);
+  registerFeishuChatManageTools(api);
+  registerFeishuChatMemberTools(api);
+  registerFeishuChatControlTools(api);
+  registerFeishuChatTabTools(api);
+  registerFeishuChatPinTools(api);
+  registerFeishuChatCapabilityTool(api);
   registerFeishuDirectoryTools(api);
   registerFeishuCalendarTools(api);
   registerFeishuTaskTools(api);

@@ -6,7 +6,102 @@ metadata: { "openclaw": { "emoji": "📨" } }
 
 # Feishu Skill — 全功能操作指南
 
-> 最后验证：2026-03-02。所有能力均经过实测（含 @mention + 企业通讯录 + Task 协作 P0 + 消息撤回）。
+> 最后验证：2026-03-03。已完成企业版 tester（docker1）回归。
+
+## Chat 运行时手册（Her 必读）
+
+这部分是给 Her 的执行规则，不是权限调研报告。处理群聊相关请求时，优先按这里调用工具。
+
+### 1) 调用前先收集参数
+
+- `chat_id`（群：`oc_xxx`）
+- `message_id`（消息：`om_xxx`，用于 pin/unpin）
+- `member_id_type`（默认 `open_id`，不要猜测）
+- `ids`（成员/管理员 ID 列表）
+- `tab_ids`（删除标签页时必填）
+
+硬规则：
+
+- 缺参就报错，先向用户补齐参数，不做猜测。
+- 不要臆造 `open_id`/`chat_id`，必须先查后写。
+- 不要把未实现能力伪装成成功。
+
+### 2) Chat 工具与 action 映射
+
+| 工具                     | action                                    | 用途                                     |
+| ------------------------ | ----------------------------------------- | ---------------------------------------- |
+| `feishu_chat`            | `list/get/members`                        | 基础只读查询（群列表/详情/成员）         |
+| `feishu_chat_manage`     | `create/get/update/delete/update_owner`   | 群创建、更新、解散、owner 场景更新       |
+| `feishu_chat_members`    | `list/add/remove/is_in_chat/add_managers` | 成员管理与管理员管理                     |
+| `feishu_chat_controls`   | `get_moderation/get_menu_tree`            | 读取发言权限与群菜单                     |
+| `feishu_chat_tabs`       | `add/delete`                              | 会话标签页管理                           |
+| `feishu_chat_pins`       | `pin/unpin`                               | 消息置顶与取消置顶                       |
+| `feishu_chat_capability` | `status`                                  | 仅查询能力状态（已支持/已知限制/待映射） |
+
+### 3) 高频调用模板（直接照用）
+
+创建群：
+
+```json
+{ "action": "create", "name": "项目同步群", "chat_type": "private", "chat_mode": "group" }
+```
+
+加成员：
+
+```json
+{ "action": "add", "chat_id": "oc_xxx", "member_id_type": "open_id", "ids": ["ou_xxx"] }
+```
+
+加管理员：
+
+```json
+{ "action": "add_managers", "chat_id": "oc_xxx", "ids": ["ou_xxx"] }
+```
+
+读群菜单：
+
+```json
+{ "action": "get_menu_tree", "chat_id": "oc_xxx" }
+```
+
+添加标签页（url）：
+
+```json
+{
+  "action": "add",
+  "chat_id": "oc_xxx",
+  "tab_name": "项目看板",
+  "tab_type": "url",
+  "url": "https://open.feishu.cn"
+}
+```
+
+置顶消息：
+
+```json
+{ "action": "pin", "message_id": "om_xxx" }
+```
+
+### 4) 已实现范围（对应已回归 PASS）
+
+- `im:chat:create/read/update/delete/operate_as_owner`
+- `im:chat.members:read/write_only/bot_access`
+- `im:chat.managers:write_only`
+- `im:chat.moderation:read`
+- `im:chat.menu_tree:read`
+- `im:chat.tabs:write_only`
+- `im:chat.chat_pins:write_only`
+
+### 5) 已知限制与待映射（只记录，不硬做）
+
+- 已知限制：`im:chat.announcement:read` 在当前群类型可能返回 `232097`（非 scope 缺失）。
+- 事件型权限：`im:chat.access_event.bot_p2p_chat:read` 是 Event Only，不是同步拉取接口。
+- 待映射：`im:chat:moderation:write_only`、`im:chat.announcement:write_only`、`im:chat.chat_pins:read`、`im:chat.top_notice:write_only`、`im:chat.menu_tree:write_only`、`im:chat.tabs:read`、`im:chat.widgets:*`、`im:chat.collab_plugins:*`。
+- 需要状态总览时，调用 `feishu_chat_capability(action="status")`。
+
+### 6) 企业迁移常见坑
+
+- 若报 `99992361 open_id cross app`，通常是沿用了旧应用 open_id。切换新 app 后要更新对应 `feishu_owner_open_id` 并重启实例。
 
 ## 能力总览
 
@@ -14,7 +109,7 @@ metadata: { "openclaw": { "emoji": "📨" } }
 | -------------- | --------------------------------------------------- | ------------------- | ---------------- |
 | **消息**       | 发送消息（群/个人）                                 | `message`           | ✅               |
 | **文件发送**   | 发送本地文件到飞书聊天（PPT/PDF/DOCX等，≤30MB）     | `message` + media   | ✅               |
-| **群聊**       | 列表、详情、成员                                    | `feishu_chat`       | ✅               |
+| **群聊**       | 群管理、成员管理、菜单/发言权限、标签页、置顶       | `feishu_chat_*`     | ✅（见上方映射） |
 | **通讯录**     | 用户、部门                                          | `feishu_directory`  | ✅ 企业版含姓名  |
 | **知识空间**   | 列空间、遍历节点、节点详情                          | `feishu_wiki`       | ✅               |
 | **Wiki 管理**  | 创建节点（docx/bitable/sheet）、重命名、移动        | `feishu_wiki`       | ✅               |
@@ -44,10 +139,10 @@ Bot 对 Wiki 节点、文档、多维表格记录没有删除权限，无法通�
 ### 2. 通讯录 API 行为（实测）
 
 - **企业版**：`feishu_directory` 返回完整用户信息（name、department_ids、email、mobile 等）
-- **个人版**：只返回 open_id + status，不含姓名。替代方案：用 `feishu_chat(action="members")` 从群成员列表获取姓名
+- **个人版**：只返回 open_id + status，不含姓名。替代方案：用 `feishu_chat_members(action="list")` 或 `feishu_chat(action="members")` 从群成员列表获取姓名
 - **`list_users(department_id='0')`（根部门）在多数企业返回空数组** — 用户归属于具体子部门，不在根部门下
 - **没有按姓名搜索的 API** — 需通过 `list_departments` + 逐部门 `list_users` 来查找特定用户
-- **`feishu_chat(action="members")` 是更快的替代路径** — 如果目标用户在 bot 已加入的群中，1 次调用即可获取 open_id 和姓名
+- **`feishu_chat_members(action="list")` 是更快的替代路径** — 如果目标用户在 bot 已加入的群中，1 次调用即可获取 open_id 和姓名
 
 ### 3. 云盘 vs 知识空间
 
@@ -243,7 +338,7 @@ Workflow: `list_blocks` 找到范围的起止 block ID → `delete_range`。注�
 ### 操作流程
 
 1. **获取目标用户的 open_id**：
-   - 从群成员获取：`feishu_chat(action="members", chat_id="oc_xxx")` — 返回成员列表含 `member_id`（即 open_id）和 `name`
+   - 从群成员获取：`feishu_chat_members(action="list", chat_id="oc_xxx")`（或 `feishu_chat(action="members")`）— 返回成员列表含 `member_id`（即 open_id）和 `name`
    - 从通讯录获取：`feishu_directory(action="list_users")` — 返回用户列表含 `open_id` 和 `name`
    - 从通讯录查单人：`feishu_directory(action="get_user", user_id="ou_xxx")`
 
@@ -262,7 +357,7 @@ Workflow: `list_blocks` 找到范围的起止 block ID → `delete_range`。注�
 
 ### 注意事项
 
-- **先查 open_id 再 @**：不要凭空编造 open_id，必须先用 `feishu_chat` 或 `feishu_directory` 查到真实 ID
+- **先查 open_id 再 @**：不要凭空编造 open_id，必须先用 `feishu_chat_members`（或 `feishu_chat`）/`feishu_directory` 查到真实 ID
 - **可以和 Markdown 混用**：`**重要通知** <at user_id="ou_xxx">张三</at> 请处理` — 系统会正确解析
 - **@所有人需要群权限**：群必须开启了"允许 @所有人"功能
 
@@ -419,8 +514,8 @@ feishu_message(action="list_sent", chat_id="oc_xxx", count=5)
 **群聊：**
 
 - `feishu_chat(action="list")` — 列出 bot 已加入的所有群
-- `feishu_chat(action="get", chat_id="oc_xxx")` — 群详情
-- `feishu_chat(action="members", chat_id="oc_xxx")` — 群成员（**含姓名**）
+- `feishu_chat_manage(action="get", chat_id="oc_xxx")` 或 `feishu_chat(action="get", chat_id="oc_xxx")` — 群详情
+- `feishu_chat_members(action="list", chat_id="oc_xxx")`（或 `feishu_chat(action="members")`）— 群成员（**含姓名**）
 - 已归档群消息：查 `~/.openclaw/feishu-groups/index.json`
 
 **联系人（企业通讯录）：**

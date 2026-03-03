@@ -90,6 +90,7 @@ USER.md
 
 # Local logs (debug, prompt dumps, etc)
 logs/
+tmp/
 
 # Per-user credentials (contains secrets)
 docker/users.csv
