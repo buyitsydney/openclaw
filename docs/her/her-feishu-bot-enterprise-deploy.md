@@ -412,7 +412,7 @@ git checkout v旧版本
 | --- | --------------------- | ------------------------------------------------------------ |
 | 1   | 创建应用 + 启用机器人 | 命名格式：`{人名}的her`（如：老杨的her），添加「机器人」能力 |
 | 2   | 记录凭证              | 复制 App ID + App Secret                                     |
-| 3   | 批量导入权限          | 粘贴 JSON 导入 100 个权限                                    |
+| 3   | 批量导入权限          | 粘贴 JSON 导入 158 个权限（142 tenant + 16 user）            |
 | 4   | 第一次发布            | 可用范围 = 指定人员，只选一人（见下方说明）                  |
 | 5   | 确认 Bot 可见         | 让目标员工搜索 Bot，确认能找到                               |
 | 6   | 交给部署者            | 等部署者确认 WSClient connected                              |
@@ -455,6 +455,22 @@ git checkout v旧版本
 {
   "scopes": {
     "tenant": [
+      "aily:data_asset:read",
+      "aily:data_asset:upload_file",
+      "aily:data_asset:write",
+      "aily:file:read",
+      "aily:file:write",
+      "aily:knowledge:ask",
+      "aily:knowledge:read",
+      "aily:knowledge:write",
+      "aily:message:read",
+      "aily:message:write",
+      "aily:run:read",
+      "aily:run:write",
+      "aily:session:read",
+      "aily:session:write",
+      "aily:skill:read",
+      "aily:skill:write",
       "bitable:app",
       "bitable:app:readonly",
       "board:whiteboard:node:create",
@@ -527,7 +543,33 @@ git checkout v旧版本
       "drive:file:readonly",
       "drive:file:upload",
       "drive:file:view_record:readonly",
+      "im:chat",
+      "im:chat.access_event.bot_p2p_chat:read",
+      "im:chat.announcement:read",
+      "im:chat.announcement:write_only",
+      "im:chat.chat_pins:read",
+      "im:chat.chat_pins:write_only",
+      "im:chat.collab_plugins:read",
+      "im:chat.collab_plugins:write_only",
+      "im:chat.managers:write_only",
+      "im:chat.members:bot_access",
+      "im:chat.members:read",
+      "im:chat.members:write_only",
+      "im:chat.menu_tree:read",
+      "im:chat.menu_tree:write_only",
+      "im:chat.moderation:read",
+      "im:chat.tabs:read",
+      "im:chat.tabs:write_only",
+      "im:chat.top_notice:write_only",
+      "im:chat.widgets:read",
+      "im:chat.widgets:write_only",
+      "im:chat:create",
+      "im:chat:delete",
+      "im:chat:moderation:write_only",
+      "im:chat:operate_as_owner",
+      "im:chat:read",
       "im:chat:readonly",
+      "im:chat:update",
       "im:message",
       "im:message.group_msg",
       "im:message.p2p_msg:readonly",
@@ -556,16 +598,37 @@ git checkout v旧版本
       "wiki:wiki",
       "wiki:wiki:readonly"
     ],
-    "user": []
+    "user": [
+      "aily:data_asset:read",
+      "aily:data_asset:upload_file",
+      "aily:data_asset:write",
+      "aily:file:read",
+      "aily:file:write",
+      "aily:knowledge:ask",
+      "aily:knowledge:read",
+      "aily:knowledge:write",
+      "aily:message:read",
+      "aily:message:write",
+      "aily:run:read",
+      "aily:run:write",
+      "aily:session:read",
+      "aily:session:write",
+      "aily:skill:read",
+      "aily:skill:write"
+    ]
   }
 }
 ```
 
 点击「下一步，确认新增权限」→ 确认即可。已开通的权限不会重复添加。
 
-> **权限分类（共 100 个，全部为 tenant 级别）**：
+> **权限分类（tenant 142 个 + user 16 个，共 158 个）**：
 >
-> - **消息基础**（6 个）：`im:message`、`im:message:send_as_bot`、`im:message.group_msg`、`im:message.p2p_msg:readonly`、`im:chat:readonly`、`im:resource` — 消息收发 + 图片 + 群聊归档
+> **Tenant 权限（142 个）**：
+>
+> - **Aily 智能伙伴**（16 个）：`aily:data_asset:*`（3 个）+ `aily:file:*`（2 个）+ `aily:knowledge:*`（3 个）+ `aily:message:*`（2 个）+ `aily:run:*`（2 个）+ `aily:session:*`（2 个）+ `aily:skill:*`（2 个） — 智能伙伴数据资产、文件、知识库、会话、技能管理
+> - **消息基础**（5 个）：`im:message`、`im:message:send_as_bot`、`im:message.group_msg`、`im:message.p2p_msg:readonly`、`im:resource` — 消息收发 + 图片
+> - **群聊管理**（27 个）：`im:chat`、`im:chat.*`（20 个）、`im:chat:*`（6 个） — 群组 CRUD、公告、置顶、成员管理、标签页、菜单树、审核、小组件、Bot 事件等完整群聊能力
 > - **卡片流式回复**（1 个）：`cardkit:card:write` — AI 打字机效果
 > - **Emoji 表情**（2 个）：`im:message.reactions:read`、`im:message.reactions:write_only` — AI 自动 Get 回应 + 点赞
 > - **日历**（16 个）：`calendar:calendar*` — 日历/日程 CRUD、ACL 权限、忙闲查询、订阅（`feishu_calendar` 工具）
@@ -582,6 +645,10 @@ git checkout v旧版本
 > - **Wiki 知识库**（2 个）：`wiki:wiki`、`wiki:wiki:readonly`
 > - **空间文档管理**（4 个）：`space:document:delete`、`space:document:move`、`space:document:retrieve`、`space:document:shortcut` — 知识空间内文档的移动/删除/快捷方式
 > - **待办任务**（14 个）：`task:task:read/write/readonly/writeonly`（4 个）+ `task:tasklist:read/write`（2 个）+ `task:comment/read/readonly/write`（4 个）+ `task:attachment:read/write`（2 个）+ `task:section:read/write`（2 个） — 任务 CRUD、清单管理、评论、附件、分组
+>
+> **User 权限（16 个）**：
+>
+> - **Aily 智能伙伴**（16 个）：与 tenant 同名的 `aily:*` 权限 — 以用户身份调用 Aily 智能伙伴 API
 
 **步骤 5：第一次发布（让 Bot 在飞书客户端可见 + 使长连接可用）**
 
