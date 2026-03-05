@@ -1,6 +1,6 @@
 ---
 name: feishu
-description: Feishu (飞书) comprehensive guide covering messaging, groups, contacts, documents, wiki, bitable, drive, calendar, task, tasklist, group archives, voice, and message recall. Use when interacting with Feishu in any way. Triggers on keywords like 飞书, feishu, 转发, 分享文档, share document, forward, 群, group, 通讯录, contacts, directory, 文档, 知识空间, wiki, 多维表格, bitable, 日历, calendar, 待办, task, tasklist, 任务清单, 忙闲, 有空吗, 建会, 群聊归档, group archive, 语音, voice, audio, 撤回, recall, delete message, unsend.
+description: Feishu (飞书) comprehensive guide covering messaging, groups, contacts, documents, wiki, bitable, drive, calendar, task, tasklist, group archives, voice, message recall, and meeting minutes (妙记). Use when interacting with Feishu in any way. Triggers on keywords like 飞书, feishu, 转发, 分享文档, share document, forward, 群, group, 通讯录, contacts, directory, 文档, 知识空间, wiki, 多维表格, bitable, 日历, calendar, 待办, task, tasklist, 任务清单, 忙闲, 有空吗, 建会, 群聊归档, group archive, 语音, voice, audio, 撤回, recall, delete message, unsend, 妙记, 会议纪要, minutes, 纪要, meeting notes, 会议记录, transcript.
 metadata: { "openclaw": { "emoji": "📨" } }
 ---
 
@@ -724,6 +724,60 @@ feishu_message(action="list_sent", chat_id="oc_xxx", count=5)
    - 禁止主会话直接执行 `feishu_drive(action="upload_file")`（必须 subagent）。
    - 禁止“可能成功了/你再试试”这类模糊话术。
    - 禁止任何 fallback 行为（包括 silently ignore、自动改目的地、自动降级到其他链路）。
+
+## 妙记/会议纪要 (Minutes)
+
+### 能力
+
+- `feishu_minutes(action="list")` — 列出最近 N 天所有妙记（默认 7 天）
+- `feishu_minutes(action="list", days=30)` — 列出最近 30 天的妙记
+- `feishu_minutes(action="get", minute_token="obcnXXX", doc_token="YYY")` — 获取妙记详情 + AI 智能摘要
+- `feishu_minutes(action="transcript", minute_token="obcnXXX")` — 获取完整逐字记录（语音转文字）
+- `feishu_minutes(action="search", query="关键词")` — 按关键词搜索妙记
+
+### 前置条件：用户 OAuth 授权
+
+妙记 API 需要 `user_access_token`（用户身份），首次使用时工具会返回授权链接。
+
+**授权流程（Her 必须遵循）：**
+
+1. 调用 `feishu_minutes` 时，如果返回 `user_auth_required` 错误和 `auth_url`
+2. 将 `auth_url` 作为可点击链接发送给用户，提示"请点击链接完成授权"
+3. 用户在飞书中点击链接 → 确认授权 → 自动完成
+4. 用户授权后 Her 会收到通知，此时重新调用 `feishu_minutes` 即可
+5. 授权有效期约 30 天，过期后需重新授权
+
+### 使用 SOP
+
+**用户说"帮我看看今天的会议纪要"：**
+
+```
+1. feishu_minutes(action="list", days=1)
+2. 如果返回 auth_url → 发给用户授权 → 等用户完成后重试
+3. 拿到妙记列表后，逐个用 get 获取 AI 摘要
+4. 汇总展示：标题、时长、关键要点、行动项
+```
+
+**用户说"帮我看看XX会议的详细纪要"：**
+
+```
+1. feishu_minutes(action="search", query="XX")
+2. 拿到匹配的妙记 → get 获取 AI 摘要
+3. 如果用户需要原始对话记录 → transcript 获取逐字记录
+```
+
+### 返回数据说明
+
+- `list` 返回：minute_token、title、duration、url、doc_token
+- `get` 返回：上述字段 + ai_summary（AI 生成的完整摘要文本）
+- `transcript` 返回：完整逐字记录（发言人 + 时间戳 + 文字）
+- `search` 返回：匹配的妙记列表
+
+### 限制
+
+- 只能读取用户有权限访问的妙记
+- 逐字记录为纯文本，无法获取原始音频
+- 飞书没有"列出所有妙记"API，通过 Drive 搜索间接发现
 
 ## 群聊归档
 

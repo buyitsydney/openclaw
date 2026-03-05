@@ -1,11 +1,13 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
+import { listEnabledFeishuAccounts } from "./src/accounts.js";
 import { feishuPlugin } from "./src/channel.js";
 import {
   buildReportFromSessionFile,
   saveReport,
   type BuildReportOpts,
 } from "./src/compaction-report.js";
+import { initOAuthCallback, startOAuthServer } from "./src/oauth.js";
 import { setFeishuRuntime } from "./src/runtime.js";
 import { registerAllFeishuTools } from "./src/tools/index.js";
 
@@ -34,6 +36,23 @@ const plugin = {
     setFeishuRuntime(api.runtime);
     api.registerChannel({ plugin: feishuPlugin });
     registerAllFeishuTools(api);
+
+    // OAuth callback for user_access_token (minutes/calendar/drive)
+    const accounts = listEnabledFeishuAccounts(api.config);
+    if (accounts.length > 0) {
+      const accountMap = new Map(accounts.map((a) => [a.accountId, a]));
+      const logOAuth = (msg: string) => api.logger.info?.(`feishu-oauth: ${msg}`);
+      const warnOAuth = (msg: string) => api.logger.warn(`feishu-oauth: ${msg}`);
+      initOAuthCallback({
+        resolveAccount: (id) => accountMap.get(id) ?? accounts[0],
+        log: logOAuth,
+        warn: warnOAuth,
+      });
+      const feishuConfig = (api.config.channels?.["feishu"] ?? {}) as Record<string, unknown>;
+      const minutesConfig = (feishuConfig.minutes ?? {}) as Record<string, unknown>;
+      const oauthPort = (minutesConfig.oauthPort as number) ?? undefined;
+      startOAuthServer({ port: oauthPort, log: logOAuth, warn: warnOAuth });
+    }
 
     api.on("after_compaction", (event, ctx) => {
       const sessionFile = event.sessionFile;

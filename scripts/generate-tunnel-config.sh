@@ -58,7 +58,7 @@ fi
 
 # 端口规则（和 start-user.sh 一致）：
 #   base = 29000 + (N-1) * 10
-#   FE = base+3, RT = base+2, WS = base+4
+#   FE = base+3, RT = base+2, WS = base+4, OAUTH = base+5
 generate_config() {
   cat << EOF
 tunnel: ${TUNNEL_NAME}
@@ -76,17 +76,21 @@ ingress:
     service: http://localhost:29013
   - hostname: vendor-proxy.carher.net
     service: http://localhost:29014
+  - hostname: vendor-auth.carher.net
+    service: http://localhost:29015
 EOF
 
   for i in $(seq 1 "$MAX_USERS"); do
     BASE=$((29000 + (i - 1) * 10))
     PORT_FE=$((BASE + 3))
     PORT_WS=$((BASE + 4))
-    # 每 user 2 行（RT 端口不暴露，语音通过 FE 代理）
+    PORT_OAUTH=$((BASE + 5))
     echo "  - hostname: u${i}-fe.carher.net"
     echo "    service: http://localhost:${PORT_FE}"
     echo "  - hostname: u${i}-proxy.carher.net"
     echo "    service: http://localhost:${PORT_WS}"
+    echo "  - hostname: u${i}-auth.carher.net"
+    echo "    service: http://localhost:${PORT_OAUTH}"
   done
 
   cat << EOF
@@ -94,7 +98,7 @@ EOF
 EOF
 }
 
-TOTAL_RULES=$((2 + 3 + MAX_USERS * 2 + 1))
+TOTAL_RULES=$((2 + 4 + MAX_USERS * 3 + 1))
 
 if [ -n "$DRY_RUN" ]; then
   echo -e "${YELLOW}预览模式（不写入文件）${NC}"
@@ -104,8 +108,8 @@ if [ -n "$DRY_RUN" ]; then
   echo ""
   echo -e "${GREEN}总计: ${TOTAL_RULES} 条 ingress 规则${NC}"
   echo "  个人 Her: 2 条 (FE + Gemini proxy; RT 通过 FE 代理)"
-  echo "  厂商别名: 3 条 (FE + vendor.carher.net→FE + Gemini proxy)"
-  echo "  用户容器: ${MAX_USERS} × 2 = $((MAX_USERS * 2)) 条"
+  echo "  厂商别名: 4 条 (FE + vendor.carher.net→FE + Gemini proxy + OAuth)"
+  echo "  用户容器: ${MAX_USERS} × 3 = $((MAX_USERS * 3)) 条 (FE + proxy + OAuth)"
   echo "  兜底:     1 条"
 else
   # 备份
@@ -118,8 +122,8 @@ else
   echo ""
   echo -e "  总计: ${GREEN}${TOTAL_RULES}${NC} 条 ingress 规则"
   echo "  个人 Her: 2 条 (FE + Gemini proxy; RT 通过 FE 代理)"
-  echo "  厂商别名: 3 条 (FE + vendor.carher.net→FE + Gemini proxy)"
-  echo "  用户容器: ${MAX_USERS} × 2 = $((MAX_USERS * 2)) 条"
+  echo "  厂商别名: 4 条 (FE + vendor.carher.net→FE + Gemini proxy + OAuth)"
+  echo "  用户容器: ${MAX_USERS} × 3 = $((MAX_USERS * 3)) 条 (FE + proxy + OAuth)"
   echo "  兜底:     1 条"
   echo ""
   echo -e "${YELLOW}重启隧道生效:${NC} ./start-tunnel.sh --restart"

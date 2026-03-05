@@ -187,6 +187,7 @@ PORT_GW=$((BASE + 1))    # Gateway
 PORT_RT=$((BASE + 2))    # Realtime WebSocket
 PORT_FE=$((BASE + 3))    # Frontend HTTP
 PORT_WS=$((BASE + 4))    # Frontend WS Proxy
+PORT_OAUTH=$((BASE + 5)) # OAuth callback (feishu minutes)
 
 # --- Logs ---
 if [ "$ACTION" = "logs" ]; then
@@ -438,6 +439,12 @@ fi
 CUSTOM_CONFIG="${SCRIPT_DIR}/docker/user-configs/carher-config-${USER_ID}.json"
 mkdir -p "${SCRIPT_DIR}/docker/user-configs"
 
+# Pre-compute auth hostname (needed by Python config below, before full domain resolution)
+case "$USER_ID" in
+  2) NAMED_AUTH_HOST="${TUNNEL_HOST_PREFIX:-}vendor-auth.carher.net" ;;
+  *) NAMED_AUTH_HOST="${TUNNEL_HOST_PREFIX:-}u${USER_ID}-auth.carher.net" ;;
+esac
+
 # Always generate a per-user config (may inject feishu credentials)
 python3 -c "
 import json, sys, os, pathlib
@@ -520,6 +527,12 @@ if feishu_id and feishu_secret:
         'enabled': True,
         'archive': True,
     }
+    # OAuth redirect URI for feishu minutes (per-user auth domain)
+    auth_host = '${NAMED_AUTH_HOST}'
+    if auth_host:
+        feishu_cfg['minutes'] = {
+            'oauthRedirectUri': f'https://{auth_host}/feishu/oauth/callback'
+        }
     cfg.setdefault('channels', {})['feishu'] = feishu_cfg
 
 # commands.ownerAllowFrom from CSV (pipe-separated open_ids)
@@ -564,12 +577,12 @@ fi
 # --- Resolve domain names (needed for VOICE env vars and URL display) ---
 TP="${TUNNEL_HOST_PREFIX:-}"
 case "$USER_ID" in
-  2) NAMED_RT_HOST="${TP}vendor.carher.net"; NAMED_PROXY_HOST="${TP}vendor-proxy.carher.net"; NAMED_FE_HOST="${TP}vendor-fe.carher.net" ;;
-  *) NAMED_RT_HOST="${TP}u${USER_ID}.carher.net"; NAMED_PROXY_HOST="${TP}u${USER_ID}-proxy.carher.net"; NAMED_FE_HOST="${TP}u${USER_ID}-fe.carher.net" ;;
+  2) NAMED_RT_HOST="${TP}vendor.carher.net"; NAMED_PROXY_HOST="${TP}vendor-proxy.carher.net"; NAMED_FE_HOST="${TP}vendor-fe.carher.net"; NAMED_AUTH_HOST="${TP}vendor-auth.carher.net" ;;
+  *) NAMED_RT_HOST="${TP}u${USER_ID}.carher.net"; NAMED_PROXY_HOST="${TP}u${USER_ID}-proxy.carher.net"; NAMED_FE_HOST="${TP}u${USER_ID}-fe.carher.net"; NAMED_AUTH_HOST="${TP}u${USER_ID}-auth.carher.net" ;;
 esac
 
 echo -e "${YELLOW}启动容器 ${CONTAINER_NAME}...${NC}"
-echo -e "  端口映射: GW=${PORT_GW} FE=${PORT_FE} WS=${PORT_WS} (RT=内部，不暴露)"
+echo -e "  端口映射: GW=${PORT_GW} FE=${PORT_FE} WS=${PORT_WS} OAuth=${PORT_OAUTH} (RT=内部，不暴露)"
 
 # Dev mode: bind mount host source into container; use a named volume for
 # node_modules so the container keeps its own Linux-native dependencies
@@ -596,6 +609,7 @@ docker run -d \
   -p "${PORT_GW}:18789" \
   -p "${PORT_FE}:8000" \
   -p "${PORT_WS}:8080" \
+  -p "${PORT_OAUTH}:18891" \
   -v "carher-${USER_ID}-data:/data/.openclaw" \
   -v "${GCLOUD_ADC}:/gcloud/application_default_credentials.json:ro" \
   -v "${CONFIG_MOUNT}:/data/.openclaw/openclaw.json:ro" \
