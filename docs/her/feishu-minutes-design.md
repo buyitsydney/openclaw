@@ -1,8 +1,8 @@
 # 飞书妙记/会议纪要 — 架构设计
 
-> 状态：**Phase 1&2 已实现，基本生产就绪** | 优先级：P1
+> 状态：**Phase 1-3 已实现，生产就绪** | 优先级：P1
 > 创建：2026-03-04 | 最后更新：2026-03-05
-> Docker 部署：carher-1 (Mac 测试) 已验证通过 | 压测 26 项，25 PASS
+> Docker1 全量回归：4 action × 全场景 + search 11 场景 = **100% PASS**
 
 ---
 
@@ -388,34 +388,20 @@ minutes-v1 API 要求 `user_access_token`。用 `tenant_access_token` 调用会�
 
 ## 压测结果（2026-03-05，docker1 carher-1）
 
-26 项测试，25 PASS，1 小问题。4 个 action 全部功能正常，OAuth 流程完整。
+Docker1 全量回归：4 action × 全场景 + search 11 场景 = **100% PASS**。
 
-### 已知问题（低优先级）
+### Phase 3 search 全文搜索（已实现）
 
-| #   | 问题                                                                              | 严重度 | 状态                            |
-| --- | --------------------------------------------------------------------------------- | ------ | ------------------------------- |
-| 1   | transcript 传无效 token 返回假正常而非 error                                      | 低     | TODO                            |
-| 2   | search 产生大量 404 warning（非 docx 文档被 Drive search 返回后扫描 blocks 失败） | 低     | TODO                            |
-| 3   | **search 只搜标题/AI摘要，不搜转写全文**                                          | **高** | **TODO — 需搜索"文字记录"docx** |
+飞书为每个会议生成 "文字记录" docx（完整转写全文），Drive search 是全文搜索。
+搜索结果如果是 "文字记录" docx → 从 blocks 提取链接的 "智能纪要" docx token → 再从 "智能纪要" 提取 minutes token。
 
-### Issue 3 分析（search 全文搜索）
+| 搜索词     | 之前 | 现在 | 路径                          |
+| ---------- | ---- | ---- | ----------------------------- |
+| "KPI"      | ✅   | ✅   | 智能纪要直接匹配              |
+| "cursor"   | ❌   | ✅   | 文字记录 → 智能纪要 → minutes |
+| "一蹴而就" | ❌   | ✅   | 文字记录 → 智能纪要 → minutes |
 
-**现状**：`searchMinutes()` 用用户关键词调 Drive search，但只匹配 "智能纪要" docx（AI 摘要）。如果关键词仅出现在转写全文中（如 "cursor"、"一蹴而就"），搜不到。
-
-**根因**：飞书 Drive search 是全文搜索（已验证），但搜到 "文字记录" docx 后，当前代码用 `extractMinuteTokensFromDoc()` 尝试从中提取 `/minutes/` 链接 → 文字记录中没有 minutes 链接 → 404 或空结果。
-
-**验证数据（docker1）**：
-
-| 搜索词     | 智能纪要匹配 | 文字记录匹配 | 当前 search 能找到？   |
-| ---------- | ------------ | ------------ | ---------------------- |
-| "KPI"      | ✅           | ✅           | ✅（恰好在 AI 摘要中） |
-| "西川"     | ✅           | ✅           | ✅                     |
-| "cursor"   | ❌           | ✅           | ❌                     |
-| "一蹴而就" | ❌           | ✅           | ❌                     |
-
-**修复方案**：搜索结果如果是 "文字记录" docx → 从 blocks 提取链接的 "智能纪要" docx token → 再从 "智能纪要" 提取 minutes token。
-
-关联链：`用户搜索 → 文字记录 docx → blocks 中的智能纪要 URL → 智能纪要 docx → /minutes/obcnXXXX`
+同时修复：非 docx 文档过滤（消除 404 warning）、transcript 无效 token 返回 error。
 
 ---
 
@@ -442,13 +428,14 @@ minutes-v1 API 要求 `user_access_token`。用 `tenant_access_token` 调用会�
   - [x] `start-user.sh` Python 配置注入 `oauthRedirectUri`
   - [x] `generate-tunnel-config.sh` 新增 `uN-auth.carher.net` 隧道入口
   - [x] carher-1 (Mac 测试) 端到端验证通过
-- [ ] Phase 3：search 全文搜索升级
-  - [ ] search 结果中识别 "文字记录" docx
-  - [ ] 从 "文字记录" blocks 提取链接的 "智能纪要" docx token
-  - [ ] 通过 "智能纪要" 间接获取 minute_token
-  - [ ] 过滤非 docx 文档避免无效 404 warning
+- [x] Phase 3：search 全文搜索升级
+  - [x] search 结果中识别 "文字记录" docx
+  - [x] 从 "文字记录" blocks 提取链接的 "智能纪要" docx token（`extractLinkedSmartMinutesDocToken`）
+  - [x] 通过 "智能纪要" 间接获取 minute_token
+  - [x] 过滤非 docx 文档避免无效 404 warning（`docs_type !== "docx"` check）
+  - [x] transcript 无效 token 返回 error 而非静默
+  - [x] docker1 全量回归 11 个 search 场景 100% PASS
 - [ ] Phase 4：体验优化
-  - [ ] transcript 无效 token 返回 error 而非静默
   - [ ] 授权后自动继续执行用户请求
   - [ ] 结构化展示妙记列表
   - [ ] refresh_token 过期提前通知

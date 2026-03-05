@@ -6,8 +6,11 @@
  *   → minutes.v1.minute.get for metadata → minuteTranscript.get for transcript
  *   → docx rawContent for AI summary text
  *
+ * Full-text search path (keyword appears only in transcript, not AI summary):
+ *   Drive search finds "文字记录" docx (full transcript) → read blocks → extract
+ *   linked "智能纪要" docx token → follow standard discovery path above
+ *
  * Requires user_access_token (OAuth) for Drive search and minutes API.
- * Uses tenant_access_token for docx block reading (no user auth needed for app-accessible docs).
  */
 
 import * as Lark from "@larksuiteoapi/node-sdk";
@@ -119,9 +122,10 @@ async function searchSmartMinutesDocs(
   }
 }
 
-// ── Extract minute_tokens from docx blocks ──
+// ── Extract tokens from docx blocks ──
 
 const MINUTES_URL_PATTERN = /\/minutes\/(obcn[a-zA-Z0-9]+)/g;
+const DOCX_URL_PATTERN = /\/docx\/([a-zA-Z0-9]+)/g;
 
 async function extractMinuteTokensFromDoc(
   client: Lark.Client,
@@ -155,6 +159,40 @@ async function extractMinuteTokensFromDoc(
   } while (pageToken);
 
   return [...tokens];
+}
+
+/**
+ * "文字记录" docx links to its corresponding "智能纪要" docx via a /docx/XXXX URL in blocks.
+ * Returns the first linked docx token that isn't the document itself.
+ */
+async function extractLinkedSmartMinutesDocToken(
+  client: Lark.Client,
+  docToken: string,
+  userAccessToken: string,
+): Promise<string | null> {
+  try {
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const res: any = await client.docx.documentBlock.list(
+      {
+        path: { document_id: docToken },
+        params: { page_size: 500 },
+      },
+      Lark.withUserAccessToken(userAccessToken),
+    );
+    if (res.code !== 0) return null;
+
+    for (const block of res.data?.items ?? []) {
+      const blockJson = JSON.stringify(block);
+      let match: RegExpExecArray | null;
+      DOCX_URL_PATTERN.lastIndex = 0;
+      while ((match = DOCX_URL_PATTERN.exec(blockJson)) !== null) {
+        if (match[1] !== docToken) return match[1];
+      }
+    }
+  } catch {
+    // best-effort
+  }
+  return null;
 }
 
 // ── Minute metadata ──
@@ -341,11 +379,14 @@ async function getMinuteTranscript(
   minuteToken: string,
 ): Promise<unknown> {
   const info = await getMinuteInfo(client, minuteToken, userToken.access_token);
-  const transcript = await getTranscript(client, minuteToken, userToken.access_token);
+  if (!info) {
+    return { error: `minute_token ${minuteToken} not found or no permission.` };
+  }
 
+  const transcript = await getTranscript(client, minuteToken, userToken.access_token);
   return {
     minute_token: minuteToken,
-    title: info?.title,
+    title: info.title,
     transcript: transcript ?? "Transcript not available.",
   };
 }
@@ -355,25 +396,48 @@ async function searchMinutes(
   userToken: FeishuUserToken,
   query: string,
 ): Promise<unknown> {
-  // Search for both "智能纪要" with the keyword and general docs matching the query
+  // Drive search is full-text: finds keyword in both AI summaries ("智能纪要")
+  // and full transcripts ("文字记录"). We only need one search call.
   const docs = await searchSmartMinutesDocs(userToken.access_token, query, 50);
 
-  // Also search with "智能纪要" prefix
-  const smartDocs = await searchSmartMinutesDocs(userToken.access_token, `智能纪要 ${query}`, 50);
+  // Classify results: only docx, split into "智能纪要" and "文字记录"
+  // docs_type comes back as "docx" (string name), despite request using numeric 22
+  const smartDocs: DriveSearchDoc[] = [];
+  const textRecordDocs: DriveSearchDoc[] = [];
+  for (const d of docs) {
+    const dt = String(d.docs_type);
+    if (dt !== "docx" && dt !== "22") continue;
+    if (d.title.startsWith("智能纪要")) smartDocs.push(d);
+    else if (d.title.startsWith("文字记录")) textRecordDocs.push(d);
+  }
 
-  // Merge and deduplicate
-  const allDocs = [...docs, ...smartDocs];
-  const seen = new Set<string>();
-  const unique = allDocs.filter((d) => {
-    if (seen.has(d.docs_token)) return false;
-    seen.add(d.docs_token);
-    return true;
-  });
+  // Resolve "文字记录" → linked "智能纪要" (if not already discovered)
+  const smartDocTokens = new Set(smartDocs.map((d) => d.docs_token));
+  for (const trd of textRecordDocs.slice(0, 10)) {
+    try {
+      const linkedToken = await extractLinkedSmartMinutesDocToken(
+        client,
+        trd.docs_token,
+        userToken.access_token,
+      );
+      if (linkedToken && !smartDocTokens.has(linkedToken)) {
+        smartDocTokens.add(linkedToken);
+        smartDocs.push({
+          docs_token: linkedToken,
+          docs_type: "22",
+          title: trd.title.replace("文字记录", "智能纪要"),
+          owner_id: trd.owner_id,
+        });
+      }
+    } catch {
+      // best-effort: if we can't resolve the link, skip this transcript doc
+    }
+  }
 
-  // Extract minute tokens from matching docx
+  // Extract minute tokens from "智能纪要" docs
   const results: MinuteInfo[] = [];
   const errors: string[] = [];
-  for (const doc of unique.slice(0, 10)) {
+  for (const doc of smartDocs.slice(0, 10)) {
     try {
       const minuteTokens = await extractMinuteTokensFromDoc(
         client,
