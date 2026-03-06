@@ -312,6 +312,174 @@ async function getAiSummary(
   return getDocxRawContent(client, docToken, userAccessToken);
 }
 
+// ── Calendar + VC recording discovery ──
+// Primary discovery: calendar events → VC meeting_no → recording URL → minute_token.
+// This finds ALL meetings the user participated in, not just those in their Drive space.
+
+const MINUTES_TOKEN_FROM_URL = /\/minutes\/(obcn[a-zA-Z0-9]+)/;
+const MEETING_NO_FROM_URL = /\/j\/(\d+)/;
+
+type CalendarEvent = {
+  summary: string;
+  start_time?: { timestamp?: string };
+  end_time?: { timestamp?: string };
+  vchat?: { vc_type?: string; meeting_url?: string };
+};
+
+async function listUserCalendars(
+  userToken: string,
+): Promise<Array<{ calendar_id: string; type: string; role: string }>> {
+  const res = await callFeishuApiWithUserToken<{
+    calendar_list?: Array<{ calendar_id: string; type: string; role: string }>;
+  }>({ method: "GET", endpoint: "/calendar/v4/calendars", userToken });
+  if (res.code !== 0) return [];
+  return res.data?.calendar_list ?? [];
+}
+
+async function listCalendarEvents(
+  userToken: string,
+  calendarId: string,
+  startTime: number,
+  endTime: number,
+): Promise<CalendarEvent[]> {
+  const events: CalendarEvent[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const query: Record<string, string> = {
+      start_time: String(startTime),
+      end_time: String(endTime),
+      page_size: "50",
+    };
+    if (pageToken) query.page_token = pageToken;
+
+    const res = await callFeishuApiWithUserToken<{
+      items?: CalendarEvent[];
+      page_token?: string;
+      has_more?: boolean;
+    }>({
+      method: "GET",
+      endpoint: `/calendar/v4/calendars/${calendarId}/events`,
+      userToken,
+      query,
+    });
+    if (res.code !== 0) break;
+    events.push(...(res.data?.items ?? []));
+    pageToken = res.data?.has_more ? res.data.page_token : undefined;
+  } while (pageToken);
+
+  return events;
+}
+
+// One meeting_no can map to multiple sessions (same VC room reused).
+async function getMeetingIdsByNo(
+  userToken: string,
+  meetingNo: string,
+  startTime: number,
+  endTime: number,
+): Promise<string[]> {
+  const res = await callFeishuApiWithUserToken<{
+    meeting_briefs?: Array<{ id: string; meeting_no: string; topic: string }>;
+  }>({
+    method: "GET",
+    endpoint: "/vc/v1/meetings/list_by_no",
+    userToken,
+    query: {
+      meeting_no: meetingNo,
+      start_time: String(startTime),
+      end_time: String(endTime),
+    },
+  });
+  if (res.code !== 0 || !res.data?.meeting_briefs?.length) return [];
+  return res.data.meeting_briefs.map((b) => b.id);
+}
+
+async function getMeetingRecordingUrl(
+  userToken: string,
+  meetingId: string,
+): Promise<string | null> {
+  const res = await callFeishuApiWithUserToken<{
+    recording?: { url?: string; duration?: string };
+  }>({
+    method: "GET",
+    endpoint: `/vc/v1/meetings/${meetingId}/recording`,
+    userToken,
+  });
+  if (res.code !== 0) return null;
+  return res.data?.recording?.url ?? null;
+}
+
+/**
+ * Discover minutes via Calendar → VC meeting → recording URL → minute_token.
+ * This path finds meetings regardless of who created them.
+ */
+async function discoverViaCalendar(
+  client: Lark.Client,
+  userToken: FeishuUserToken,
+  days: number,
+): Promise<MinuteInfo[]> {
+  const calendars = await listUserCalendars(userToken.access_token);
+  const primaryCal = calendars.find((c) => c.type === "primary" && c.role === "owner");
+  if (!primaryCal) return [];
+
+  const endTime = Math.floor(Date.now() / 1000);
+  const startTime = endTime - days * 86400;
+  const events = await listCalendarEvents(
+    userToken.access_token,
+    primaryCal.calendar_id,
+    startTime,
+    endTime,
+  );
+
+  const vcMeetings = events.filter((e) => e.vchat?.meeting_url && e.summary);
+
+  const results: MinuteInfo[] = [];
+  const seen = new Set<string>();
+  for (const meeting of vcMeetings) {
+    try {
+      const meetingNo = meeting.vchat!.meeting_url!.match(MEETING_NO_FROM_URL)?.[1];
+      if (!meetingNo) continue;
+
+      const eventStart = Number(meeting.start_time?.timestamp ?? startTime);
+      const lookupStart = eventStart - 86400;
+      const lookupEnd = eventStart + 86400;
+
+      const meetingIds = await getMeetingIdsByNo(
+        userToken.access_token,
+        meetingNo,
+        lookupStart,
+        lookupEnd,
+      );
+
+      for (const meetingId of meetingIds) {
+        const recordingUrl = await getMeetingRecordingUrl(userToken.access_token, meetingId);
+        if (!recordingUrl) continue;
+
+        const minuteToken = recordingUrl.match(MINUTES_TOKEN_FROM_URL)?.[1];
+        if (!minuteToken || seen.has(minuteToken)) continue;
+        seen.add(minuteToken);
+
+        const info = await getMinuteInfo(client, minuteToken, userToken.access_token);
+        if (info) {
+          results.push(info);
+        } else {
+          results.push({
+            minute_token: minuteToken,
+            title: meeting.summary,
+            url: recordingUrl,
+            create_time: meeting.start_time?.timestamp
+              ? String(Number(meeting.start_time.timestamp) * 1000)
+              : undefined,
+          });
+        }
+      }
+    } catch {
+      // Best-effort per meeting; skip failures silently
+    }
+  }
+  return results;
+}
+
 // ── Actions ──
 
 /** Parse date from smart minutes title like "智能纪要：XXX 2026年3月4日" */
@@ -511,65 +679,82 @@ async function listMinutes(
   userToken: FeishuUserToken,
   days: number,
 ): Promise<unknown> {
-  const docs = await searchSmartMinutesDocs(userToken.access_token, "智能纪要", 50);
+  // ── Path A: Drive Search (finds docs in user's own Drive space) ──
+  const driveResults: MinuteInfo[] = [];
+  const errors: string[] = [];
 
-  // Filter: only "智能纪要" titles + recent N days
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - days);
-  cutoff.setHours(0, 0, 0, 0);
-  const recentDocs = docs.filter((d) => {
-    if (!d.title.startsWith("智能纪要")) return false;
-    const date = parseDateFromTitle(d.title);
-    return date ? date >= cutoff : true;
-  });
+  try {
+    const docs = await searchSmartMinutesDocs(userToken.access_token, "智能纪要", 50);
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - days);
+    cutoff.setHours(0, 0, 0, 0);
+    const recentDocs = docs.filter((d) => {
+      if (!d.title.startsWith("智能纪要")) return false;
+      const date = parseDateFromTitle(d.title);
+      return date ? date >= cutoff : true;
+    });
 
-  if (recentDocs.length === 0) {
-    return { minutes: [], message: `最近 ${days} 天未找到智能纪要文档。` };
+    for (const doc of recentDocs) {
+      try {
+        const minuteTokens = await extractMinuteTokensFromDoc(
+          client,
+          doc.docs_token,
+          userToken.access_token,
+        );
+        if (minuteTokens.length > 0) {
+          for (const mt of minuteTokens) {
+            const info = await getMinuteInfo(client, mt, userToken.access_token);
+            if (info) {
+              info.doc_token = doc.docs_token;
+              info.doc_title = doc.title;
+              driveResults.push(info);
+            } else {
+              driveResults.push(docxFallbackInfo(doc, mt));
+            }
+          }
+        } else {
+          driveResults.push(docxFallbackInfo(doc));
+        }
+      } catch (err) {
+        errors.push(`${doc.title}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  } catch (err) {
+    errors.push(`Drive search: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  const results: MinuteInfo[] = [];
-  const errors: string[] = [];
-  for (const doc of recentDocs) {
-    try {
-      const minuteTokens = await extractMinuteTokensFromDoc(
-        client,
-        doc.docs_token,
-        userToken.access_token,
-      );
+  // ── Path B: Calendar + VC recording (finds ALL meetings the user attended) ──
+  let calendarResults: MinuteInfo[] = [];
+  try {
+    calendarResults = await discoverViaCalendar(client, userToken, days);
+  } catch (err) {
+    errors.push(`Calendar discovery: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
-      if (minuteTokens.length > 0) {
-        for (const mt of minuteTokens) {
-          const info = await getMinuteInfo(client, mt, userToken.access_token);
-          if (info) {
-            info.doc_token = doc.docs_token;
-            info.doc_title = doc.title;
-            results.push(info);
-          } else {
-            // minutes.get failed (403 etc.) — still return docx-based info
-            results.push(docxFallbackInfo(doc, mt));
-          }
-        }
-      } else {
-        // No minute_token in docx blocks — still discoverable via docx
-        results.push(docxFallbackInfo(doc));
-      }
-    } catch (err) {
-      errors.push(`${doc.title}: ${err instanceof Error ? err.message : String(err)}`);
+  // ── Merge & deduplicate (prefer Drive results which carry doc_token) ──
+  const seen = new Set<string>();
+  const merged: MinuteInfo[] = [];
+  for (const r of driveResults) {
+    if (!seen.has(r.minute_token)) {
+      seen.add(r.minute_token);
+      merged.push(r);
+    }
+  }
+  for (const r of calendarResults) {
+    if (!seen.has(r.minute_token)) {
+      seen.add(r.minute_token);
+      merged.push(r);
     }
   }
 
-  // Deduplicate by minute_token
-  const seen = new Set<string>();
-  const unique = results.filter((r) => {
-    if (seen.has(r.minute_token)) return false;
-    seen.add(r.minute_token);
-    return true;
-  });
-
   return {
-    minutes: unique,
-    count: unique.length,
+    minutes: merged,
+    count: merged.length,
     days,
+    discovery: {
+      drive_search: driveResults.length,
+      calendar_vc: calendarResults.length,
+    },
     ...(errors.length > 0 ? { warnings: errors } : {}),
     tip: "Use get action with minute_token or doc_token to read AI summary. Use transcript action with minute_token for full transcript.",
   };

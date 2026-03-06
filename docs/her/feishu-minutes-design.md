@@ -1,21 +1,21 @@
 # 飞书妙记/会议纪要 — 架构设计
 
-> 状态：**Phase 4 代码已完成，待权限配置 + 重新授权测试** | Phase 1-3.5 已实现 | 优先级：P1
+> 状态：**Phase 5 代码已完成，待权限配置 + 重新授权测试** | Phase 1-4 已实现 | 优先级：P1
 > 创建：2026-03-04 | 最后更新：2026-03-06
 >
-> ### Phase 4 诊断 & 修复（2026-03-06）
+> ### Phase 5 — 日历+VC录制发现路径（2026-03-06）
 >
-> - Docker13 实测：飞书 App 可见 8 条妙记，旧代码只返回 1 条（12.5%）
-> - **根因 1（代码 Bug）**：50% 的"智能纪要"docx 不含 obcn 链接 → 被静默丢弃。**已修复**：直接从 rawContent 读 AI 摘要
-> - **根因 2（权限缺失）**：OAuth scope 缺少 `drive:drive.search:readonly`、`search:docs:read`（搜索专用权限），Drive Search 覆盖不全。**已补充 scope**
-> - **根因 3（VC 权限缺失）**：没有 `vc:*` scope，无法通过 VC API 发现所有参与的会议。**已补充 scope**
+> - Phase 4 实测：Drive Search 只找到 5/8（62.5%），其余 3 条由他人创建，不在用户 Drive 空间
+> - **根因**：Drive Search 只搜索用户自己云空间的文档，别人创建的"智能纪要"docx 完全搜不到
+> - **修复**：新增 Calendar → VC meeting_no → recording URL → minute_token 发现路径
+> - **新增 scope**：`vc:record:readonly`（读取会议录制信息，其中 URL 包含 minute_token）
+> - **修复 bug**：OAuth callback 通知消息用 account name "default" 当 chatId → Invalid ids 错误
 >
 > ### 待完成
 >
-> - [ ] 飞书 App 后台勾选新权限（用户身份 + 应用身份）并发布新版本
-> - [ ] Docker13 用户重新 OAuth 授权（scope 变更后必须重新授权）
-> - [ ] 验证 Drive Search 覆盖率是否提升（目标：8/8）
-> - [ ] 验证 VC API 会议发现是否可用
+> - [ ] 飞书 App 后台勾选 `vc:record:readonly` 权限（用户身份 + 应用身份）
+> - [ ] Docker13 用户重新 OAuth 授权（scope 新增后必须重新授权）
+> - [ ] 验证覆盖率达到 8/8
 
 ---
 
@@ -92,34 +92,35 @@ VC meetings/{id}/recording ──→ 录制 URL (https://.../minutes/obcnXXXX)
 | 6   | `vc/v1/exports/meeting_list`      | user       | **导出用户参与的所有会议**（Phase 5 目标）    | `vc:export`                                        |
 | 7   | `vc/v1/meetings/{id}/recording`   | user       | 获取录制 URL → 提取 minute_token              | `vc:meeting:readonly`                              |
 
-### 所需 OAuth Scope（完整列表，16 个）
+### 所需 OAuth Scope（完整列表，17 个）
 
 ```
 minutes:minutes, minutes:minutes:readonly, minutes:minutes.basic:read, minutes:minutes.transcript:export,
 calendar:calendar, calendar:calendar:readonly,
 drive:drive:readonly, drive:drive.search:readonly, docx:document:readonly,
 search:docs:read, search:message,
-vc:meeting:readonly, vc:export, vc:room:readonly
+vc:meeting:readonly, vc:record:readonly, vc:export, vc:room:readonly
 ```
 
 ### 飞书 App 后台权限配置（用户身份 + 应用身份都要勾）
 
-| 权限名称                  | scope 标识                          | Phase 1-3 有? | Phase 4 新增? |
-| ------------------------- | ----------------------------------- | ------------- | ------------- |
-| 读取妙记                  | `minutes:minutes`                   | ✅            |               |
-| 只读妙记                  | `minutes:minutes:readonly`          | ✅            |               |
-| 读取妙记基本信息          | `minutes:minutes.basic:read`        | ✅            |               |
-| 导出妙记逐字记录          | `minutes:minutes.transcript:export` | ✅            |               |
-| 日历读写                  | `calendar:calendar`                 | ✅            |               |
-| 日历只读                  | `calendar:calendar:readonly`        | ✅            |               |
-| 读取云空间                | `drive:drive:readonly`              | ✅            |               |
-| **搜索云文档**            | `drive:drive.search:readonly`       | **❌**        | **✅ 新增**   |
-| 读取文档                  | `docx:document:readonly`            | ✅            |               |
-| **搜索云文档(Wiki+文档)** | `search:docs:read`                  | **❌**        | **✅ 新增**   |
-| **搜索消息**              | `search:message`                    | **❌**        | **✅ 新增**   |
-| **视频会议只读**          | `vc:meeting:readonly`               | **❌**        | **✅ 新增**   |
-| **导出会议数据**          | `vc:export`                         | **❌**        | **✅ 新增**   |
-| **会议室信息**            | `vc:room:readonly`                  | **❌**        | **✅ 新增**   |
+| 权限名称                  | scope 标识                          | Phase 1-3 有? | Phase 4 新增?  |
+| ------------------------- | ----------------------------------- | ------------- | -------------- |
+| 读取妙记                  | `minutes:minutes`                   | ✅            |                |
+| 只读妙记                  | `minutes:minutes:readonly`          | ✅            |                |
+| 读取妙记基本信息          | `minutes:minutes.basic:read`        | ✅            |                |
+| 导出妙记逐字记录          | `minutes:minutes.transcript:export` | ✅            |                |
+| 日历读写                  | `calendar:calendar`                 | ✅            |                |
+| 日历只读                  | `calendar:calendar:readonly`        | ✅            |                |
+| 读取云空间                | `drive:drive:readonly`              | ✅            |                |
+| **搜索云文档**            | `drive:drive.search:readonly`       | **❌**        | **✅ 新增**    |
+| 读取文档                  | `docx:document:readonly`            | ✅            |                |
+| **搜索云文档(Wiki+文档)** | `search:docs:read`                  | **❌**        | **✅ 新增**    |
+| **搜索消息**              | `search:message`                    | **❌**        | **✅ 新增**    |
+| **视频会议只读**          | `vc:meeting:readonly`               | **❌**        | **✅ Phase 4** |
+| **录制信息只读**          | `vc:record:readonly`                | **❌**        | **✅ Phase 5** |
+| **导出会议数据**          | `vc:export`                         | **❌**        | **✅ Phase 4** |
+| **会议室信息**            | `vc:room:readonly`                  | **❌**        | **✅ Phase 4** |
 
 ### 验证结果
 
@@ -142,8 +143,8 @@ vc:meeting:readonly, vc:export, vc:room:readonly
 | `calendar:calendar:readonly`        | 日历只读                                      | ✅   |
 | `drive:drive:readonly`              | 搜索用户文档                                  | ✅   |
 | `docx:document:readonly`            | 读取智能纪要 docx blocks（提取 minute_token） | ✅   |
-| `vc:meeting:readonly`               | 视频会议信息（备用）                          | 可选 |
-| `vc:record:readonly`                | 录制信息（备用）                              | 可选 |
+| `vc:meeting:readonly`               | 通过会议号查 meeting_id                       | ✅   |
+| `vc:record:readonly`                | 读取录制 URL（含 minute_token）               | ✅   |
 
 > **关键发现**：OAuth authorize URL **必须**在 `scope` 参数中显式声明所需权限。即使应用后台已配置并发布版本，如果 authorize URL 不带 scope 参数，token 不会携带相应权限。
 >

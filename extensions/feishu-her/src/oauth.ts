@@ -21,24 +21,44 @@ import { getFeishuClient, sendFeishuRichText } from "./outbound.js";
 
 const FEISHU_ALLOWED_HOSTNAMES = ["open.feishu.cn", "accounts.feishu.cn"];
 
-// All scopes required for minutes discovery and reading.
-// VC scopes enable meeting discovery (the "妙记" product is built on VC recordings).
-// Search scopes (drive.search + search:docs) expand Drive Search coverage beyond basic drive:readonly.
+// Comprehensive read-only scopes so Her has the same visibility as the user.
 const OAUTH_SCOPES = [
+  // ── Messages & chat ──
+  "im:message:readonly",
+  "im:chat:readonly",
+  "im:resource",
+  // ── Drive & docs (read-only) ──
+  "drive:drive:readonly",
+  "drive:drive.search:readonly",
+  "drive:drive.metadata:readonly",
+  "drive:file:readonly",
+  "drive:export:readonly",
+  "docx:document:readonly",
+  "docs:doc:readonly",
+  "sheets:spreadsheet:readonly",
+  "bitable:app:readonly",
+  // ── Wiki ──
+  "wiki:wiki:readonly",
+  // ── Search ──
+  "search:docs:read",
+  "search:message",
+  // ── Calendar ──
+  "calendar:calendar",
+  "calendar:calendar:readonly",
+  // ── Minutes (妙记) ──
   "minutes:minutes",
   "minutes:minutes:readonly",
   "minutes:minutes.basic:read",
   "minutes:minutes.transcript:export",
-  "calendar:calendar",
-  "calendar:calendar:readonly",
-  "drive:drive:readonly",
-  "drive:drive.search:readonly",
-  "docx:document:readonly",
-  "search:docs:read",
-  "search:message",
+  // ── Video conference ──
   "vc:meeting:readonly",
-  "vc:export",
+  "vc:record:readonly",
   "vc:room:readonly",
+  "vc:export",
+  // ── Contact (resolve user names) ──
+  "contact:user.base:readonly",
+  // ── Tasks ──
+  "task:task:readonly",
 ];
 
 // ── Types ──
@@ -147,7 +167,8 @@ async function refreshUserToken(
 /**
  * Get a valid user_access_token. Auto-refreshes if the access_token is expired
  * but refresh_token is still valid.
- * Returns null if no token exists or refresh_token has expired.
+ * Returns null if no token exists, refresh_token has expired, or token is
+ * missing scopes that OAUTH_SCOPES now requires (triggers re-authorization).
  */
 export async function getValidUserToken(
   account: ResolvedFeishuAccount,
@@ -160,6 +181,12 @@ export async function getValidUserToken(
 
   // refresh_token expired → user must re-authorize
   if (now >= token.refresh_token_expires_at) return null;
+
+  // Scope drift: if code now requests scopes the saved token doesn't have,
+  // treat the token as invalid so the user gets prompted to re-authorize.
+  const granted = new Set(token.scopes ?? []);
+  const missing = OAUTH_SCOPES.filter((s) => !granted.has(s));
+  if (missing.length > 0) return null;
 
   // access_token still valid
   if (now < token.access_token_expires_at - REFRESH_MARGIN_MS) return token;
@@ -304,14 +331,18 @@ export async function handleOAuthCallback(
       `<h2>授权成功</h2><p>${displayName}，Her 现在可以读取你的飞书妙记/会议纪要了。</p><p>你可以关闭此页面，回到飞书继续对话。</p>`,
     );
 
-    // Notify user in Feishu chat (best-effort)
-    sendFeishuRichText({
-      account,
-      chatId: state.chatId,
-      text: `**授权成功** ✓\n${displayName}，我现在可以读取你的飞书妙记和会议纪要了。\n你可以说"帮我看看今天的会议纪要"来试试。`,
-    }).catch(() => {
-      // best-effort notification
-    });
+    // Notify user in Feishu chat (best-effort).
+    // state.chatId may be a placeholder (e.g. "default") when the tool lacks the real chat ID;
+    // real Feishu chat IDs start with "oc_".
+    if (state.chatId.startsWith("oc_")) {
+      sendFeishuRichText({
+        account,
+        chatId: state.chatId,
+        text: `**授权成功** ✓\n${displayName}，我现在可以读取你的飞书妙记和会议纪要了。\n你可以说"帮我看看今天的会议纪要"来试试。`,
+      }).catch(() => {
+        // best-effort notification
+      });
+    }
   } catch (err) {
     callbackDeps.warn(`OAuth callback error: ${String(err)}`);
     res.statusCode = 500;
