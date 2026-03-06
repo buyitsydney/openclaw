@@ -25,6 +25,8 @@ const FEISHU_ALLOWED_HOSTNAMES = ["open.feishu.cn", "accounts.feishu.cn"];
 const OAUTH_SCOPES = [
   // ── Messages & chat ──
   "im:message:readonly",
+  "im:message.group_msg:get_as_user",
+  "im:message.p2p_msg:readonly",
   "im:chat:readonly",
   "im:resource",
   // ── Drive & docs (read-only) ──
