@@ -228,12 +228,26 @@ function createOAuthState(chatId: string, accountId: string): string {
   return nonce;
 }
 
+// States that were already consumed (OAuth completed). Kept briefly so
+// duplicate/retry requests from Cloudflare tunnels still show the success page.
+const completedStates = new Map<string, OAuthState>();
+const COMPLETED_TTL_MS = 5 * 60 * 1000;
+
 function consumeOAuthState(nonce: string): OAuthState | null {
+  // Already completed — return the state again for the success page.
+  const done = completedStates.get(nonce);
+  if (done) return done;
+
   const state = pendingStates.get(nonce);
   if (!state) return null;
   pendingStates.delete(nonce);
   if (Date.now() - state.createdAt > STATE_TTL_MS) return null;
   return state;
+}
+
+function markStateCompleted(nonce: string, state: OAuthState): void {
+  completedStates.set(nonce, state);
+  setTimeout(() => completedStates.delete(nonce), COMPLETED_TTL_MS);
 }
 
 // ── OAuth callback handler ──
@@ -266,7 +280,17 @@ export async function handleOAuthCallback(
     return;
   }
 
+  const isRetry = completedStates.has(stateNonce);
   const state = consumeOAuthState(stateNonce);
+
+  // Retry of an already-completed OAuth — show success without re-exchanging.
+  if (!state && isRetry) {
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.end("<h2>授权成功</h2><p>授权已完成。你可以关闭此页面，回到飞书继续对话。</p>");
+    return;
+  }
+
   if (!state) {
     res.statusCode = 400;
     res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -321,6 +345,7 @@ export async function handleOAuthCallback(
     };
 
     saveUserToken(userToken);
+    markStateCompleted(stateNonce, state);
     callbackDeps.log(
       `OAuth success: ${userToken.name ?? userToken.open_id} (${userToken.open_id})`,
     );
