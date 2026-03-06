@@ -6,7 +6,7 @@ metadata: { "openclaw": { "emoji": "📨" } }
 
 # Feishu Skill — 全功能操作指南
 
-> 最后验证：2026-03-03。已完成企业版 tester（docker1）回归。
+> 最后验证：2026-03-06。已完成企业版 tester（docker1）Phase 3.5 回归。
 
 ## Chat 运行时手册（Her 必读）
 
@@ -451,7 +451,8 @@ Workflow: `list_blocks` 找到范围的起止 block ID → `delete_range`。注�
 
 - "帮我约个会" → `get_primary` → `create_event`（**必须**加 `attendee_ids`）→ `check_freebusy` 告知冲突
 - "某人今天有空吗" → `check_freebusy`（先查 open_id）
-- "我今天有什么会" → `check_freebusy` 看忙碌时段 + `list_events` 看 bot 创建的事件
+- "我今天有什么会" → 只在用户明确要查**日历/忙闲/未开始的会**时，才用 `check_freebusy` + `list_events`
+- 只要用户提到 `会议纪要` / `妙记` / `记录` / `详细内容` / `讲了什么` / `总结`，不要走 calendar，优先走 `feishu_minutes`
 
 ## 待办（Task v2）
 
@@ -733,7 +734,7 @@ feishu_message(action="list_sent", chat_id="oc_xxx", count=5)
 - `feishu_minutes(action="list", days=30)` — 列出最近 30 天的妙记
 - `feishu_minutes(action="get", minute_token="obcnXXX", doc_token="YYY")` — 获取妙记详情 + AI 智能摘要
 - `feishu_minutes(action="transcript", minute_token="obcnXXX")` — 获取完整逐字记录（语音转文字）
-- `feishu_minutes(action="search", query="关键词")` — 按关键词搜索妙记
+- `feishu_minutes(action="search", query="关键词")` — 按关键词搜索妙记，并直接返回可解释证据
 
 ### 前置条件：用户 OAuth 授权
 
@@ -747,31 +748,69 @@ feishu_message(action="list_sent", chat_id="oc_xxx", count=5)
 4. 用户授权后 Her 会收到通知，此时重新调用 `feishu_minutes` 即可
 5. 授权有效期约 30 天，过期后需重新授权
 
-### 使用 SOP
+### Her 视角：会议对象模型
 
-**用户说"帮我看看今天的会议纪要"：**
+不要把 Minutes 想成单一对象。对 Her 来说，一场会议通常有三个对象：
 
-```
-1. feishu_minutes(action="list", days=1)
-2. 如果返回 auth_url → 发给用户授权 → 等用户完成后重试
-3. 拿到妙记列表后，逐个用 get 获取 AI 摘要
-4. 汇总展示：标题、时长、关键要点、行动项
-```
+- `智能纪要 docx`：AI summary、结论、行动项。适合快速理解一场会讲了什么。
+- `文字记录 docx`：听写全文的 docx 视图。适合全文命中和提取局部原文片段。
+- `minute`：妙记正式对象。适合拿 metadata（标题、时长、URL）和完整 transcript。
 
-**用户说"帮我看看XX会议的详细纪要"：**
+关键认知：
 
-```
-1. feishu_minutes(action="search", query="XX")
-2. 拿到匹配的妙记 → get 获取 AI 摘要
-3. 如果用户需要原始对话记录 → transcript 获取逐字记录
-```
+- 飞书公开搜索命中的是**文档索引**，不是 `minute` 索引。
+- `search` 先完成会议定位，并返回第一层解释性证据；`get` / `transcript` 负责更深展开。
+- `transcript` 是高成本证据层，不是默认阅读层。
+- `ai_summary` 可能有错。Her 有用户长期记忆和当前上下文；回答时必须结合用户背景主动纠正明显错词/错句/错判，不能机械复读飞书 AI 摘要。若上下文仍不足，再升级 `transcript` 核对。
 
-### 返回数据说明
+### 当前 tool 语义（非常重要）
 
-- `list` 返回：minute_token、title、duration、url、doc_token
-- `get` 返回：上述字段 + ai_summary（AI 生成的完整摘要文本）
+- `feishu_minutes(action="list")`
+  - 时间范围召回层。适合回答“今天/本周有哪些会”。
+- `feishu_minutes(action="search", query="...")`
+  - 主题召回 + 第一层证据层。适合回答“哪场会提到了 X”“为什么提到了 X”。
+  - 返回 `results[]`；每条结果可直接携带 `ai_summary`、`match_sources`、`why_matched`，以及仅在摘要不足解释时才返回的 `transcript_snippets`。
+- `feishu_minutes(action="get", minute_token="...", doc_token="...")`
+  - 单会展开层。适合理解一场会的 AI 摘要。
+- `feishu_minutes(action="transcript", minute_token="...")`
+  - 完整原文层。只在用户明确要求原话、证据、引用、争议核对时再升级使用。
+
+### 不要机械按 action 思考，先识别用户任务
+
+常见任务只有 5 类：
+
+- `overview`
+  - 例子：“今天都开了哪些会？”“这周会议纪要帮我总结一下。”“看一下我今天的会议，给我详细内容。”
+  - Her 应先用 `list` 召回会议，再按需要对重点会议用 `get` 展开。只要问题在问会后内容、会议纪要、妙记、讲了什么、详细内容，就优先按 `minutes` 处理，不要误路由到 `calendar`。
+- `lookup`
+  - 例子：“上次谁提了 cursor？”“有没有讨论过 KPI？”
+  - Her 应先用 `search` 定位相关会议；如果 `search` 已给出足够证据，直接回答，不要机械再调 `get` / `transcript`。
+- `deep-dive`
+  - 例子：“这场会详细讲了什么？”
+  - Her 应先定位会议，再用 `get` 读 AI 摘要。
+- `evidence`
+  - 例子：“原话是什么？”“谁说的？”
+  - Her 应先看 `search` 里的 `why_matched` / `transcript_snippets`；只有 snippet 不够、或用户明确要全文时再升级 `transcript`。
+- `synthesis`
+  - 例子：“整理最近两周关于 AI 采购和落地节奏的所有讨论。”
+  - Her 应收集多场会议，读多份摘要，只在关键分歧点升级到 `transcript`。
+
+### 升级边界
+
+- 默认先停在 `list` / `search` / `get` 层，不要直接读取完整 transcript。
+- 只有在以下场景才升级 `transcript`：
+  - 用户明确要“原话/证据/谁说的/时间点”
+  - `search` 返回的 `ai_summary` / `transcript_snippets` 仍不足以解释为什么命中
+  - 跨会议综合时，关键结论存在冲突，需要核对原文
+
+### 当前返回数据说明
+
+- `list` 返回：`minute_token`、`title`、`duration`、`url`、`doc_token`
+- `get` 返回：上述字段 + `ai_summary`（AI 生成的完整摘要文本）
 - `transcript` 返回：完整逐字记录（发言人 + 时间戳 + 文字）
-- `search` 返回：匹配的妙记列表
+- `search` 返回：`results[]` + `scan_stats`
+- `search.results[*]` 返回：metadata + `ai_summary` + `match_sources` + `why_matched`
+- `search.results[*].transcript_snippets`：仅当摘要不足解释命中、但文字记录能解释时才返回
 
 ### 限制
 

@@ -1,8 +1,12 @@
 # 飞书妙记/会议纪要 — 架构设计
 
-> 状态：**Phase 1-3 已实现，生产就绪** | 优先级：P1
-> 创建：2026-03-04 | 最后更新：2026-03-05
-> Docker1 全量回归：4 action × 全场景 + search 11 场景 = **100% PASS**
+> 状态：**Phase 1-3 已实现** | **Phase 3.5 已实现（search 可解释性重构）** | **全量升级：暂不建议（skills 路由 blocker）** | 优先级：P1
+> 创建：2026-03-04 | 最后更新：2026-03-06
+> Docker1 工具回归：4 action × 全场景 + Phase 3.5 docker1 Her 实测（`cursor` / `KPI`）= **PASS**
+> Docker1 最新路由验证（2026-03-06 02:08）：显式表述 `查一下我今天的会议纪要，给我细节` = **PASS**；歧义表述 `看一下我今天的会议，给我详细内容` 仍先走 `calendar` = **FAIL**
+> 2026-03-06 官方/API 实测：公开 Drive Search 可命中与飞书 App 相同的"文字记录"文档，但公开 API 不返回 snippet/highlight，排序也不等于 App
+> ✅ 当前 search 已补齐可直接回答的字段：`ai_summary` / `match_sources` / `why_matched` / `transcript_snippets` / `scan_stats`
+> ⚠️ 结论：`feishu_minutes` 工具链路可灰度；在修掉自然语言路由歧义前，不建议全量升级。
 
 ---
 
@@ -33,15 +37,15 @@ Drive 搜索 ──→ 搜索"智能纪要"docx ──→ 扫描 blocks ──�
 
 具体步骤：
 
-| #   | API                               | Token 类型 | 作用                                               |
-| --- | --------------------------------- | ---------- | -------------------------------------------------- |
-| 1   | `calendar.v4.calendar.list`       | user       | 获取用户主日历                                     |
-| 2   | `calendar.v4.calendarEvent.list`  | user       | 列出带视频会议的日程                               |
-| 3   | `suite/docs-api/search/object`    | user       | 搜索"智能纪要"文档                                 |
-| 4   | `docx.v1.documentBlock.list`      | tenant     | 扫描智能纪要 docx blocks，提取 `/minutes/obcnXXXX` |
-| 5   | `minutes.v1.minute.get`           | user       | 获取妙记元数据（标题、时长、URL）                  |
-| 6   | `minutes.v1.minuteTranscript.get` | user       | 获取逐字记录                                       |
-| 7   | `docx.v1.document.rawContent`     | tenant     | 读取 AI 智能纪要全文（摘要、结论、行动项）         |
+| #   | API                               | Token 类型 | 作用                                                     |
+| --- | --------------------------------- | ---------- | -------------------------------------------------------- |
+| 1   | `calendar.v4.calendar.list`       | user       | 获取用户主日历                                           |
+| 2   | `calendar.v4.calendarEvent.list`  | user       | 列出带视频会议的日程                                     |
+| 3   | `suite/docs-api/search/object`    | user       | 搜索"智能纪要"/"文字记录"文档                            |
+| 4   | `docx.v1.documentBlock.list`      | user       | 扫描 docx blocks，提取智能纪要链接或 `/minutes/obcnXXXX` |
+| 5   | `minutes.v1.minute.get`           | user       | 获取妙记元数据（标题、时长、URL）                        |
+| 6   | `minutes.v1.minuteTranscript.get` | user       | 获取逐字记录                                             |
+| 7   | `docx.v1.document.rawContent`     | user       | 读取智能纪要/文字记录纯文本内容                          |
 
 ### 验证结果
 
@@ -67,6 +71,8 @@ Drive 搜索 ──→ 搜索"智能纪要"docx ──→ 扫描 blocks ──�
 | `vc:record:readonly`                | 录制信息（备用）                              | 可选 |
 
 > **关键发现**：OAuth authorize URL **必须**在 `scope` 参数中显式声明所需权限。即使应用后台已配置并发布版本，如果 authorize URL 不带 scope 参数，token 不会携带相应权限。
+>
+> 2026-03-06 docker1 实测：以上 user scope 已足够打通 `search -> 文字记录 -> 智能纪要 -> minute -> transcript` 全链路，**无需新增额外 user scope**。
 
 ---
 
@@ -203,12 +209,12 @@ https://auth.carher.net/feishu/oauth/callback
 
 ### action 说明
 
-| action       | 功能                                | 实现路径                                                                |
-| ------------ | ----------------------------------- | ----------------------------------------------------------------------- |
-| `list`       | 列出最近 N 天的所有妙记             | Drive 搜索"智能纪要" → 提取 minute_token → minute.get                   |
-| `get`        | 获取妙记详情（标题、时长、AI 摘要） | minute.get + rawContent 读取智能纪要 docx                               |
-| `transcript` | 获取逐字记录                        | minuteTranscript.get                                                    |
-| `search`     | 按关键词搜索妙记                    | Drive 搜索 → 匹配"智能纪要"+"文字记录" → 提取 minute_token → minute.get |
+| action       | 功能                                | 实现路径                                                                              |
+| ------------ | ----------------------------------- | ------------------------------------------------------------------------------------- |
+| `list`       | 列出最近 N 天的所有妙记             | Drive 搜索"智能纪要" → 提取 minute_token → minute.get                                 |
+| `get`        | 获取妙记详情（标题、时长、AI 摘要） | minute.get + rawContent 读取智能纪要 docx                                             |
+| `transcript` | 获取逐字记录                        | minuteTranscript.get                                                                  |
+| `search`     | 按关键词搜索妙记（含内容）          | Drive 全文搜索 → 匹配"智能纪要"+"文字记录" → 提取 minute_token → minute.get + AI 总结 |
 
 ### Token 降级策略
 
@@ -376,11 +382,33 @@ minutes-v1 API 要求 `user_access_token`。用 `tenant_access_token` 调用会�
 
 `calendarEventMeetingMinute.create` 需要 `calendar:calendar`（写权限），`calendar:calendar:readonly` 不够。
 
-### 7. Drive 搜索 API 不返回 create_time
+### 7. 飞书没有"搜索妙记内容"的一体化 API（2026-03-05 调查确认）
+
+飞书所有搜索 API 都**只返回元数据，不返回内容片段**：
+
+| API                                                 | 返回字段                                       | 返回内容/snippet？ |
+| --------------------------------------------------- | ---------------------------------------------- | ------------------ |
+| `suite/docs-api/search/object`（老版 Drive Search） | `docs_token`, `docs_type`, `title`, `owner_id` | ❌                 |
+| `wiki/v1/nodes/search`（Wiki Search）               | `node_id`, `title`, `url`, `icon`              | ❌                 |
+| `search-v2/message/create`（消息搜索）              | `items` (message_id[])                         | ❌                 |
+| `search-v2/doc_wiki/search`（新版文档搜索）         | SDK 不包含此资源，文档页面也未见 snippet 字段  | ❌                 |
+
+**结论**：飞书 Drive search 是服务端全文搜索（能匹配文档正文内容），但只告诉"哪些文档匹配了"，不告诉"匹配了什么内容"。如需获取内容，必须额外调用 `docx.rawContent` 或 `minuteTranscript.get`。
+
+2026-03-06 官方/API 实测补充：
+
+- 飞书 App 搜索 `cursor`（云文档）和公开 API `search/object` 都能命中同一条"文字记录" docx，说明两者共享同类全文索引能力
+- 但公开 API 不返回 snippet/highlight，也不保证与飞书 App 相同排序
+- `docs_types: [22]` 仍可能返回 `bitable`，不能信任服务端过滤，必须本地再过滤 `docs_type` 和标题前缀
+- `minuteTranscript.get` 只有 `need_speaker`、`need_timestamp`、`file_format` 三个参数，返回二进制流，不支持按时间/字数范围读取
+
+这意味着 `feishu_minutes search` 要想既"找得到"又"解释得清"，必须主动拉取 AI 总结，并在命中"文字记录"时从该 docx 原文中切出 transcript snippet。
+
+### 8. Drive 搜索 API 不返回 create_time
 
 `suite/docs-api/search/object` 返回的字段只有 `docs_token`、`docs_type`、`owner_id`、`title`，不包含 `create_time`、`update_time` 等时间字段。时间过滤需要从标题中解析日期（"智能纪要：XXX 2026年3月4日"）。
 
-### 8. Gateway loopback 与 Docker tunnel 不兼容
+### 9. Gateway loopback 与 Docker tunnel 不兼容
 
 个人 Her 的 Gateway 默认绑定 loopback（`127.0.0.1:18789`），Docker 中的 Cloudflare tunnel 通过 `host.docker.internal`（映射到 `192.168.65.254`）无法访问 loopback 端口。OAuth callback 必须使用绑定 `0.0.0.0` 的独立 HTTP 服务器。
 
@@ -388,7 +416,7 @@ minutes-v1 API 要求 `user_access_token`。用 `tenant_access_token` 调用会�
 
 ## 压测结果（2026-03-05，docker1 carher-1）
 
-Docker1 全量回归：4 action × 全场景 + search 11 场景 = **100% PASS**。
+Docker1 工具层全量回归：4 action × 全场景 + search 11 场景 = **100% PASS**（仅工具层，不含最新自然语言路由回归）。
 
 ### Phase 3 search 全文搜索（已实现）
 
@@ -402,6 +430,244 @@ Docker1 全量回归：4 action × 全场景 + search 11 场景 = **100% PASS**�
 | "一蹴而就" | ❌   | ✅   | 文字记录 → 智能纪要 → minutes |
 
 同时修复：非 docx 文档过滤（消除 404 warning）、transcript 无效 token 返回 error。
+
+---
+
+## Phase 3.5：Search 可解释性重构（已实现，2026-03-06 docker1 实测通过）
+
+### 实现结果
+
+- `searchMinutes` 已改为分页扫描 `offset=0/50/100/150`，最多收集 20 个候选，增强 top 5 结果。
+- docker1 Her 实测 `cursor`：只调用 1 次 `feishu_minutes search`，返回 `match_sources=["transcript"]`、`why_matched="关键词命中文字记录原文"`，并给出带 `speaker` / `timestamp` 的 snippet；Her 未再升级 `transcript`。
+- docker1 Her 实测 `KPI`：只调用 1 次 `feishu_minutes search`，因为 `ai_summary` 已足够解释命中，所以不返回 `transcript_snippets`，Her 直接基于摘要回答。
+
+### 先从 Her 视角定义问题
+
+这次重构的目标不是"再做一个更复杂的 search tool"，而是让 **Her 这样的强模型** 在真实会议任务里更轻松地完成工作。
+
+对 Her 来说，skill 的价值不是详细 SOP，而是：
+
+- 正确的**会议世界模型**
+- 每个 tool 的**认知语义**
+- 清晰的**成本/升级边界**
+- 不同用户任务的**成功标准**
+
+因此，Phase 3.5 必须先回答："Her 在面对会议相关请求时，脑中应该如何建模这个系统？"
+
+### Her 的会议世界模型
+
+一场飞书会议在本系统里通常有三个对象：
+
+| 对象            | 作用                                             | 最适合回答什么问题                                 |
+| --------------- | ------------------------------------------------ | -------------------------------------------------- |
+| `智能纪要 docx` | AI summary、结论、行动项                         | 这场会大意讲了什么？                               |
+| `文字记录 docx` | 全量听写文本的 docx 视图                         | 某个关键词为什么命中？原文证据在哪里？             |
+| `minute`        | 妙记正式对象，含 metadata 和 transcript 导出能力 | 这场会的标题/时长/链接是什么？完整逐字记录是什么？ |
+
+关键认知：
+
+- 飞书公开搜索索引的是**文档**，不是 `minute`
+- `智能纪要` 适合快速理解会议
+- `文字记录` 适合做全文命中和 snippet 提取
+- `minuteTranscript.get` 是高成本全文层，不该作为默认阅读层
+
+### 真实用户任务类型
+
+从 Her 视角，会议相关请求可以归纳为 5 类主任务：
+
+| 任务类型    | 用户怎么说                           | Her 真正要完成什么                 |
+| ----------- | ------------------------------------ | ---------------------------------- |
+| `overview`  | “今天都开了哪些会？”                 | 在时间范围内发现会议，并做高层摘要 |
+| `lookup`    | “上次谁提了 cursor？”                | 找到相关会议，并解释为什么命中     |
+| `deep-dive` | “这场会详细讲了什么？”               | 展开单场会议内容                   |
+| `evidence`  | “原话是什么？谁说的？”               | 提供原文证据而不是摘要             |
+| `synthesis` | “整理最近两周关于 AI 采购的所有讨论” | 跨多场会议汇总形成新结论           |
+
+### Her 真正需要从 skill 看见什么
+
+一个适合强模型的 skill，应该最少提供以下信息：
+
+1. **对象模型**：`智能纪要`、`文字记录`、`minute` 分别代表什么
+2. **工具语义**：`list/search/get/transcript` 各自解决哪类认知问题
+3. **升级边界**：什么时候停在 summary 层，什么时候必须升级到 transcript 层
+4. **答案形态**：概览型、检索型、证据型、综合型答案分别应该长什么样
+5. **失败模型**：权限、授权、搜索为空、tunnel/callback 故障分别意味着什么
+
+### 当前 tools 语义 vs 目标 tools 语义
+
+| Tool         | 当前语义                | 目标语义                                                          |
+| ------------ | ----------------------- | ----------------------------------------------------------------- |
+| `list`       | 时间范围内召回会议列表  | 保持不变，服务 `overview` / `synthesis`                           |
+| `search`     | 返回候选会议元数据      | 升级为 **answer-ready evidence layer**，让 Her 能直接解释命中原因 |
+| `get`        | 展开单场会议 AI summary | 保持不变，服务 `deep-dive` / `synthesis`                          |
+| `transcript` | 导出完整逐字记录        | 保持不变，但明确为高成本证据层                                    |
+
+### 设计目标
+
+- `search` 结果要让 Her 直接知道"为什么这场会议匹配"
+- 大多数 `lookup` / `evidence` / `synthesis` 查询只需要 **1 次** `search` tool call 即可形成第一版答案
+- 控制 context window，不把整份 transcript 直接塞进搜索结果
+- 在用户有海量普通文档时，尽量避免 minutes 结果被普通文档淹没
+
+### 非目标
+
+- 不追求和飞书 App 搜索 **100% 一样** 的排序和高亮展示；公开 API 不提供这部分能力
+- `search` 不直接返回完整 transcript；完整原文继续由 `transcript` action 承担
+- 不依赖 undocumented 的 query 拼词技巧（例如 `"智能纪要 " + query`）作为主方案
+
+### 新架构（从 Her 任务反推）
+
+1. **候选收集层**
+   - 调用 `suite/docs-api/search/object`
+   - 不只看第一页 50 条，而是分页扫描 `offset=0/50/100/150`
+   - 直到收集到足够的 minutes 候选（例如 20 条）或耗尽官方 200 条上限
+   - 本地只保留标题前缀为 `"智能纪要"` / `"文字记录"` 且 `docs_type === "docx"` 的结果
+
+2. **会议归一化层**
+   - `"智能纪要"` 命中：直接作为 `summary` source 候选
+   - `"文字记录"` 命中：通过 `documentBlock.list` 找到链接的 `"智能纪要"` docx，标记为 `transcript` source
+   - 以智能纪要 docx / `minute_token` 去重合并，保留 `match_sources`
+
+3. **内容增强层**
+   - 对排序靠前的 top 5 结果，固定拉取：
+     - `minutes.v1.minute.get`（元数据）
+     - `docx.v1.document.rawContent`（智能纪要 AI summary，**返回全文**）
+   - 如果该结果包含 `transcript` source，则额外拉取对应"文字记录" docx 的 `rawContent`
+   - 在本地从"文字记录"原文中切出 **1 段** `transcript_snippets`
+   - snippet 规则：以第一次命中 query 的位置为中心，截取前后各约 120 个中文字符
+   - 只有当 query 无法被 `ai_summary` 直接解释、但能在 `文字记录` 中解释时，才返回 `transcript_snippets`
+   - **不**在 `search` 中调用 `minuteTranscript.get`；该接口仍保留给显式 `transcript` action
+
+4. **结果输出层**
+   - 返回 metadata + `ai_summary` + `transcript_snippets` + `match_sources`
+   - 让 LLM 一次 tool call 就能回答"命中了哪场会、为什么命中、对应内容是什么"
+
+### 实际返回结构（当前实现）
+
+```json
+{
+  "query": "cursor",
+  "results": [
+    {
+      "minute_token": "obcn...",
+      "title": "AI账号采购及落地节奏讨论",
+      "url": "https://.../minutes/obcn...",
+      "duration": "3m21s",
+      "match_sources": ["transcript"],
+      "ai_summary": "本次会议围绕 AI 账号采购、效果闭环及落地节奏展开讨论...",
+      "transcript_snippets": [
+        {
+          "speaker": "说话人 1",
+          "timestamp": "00:00:40",
+          "snippet": "我觉得这个 AI 版本对，切换到 cursor 这个是至关重要..."
+        }
+      ],
+      "why_matched": "关键词命中文字记录原文"
+    }
+  ],
+  "scan_stats": {
+    "pages_scanned": 2,
+    "docs_scanned": 73,
+    "minute_candidates": 6,
+    "results_enriched": 3
+  }
+}
+```
+
+### Her 的多轮工作模式
+
+| 任务类型    | Her 的首选思路                              | 默认停止层        | 何时升级                                          |
+| ----------- | ------------------------------------------- | ----------------- | ------------------------------------------------- |
+| `overview`  | `list(days=N)` → `get` top N                | `ai_summary`      | 用户明确要原话/争议点时升级 transcript            |
+| `lookup`    | `search(query)`                             | `search` 结果     | 只有 `search` 仍解释不清时才 `get` / `transcript` |
+| `deep-dive` | 先定位会议，再 `get`                        | `get`             | 用户继续追问原话时升级 transcript                 |
+| `evidence`  | `search(query)` 优先看 snippet              | `search` 结果     | snippet 不足以支持回答时升级 transcript           |
+| `synthesis` | `search` / `list` 收集候选 → `get` 多场会议 | `ai_summary` 集合 | 某个关键结论存在冲突或证据不足时升级 transcript   |
+
+### 资源预算
+
+- Drive Search 最多扫描 4 页（官方上限 200 条）
+- 最多保留 20 个 minutes 候选
+- 最多增强 top 5 结果
+- 每个结果最多返回 1 个 transcript snippet
+- 每个 snippet 控制在 query 前后各约 120 个中文字符
+- `ai_summary` 返回全文
+- 目标：单次 `search` 返回内容控制在约 `2k-4k tokens`
+
+### 三个维度的取舍
+
+| 维度           | 当前 Phase 3                                                                   | 新架构                                                                   |
+| -------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
+| Context window | `search` 本身很小，但 AI 常常还要继续调 `get` / `transcript`，整体上下文不可控 | `search` 直接返回 compact `ai_summary` + `transcript_snippets`，预算可控 |
+| Latency        | 飞书 API 少，但 LLM 常需 2-3 次额外 tool round-trip                            | 飞书 API 略多，但大多数问题只需 1 次 `search` tool call                  |
+| 质量           | 知道"哪场会匹配"，不知道"为什么匹配"                                           | 同时知道会议、命中来源和对应内容                                         |
+
+### 全场景对比
+
+| 场景                     | 当前 Phase 3                                                           | 新架构                                  | 结果                                    |
+| ------------------------ | ---------------------------------------------------------------------- | --------------------------------------- | --------------------------------------- |
+| 关键词在 AI summary 中   | `search` 只能返回会议元数据，AI 还要再调 `get`                         | `search` 直接返回 `ai_summary`          | 延迟下降，质量上升                      |
+| 关键词只在 transcript 中 | `search` 只能返回会议元数据，AI 还要再调 `transcript` 才知道为什么命中 | `search` 直接返回 `transcript_snippets` | 解释力显著提升                          |
+| 用户有海量普通文档       | 只看第一页 50 条，minutes 可能被淹没                                   | 分页扫描到 200 条或直到收集到足够候选   | 召回显著提升，但仍受官方 200 条上限约束 |
+| 用户要完整原文           | 继续使用 `transcript` action                                           | 继续使用 `transcript` action            | 语义清晰，不混淆搜索和全文导出          |
+
+### 与飞书 App 搜索的关系
+
+- **底层能力**：接近。公开 API 和飞书 App 都能命中"文字记录"正文里的关键词
+- **展示能力**：不同。公开 API 没有 snippet/highlight，也不保证相同排序
+- **产品目标**：Her 的目标不是复制飞书 App UI，而是把搜索结果变成"可供 AI 直接回答"的结构化输入
+
+---
+
+## 实现计划（Her 视角）
+
+### Step 1：先让 skill 对强模型友好
+
+修改 `extensions/feishu-her/skills/feishu/SKILL.md` 的 Minutes 段落：
+
+- 不再把 Minutes 写成 action 目录 + rigid SOP
+- 改成 Her 的**对象模型 + 任务类型 + 工具语义 + 升级边界**
+- 明确 `search/get/transcript` 分别处于哪一层
+- 明确 transcript 是高成本证据层，不是默认阅读层
+
+### Step 2：把 `search` 从“候选列表”升级为“可回答证据层”
+
+修改 `extensions/feishu-her/src/tools/minutes.ts`：
+
+- `searchMinutes` 改为分页扫描（最多 4 页，最多收集 20 个候选）
+- 本地严格过滤 `docx + 标题前缀`
+- 按 meeting 归一化并保留 `match_sources`
+- 对 top 5 结果补齐：
+  - metadata
+  - `ai_summary`（全文）
+  - `transcript_snippets`（最多 1 段，前后各 120 字）
+  - `why_matched`
+  - `scan_stats`
+
+### Step 3：不改变 `get` / `transcript` 的角色
+
+- `get` 继续作为单会展开层
+- `transcript` 继续作为完整原文层
+- 不让 `search` 直接承担全文导出职责
+
+### Step 4：按真实用户任务验证，而不是只测 action
+
+至少验证以下 5 类场景：
+
+1. `overview`：今天/本周会议概览
+2. `lookup`：关键词只在 AI summary 中
+3. `lookup`：关键词只在 transcript 中
+4. `evidence`：用户要求原话/谁说的
+5. `synthesis`：跨多场会议输出结论/分歧/行动项
+
+### Step 5：用 Her 的效果而不是 tool 输出判断成败
+
+成功标准不是“API 返回字段更多了”，而是：
+
+- Her 是否更少调用多轮 tool
+- Her 是否能直接解释"为什么命中"
+- Her 是否在大多数查询里避免读取完整 transcript
+- Her 是否能稳定完成跨会综合任务
 
 ---
 
@@ -435,6 +701,18 @@ Docker1 全量回归：4 action × 全场景 + search 11 场景 = **100% PASS**�
   - [x] 过滤非 docx 文档避免无效 404 warning（`docs_type !== "docx"` check）
   - [x] transcript 无效 token 返回 error 而非静默
   - [x] docker1 全量回归 11 个 search 场景 100% PASS
+- [x] Phase 3.5：search 可解释性重构
+  - [x] 更新 `extensions/feishu-her/skills/feishu/SKILL.md`：Minutes 改写为对象模型/任务类型/升级边界
+  - [x] `searchMinutes` 分页扫描 `offset=0/50/100/150`，直到收集足够的 minutes 候选
+  - [x] 本地严格过滤 `docs_type === "docx"` 且标题前缀为 `"智能纪要"` / `"文字记录"`
+  - [x] 返回结果中直接包含 `match_sources`
+  - [x] 对 top 5 结果拉取智能纪要 `rawContent`，返回全文 `ai_summary`
+  - [x] 对 transcript-source 结果拉取"文字记录" `rawContent`，按首个命中点切出 1 段 `transcript_snippets`
+  - [x] 仅在 `ai_summary` 无法解释命中时返回 `transcript_snippets`
+  - [x] 返回 `why_matched`
+  - [x] 返回 `scan_stats`，便于调试召回范围和成本
+  - [x] 严格限制 search 返回内容预算，避免 transcript 撑爆 context window
+  - [ ] 以 `overview/lookup/deep-dive/evidence/synthesis` 五类任务做 docker1 实测验证（当前已完成 `lookup(summary)` + `lookup/evidence(transcript)`）
 - [ ] Phase 4：体验优化
   - [ ] 授权后自动继续执行用户请求
   - [ ] 结构化展示妙记列表

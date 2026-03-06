@@ -91,11 +91,24 @@ type DriveSearchDoc = {
   owner_id: string;
 };
 
-async function searchSmartMinutesDocs(
+type DriveSearchPage = {
+  docs: DriveSearchDoc[];
+  hasMore: boolean;
+  total: number;
+};
+
+const SEARCH_PAGE_SIZE = 50;
+const SEARCH_PAGE_OFFSETS = [0, 50, 100, 150] as const;
+const SEARCH_MAX_CANDIDATES = 20;
+const SEARCH_MAX_RESULTS = 5;
+const SEARCH_SNIPPET_RADIUS = 120;
+
+async function searchMinutesDocsPage(
   userToken: string,
   keyword: string,
   count: number,
-): Promise<DriveSearchDoc[]> {
+  offset: number,
+): Promise<DriveSearchPage> {
   try {
     const res = await callFeishuApiWithUserToken<{
       docs_entities?: DriveSearchDoc[];
@@ -107,19 +120,32 @@ async function searchSmartMinutesDocs(
       userToken,
       body: {
         search_key: keyword,
-        count: Math.min(count, 50),
-        offset: 0,
+        count: Math.min(count, SEARCH_PAGE_SIZE),
+        offset,
         owner_ids: [],
-        docs_types: [22], // 22 = docx
+        docs_types: [22], // 22 = docx; response may still include non-docx, so filter locally
       },
     });
     if (res.code !== 0) {
       throw new Error(`Drive search failed: code=${res.code} msg=${res.msg}`);
     }
-    return res.data?.docs_entities ?? [];
+    return {
+      docs: res.data?.docs_entities ?? [],
+      hasMore: Boolean(res.data?.has_more),
+      total: res.data?.total ?? 0,
+    };
   } catch (err) {
     throw new Error(`Drive search error: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+async function searchSmartMinutesDocs(
+  userToken: string,
+  keyword: string,
+  count: number,
+): Promise<DriveSearchDoc[]> {
+  const page = await searchMinutesDocsPage(userToken, keyword, count, 0);
+  return page.docs;
 }
 
 // ── Extract tokens from docx blocks ──
@@ -258,9 +284,9 @@ async function getTranscript(
   }
 }
 
-// ── AI summary (read smart minutes docx content) ──
+// ── Docx raw text / AI summary ──
 
-async function getAiSummary(
+async function getDocxRawContent(
   client: Lark.Client,
   docToken: string,
   userAccessToken: string,
@@ -278,6 +304,14 @@ async function getAiSummary(
   }
 }
 
+async function getAiSummary(
+  client: Lark.Client,
+  docToken: string,
+  userAccessToken: string,
+): Promise<string | null> {
+  return getDocxRawContent(client, docToken, userAccessToken);
+}
+
 // ── Actions ──
 
 /** Parse date from smart minutes title like "智能纪要：XXX 2026年3月4日" */
@@ -285,6 +319,167 @@ function parseDateFromTitle(title: string): Date | null {
   const m = title.match(/(\d{4})年(\d{1,2})月(\d{1,2})日/);
   if (!m) return null;
   return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+}
+
+type SearchMatchSource = "summary" | "transcript";
+
+type SearchTranscriptSnippet = {
+  speaker?: string;
+  timestamp?: string;
+  snippet: string;
+};
+
+type SearchCandidate = {
+  smart_doc_token: string;
+  smart_doc_title: string;
+  owner_id: string;
+  rank: number;
+  match_sources: Set<SearchMatchSource>;
+  text_record_doc_token?: string;
+  text_record_doc_title?: string;
+};
+
+type SearchResult = MinuteInfo & {
+  ai_summary: string | null;
+  match_sources: SearchMatchSource[];
+  why_matched: string;
+  transcript_snippets?: SearchTranscriptSnippet[];
+};
+
+function isDocxType(docsType: string): boolean {
+  const dt = String(docsType).toLowerCase();
+  return dt === "docx" || dt === "22";
+}
+
+function getMinutesDocKind(doc: DriveSearchDoc): SearchMatchSource | null {
+  if (!isDocxType(doc.docs_type)) return null;
+  if (doc.title.startsWith("智能纪要")) return "summary";
+  if (doc.title.startsWith("文字记录")) return "transcript";
+  return null;
+}
+
+function includesQuery(text: string | null | undefined, query: string): boolean {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!text || !normalizedQuery) return false;
+  return text.toLowerCase().includes(normalizedQuery);
+}
+
+function orderedMatchSources(matchSources: Set<SearchMatchSource>): SearchMatchSource[] {
+  const ordered: SearchMatchSource[] = [];
+  if (matchSources.has("summary")) ordered.push("summary");
+  if (matchSources.has("transcript")) ordered.push("transcript");
+  return ordered;
+}
+
+function addSearchCandidate(
+  candidates: Map<string, SearchCandidate>,
+  candidate: {
+    smart_doc_token: string;
+    smart_doc_title: string;
+    owner_id: string;
+    rank: number;
+    source: SearchMatchSource;
+    text_record_doc_token?: string;
+    text_record_doc_title?: string;
+  },
+): void {
+  const existing = candidates.get(candidate.smart_doc_token);
+  if (!existing) {
+    candidates.set(candidate.smart_doc_token, {
+      smart_doc_token: candidate.smart_doc_token,
+      smart_doc_title: candidate.smart_doc_title,
+      owner_id: candidate.owner_id,
+      rank: candidate.rank,
+      match_sources: new Set([candidate.source]),
+      ...(candidate.text_record_doc_token
+        ? { text_record_doc_token: candidate.text_record_doc_token }
+        : {}),
+      ...(candidate.text_record_doc_title
+        ? { text_record_doc_title: candidate.text_record_doc_title }
+        : {}),
+    });
+    return;
+  }
+
+  existing.rank = Math.min(existing.rank, candidate.rank);
+  existing.match_sources.add(candidate.source);
+  if (candidate.source === "summary") {
+    existing.smart_doc_title = candidate.smart_doc_title;
+  }
+  if (candidate.text_record_doc_token && !existing.text_record_doc_token) {
+    existing.text_record_doc_token = candidate.text_record_doc_token;
+  }
+  if (candidate.text_record_doc_title && !existing.text_record_doc_title) {
+    existing.text_record_doc_title = candidate.text_record_doc_title;
+  }
+}
+
+function buildTranscriptSnippet(rawContent: string, query: string): SearchTranscriptSnippet | null {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return null;
+
+  const matchIndex = rawContent.toLowerCase().indexOf(normalizedQuery);
+  if (matchIndex === -1) return null;
+
+  const start = Math.max(0, matchIndex - SEARCH_SNIPPET_RADIUS);
+  const end = Math.min(rawContent.length, matchIndex + query.length + SEARCH_SNIPPET_RADIUS);
+  const snippet = rawContent.slice(start, end).replace(/\s+/g, " ").trim();
+
+  const lines = rawContent.split(/\r?\n/);
+  let consumed = 0;
+  let matchLineIndex = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const lineEnd = consumed + lines[i].length;
+    if (matchIndex <= lineEnd) {
+      matchLineIndex = i;
+      break;
+    }
+    consumed = lineEnd + 1;
+  }
+
+  let speaker: string | undefined;
+  let timestamp: string | undefined;
+  for (let i = matchLineIndex; i >= 0 && i >= matchLineIndex - 3; i--) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    if (!timestamp) {
+      timestamp = line.match(/\d{2}:\d{2}:\d{2}(?:\.\d{3})?/)?.[0];
+    }
+    if (!speaker) {
+      speaker = line.match(/^(说话人\s*\d+)/)?.[1];
+    }
+    if (speaker || timestamp) break;
+  }
+
+  return {
+    ...(speaker ? { speaker } : {}),
+    ...(timestamp ? { timestamp } : {}),
+    snippet,
+  };
+}
+
+function buildWhyMatched(params: {
+  summaryTitleMatch: boolean;
+  summaryTextMatch: boolean;
+  transcriptTitleMatch: boolean;
+  transcriptTextMatch: boolean;
+  matchSources: Set<SearchMatchSource>;
+}): string {
+  if (params.summaryTextMatch && params.transcriptTextMatch) {
+    return "关键词同时命中 AI 摘要和文字记录原文";
+  }
+  if (params.summaryTextMatch) return "关键词命中 AI 摘要";
+  if (params.transcriptTextMatch) return "关键词命中文字记录原文";
+  if (params.summaryTitleMatch && params.transcriptTitleMatch) {
+    return "关键词同时命中智能纪要和文字记录标题";
+  }
+  if (params.summaryTitleMatch) return "关键词命中智能纪要标题";
+  if (params.transcriptTitleMatch) return "关键词命中文字记录标题";
+  if (params.matchSources.has("summary") && params.matchSources.has("transcript")) {
+    return "飞书搜索同时命中智能纪要和文字记录文档";
+  }
+  if (params.matchSources.has("summary")) return "飞书搜索命中智能纪要文档";
+  return "飞书搜索命中文字记录文档";
 }
 
 async function listMinutes(
@@ -396,79 +591,150 @@ async function searchMinutes(
   userToken: FeishuUserToken,
   query: string,
 ): Promise<unknown> {
-  // Drive search is full-text: finds keyword in both AI summaries ("智能纪要")
-  // and full transcripts ("文字记录"). We only need one search call.
-  const docs = await searchSmartMinutesDocs(userToken.access_token, query, 50);
+  const candidates = new Map<string, SearchCandidate>();
+  const warnings: string[] = [];
+  let pagesScanned = 0;
+  let docsScanned = 0;
+  let rank = 0;
 
-  // Classify results: only docx, split into "智能纪要" and "文字记录"
-  // docs_type comes back as "docx" (string name), despite request using numeric 22
-  const smartDocs: DriveSearchDoc[] = [];
-  const textRecordDocs: DriveSearchDoc[] = [];
-  for (const d of docs) {
-    const dt = String(d.docs_type);
-    if (dt !== "docx" && dt !== "22") continue;
-    if (d.title.startsWith("智能纪要")) smartDocs.push(d);
-    else if (d.title.startsWith("文字记录")) textRecordDocs.push(d);
-  }
+  for (const offset of SEARCH_PAGE_OFFSETS) {
+    const page = await searchMinutesDocsPage(
+      userToken.access_token,
+      query,
+      SEARCH_PAGE_SIZE,
+      offset,
+    );
+    pagesScanned += 1;
+    docsScanned += page.docs.length;
 
-  // Resolve "文字记录" → linked "智能纪要" (if not already discovered)
-  const smartDocTokens = new Set(smartDocs.map((d) => d.docs_token));
-  for (const trd of textRecordDocs.slice(0, 10)) {
-    try {
+    const pendingTranscriptDocs: Array<{ doc: DriveSearchDoc; rank: number }> = [];
+    for (const doc of page.docs) {
+      const docKind = getMinutesDocKind(doc);
+      if (!docKind) continue;
+
+      const currentRank = rank++;
+      if (docKind === "summary") {
+        addSearchCandidate(candidates, {
+          smart_doc_token: doc.docs_token,
+          smart_doc_title: doc.title,
+          owner_id: doc.owner_id,
+          rank: currentRank,
+          source: "summary",
+        });
+        continue;
+      }
+
+      pendingTranscriptDocs.push({ doc, rank: currentRank });
+    }
+
+    for (const item of pendingTranscriptDocs) {
+      if (candidates.size >= SEARCH_MAX_CANDIDATES) break;
       const linkedToken = await extractLinkedSmartMinutesDocToken(
         client,
-        trd.docs_token,
+        item.doc.docs_token,
         userToken.access_token,
       );
-      if (linkedToken && !smartDocTokens.has(linkedToken)) {
-        smartDocTokens.add(linkedToken);
-        smartDocs.push({
-          docs_token: linkedToken,
-          docs_type: "22",
-          title: trd.title.replace("文字记录", "智能纪要"),
-          owner_id: trd.owner_id,
-        });
+      if (!linkedToken) {
+        warnings.push(`${item.doc.title}: linked smart minutes doc not found`);
+        continue;
       }
-    } catch {
-      // best-effort: if we can't resolve the link, skip this transcript doc
+      addSearchCandidate(candidates, {
+        smart_doc_token: linkedToken,
+        smart_doc_title: item.doc.title.replace("文字记录", "智能纪要"),
+        owner_id: item.doc.owner_id,
+        rank: item.rank,
+        source: "transcript",
+        text_record_doc_token: item.doc.docs_token,
+        text_record_doc_title: item.doc.title,
+      });
     }
+
+    if (candidates.size >= SEARCH_MAX_CANDIDATES) break;
+    if (!page.hasMore || page.docs.length < SEARCH_PAGE_SIZE) break;
   }
 
-  // Extract minute tokens from "智能纪要" docs
-  const results: MinuteInfo[] = [];
-  const errors: string[] = [];
-  for (const doc of smartDocs.slice(0, 10)) {
-    try {
-      const minuteTokens = await extractMinuteTokensFromDoc(
+  const orderedCandidates = [...candidates.values()]
+    .sort((a, b) => a.rank - b.rank)
+    .slice(0, SEARCH_MAX_RESULTS);
+
+  const seenMinuteTokens = new Set<string>();
+  const results: SearchResult[] = [];
+
+  for (const candidate of orderedCandidates) {
+    const minuteTokens = await extractMinuteTokensFromDoc(
+      client,
+      candidate.smart_doc_token,
+      userToken.access_token,
+    );
+    if (minuteTokens.length === 0) {
+      warnings.push(`${candidate.smart_doc_title}: minute token not found`);
+      continue;
+    }
+
+    for (const minuteToken of minuteTokens) {
+      if (seenMinuteTokens.has(minuteToken)) continue;
+      seenMinuteTokens.add(minuteToken);
+
+      const info = await getMinuteInfo(client, minuteToken, userToken.access_token);
+      if (!info) {
+        warnings.push(`${candidate.smart_doc_title}: minute info not found for ${minuteToken}`);
+        continue;
+      }
+
+      const aiSummary = await getAiSummary(
         client,
-        doc.docs_token,
+        candidate.smart_doc_token,
         userToken.access_token,
       );
-      for (const mt of minuteTokens) {
-        const info = await getMinuteInfo(client, mt, userToken.access_token);
-        if (info) {
-          info.doc_token = doc.docs_token;
-          info.doc_title = doc.title;
-          results.push(info);
+      const summaryTitleMatch = includesQuery(candidate.smart_doc_title, query);
+      const summaryTextMatch = includesQuery(aiSummary, query);
+
+      let transcriptTitleMatch = false;
+      let transcriptTextMatch = false;
+      let transcriptSnippet: SearchTranscriptSnippet | null = null;
+
+      if (candidate.match_sources.has("transcript") && candidate.text_record_doc_token) {
+        const recordRawContent = await getDocxRawContent(
+          client,
+          candidate.text_record_doc_token,
+          userToken.access_token,
+        );
+        transcriptTitleMatch = includesQuery(candidate.text_record_doc_title, query);
+        transcriptTextMatch = includesQuery(recordRawContent, query);
+        if (!summaryTextMatch && transcriptTextMatch && recordRawContent) {
+          transcriptSnippet = buildTranscriptSnippet(recordRawContent, query);
         }
       }
-    } catch (err) {
-      errors.push(`${doc.title}: ${err instanceof Error ? err.message : String(err)}`);
+
+      results.push({
+        ...info,
+        doc_token: candidate.smart_doc_token,
+        doc_title: candidate.smart_doc_title,
+        ai_summary: aiSummary,
+        match_sources: orderedMatchSources(candidate.match_sources),
+        why_matched: buildWhyMatched({
+          summaryTitleMatch,
+          summaryTextMatch,
+          transcriptTitleMatch,
+          transcriptTextMatch,
+          matchSources: candidate.match_sources,
+        }),
+        ...(transcriptSnippet ? { transcript_snippets: [transcriptSnippet] } : {}),
+      });
     }
   }
-
-  const deduped = new Set<string>();
-  const finalResults = results.filter((r) => {
-    if (deduped.has(r.minute_token)) return false;
-    deduped.add(r.minute_token);
-    return true;
-  });
 
   return {
     query,
-    minutes: finalResults,
-    count: finalResults.length,
-    ...(errors.length > 0 ? { warnings: errors } : {}),
+    results,
+    count: results.length,
+    scan_stats: {
+      pages_scanned: pagesScanned,
+      docs_scanned: docsScanned,
+      minute_candidates: candidates.size,
+      results_enriched: results.length,
+    },
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
 }
 
