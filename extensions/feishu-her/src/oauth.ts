@@ -332,6 +332,14 @@ export async function handleOAuthCallback(
     }
 
     const now = Date.now();
+
+    // Use actual granted scopes from Feishu (not our requested list) so scope
+    // drift detection works correctly when the app backend is missing permissions.
+    const grantedScopeStr: string = tokenRes.data.scope ?? "";
+    const grantedScopes = grantedScopeStr
+      ? grantedScopeStr.split(/[\s,]+/).filter(Boolean)
+      : OAUTH_SCOPES;
+
     const userToken: FeishuUserToken = {
       open_id: tokenRes.data.open_id ?? "",
       name: tokenRes.data.name,
@@ -339,15 +347,18 @@ export async function handleOAuthCallback(
       refresh_token: tokenRes.data.refresh_token ?? "",
       access_token_expires_at: now + (tokenRes.data.expires_in ?? 7200) * 1000,
       refresh_token_expires_at: now + (tokenRes.data.refresh_expires_in ?? 2592000) * 1000,
-      scopes: OAUTH_SCOPES,
+      scopes: grantedScopes,
       created_at: now,
       updated_at: now,
     };
 
     saveUserToken(userToken);
     markStateCompleted(stateNonce, state);
+
+    const missing = OAUTH_SCOPES.filter((s) => !grantedScopes.includes(s));
     callbackDeps.log(
-      `OAuth success: ${userToken.name ?? userToken.open_id} (${userToken.open_id})`,
+      `OAuth success: ${userToken.name ?? userToken.open_id} (${userToken.open_id}) — ${grantedScopes.length} scopes granted` +
+        (missing.length > 0 ? `, MISSING: ${missing.join(", ")}` : ""),
     );
 
     // Respond with success page
