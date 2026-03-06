@@ -1,12 +1,21 @@
 # 飞书妙记/会议纪要 — 架构设计
 
-> 状态：**Phase 1-3 已实现** | **Phase 3.5 已实现（search 可解释性重构）** | **全量升级：暂不建议（skills 路由 blocker）** | 优先级：P1
+> 状态：**Phase 4 代码已完成，待权限配置 + 重新授权测试** | Phase 1-3.5 已实现 | 优先级：P1
 > 创建：2026-03-04 | 最后更新：2026-03-06
-> Docker1 工具回归：4 action × 全场景 + Phase 3.5 docker1 Her 实测（`cursor` / `KPI`）= **PASS**
-> Docker1 最新路由验证（2026-03-06 02:08）：显式表述 `查一下我今天的会议纪要，给我细节` = **PASS**；歧义表述 `看一下我今天的会议，给我详细内容` 仍先走 `calendar` = **FAIL**
-> 2026-03-06 官方/API 实测：公开 Drive Search 可命中与飞书 App 相同的"文字记录"文档，但公开 API 不返回 snippet/highlight，排序也不等于 App
-> ✅ 当前 search 已补齐可直接回答的字段：`ai_summary` / `match_sources` / `why_matched` / `transcript_snippets` / `scan_stats`
-> ⚠️ 结论：`feishu_minutes` 工具链路可灰度；在修掉自然语言路由歧义前，不建议全量升级。
+>
+> ### Phase 4 诊断 & 修复（2026-03-06）
+>
+> - Docker13 实测：飞书 App 可见 8 条妙记，旧代码只返回 1 条（12.5%）
+> - **根因 1（代码 Bug）**：50% 的"智能纪要"docx 不含 obcn 链接 → 被静默丢弃。**已修复**：直接从 rawContent 读 AI 摘要
+> - **根因 2（权限缺失）**：OAuth scope 缺少 `drive:drive.search:readonly`、`search:docs:read`（搜索专用权限），Drive Search 覆盖不全。**已补充 scope**
+> - **根因 3（VC 权限缺失）**：没有 `vc:*` scope，无法通过 VC API 发现所有参与的会议。**已补充 scope**
+>
+> ### 待完成
+>
+> - [ ] 飞书 App 后台勾选新权限（用户身份 + 应用身份）并发布新版本
+> - [ ] Docker13 用户重新 OAuth 授权（scope 变更后必须重新授权）
+> - [ ] 验证 Drive Search 覆盖率是否提升（目标：8/8）
+> - [ ] 验证 VC API 会议发现是否可用
 
 ---
 
@@ -14,10 +23,37 @@
 
 Her 需要**全自动**获取用户每天所有的飞书会议纪要和妙记（Minutes），无需用户手动复制链接。
 
-飞书"妙记"是 AI 生成的会议录音转写 + 智能摘要。飞书 Open API 提供了 `minutes-v1` 系列接口可以读取妙记内容，但有两个核心挑战：
+飞书"妙记"是 AI 生成的会议录音转写 + 智能摘要。飞书 Open API 提供了 `minutes-v1` 系列接口可以读取妙记内容，但有三个核心挑战：
 
 1. **需要 `user_access_token`**（用户身份）：应用身份（`tenant_access_token`）无法访问 minutes API，必须以用户身份调用
-2. **无"列出所有妙记"API**：飞书没有 `minutes.list` 接口，必须通过 Drive 搜索间接发现
+2. **无"列出所有妙记"API**：飞书没有 `minutes.list` 接口，必须通过 Drive 搜索或 VC API 间接发现
+3. **Drive Search 覆盖不全**：只能找到用户云空间中的文档，别人组织的会议纪要可能不在用户 Drive 中（但在"妙记"产品中可见）
+
+---
+
+## Phase 4 诊断结果（2026-03-06 docker13 实测）
+
+### 三个根本性问题
+
+| 问题                   | 严重程度     | 根因                                                            | 修复状态                     |
+| ---------------------- | ------------ | --------------------------------------------------------------- | ---------------------------- |
+| Drive Search 覆盖不全  | **Critical** | "智能纪要"docx 存在于组织者云空间，参会人的 Drive Search 搜不到 | 待 VC 权限验证               |
+| 无 obcn 链接时静默丢弃 | **High**     | 50% 的"智能纪要"docx 不含 `/minutes/obcnXXXX` 链接，代码返回空  | ✅ 已修复                    |
+| minutes.get 返回 403   | **Medium**   | 部分妙记的权限设置不允许 API 访问（即使用户是参会人）           | ✅ 已绕过（改用 rawContent） |
+
+### 实测数据（docker13, user=卜弋天）
+
+| 会议                  | 飞书 App 可见 | Drive Search | docx 有 obcn | minutes.get | rawContent |
+| --------------------- | ------------- | ------------ | ------------ | ----------- | ---------- |
+| 网宿科技交流 2/28     | ✅            | ✅           | ✅           | ✅          | ✅ 4532字  |
+| her接入aily 3/1       | ✅            | ✅           | **❌**       | N/A         | ✅ 1949字  |
+| 年会报告预演彩排 2/28 | ✅            | ✅           | ✅           | **❌ 403**  | ✅ 13087字 |
+| AI立项材料预评审 2/27 | ✅            | ✅           | **❌**       | N/A         | ✅ 1574字  |
+| cursor+figma+MCP 3/4  | ✅            | **❌**       | N/A          | N/A         | N/A        |
+| 新产品试点推广 3/4    | ✅            | **❌**       | N/A          | N/A         | N/A        |
+| 系统权限架构分工 3/1  | ✅            | **❌**       | N/A          | N/A         | N/A        |
+
+修复前：1/8 = 12.5% 覆盖率 → 修复后（Phase 4 代码）：4/8 = 50% → VC 权限加持后目标 100%
 
 ---
 
@@ -25,32 +61,71 @@ Her 需要**全自动**获取用户每天所有的飞书会议纪要和妙记（
 
 > 以下路径已在 carher-1 容器中通过实际 API 调用验证
 
-### 妙记发现（全自动）
+### 妙记发现（当前：Drive Search 路径）
 
 ```
-用户日历 ──→ 列出视频会议事件
-                │
-Drive 搜索 ──→ 搜索"智能纪要"docx ──→ 扫描 blocks ──→ 提取 /minutes/obcnXXXX
-                                                              │
-                                                    minutes-v1 API ──→ 妙记内容
+Drive 搜索 ──→ 搜索"智能纪要"docx ──→ docx.rawContent ──→ AI 摘要全文
+                                    ├──→ 扫描 blocks ──→ 提取 obcn（可选，部分 docx 没有）
+                                    │                         │
+                                    │               minutes-v1 API ──→ 元数据/逐字记录（可选）
 ```
 
-具体步骤：
+### 妙记发现（目标：VC 会议路径，需要 vc:\* 权限）
 
-| #   | API                               | Token 类型 | 作用                                                     |
-| --- | --------------------------------- | ---------- | -------------------------------------------------------- |
-| 1   | `calendar.v4.calendar.list`       | user       | 获取用户主日历                                           |
-| 2   | `calendar.v4.calendarEvent.list`  | user       | 列出带视频会议的日程                                     |
-| 3   | `suite/docs-api/search/object`    | user       | 搜索"智能纪要"/"文字记录"文档                            |
-| 4   | `docx.v1.documentBlock.list`      | user       | 扫描 docx blocks，提取智能纪要链接或 `/minutes/obcnXXXX` |
-| 5   | `minutes.v1.minute.get`           | user       | 获取妙记元数据（标题、时长、URL）                        |
-| 6   | `minutes.v1.minuteTranscript.get` | user       | 获取逐字记录                                             |
-| 7   | `docx.v1.document.rawContent`     | user       | 读取智能纪要/文字记录纯文本内容                          |
+```
+VC export meeting_list ──→ 发现所有参与的会议
+                               │
+VC meetings/{id}/recording ──→ 录制 URL (https://.../minutes/obcnXXXX)
+                                     │
+                           minutes-v1 API ──→ 元数据 + 逐字记录
+```
+
+### API 步骤
+
+| #   | API                               | Token 类型 | 作用                                          | 需要的 scope                                       |
+| --- | --------------------------------- | ---------- | --------------------------------------------- | -------------------------------------------------- |
+| 1   | `suite/docs-api/search/object`    | user       | 搜索"智能纪要"/"文字记录"文档                 | `drive:drive.search:readonly` + `search:docs:read` |
+| 2   | `docx.v1.document.rawContent`     | user       | **直接读取 AI 摘要全文**（核心路径）          | `docx:document:readonly`                           |
+| 3   | `docx.v1.documentBlock.list`      | user       | 扫描 blocks 提取 obcn 链接（可选）            | `docx:document:readonly`                           |
+| 4   | `minutes.v1.minute.get`           | user       | 获取元数据：标题、时长、URL（可选，可能 403） | `minutes:minutes:readonly`                         |
+| 5   | `minutes.v1.minuteTranscript.get` | user       | 获取逐字记录                                  | `minutes:minutes.transcript:export`                |
+| 6   | `vc/v1/exports/meeting_list`      | user       | **导出用户参与的所有会议**（Phase 5 目标）    | `vc:export`                                        |
+| 7   | `vc/v1/meetings/{id}/recording`   | user       | 获取录制 URL → 提取 minute_token              | `vc:meeting:readonly`                              |
+
+### 所需 OAuth Scope（完整列表，16 个）
+
+```
+minutes:minutes, minutes:minutes:readonly, minutes:minutes.basic:read, minutes:minutes.transcript:export,
+calendar:calendar, calendar:calendar:readonly,
+drive:drive:readonly, drive:drive.search:readonly, docx:document:readonly,
+search:docs:read, search:message,
+vc:meeting:readonly, vc:export, vc:room:readonly
+```
+
+### 飞书 App 后台权限配置（用户身份 + 应用身份都要勾）
+
+| 权限名称                  | scope 标识                          | Phase 1-3 有? | Phase 4 新增? |
+| ------------------------- | ----------------------------------- | ------------- | ------------- |
+| 读取妙记                  | `minutes:minutes`                   | ✅            |               |
+| 只读妙记                  | `minutes:minutes:readonly`          | ✅            |               |
+| 读取妙记基本信息          | `minutes:minutes.basic:read`        | ✅            |               |
+| 导出妙记逐字记录          | `minutes:minutes.transcript:export` | ✅            |               |
+| 日历读写                  | `calendar:calendar`                 | ✅            |               |
+| 日历只读                  | `calendar:calendar:readonly`        | ✅            |               |
+| 读取云空间                | `drive:drive:readonly`              | ✅            |               |
+| **搜索云文档**            | `drive:drive.search:readonly`       | **❌**        | **✅ 新增**   |
+| 读取文档                  | `docx:document:readonly`            | ✅            |               |
+| **搜索云文档(Wiki+文档)** | `search:docs:read`                  | **❌**        | **✅ 新增**   |
+| **搜索消息**              | `search:message`                    | **❌**        | **✅ 新增**   |
+| **视频会议只读**          | `vc:meeting:readonly`               | **❌**        | **✅ 新增**   |
+| **导出会议数据**          | `vc:export`                         | **❌**        | **✅ 新增**   |
+| **会议室信息**            | `vc:room:readonly`                  | **❌**        | **✅ 新增**   |
 
 ### 验证结果
 
-- 自动发现 **4 个妙记**（包括一个用户未主动搜索的"AI账号采购及落地节奏讨论"会议）
-- 全部成功读取标题、时长、逐字记录、AI 摘要
+- Phase 1-3: 自动发现 **4 个妙记**（carher-1 实测）
+- Phase 4 代码修复后: Drive Search 找到的 **4/4 个妙记全部可读取 AI 摘要**
+- 待 VC 权限验证: 目标覆盖飞书 App "我参与的"列表中的全部会议
 
 ---
 

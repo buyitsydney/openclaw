@@ -21,7 +21,9 @@ import { getFeishuClient, sendFeishuRichText } from "./outbound.js";
 
 const FEISHU_ALLOWED_HOSTNAMES = ["open.feishu.cn", "accounts.feishu.cn"];
 
-// All scopes required for minutes discovery and reading
+// All scopes required for minutes discovery and reading.
+// VC scopes enable meeting discovery (the "妙记" product is built on VC recordings).
+// Search scopes (drive.search + search:docs) expand Drive Search coverage beyond basic drive:readonly.
 const OAUTH_SCOPES = [
   "minutes:minutes",
   "minutes:minutes:readonly",
@@ -30,7 +32,13 @@ const OAUTH_SCOPES = [
   "calendar:calendar",
   "calendar:calendar:readonly",
   "drive:drive:readonly",
+  "drive:drive.search:readonly",
   "docx:document:readonly",
+  "search:docs:read",
+  "search:message",
+  "vc:meeting:readonly",
+  "vc:export",
+  "vc:room:readonly",
 ];
 
 // ── Types ──

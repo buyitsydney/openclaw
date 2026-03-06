@@ -321,6 +321,30 @@ function parseDateFromTitle(title: string): Date | null {
   return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
 }
 
+/** Extract meeting name from "智能纪要：XXX 2026年3月1日" → "XXX" */
+function parseMeetingNameFromTitle(title: string): string {
+  return title
+    .replace(/^智能纪要[：:]\s*/, "")
+    .replace(/\s+\d{4}年\d{1,2}月\d{1,2}日$/, "")
+    .trim();
+}
+
+/**
+ * Build a MinuteInfo from docx metadata when minutes API is unavailable
+ * (either no obcn link in docx blocks, or minutes.get returned 403).
+ */
+function docxFallbackInfo(doc: DriveSearchDoc, minuteToken?: string): MinuteInfo {
+  const date = parseDateFromTitle(doc.title);
+  return {
+    minute_token: minuteToken ?? `doc:${doc.docs_token}`,
+    title: parseMeetingNameFromTitle(doc.title),
+    doc_token: doc.docs_token,
+    doc_title: doc.title,
+    owner_id: doc.owner_id,
+    ...(date ? { create_time: String(date.getTime()) } : {}),
+  };
+}
+
 type SearchMatchSource = "summary" | "transcript";
 
 type SearchTranscriptSnippet = {
@@ -503,7 +527,6 @@ async function listMinutes(
     return { minutes: [], message: `最近 ${days} 天未找到智能纪要文档。` };
   }
 
-  // Extract minute tokens from each smart minutes docx
   const results: MinuteInfo[] = [];
   const errors: string[] = [];
   for (const doc of recentDocs) {
@@ -513,13 +536,22 @@ async function listMinutes(
         doc.docs_token,
         userToken.access_token,
       );
-      for (const mt of minuteTokens) {
-        const info = await getMinuteInfo(client, mt, userToken.access_token);
-        if (info) {
-          info.doc_token = doc.docs_token;
-          info.doc_title = doc.title;
-          results.push(info);
+
+      if (minuteTokens.length > 0) {
+        for (const mt of minuteTokens) {
+          const info = await getMinuteInfo(client, mt, userToken.access_token);
+          if (info) {
+            info.doc_token = doc.docs_token;
+            info.doc_title = doc.title;
+            results.push(info);
+          } else {
+            // minutes.get failed (403 etc.) — still return docx-based info
+            results.push(docxFallbackInfo(doc, mt));
+          }
         }
+      } else {
+        // No minute_token in docx blocks — still discoverable via docx
+        results.push(docxFallbackInfo(doc));
       }
     } catch (err) {
       errors.push(`${doc.title}: ${err instanceof Error ? err.message : String(err)}`);
@@ -539,19 +571,19 @@ async function listMinutes(
     count: unique.length,
     days,
     ...(errors.length > 0 ? { warnings: errors } : {}),
-    tip: "Use get action with minute_token to read AI summary. Use transcript action for full transcript.",
+    tip: "Use get action with minute_token or doc_token to read AI summary. Use transcript action with minute_token for full transcript.",
   };
 }
 
 async function getMinute(
   client: Lark.Client,
   userToken: FeishuUserToken,
-  minuteToken: string,
+  minuteToken?: string,
   docToken?: string,
 ): Promise<unknown> {
-  const info = await getMinuteInfo(client, minuteToken, userToken.access_token);
-  if (!info) {
-    return { error: `minute_token ${minuteToken} not found or no permission.` };
+  let info: MinuteInfo | null = null;
+  if (minuteToken && !minuteToken.startsWith("doc:")) {
+    info = await getMinuteInfo(client, minuteToken, userToken.access_token);
   }
 
   let aiSummary: string | null = null;
@@ -559,8 +591,13 @@ async function getMinute(
     aiSummary = await getAiSummary(client, docToken, userToken.access_token);
   }
 
+  if (!info && !aiSummary) {
+    return { error: "minute_token or doc_token required. Could not retrieve any data." };
+  }
+
   return {
-    ...info,
+    ...(info ?? { minute_token: minuteToken ?? "unknown" }),
+    ...(docToken ? { doc_token: docToken } : {}),
     ai_summary: aiSummary,
     tip: aiSummary
       ? undefined
@@ -666,61 +703,85 @@ async function searchMinutes(
       candidate.smart_doc_token,
       userToken.access_token,
     );
-    if (minuteTokens.length === 0) {
-      warnings.push(`${candidate.smart_doc_title}: minute token not found`);
-      continue;
-    }
 
-    for (const minuteToken of minuteTokens) {
-      if (seenMinuteTokens.has(minuteToken)) continue;
-      seenMinuteTokens.add(minuteToken);
+    // Read AI summary regardless of whether we found a minute_token
+    const aiSummary = await getAiSummary(client, candidate.smart_doc_token, userToken.access_token);
+    const summaryTitleMatch = includesQuery(candidate.smart_doc_title, query);
+    const summaryTextMatch = includesQuery(aiSummary, query);
 
-      const info = await getMinuteInfo(client, minuteToken, userToken.access_token);
-      if (!info) {
-        warnings.push(`${candidate.smart_doc_title}: minute info not found for ${minuteToken}`);
-        continue;
-      }
+    let transcriptTitleMatch = false;
+    let transcriptTextMatch = false;
+    let transcriptSnippet: SearchTranscriptSnippet | null = null;
 
-      const aiSummary = await getAiSummary(
+    if (candidate.match_sources.has("transcript") && candidate.text_record_doc_token) {
+      const recordRawContent = await getDocxRawContent(
         client,
-        candidate.smart_doc_token,
+        candidate.text_record_doc_token,
         userToken.access_token,
       );
-      const summaryTitleMatch = includesQuery(candidate.smart_doc_title, query);
-      const summaryTextMatch = includesQuery(aiSummary, query);
-
-      let transcriptTitleMatch = false;
-      let transcriptTextMatch = false;
-      let transcriptSnippet: SearchTranscriptSnippet | null = null;
-
-      if (candidate.match_sources.has("transcript") && candidate.text_record_doc_token) {
-        const recordRawContent = await getDocxRawContent(
-          client,
-          candidate.text_record_doc_token,
-          userToken.access_token,
-        );
-        transcriptTitleMatch = includesQuery(candidate.text_record_doc_title, query);
-        transcriptTextMatch = includesQuery(recordRawContent, query);
-        if (!summaryTextMatch && transcriptTextMatch && recordRawContent) {
-          transcriptSnippet = buildTranscriptSnippet(recordRawContent, query);
-        }
+      transcriptTitleMatch = includesQuery(candidate.text_record_doc_title, query);
+      transcriptTextMatch = includesQuery(recordRawContent, query);
+      if (!summaryTextMatch && transcriptTextMatch && recordRawContent) {
+        transcriptSnippet = buildTranscriptSnippet(recordRawContent, query);
       }
+    }
 
-      results.push({
-        ...info,
-        doc_token: candidate.smart_doc_token,
-        doc_title: candidate.smart_doc_title,
-        ai_summary: aiSummary,
-        match_sources: orderedMatchSources(candidate.match_sources),
-        why_matched: buildWhyMatched({
-          summaryTitleMatch,
-          summaryTextMatch,
-          transcriptTitleMatch,
-          transcriptTextMatch,
-          matchSources: candidate.match_sources,
-        }),
-        ...(transcriptSnippet ? { transcript_snippets: [transcriptSnippet] } : {}),
-      });
+    const whyMatched = buildWhyMatched({
+      summaryTitleMatch,
+      summaryTextMatch,
+      transcriptTitleMatch,
+      transcriptTextMatch,
+      matchSources: candidate.match_sources,
+    });
+
+    if (minuteTokens.length > 0) {
+      for (const minuteToken of minuteTokens) {
+        if (seenMinuteTokens.has(minuteToken)) continue;
+        seenMinuteTokens.add(minuteToken);
+
+        const info = await getMinuteInfo(client, minuteToken, userToken.access_token);
+        const base =
+          info ??
+          docxFallbackInfo(
+            {
+              docs_token: candidate.smart_doc_token,
+              docs_type: "docx",
+              title: candidate.smart_doc_title,
+              owner_id: candidate.owner_id,
+            },
+            minuteToken,
+          );
+        results.push({
+          ...base,
+          doc_token: candidate.smart_doc_token,
+          doc_title: candidate.smart_doc_title,
+          ai_summary: aiSummary,
+          match_sources: orderedMatchSources(candidate.match_sources),
+          why_matched: whyMatched,
+          ...(transcriptSnippet ? { transcript_snippets: [transcriptSnippet] } : {}),
+        });
+      }
+    } else {
+      // No minute_token in docx blocks — still return docx-based result
+      const syntheticKey = `doc:${candidate.smart_doc_token}`;
+      if (!seenMinuteTokens.has(syntheticKey)) {
+        seenMinuteTokens.add(syntheticKey);
+        const base = docxFallbackInfo({
+          docs_token: candidate.smart_doc_token,
+          docs_type: "docx",
+          title: candidate.smart_doc_title,
+          owner_id: candidate.owner_id,
+        });
+        results.push({
+          ...base,
+          doc_token: candidate.smart_doc_token,
+          doc_title: candidate.smart_doc_title,
+          ai_summary: aiSummary,
+          match_sources: orderedMatchSources(candidate.match_sources),
+          why_matched: whyMatched,
+          ...(transcriptSnippet ? { transcript_snippets: [transcriptSnippet] } : {}),
+        });
+      }
     }
   }
 
@@ -789,8 +850,10 @@ export function registerFeishuMinutesTools(api: OpenClawPluginApi): void {
               return json(await listMinutes(client, userToken, days));
             }
             case "get": {
-              if (!params.minute_token) {
-                return json({ error: "minute_token is required for get action." });
+              if (!params.minute_token && !params.doc_token) {
+                return json({
+                  error: "minute_token or doc_token is required for get action.",
+                });
               }
               return json(
                 await getMinute(client, userToken, params.minute_token, params.doc_token),
