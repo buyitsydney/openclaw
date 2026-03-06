@@ -417,10 +417,17 @@ async function discoverViaCalendar(
   client: Lark.Client,
   userToken: FeishuUserToken,
   days: number,
+  log?: (msg: string) => void,
 ): Promise<MinuteInfo[]> {
+  const _log = log ?? (() => {});
   const calendars = await listUserCalendars(userToken.access_token);
+  _log(`[calendar-discovery] calendars found: ${calendars.length}`);
   const primaryCal = calendars.find((c) => c.type === "primary" && c.role === "owner");
-  if (!primaryCal) return [];
+  if (!primaryCal) {
+    _log("[calendar-discovery] no primary calendar found — aborting");
+    return [];
+  }
+  _log(`[calendar-discovery] primary calendar: ${primaryCal.calendar_id}`);
 
   const endTime = Math.floor(Date.now() / 1000);
   const startTime = endTime - days * 86400;
@@ -430,8 +437,10 @@ async function discoverViaCalendar(
     startTime,
     endTime,
   );
+  _log(`[calendar-discovery] events in range: ${events.length}`);
 
   const vcMeetings = events.filter((e) => e.vchat?.meeting_url && e.summary);
+  _log(`[calendar-discovery] VC meetings with URL: ${vcMeetings.length}`);
 
   const results: MinuteInfo[] = [];
   const seen = new Set<string>();
@@ -450,14 +459,21 @@ async function discoverViaCalendar(
         lookupStart,
         lookupEnd,
       );
+      _log(
+        `[calendar-discovery] "${meeting.summary}" meetingNo=${meetingNo} → ${meetingIds.length} session(s)`,
+      );
 
       for (const meetingId of meetingIds) {
         const recordingUrl = await getMeetingRecordingUrl(userToken.access_token, meetingId);
-        if (!recordingUrl) continue;
+        if (!recordingUrl) {
+          _log(`[calendar-discovery]   meetingId=${meetingId} → no recording`);
+          continue;
+        }
 
         const minuteToken = recordingUrl.match(MINUTES_TOKEN_FROM_URL)?.[1];
         if (!minuteToken || seen.has(minuteToken)) continue;
         seen.add(minuteToken);
+        _log(`[calendar-discovery]   → minute_token=${minuteToken}`);
 
         const info = await getMinuteInfo(client, minuteToken, userToken.access_token);
         if (info) {
@@ -473,10 +489,13 @@ async function discoverViaCalendar(
           });
         }
       }
-    } catch {
-      // Best-effort per meeting; skip failures silently
+    } catch (err) {
+      _log(
+        `[calendar-discovery] "${meeting.summary}" error: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
+  _log(`[calendar-discovery] total minutes found: ${results.length}`);
   return results;
 }
 
@@ -678,13 +697,16 @@ async function listMinutes(
   client: Lark.Client,
   userToken: FeishuUserToken,
   days: number,
+  log?: (msg: string) => void,
 ): Promise<unknown> {
+  const _log = log ?? (() => {});
   // ── Path A: Drive Search (finds docs in user's own Drive space) ──
   const driveResults: MinuteInfo[] = [];
   const errors: string[] = [];
 
   try {
     const docs = await searchSmartMinutesDocs(userToken.access_token, "智能纪要", 50);
+    _log(`[minutes] Drive search returned ${docs.length} docs`);
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - days);
     cutoff.setHours(0, 0, 0, 0);
@@ -693,6 +715,7 @@ async function listMinutes(
       const date = parseDateFromTitle(d.title);
       return date ? date >= cutoff : true;
     });
+    _log(`[minutes] recent "智能纪要" docs (${days}d): ${recentDocs.length}`);
 
     for (const doc of recentDocs) {
       try {
@@ -723,13 +746,21 @@ async function listMinutes(
     errors.push(`Drive search: ${err instanceof Error ? err.message : String(err)}`);
   }
 
+  _log(`[minutes] Drive path found ${driveResults.length} minutes`);
+
   // ── Path B: Calendar + VC recording (finds ALL meetings the user attended) ──
   let calendarResults: MinuteInfo[] = [];
   try {
-    calendarResults = await discoverViaCalendar(client, userToken, days);
+    calendarResults = await discoverViaCalendar(client, userToken, days, log);
   } catch (err) {
-    errors.push(`Calendar discovery: ${err instanceof Error ? err.message : String(err)}`);
+    const msg = `Calendar discovery: ${err instanceof Error ? err.message : String(err)}`;
+    _log(`[minutes] ${msg}`);
+    errors.push(msg);
   }
+
+  _log(
+    `[minutes] Calendar path found ${calendarResults.length} minutes — merging with ${driveResults.length} from Drive`,
+  );
 
   // ── Merge & deduplicate (prefer Drive results which carry doc_token) ──
   const seen = new Set<string>();
@@ -746,6 +777,7 @@ async function listMinutes(
       merged.push(r);
     }
   }
+  _log(`[minutes] merged total: ${merged.length}`);
 
   return {
     minutes: merged,
@@ -1029,10 +1061,12 @@ export function registerFeishuMinutesTools(api: OpenClawPluginApi): void {
 
           const client = getClient();
 
+          const toolLog = (msg: string) => api.logger.info?.(msg);
+
           switch (params.action) {
             case "list": {
               const days = Math.min(Math.max(params.days ?? 7, 1), 30);
-              return json(await listMinutes(client, userToken, days));
+              return json(await listMinutes(client, userToken, days, toolLog));
             }
             case "get": {
               if (!params.minute_token && !params.doc_token) {
