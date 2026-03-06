@@ -377,6 +377,7 @@ async function getMeetingIdsByNo(
   meetingNo: string,
   startTime: number,
   endTime: number,
+  log?: (msg: string) => void,
 ): Promise<string[]> {
   const res = await callFeishuApiWithUserToken<{
     meeting_briefs?: Array<{ id: string; meeting_no: string; topic: string }>;
@@ -390,13 +391,20 @@ async function getMeetingIdsByNo(
       end_time: String(endTime),
     },
   });
-  if (res.code !== 0 || !res.data?.meeting_briefs?.length) return [];
+  if (res.code !== 0) {
+    log?.(
+      `[calendar-discovery] list_by_no meetingNo=${meetingNo} FAILED: code=${res.code} msg=${res.msg}`,
+    );
+    return [];
+  }
+  if (!res.data?.meeting_briefs?.length) return [];
   return res.data.meeting_briefs.map((b) => b.id);
 }
 
 async function getMeetingRecordingUrl(
   userToken: string,
   meetingId: string,
+  log?: (msg: string) => void,
 ): Promise<string | null> {
   const res = await callFeishuApiWithUserToken<{
     recording?: { url?: string; duration?: string };
@@ -405,7 +413,12 @@ async function getMeetingRecordingUrl(
     endpoint: `/vc/v1/meetings/${meetingId}/recording`,
     userToken,
   });
-  if (res.code !== 0) return null;
+  if (res.code !== 0) {
+    log?.(
+      `[calendar-discovery] recording meetingId=${meetingId} FAILED: code=${res.code} msg=${res.msg}`,
+    );
+    return null;
+  }
   return res.data?.recording?.url ?? null;
 }
 
@@ -458,13 +471,14 @@ async function discoverViaCalendar(
         meetingNo,
         lookupStart,
         lookupEnd,
+        log,
       );
       _log(
         `[calendar-discovery] "${meeting.summary}" meetingNo=${meetingNo} → ${meetingIds.length} session(s)`,
       );
 
       for (const meetingId of meetingIds) {
-        const recordingUrl = await getMeetingRecordingUrl(userToken.access_token, meetingId);
+        const recordingUrl = await getMeetingRecordingUrl(userToken.access_token, meetingId, log);
         if (!recordingUrl) {
           _log(`[calendar-discovery]   meetingId=${meetingId} → no recording`);
           continue;
