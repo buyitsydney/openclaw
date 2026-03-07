@@ -19,6 +19,7 @@ import type {
 } from "openclaw/plugin-sdk";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { resolveGroupOwnerIds } from "./accounts.js";
+import { rewriteModelShortcutCommand } from "./model-shortcuts.js";
 import {
   getFeishuClient,
   sendFeishuText,
@@ -1355,7 +1356,11 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   }
 
   // Strip @mentions (Feishu uses @_user_N patterns in text).
-  const cleanText = textFromMessage.replace(/@_user_\d+/g, "").trim();
+  const rawCleanText = textFromMessage.replace(/@_user_\d+/g, "").trim();
+  const cleanText = rewriteModelShortcutCommand(rawCleanText);
+  if (cleanText !== rawCleanText) {
+    log?.info(`[${account.accountId}] rewritten model shortcut: ${rawCleanText} -> ${cleanText}`);
+  }
   const isGroup = chatType === "group";
 
   // Allow through if: has text, is a reply (quoted msg context will be injected),

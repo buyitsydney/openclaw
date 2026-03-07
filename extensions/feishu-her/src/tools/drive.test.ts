@@ -190,7 +190,7 @@ describe("feishu-her feishu_drive visibility guard", () => {
       title: "预算表",
       online_type: "sheet",
     });
-    const details = result.details as { token?: string; online_type?: string };
+    const details = result.details as { token?: string; online_type?: string; url?: string };
 
     expect(details.token).toBe("shtcn1");
     expect(details.online_type).toBe("sheet");
