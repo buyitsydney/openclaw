@@ -19,6 +19,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { stringEnum } from "openclaw/plugin-sdk";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import { callFeishuApiWithUserToken, getValidUserToken, type FeishuUserToken } from "../oauth.js";
+import { getFeishuClient } from "../outbound.js";
 
 function json(data: unknown) {
   return {
@@ -242,6 +243,25 @@ function supplementFromArchive(
   }
 }
 
+// ── Tenant token fallback for enterprises where user_access_token
+// is rejected with 231204 ("b2c/b2b app not support") on im/v1/messages.
+// The tenant_access_token uses the same API and response format.
+
+const APP_TYPE_UNSUPPORTED_CODE = 231204;
+
+type TokenClient = {
+  tokenManager?: {
+    getTenantAccessToken: (params: Record<string, never>) => Promise<string | null | undefined>;
+  };
+};
+
+async function getTenantAccessToken(account: ResolvedFeishuAccount): Promise<string> {
+  const client = getFeishuClient(account) as unknown as TokenClient;
+  const token = await client.tokenManager?.getTenantAccessToken({});
+  if (!token) throw new Error("failed_to_get_tenant_access_token");
+  return token;
+}
+
 // ── API wrappers ──
 
 const DEFAULT_MESSAGE_LIMIT = 20;
@@ -293,6 +313,11 @@ async function fetchChatHistory(params: {
       query,
     });
 
+    if (res.code === APP_TYPE_UNSUPPORTED_CODE) {
+      throw Object.assign(new Error(`Feishu API error: code=${res.code} msg=${res.msg}`), {
+        feishuCode: APP_TYPE_UNSUPPORTED_CODE,
+      });
+    }
     if (res.code !== 0) {
       throw new Error(`Feishu API error: code=${res.code} msg=${res.msg}`);
     }
@@ -354,6 +379,11 @@ async function fetchThreadMessages(params: {
     query,
   });
 
+  if (res.code === APP_TYPE_UNSUPPORTED_CODE) {
+    throw Object.assign(new Error(`Feishu API error: code=${res.code} msg=${res.msg}`), {
+      feishuCode: APP_TYPE_UNSUPPORTED_CODE,
+    });
+  }
   if (res.code !== 0) {
     throw new Error(`Feishu API error: code=${res.code} msg=${res.msg}`);
   }
@@ -477,9 +507,9 @@ export function registerFeishuChatHistoryTool(api: OpenClawPluginApi) {
         try {
           switch (params.action) {
             case "list_history":
-              return await handleListHistory(userToken, params);
+              return await handleListHistory(firstAccount, userToken, params);
             case "list_thread":
-              return await handleListThread(userToken, params);
+              return await handleListThread(firstAccount, userToken, params);
             case "get_message":
               return await handleGetMessage(userToken, params);
             default:
@@ -499,7 +529,12 @@ export function registerFeishuChatHistoryTool(api: OpenClawPluginApi) {
 // ── Action handlers ──
 
 // oxlint-disable-next-line typescript/no-explicit-any
-async function handleListHistory(userToken: FeishuUserToken, params: any) {
+async function handleListHistory(
+  account: ResolvedFeishuAccount,
+  userToken: FeishuUserToken,
+  // oxlint-disable-next-line typescript/no-explicit-any
+  params: any,
+) {
   if (!params.chat_id) {
     return json({ error: "chat_id is required for list_history action" });
   }
@@ -511,14 +546,35 @@ async function handleListHistory(userToken: FeishuUserToken, params: any) {
 
   const limit = Math.min(Math.max(params.page_size ?? DEFAULT_MESSAGE_LIMIT, 1), MAX_MESSAGE_LIMIT);
 
-  const result = await fetchChatHistory({
-    token: userToken.access_token,
-    chatId: params.chat_id,
-    startMs,
-    endMs,
-    limit,
-    pageToken: params.page_token,
-  });
+  let token = userToken.access_token;
+  let usedTenantFallback = false;
+
+  let result: ListHistoryResult;
+  try {
+    result = await fetchChatHistory({
+      token,
+      chatId: params.chat_id,
+      startMs,
+      endMs,
+      limit,
+      pageToken: params.page_token,
+    });
+  } catch (err) {
+    if ((err as { feishuCode?: number }).feishuCode === APP_TYPE_UNSUPPORTED_CODE) {
+      token = await getTenantAccessToken(account);
+      usedTenantFallback = true;
+      result = await fetchChatHistory({
+        token,
+        chatId: params.chat_id,
+        startMs,
+        endMs,
+        limit,
+        pageToken: params.page_token,
+      });
+    } else {
+      throw err;
+    }
+  }
 
   // Cross-reference with local archive for messages the API can't fully read
   // (video shows as "nonsupport", interactive cards are degraded).
@@ -536,7 +592,7 @@ async function handleListHistory(userToken: FeishuUserToken, params: any) {
     for (const m of threaded) {
       try {
         const threadResult = await fetchThreadMessages({
-          token: userToken.access_token,
+          token,
           threadId: m.thread_id!,
           pageSize: API_PAGE_SIZE,
         });
@@ -554,6 +610,7 @@ async function handleListHistory(userToken: FeishuUserToken, params: any) {
         thread_replies: threadReplies,
         threads_fetched: Object.keys(threadReplies).length,
         user_open_id: userToken.open_id,
+        ...(usedTenantFallback && { token_mode: "tenant_fallback" }),
       });
     }
   }
@@ -561,28 +618,53 @@ async function handleListHistory(userToken: FeishuUserToken, params: any) {
   return json({
     ...result,
     user_open_id: userToken.open_id,
+    ...(usedTenantFallback && { token_mode: "tenant_fallback" }),
   });
 }
 
-// oxlint-disable-next-line typescript/no-explicit-any
-async function handleListThread(userToken: FeishuUserToken, params: any) {
+async function handleListThread(
+  account: ResolvedFeishuAccount,
+  userToken: FeishuUserToken,
+  // oxlint-disable-next-line typescript/no-explicit-any
+  params: any,
+) {
   if (!params.thread_id) {
     return json({ error: "thread_id is required for list_thread action" });
   }
 
   const limit = Math.min(Math.max(params.page_size ?? DEFAULT_MESSAGE_LIMIT, 1), MAX_MESSAGE_LIMIT);
-  const result = await fetchThreadMessages({
-    token: userToken.access_token,
-    threadId: params.thread_id,
-    pageSize: Math.min(limit, API_PAGE_SIZE),
-    pageToken: params.page_token,
-  });
+  let token = userToken.access_token;
+  let usedTenantFallback = false;
+
+  let result: { messages: NormalizedMessage[]; has_more: boolean; page_token?: string };
+  try {
+    result = await fetchThreadMessages({
+      token,
+      threadId: params.thread_id,
+      pageSize: Math.min(limit, API_PAGE_SIZE),
+      pageToken: params.page_token,
+    });
+  } catch (err) {
+    if ((err as { feishuCode?: number }).feishuCode === APP_TYPE_UNSUPPORTED_CODE) {
+      token = await getTenantAccessToken(account);
+      usedTenantFallback = true;
+      result = await fetchThreadMessages({
+        token,
+        threadId: params.thread_id,
+        pageSize: Math.min(limit, API_PAGE_SIZE),
+        pageToken: params.page_token,
+      });
+    } else {
+      throw err;
+    }
+  }
 
   return json({
     ...result,
     thread_id: params.thread_id,
     total_fetched: result.messages.length,
     user_open_id: userToken.open_id,
+    ...(usedTenantFallback && { token_mode: "tenant_fallback" }),
   });
 }
 
