@@ -754,6 +754,7 @@ async function listMinutes(
         }
       } catch (err) {
         errors.push(`${doc.title}: ${err instanceof Error ? err.message : String(err)}`);
+        driveResults.push(docxFallbackInfo(doc));
       }
     }
   } catch (err) {
@@ -929,11 +930,16 @@ async function searchMinutes(
   const results: SearchResult[] = [];
 
   for (const candidate of orderedCandidates) {
-    const minuteTokens = await extractMinuteTokensFromDoc(
-      client,
-      candidate.smart_doc_token,
-      userToken.access_token,
-    );
+    let minuteTokens: string[] = [];
+    try {
+      minuteTokens = await extractMinuteTokensFromDoc(
+        client,
+        candidate.smart_doc_token,
+        userToken.access_token,
+      );
+    } catch {
+      // documentBlock.list may throw 403/404 — continue with empty tokens (fallback below)
+    }
 
     // Read AI summary regardless of whether we found a minute_token
     const aiSummary = await getAiSummary(client, candidate.smart_doc_token, userToken.access_token);

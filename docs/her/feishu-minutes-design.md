@@ -1,21 +1,81 @@
 # 飞书妙记/会议纪要 — 架构设计
 
-> 状态：**Phase 5 代码已完成，待权限配置 + 重新授权测试** | Phase 1-4 已实现 | 优先级：P1
-> 创建：2026-03-04 | 最后更新：2026-03-06
+> 状态：**Phase 7 最终结论 — 飞书平台 API 限制确认** | Phase 1-6 已实现 | 优先级：P1
+> 创建：2026-03-04 | 最后更新：2026-03-07
 >
-> ### Phase 5 — 日历+VC录制发现路径（2026-03-06）
+> ### Phase 7 — 飞书平台 API 限制最终确认（2026-03-07）
 >
-> - Phase 4 实测：Drive Search 只找到 5/8（62.5%），其余 3 条由他人创建，不在用户 Drive 空间
-> - **根因**：Drive Search 只搜索用户自己云空间的文档，别人创建的"智能纪要"docx 完全搜不到
-> - **修复**：新增 Calendar → VC meeting_no → recording URL → minute_token 发现路径
-> - **新增 scope**：`vc:record:readonly`（读取会议录制信息，其中 URL 包含 minute_token）
-> - **修复 bug**：OAuth callback 通知消息用 account name "default" 当 chatId → Invalid ids 错误
+> **结论：飞书开放平台不存在任何 API 能 100% 自动发现用户的所有智能纪要。这是平台能力缺失，不是权限或代码问题。**
 >
-> ### 待完成
+> #### 已验证并排除的全部路径（10 条）
 >
-> - [ ] 飞书 App 后台勾选 `vc:record:readonly` 权限（用户身份 + 应用身份）
-> - [ ] Docker13 用户重新 OAuth 授权（scope 新增后必须重新授权）
-> - [ ] 验证覆盖率达到 8/8
+> | #   | 路径                                 | 结果                       | 根因                                                   |
+> | --- | ------------------------------------ | -------------------------- | ------------------------------------------------------ |
+> | 1   | `minutes/v1/minutes/list`            | 不存在                     | 飞书没有提供列表 API                                   |
+> | 2   | IM 读智能纪要助手消息 (user_token)   | 230001 / 231204            | user_access_token 不支持读取系统 bot 消息              |
+> | 3   | IM 读智能纪要助手消息 (tenant_token) | 230002                     | Bot 不在智能纪要助手 P2P 聊天中                        |
+> | 4   | 转发智能纪要助手消息                 | 99991668 / 230002          | forward API 不支持 user_token，tenant_token 不在源聊天 |
+> | 5   | Drive Search                         | 只返回用户在 UI 中打开过的 | 飞书索引机制限制（API 读取不触发索引）                 |
+> | 6   | 会议结束事件 → doc_token             | 无映射                     | meeting_id 无法转换为 doc_token，无此 API              |
+> | 7   | 飞书 Flow / Aily 自动化转发          | 不支持                     | 无 "P2P bot 消息" 触发器                               |
+> | 8   | 飞书多维表格自动化                   | 不支持                     | bot 消息不触发 receive 事件                            |
+> | 9   | VC 录制 → minute_token               | 不可靠                     | 不开录制也有纪要（飞书官方确认）                       |
+> | 10  | drive 共享/最近文件/list API         | 不存在                     | 飞书没有 "shared with me" 列表 API                     |
+>
+> #### 关键发现：智能纪要助手消息是 100% 可靠的信号源
+>
+> 用户截图确认：**每篇智能纪要生成后，"智能纪要助手"机器人都会发送消息卡片**（含 docx 链接）。
+> `search/v2/message` 能搜到 20+ 条此类消息 ID，但受两道 API 限制无法读取内容：
+>
+> - `im/v1/messages/{id}` GET → 230001 "this operation to bots is currently not supported"
+> - `im/v1/messages` LIST → 231204 "b2c/b2b app not support"（即使是企业自建应用）
+>
+> #### 录制与智能纪要的关系（官方确认）
+>
+> **不开录制也能生成智能纪要**。飞书通过实时语音转文字生成妙记和智能纪要，录制是可选的。
+> 因此 `vc/v1/meetings/{id}/recording` API 根本不适合做智能纪要发现。
+>
+> #### 当前最优方案
+>
+> 1. **Drive Search** 是唯一可用的发现路径。用户在飞书 UI 中打开过的纪要 100% 可被发现和读取。
+> 2. **bug 修复**（Phase 6.1）：修复了 `extractMinuteTokensFromDoc` 异常导致文档丢失的两个 bug，确保所有已索引文档不会被静默丢弃。
+> 3. **docker13 实测 10/10**：用户点开所有纪要后，Drive Search 返回全部 10 篇智能纪要。
+>
+> #### 如需未来实现 100% 自动发现
+>
+> 需等待飞书开放以下任一能力（不在我们控制范围内）：
+>
+> - `minutes/v1/minutes/list` 列出用户所有妙记的 API
+> - IM API 支持读取系统 bot（智能纪要助手）的 P2P 消息
+> - 全局事件 "智能纪要已生成" 推送（含 doc_token）
+>
+> ### Phase 6 — Drive Search 索引根因确认（2026-03-07）
+>
+> **确定性规律（已实验验证，非推测）：**
+>
+> 1. **Drive Search 只索引用户在飞书 UI 中"打开过"的智能纪要 docx**。即使用户作为参与者有权限，未访问过的 docx 不会出现在 Drive Search 结果中。
+> 2. **通过 API（rawContent）读取 docx 不触发索引**。实验：用 API 读取 2 篇未访问 docx 后等 30 秒，Drive Search 仍为 0。
+> 3. **用户在飞书浏览器中点开 docx 后，Drive Search 立即可搜到**。实验：cursor+figma 点开前搜不到，点开后立刻搜到。
+> 4. **内容始终可读**：只要知道 doc_token，`docx.rawContent` 可以读取任何用户有参与者权限的 docx，不受索引限制。
+> 5. **问题本质是 discovery（发现 doc_token），不是 access（读取内容）**。
+>
+> **docker13 实测时间线：**
+>
+> - 用户点击前：Drive path found **6** minutes
+> - 用户在飞书 App 点击几篇后：Drive path found **8** minutes（+2）
+> - 用户点击全部后：Drive path found **10** minutes = **100%**
+> - Calendar path 始终贡献 0（recording API 对所有会议返回 121005/121004）
+>
+> ### 飞书三层对象模型（官方文档确认）
+>
+> | 层级        | 对象           | URL 格式           | 标识符                     | 说明                                    |
+> | ----------- | -------------- | ------------------ | -------------------------- | --------------------------------------- |
+> | 1. VC 会议  | 视频会议实例   | 无固定页面         | `meeting_id`, `meeting_no` | 实际的视频通话                          |
+> | 2. 妙记     | 录音/录像+转写 | `/minutes/obcnXXX` | `minute_token` (24字符)    | 音视频播放+逐字转写（不需录制也可生成） |
+> | 3. 智能纪要 | AI 生成的 docx | `/docx/XXX`        | `doc_token`                | 结构化 AI 总结文档                      |
+>
+> 关系：会议结束 → 飞书自动生成"妙记"（实时转写，无需录制）→"智能纪要助手"自动生成 docx 存入**组织者 Drive 空间**，
+> 并把"会议参与者"加为 docx 协作者。minute_token 和 doc_token 是**不同标识符**，无公开 API 互转。
 
 ---
 
@@ -31,29 +91,61 @@ Her 需要**全自动**获取用户每天所有的飞书会议纪要和妙记（
 
 ---
 
-## Phase 4 诊断结果（2026-03-06 docker13 实测）
+## Phase 6 诊断结果（2026-03-07 docker13 实测，确定性结论）
 
-### 三个根本性问题
+### 根因：Drive Search 索引 = 用户 UI 访问记录
 
-| 问题                   | 严重程度     | 根因                                                            | 修复状态                     |
-| ---------------------- | ------------ | --------------------------------------------------------------- | ---------------------------- |
-| Drive Search 覆盖不全  | **Critical** | "智能纪要"docx 存在于组织者云空间，参会人的 Drive Search 搜不到 | 待 VC 权限验证               |
-| 无 obcn 链接时静默丢弃 | **High**     | 50% 的"智能纪要"docx 不含 `/minutes/obcnXXXX` 链接，代码返回空  | ✅ 已修复                    |
-| minutes.get 返回 403   | **Medium**   | 部分妙记的权限设置不允许 API 访问（即使用户是参会人）           | ✅ 已绕过（改用 rawContent） |
+| 问题                  | 根因                                                                              | 状态        |
+| --------------------- | --------------------------------------------------------------------------------- | ----------- |
+| Drive Search 覆盖不全 | **Drive Search 只对"用户在飞书 UI 中打开过"的 docx 建索引**。API 读取不触发索引。 | ✅ 根因确认 |
+| Calendar 路径 0 贡献  | VC recording API 对所有会议返回 121005(no permission) 或 121004(data not exist)   | 已知限制    |
+| 内容可读但不可发现    | `docx.rawContent` 可以读取任何有参与者权限的 docx，不受索引限制                   | ✅ 已验证   |
 
-### 实测数据（docker13, user=卜弋天）
+### 实验证据
 
-| 会议                  | 飞书 App 可见 | Drive Search | docx 有 obcn | minutes.get | rawContent |
-| --------------------- | ------------- | ------------ | ------------ | ----------- | ---------- |
-| 网宿科技交流 2/28     | ✅            | ✅           | ✅           | ✅          | ✅ 4532字  |
-| her接入aily 3/1       | ✅            | ✅           | **❌**       | N/A         | ✅ 1949字  |
-| 年会报告预演彩排 2/28 | ✅            | ✅           | ✅           | **❌ 403**  | ✅ 13087字 |
-| AI立项材料预评审 2/27 | ✅            | ✅           | **❌**       | N/A         | ✅ 1574字  |
-| cursor+figma+MCP 3/4  | ✅            | **❌**       | N/A          | N/A         | N/A        |
-| 新产品试点推广 3/4    | ✅            | **❌**       | N/A          | N/A         | N/A        |
-| 系统权限架构分工 3/1  | ✅            | **❌**       | N/A          | N/A         | N/A        |
+| 实验                         | 操作                       | 结果                                                           |
+| ---------------------------- | -------------------------- | -------------------------------------------------------------- |
+| cursor+figma                 | 用户在飞书 App 点开        | Drive Search **立刻搜到** (token=BMqTdWH8Mo8RykxW0EOcrxBOn8c)  |
+| 新产品试点推广               | 仅通过 API rawContent 读取 | Drive Search **仍然搜不到** (等 30 秒后验证)                   |
+| 系统权限架构分工             | 仅通过 API rawContent 读取 | Drive Search **仍然搜不到** (等 30 秒后验证)                   |
+| 网宿科技交流 vs cursor+figma | 同为史晓杰创建             | 权限对比：网宿有"弋天的her [应用] - 可阅读"，cursor+figma 没有 |
 
-修复前：1/8 = 12.5% 覆盖率 → 修复后（Phase 4 代码）：4/8 = 50% → VC 权限加持后目标 100%
+### 权限对比铁证（截图确认）
+
+| 权限项               | cursor+figma（搜不到） | 网宿科技交流（搜到） |
+| -------------------- | ---------------------- | -------------------- |
+| 所有者               | 史晓杰                 | 史晓杰               |
+| 参与者权限           | 可编辑                 | 可编辑               |
+| **弋天的her [应用]** | **没有**               | **可阅读**           |
+
+### 全量实测数据（docker13, user=卜弋天, 2026-03-07）
+
+| 会议                     | 飞书 UI 可见 | Drive Search | rawContent | doc_token                   | 发现途径     |
+| ------------------------ | ------------ | ------------ | ---------- | --------------------------- | ------------ |
+| NIO AI合作分工讨论 3/7   | ✅           | 待验证       | 待验证     | 待获取                      | 今天新会议   |
+| Her 供应商切换测试 3/6   | ✅           | ✅           | ✅         | C1SOdl81VoB7lsxXgQjctzT9noh | Drive        |
+| cursor+figma+MCP 3/4     | ✅           | ✅ (点开后)  | ✅ 970字   | BMqTdWH8Mo8RykxW0EOcrxBOn8c | 用户 UI 点开 |
+| 新产品试点推广 3/4       | ✅           | **❌**       | ✅ 1198字  | MHVPdb7Ujos7Xbx4az7chr1dnWd | 需用户点开   |
+| her接入aily 3/1          | ✅           | ✅           | ✅ 1949字  | HW6BdfX0poo338xJrhncejdHnnh | Drive        |
+| 系统权限架构分工 3/1     | ✅           | **❌**       | ✅ 3423字  | Tamxd7X7aolgOfxX3MycqgX7nFb | 需用户点开   |
+| AI项目合作及后续工作 3/1 | ✅           | ✅           | ✅         | U4hpdcYYvo19ZtxkjvbcjdS3nhf | Drive        |
+| 网宿科技交流 2/28        | ✅           | ✅           | ✅ 4532字  | U8nAdaxWTovqUux1d63cO2Q2nP6 | Drive        |
+| 年会报告预演彩排 2/28    | ✅           | ✅           | ✅ 13087字 | LEImd7i5Lo8aRwx6fABc419Zn6b | Drive        |
+| AI立项材料预评审 2/27    | ✅           | ✅           | ✅ 1574字  | WWo4dXBKIoSSIrxMrkKcKBtfnRc | Drive        |
+
+**2026-03-07 最终验证：用户在飞书 App 点开所有纪要后，Drive Search 10/10 = 100% 覆盖。**
+
+当前代码可实现 100% 发现，前提是用户在飞书 UI 中"打开过"每篇纪要。
+
+**Phase 6.1 Bug 修复**（2026-03-07）：
+
+- `listMinutes` 中 `extractMinuteTokensFromDoc` 异常时文档被静默丢弃 → 修复为添加 `docxFallbackInfo`
+- `searchMinutes` 中 `extractMinuteTokensFromDoc` 无 try-catch → 修复为捕获异常继续执行
+- 修复后 Her 报告 10/10（修复前为 8/10，2 篇被 403/404 异常丢弃）
+
+**Phase 7 结论**（2026-03-07）：
+飞书开放平台 API 无法 100% 自动发现所有智能纪要（详见上方 Phase 7 最终结论）。
+`drive.file.permission_member_added_v1` 事件订阅已排除——仅限单文件订阅且需预知 file_token，无法全局监听。
 
 ---
 
