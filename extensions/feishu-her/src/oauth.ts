@@ -280,16 +280,17 @@ export async function handleOAuthCallback(
     return;
   }
 
-  const isRetry = completedStates.has(stateNonce);
-  const state = consumeOAuthState(stateNonce);
-
-  // Retry of an already-completed OAuth — show success without re-exchanging.
-  if (!state && isRetry) {
+  // Feishu mobile opens callback in internal WebView first (consuming the code),
+  // then shows "即将离开飞书" and opens Chrome with the same URL. Detect this
+  // duplicate and show success immediately without re-exchanging the code.
+  if (completedStates.has(stateNonce)) {
     res.statusCode = 200;
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.end("<h2>授权成功</h2><p>授权已完成。你可以关闭此页面，回到飞书继续对话。</p>");
     return;
   }
+
+  const state = consumeOAuthState(stateNonce);
 
   if (!state) {
     res.statusCode = 400;
@@ -322,6 +323,24 @@ export async function handleOAuthCallback(
     });
 
     if (tokenRes.code !== 0 || !tokenRes.data?.access_token) {
+      // code=20003 means the authorization code was already exchanged (e.g. Feishu
+      // mobile WebView consumed it, now Chrome retries with the same code). If we
+      // already have a valid token on disk, treat this as success.
+      if (tokenRes.code === 20003) {
+        const existing = findAnyUserToken();
+        if (existing) {
+          markStateCompleted(stateNonce, state);
+          callbackDeps.log(
+            `OAuth code already used but token exists for ${existing.name ?? existing.open_id} — showing success`,
+          );
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "text/html; charset=utf-8");
+          res.end(
+            `<h2>授权成功</h2><p>${existing.name ?? "用户"}，授权已完成。你可以关闭此页面，回到飞书继续对话。</p>`,
+          );
+          return;
+        }
+      }
       callbackDeps.warn(`OAuth token exchange failed: code=${tokenRes.code} msg=${tokenRes.msg}`);
       res.statusCode = 400;
       res.setHeader("Content-Type", "text/html; charset=utf-8");
