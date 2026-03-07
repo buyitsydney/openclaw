@@ -7,7 +7,7 @@
 
 import os from "node:os";
 import path from "node:path";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import { normalizeAgentId, type OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { loadCoreAgentDeps, type CoreConfig } from "./src/core-bridge.js";
 import { setupFileWatcher, type FileWatcher } from "./src/file-watcher.js";
 import { buildBackendModePrompt } from "./src/prompt.js";
@@ -27,6 +27,27 @@ export interface RealtimeConfig {
 let server: RealtimeServer | null = null;
 let fileWatcher: FileWatcher | null = null;
 let serverStarting = false;
+
+type RealtimeAgentListEntry = {
+  id?: string;
+  default?: boolean;
+};
+
+type RealtimeRootConfig = CoreConfig & {
+  agents?: {
+    list?: RealtimeAgentListEntry[];
+  };
+};
+
+function resolveDefaultAgentIdFromConfig(cfg: CoreConfig): string {
+  const agentList = (cfg as RealtimeRootConfig).agents?.list;
+  if (!Array.isArray(agentList) || agentList.length === 0) {
+    return "main";
+  }
+
+  const defaultEntry = agentList.find((entry) => entry?.default) ?? agentList[0];
+  return normalizeAgentId(defaultEntry?.id ?? "main");
+}
 
 const realtimePlugin = {
   id: "realtime",
@@ -62,9 +83,9 @@ const realtimePlugin = {
     try {
       api.logger.info("[realtime] Starting Realtime plugin...");
 
-      // Resolve the default agent ID from config (falls back to "main")
-      const coreDeps = await loadCoreAgentDeps();
-      const defaultAgentId = coreDeps.resolveDefaultAgentId(api.config as CoreConfig);
+      // Realtime only needs the same default-agent resolution semantics as core.
+      await loadCoreAgentDeps();
+      const defaultAgentId = resolveDefaultAgentIdFromConfig(api.config as CoreConfig);
       api.logger.info(`[realtime] Default agent ID: ${defaultAgentId}`);
 
       // Voice token file path (Layer 2 auth — same mechanism for local and Docker)

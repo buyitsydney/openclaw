@@ -208,9 +208,6 @@
   - launchd PATH is minimal; ensure the app’s launch agent PATH includes standard system paths plus your pnpm bin (typically `$HOME/Library/pnpm`) so `pnpm`/`openclaw` binaries resolve when invoked via `openclaw-mac`.
 - For manual `openclaw message send` messages that include `!`, use the heredoc pattern noted below to avoid the Bash tool’s escaping.
 - Release guardrails: do not change version numbers without operator’s explicit consent; always ask permission before running any npm publish/release step.
-- Session config hot-reload: `session.identityLinks` supports hot-reload (gateway auto-detects config change). **`session.dmScope` does NOT support hot-reload** — changing dmScope requires a full gateway restart to take effect. The gateway log may report `config change applied` but routing will not actually change until restart.
-- Per-peer session isolation: `dmScope = "per-peer"` automatically isolates sessions for channels with built-in user identity (Feishu open_id, Telegram user_id). Webchat has no user identity (`SenderId` is fixed `"webchat"`), so per-peer does not isolate webchat users. Realtime/voice uses its own `realtime:xxx` session key prefix, independent of dmScope.
-- Personal Her uses `dmScope = "main"` (default) for cross-channel shared memory. Enterprise deployment uses a **separate OpenClaw instance** with `dmScope = "per-peer"`. Never change the personal Her’s dmScope without explicit user request.
 - Beta release guardrail: when using a beta Git tag (for example `vYYYY.M.D-beta.N`), publish npm with a matching beta version suffix (for example `YYYY.M.D-beta.N`) rather than a plain version on `--tag beta`; otherwise the plain version name gets consumed/blocked.
 
 ## NPM + 1Password (publish/verify)

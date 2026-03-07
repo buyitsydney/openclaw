@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { Type } from "@sinclair/typebox";
 import Ajv from "ajv";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk";
@@ -25,11 +26,16 @@ async function loadRunEmbeddedPiAgent(): Promise<RunEmbeddedPiAgentFn> {
   }
 
   // Bundled install (built)
-  const mod = await import("../../../src/agents/pi-embedded-runner.js");
-  if (typeof mod.runEmbeddedPiAgent !== "function") {
+  // NOTE: there is no src/ tree in a packaged install. Prefer a stable internal entrypoint.
+  const mod = (await import(
+    pathToFileURL(path.resolve(import.meta.dirname, "../../../dist/extensionAPI.js")).href
+  )) as { runEmbeddedPiAgent?: unknown };
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const fn = (mod as any).runEmbeddedPiAgent;
+  if (typeof fn !== "function") {
     throw new Error("Internal error: runEmbeddedPiAgent not available");
   }
-  return mod.runEmbeddedPiAgent as RunEmbeddedPiAgentFn;
+  return fn as RunEmbeddedPiAgentFn;
 }
 
 function stripCodeFences(s: string): string {

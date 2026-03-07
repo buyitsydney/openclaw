@@ -27,6 +27,7 @@ mise.toml
 apps/android/.gradle/
 apps/android/app/build/
 apps/android/.cxx/
+apps/android/.kotlin/
 
 # Bun build artifacts
 *.bun-build
@@ -88,27 +89,13 @@ USER.md
 # local tooling
 .serena/
 
-# Local logs (debug, prompt dumps, etc)
-logs/
-tmp/
-
-# Per-user credentials (contains secrets)
-docker/users.csv
-docker/user-configs/
-docker/servers.txt
-docker/server.env
-docker/*.bak*
-._*
-# Workspace templates may contain personal tokens
-docker/workspace/
-
 # Agent credentials and memory (NEVER COMMIT)
 /memory/
 .agent/*.json
 !.agent/workflows/
 /local/
 package-lock.json
-.claude/settings.local.json
+.claude/
 .agents/
 .agents
 .agent/
@@ -134,6 +121,3 @@ dist/protocol.schema.json
 
 # Synthing
 **/.stfolder/
-
-# Her investigation reports (contain server-specific data)
-docs/her/network-connection-lost-investigation.md

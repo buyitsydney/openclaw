@@ -17,7 +17,6 @@ export type CoreConfig = {
 };
 
 export type CoreAgentDeps = {
-  resolveDefaultAgentId: (cfg: CoreConfig) => string;
   resolveAgentDir: (cfg: CoreConfig, agentId: string) => string;
   resolveAgentWorkspaceDir: (cfg: CoreConfig, agentId: string) => string;
   resolveThinkingDefault: (params: {
@@ -139,7 +138,6 @@ export async function loadCoreAgentDeps(): Promise<CoreAgentDeps> {
     }
 
     const api = (await import(pathToFileURL(apiPath).href)) as {
-      resolveDefaultAgentId: CoreAgentDeps["resolveDefaultAgentId"];
       resolveAgentDir: CoreAgentDeps["resolveAgentDir"];
       resolveAgentWorkspaceDir: CoreAgentDeps["resolveAgentWorkspaceDir"];
       resolveThinkingDefault: CoreAgentDeps["resolveThinkingDefault"];
@@ -155,7 +153,6 @@ export async function loadCoreAgentDeps(): Promise<CoreAgentDeps> {
     };
 
     return {
-      resolveDefaultAgentId: api.resolveDefaultAgentId,
       resolveAgentDir: api.resolveAgentDir,
       resolveAgentWorkspaceDir: api.resolveAgentWorkspaceDir,
       resolveThinkingDefault: api.resolveThinkingDefault,

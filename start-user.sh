@@ -43,6 +43,7 @@ resolve_model() {
     gemini-3.1|gemini-3.1-pro) echo "openrouter/google/gemini-3.1-pro-preview" ;;
     gemini-2.5|gemini-pro) echo "openrouter/google/gemini-2.5-pro-preview" ;;
     gemini-flash)          echo "openrouter/google/gemini-2.0-flash-001" ;;
+    gpt|gpt54|gpt-5.4|gpt54pro|gpt-5.4-pro) echo "openrouter/openai/gpt-5.4" ;;
     gpt-4o)                echo "openrouter/openai/gpt-4o" ;;
     gpt-4o-mini)           echo "openrouter/openai/gpt-4o-mini" ;;
     minimax|minimax-m2.5)  echo "openrouter/minimax/minimax-m2.5" ;;
@@ -105,6 +106,7 @@ for arg in "$@"; do
       echo "  haiku        → claude-3.5-haiku (最省)"
       echo "  gemini-2.5   → gemini-2.5-pro-preview"
       echo "  gemini-flash → gemini-2.0-flash"
+      echo "  gpt          → gpt-5.4"
       echo "  gpt-4o       → gpt-4o"
       echo "  gpt-4o-mini  → gpt-4o-mini"
       echo "  或直接传完整 OpenRouter 路径"
@@ -471,6 +473,7 @@ if provider == 'anthropic':
         'openrouter/google/gemini-3.1-pro-preview': {'alias': 'gemini'},
         'openrouter/minimax/minimax-m2.5': {'alias': 'minimax'},
         'openrouter/z-ai/glm-5': {'alias': 'glm'},
+        'openrouter/openai/gpt-5.4': {'alias': 'gpt'},
         'openrouter/openai/gpt-5.3-codex': {'alias': 'codex'},
     }
 else:
@@ -482,6 +485,7 @@ else:
         'openrouter/google/gemini-3.1-pro-preview': {'alias': 'gemini'},
         'openrouter/minimax/minimax-m2.5': {'alias': 'minimax'},
         'openrouter/z-ai/glm-5': {'alias': 'glm'},
+        'openrouter/openai/gpt-5.4': {'alias': 'gpt'},
         'openrouter/openai/gpt-5.3-codex': {'alias': 'codex'},
     }
 if agents['defaults']:
