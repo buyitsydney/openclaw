@@ -1,6 +1,17 @@
 # Her 飞书群聊架构设计
 
-状态：方案设计中，基于 2026-03-07 `test` 群双 Bot 实测结果。
+状态：**已实现并验证**。基于 2026-03-07 `test` 群双 Bot 实测，`feishu_group_history` 工具已上线，群聊正文已切换为 `text/post`。
+
+### 实现状态（2026-03-07）
+
+- `feishu_group_history` 工具：已实现并部署，支持 `list_history` / `list_thread` / `get_message` 三种 action
+- 群聊输出格式：Her 在群聊中已切换为 `text/post`（非 interactive 卡片），私聊保持卡片流式输出
+- 群聊消息合并：Her 的群聊回复已合并为单条 `post` 消息（不再碎片化）
+- page_size 语义：`page_size` 参数表示总消息数上限（默认 20，最大 200），不再是 per-page
+- 时间戳：已修复为 human-readable ISO 8601 格式
+- 本地归档交叉引用：支持 `file`/`image`/`audio`/`video`/`interactive` 等类型的本地路径补全
+- `feishu_wiki` URL 解析：支持传入完整飞书 URL（自动提取 token 和文档类型）
+- **tenant_access_token fallback**：当 `user_access_token` 遇到 231204 错误（"b2c/b2b app not support"）时，自动 fallback 到 `tenant_access_token`，已在 carher-13 验证通过
 
 本文不讨论抽象"群聊能力"，只回答一个更实际的问题：
 

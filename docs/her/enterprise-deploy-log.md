@@ -693,4 +693,129 @@ console.log('opus contextWindow:', m?.contextWindow);
 - **[2026-02-25] 新增 `remove_attendees` action**：通过 `calendarEventAttendee.batchDelete` 批量删除参会人，支持按 open_id 移除并发送通知。本地 Her + docker1 均验证通过
 - **[2026-02-25] SKILL.md 新增建会流程规则**：① 立即创建（必须传 attendee_ids）→ ② 建完后 check_freebusy → ③ 告知冲突（用户可忽略）。Opus 100% 遵循，Sonnet 忽略忙闲检查步骤
 
+---
+
+## Cloudflare 隧道架构
+
+### 概览
+
+每台服务器一个 Cloudflare Named Tunnel，通过 systemd 自启动。
+
+| 服务器 | IP           | 隧道名     | 隧道 UUID                            | 预分配用户 |
+| ------ | ------------ | ---------- | ------------------------------------ | ---------- |
+| S1     | 10.68.13.186 | carher-s1  | d18effca-6456-4b6c-b735-94dbbdc83299 | User 1-50  |
+| S2     | 10.68.13.187 | carher-s2  | d4180094-9f8a-4693-99ee-721412df1b4e | User 1-50  |
+| S3     | 10.68.13.188 | carher-s3  | 750fb00c-6572-4d7c-bed4-60c1a9c3107f | User 1-50  |
+
+### 端口规则
+
+每个用户 N 的端口基址 = `29000 + (N-1) * 10`：
+
+| 用途       | 端口偏移 | 容器端口 | 域名后缀      |
+| ---------- | -------- | -------- | ------------- |
+| Gateway    | +1       | 18789    | （无外部域名） |
+| Realtime   | +2       | —        | （内部）       |
+| Frontend   | +3       | 8000     | `-fe`         |
+| WS Proxy   | +4       | 8080     | `-proxy`      |
+| OAuth      | +5       | 18891    | `-auth`       |
+
+域名格式：`sN-uID-{fe,proxy,auth}.carher.net`
+
+示例：S3 上 User 14 → `s3-u14-fe.carher.net` (port 29133), `s3-u14-auth.carher.net` (port 29135)
+
+### 关键文件位置
+
+| 文件                                    | 路径                                                      |
+| --------------------------------------- | --------------------------------------------------------- |
+| 隧道配置                                | `/etc/cloudflared/config.yml`                             |
+| 隧道凭证                                | `/etc/cloudflared/<uuid>.json`                            |
+| Cloudflare 证书                         | `/etc/cloudflared/cert.pem`                               |
+| systemd 服务                            | `/etc/systemd/system/cloudflared.service`                 |
+
+### 新增用户流程
+
+当前状态下，S1/S2/S3 三台服务器的 `fe` / `proxy` / `auth` 域名路由和 DNS 都已经预分配到 User 1-50。
+
+这意味着：**日常新增用户不需要再修改 Cloudflare ingress，也不需要再注册 DNS。**
+
+当需要在某台服务器上新增一个 CarHer 用户时：
+
+#### 1. 确定用户 ID 和目标服务器
+
+```bash
+# 查看当前各服务器的容器
+ssh cltx@10.68.13.186 "docker ps --format '{{.Names}}' | grep carher"
+ssh cltx@10.68.13.187 "docker ps --format '{{.Names}}' | grep carher"
+ssh cltx@10.68.13.188 "docker ps --format '{{.Names}}' | grep carher"
+```
+
+#### 2. 确认隧道服务正常
+
+```bash
+ssh cltx@10.68.13.186 "sudo systemctl is-active cloudflared"
+ssh cltx@10.68.13.187 "sudo systemctl is-active cloudflared"
+ssh cltx@10.68.13.188 "sudo systemctl is-active cloudflared"
+```
+
+正常应返回 `active`。如果某台服务器的 `cloudflared` 不在运行，再单独重启该台服务。
+
+#### 3. 启动容器
+
+```bash
+cd /Data/CarHer
+./start-user.sh --id=N
+```
+
+`start-user.sh` 会根据 `TP` 环境变量自动计算域名前缀（`s1-`/`s2-`/`s3-`），并将 `NAMED_AUTH_HOST` 注入容器配置。
+
+#### 4. 验证
+
+```bash
+# 隧道可达
+curl -s -o /dev/null -w "%{http_code}" https://sX-uN-auth.carher.net/feishu/oauth/callback
+# 期望 400（OAuth 服务正常但缺参数）
+
+curl -s -o /dev/null -w "%{http_code}" https://sX-uN-fe.carher.net/
+# 期望 200
+```
+
+#### 5. 飞书 App 配置
+
+在飞书开发者后台，该用户的企业自建应用 → 安全设置 → 重定向 URL，添加：
+
+```
+https://sX-uN-auth.carher.net/feishu/oauth/callback
+```
+
+#### 完整命令速查（一步新增 S2 User 44 的例子）
+
+```bash
+# 确认 S2 隧道在线
+ssh cltx@10.68.13.187 "sudo systemctl is-active cloudflared"
+
+# 启动容器
+ssh cltx@10.68.13.187 "cd /Data/CarHer && TP=s2- ./start-user.sh --id=44"
+
+# 验证
+curl -sw "%{http_code}" https://s2-u44-auth.carher.net/feishu/oauth/callback
+```
+
+> 只有在新增第 51 个用户、扩新服务器，或重做 Cloudflare 隧道时，才需要重新编辑 `/etc/cloudflared/config.yml` 和注册 DNS。
+
+### 隧道运维
+
+```bash
+# 查看隧道状态
+sudo systemctl status cloudflared
+
+# 查看隧道日志
+sudo journalctl -u cloudflared -f
+
+# 列出所有隧道
+cloudflared tunnel list
+
+# 重启（配置变更后）
+sudo systemctl restart cloudflared
+```
+
 <!-- 后续操作记录追加在这里 -->

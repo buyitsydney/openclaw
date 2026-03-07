@@ -7,7 +7,7 @@
 
 **最终方案：200 Bot + 200 Docker（每人一个独立 OpenClaw 容器）**
 
-**验证状态 (2026-02-27 更新)：飞书并发测试通过、数据隔离已确认、Webchat 隔离已确认、自动镜像重建已实现、Web Search (Perplexity) 已验证、Browser Use (Chromium headless) 已验证、Context Window 240K 保护已配置、CardKit 状态 Footer 已实现、Config $include 零分叉架构已验证（本地 + Docker 全环境 0 error）、语音 Gemini Live 已验证（本地 + Docker）、@mention 发送已验证（本地 + Docker，需 contact:user.base:readonly 权限）、飞书待办 Task v2 P1 全量能力已验证（本机 Her + docker1 Her 双端通过）**（均为本地 Mac 验证，Ubuntu 企业部署尚未执行）
+**验证状态 (2026-03-07 更新)：飞书并发测试通过、数据隔离已确认、Webchat 隔离已确认、自动镜像重建已实现、Web Search (Perplexity) 已验证、Browser Use (Chromium headless) 已验证、Context Window 240K 保护已配置、CardKit 状态 Footer 已实现、Config $include 零分叉架构已验证（本地 + Docker 全环境 0 error）、语音 Gemini Live 已验证（本地 + Docker）、@mention 发送已验证（本地 + Docker，需 contact:user.base:readonly 权限）、飞书待办 Task v2 P1 全量能力已验证（本机 Her + docker1 Her 双端通过）、群聊消息读取已验证（`feishu_group_history` 工具 + `tenant_access_token` fallback）、OAuth user_access_token 授权已验证（S1/S3 carher-13/14）、Cloudflare 隧道三台服务器已部署（S1/S2/S3 各预分配 50 用户），权限 215 个（161 tenant + 54 user）**
 
 ---
 
@@ -33,7 +33,7 @@
 | Git         | `apt install git`                                                                                                                | 拉取部署代码                        |
 | Python 3    | `apt install python3`                                                                                                            | 配置生成脚本依赖                    |
 | tmux        | `apt install tmux`                                                                                                               | 终端会话持久化（start.sh 自动使用） |
-| cloudflared | `curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \| tee /usr/share/keyrings/cloudflare.gpg && apt install cloudflared` | 远程隧道（可选，仅远程访问时需要）  |
+| cloudflared | `curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \| tee /usr/share/keyrings/cloudflare.gpg && apt install cloudflared` | Cloudflare 隧道（**必需**，OAuth 回调 + 语音 + Webchat 远程访问） |
 
 ### 账号与密钥（P0，必须提前申请）
 
@@ -102,6 +102,30 @@ ls ~/.config/gcloud/application_default_credentials.json
 #### ③ 飞书管理员账号
 
 登录 [飞书管理后台](https://feishu.cn/admin)，确认当前账号有「创建自建应用」权限。后续创建 200 个 Bot 需要此权限。
+
+### Cloudflare 隧道（每台服务器一次性配置）
+
+每台服务器需要一个 Cloudflare Named Tunnel，将外部域名路由到容器端口。隧道用于：OAuth 回调（user_access_token 授权）、语音 WebRTC 信令、Webchat 远程访问。
+
+**隧道已在 S1/S2/S3 上配置完毕，且每台服务器已预分配 User 1-50 的全部路由。** 新增用户无需修改隧道配置。
+
+| 服务器 | IP           | 隧道名    | 预分配用户 | 状态 |
+| ------ | ------------ | --------- | ---------- | ---- |
+| S1     | 10.68.13.186 | carher-s1 | User 1-50  | 运行中 |
+| S2     | 10.68.13.187 | carher-s2 | User 1-50  | 运行中 |
+| S3     | 10.68.13.188 | carher-s3 | User 1-50  | 运行中 |
+
+每个用户 N 在服务器 sX 上有 3 个域名（全部已预注册 DNS）：
+
+| 域名 | 用途 | 容器端口 | 宿主机端口 |
+| ---- | ---- | -------- | ---------- |
+| `sX-uN-fe.carher.net` | 前端/Webchat | 8000 | base+3 |
+| `sX-uN-proxy.carher.net` | WebSocket 代理 | 8080 | base+4 |
+| `sX-uN-auth.carher.net` | OAuth 回调 | 18891 | base+5 |
+
+> 隧道通过 systemd 自启动（`/etc/systemd/system/cloudflared.service`），服务器重启后自动恢复。配置文件位于 `/etc/cloudflared/config.yml`。
+>
+> 详细的隧道架构、运维命令和扩展指南见 [企业部署实录 - Cloudflare 隧道架构](/her/enterprise-deploy-log#cloudflare-隧道架构)。
 
 ### 代码部署
 
@@ -297,7 +321,7 @@ source ~/.bashrc
 ./start-user.sh --down
 ```
 
-每个容器的端口自动分配：`base = 29000 + (id-1) * 10`，如用户 1 = 29001（Gateway）、29002（Realtime）、29003（Frontend）、29004（WS Proxy）。
+每个容器的端口自动分配：`base = 29000 + (id-1) * 10`，如用户 1 = 29001（Gateway）、29002（Realtime）、29003（Frontend）、29004（WS Proxy）、29005（OAuth）。OAuth 端口用于飞书 `user_access_token` 授权回调。
 
 #### 目录结构
 
@@ -412,7 +436,8 @@ git checkout v旧版本
 | --- | --------------------- | ------------------------------------------------------------ |
 | 1   | 创建应用 + 启用机器人 | 命名格式：`{人名}的her`（如：老杨的her），添加「机器人」能力 |
 | 2   | 记录凭证              | 复制 App ID + App Secret                                     |
-| 3   | 批量导入权限          | 粘贴 JSON 导入 158 个权限（142 tenant + 16 user）            |
+| 3   | 批量导入权限          | 粘贴 JSON 导入 215 个权限（161 tenant + 54 user）            |
+| 3b  | 配置安全设置          | 安全设置 → 重定向 URL → 添加 OAuth 回调 URL                 |
 | 4   | 第一次发布            | 可用范围 = 指定人员，只选一人（见下方说明）                  |
 | 5   | 确认 Bot 可见         | 让目标员工搜索 Bot，确认能找到                               |
 | 6   | 交给部署者            | 等部署者确认 WSClient connected                              |
@@ -496,6 +521,7 @@ git checkout v旧版本
       "contact:department.base:readonly",
       "contact:user.base:readonly",
       "docs:doc",
+      "docs:doc:readonly",
       "docs:document.comment:create",
       "docs:document.comment:read",
       "docs:document.comment:update",
@@ -571,12 +597,23 @@ git checkout v旧版本
       "im:chat:readonly",
       "im:chat:update",
       "im:message",
+      "im:message.group_at_msg:readonly",
       "im:message.group_msg",
       "im:message.p2p_msg:readonly",
+      "im:message.pins:read",
+      "im:message.pins:write_only",
       "im:message.reactions:read",
       "im:message.reactions:write_only",
+      "im:message:readonly",
       "im:message:send_as_bot",
       "im:resource",
+      "minutes:minutes",
+      "minutes:minutes.basic:read",
+      "minutes:minutes.media:export",
+      "minutes:minutes.statistics:read",
+      "minutes:minutes.transcript:export",
+      "minutes:minutes:readonly",
+      "sheets:spreadsheet:readonly",
       "space:document:delete",
       "space:document:move",
       "space:document:retrieve",
@@ -595,6 +632,13 @@ git checkout v旧版本
       "task:task:writeonly",
       "task:tasklist:read",
       "task:tasklist:write",
+      "vc:export",
+      "vc:meeting",
+      "vc:meeting.all_meeting:readonly",
+      "vc:meeting:readonly",
+      "vc:record:readonly",
+      "vc:room",
+      "vc:room:readonly",
       "wiki:wiki",
       "wiki:wiki:readonly"
     ],
@@ -614,7 +658,45 @@ git checkout v旧版本
       "aily:session:read",
       "aily:session:write",
       "aily:skill:read",
-      "aily:skill:write"
+      "aily:skill:write",
+      "bitable:app:readonly",
+      "calendar:calendar",
+      "calendar:calendar.acl:read",
+      "calendar:calendar.event:read",
+      "calendar:calendar.free_busy:read",
+      "calendar:calendar:read",
+      "calendar:calendar:readonly",
+      "contact:user.base:readonly",
+      "docs:doc:readonly",
+      "docx:document:readonly",
+      "drive:drive.metadata:readonly",
+      "drive:drive.search:readonly",
+      "drive:drive:readonly",
+      "drive:export:readonly",
+      "drive:file:readonly",
+      "im:chat:readonly",
+      "im:message.group_msg:get_as_user",
+      "im:message.p2p_msg:get_as_user",
+      "im:message.pins:read",
+      "im:message.reactions:read",
+      "im:message:readonly",
+      "minutes:minutes",
+      "minutes:minutes.basic:read",
+      "minutes:minutes.media:export",
+      "minutes:minutes.statistics:read",
+      "minutes:minutes.transcript:export",
+      "minutes:minutes:readonly",
+      "search:app",
+      "search:department:read",
+      "search:docs:read",
+      "search:message",
+      "sheets:spreadsheet:readonly",
+      "task:task:readonly",
+      "vc:export",
+      "vc:meeting:readonly",
+      "vc:record:readonly",
+      "vc:room:readonly",
+      "wiki:wiki:readonly"
     ]
   }
 }
@@ -622,33 +704,64 @@ git checkout v旧版本
 
 点击「下一步，确认新增权限」→ 确认即可。已开通的权限不会重复添加。
 
-> **权限分类（tenant 142 个 + user 16 个，共 158 个）**：
+> **权限分类（tenant 161 个 + user 54 个，共 215 个）**：
 >
-> **Tenant 权限（142 个）**：
+> **Tenant 权限（161 个）**：
 >
-> - **Aily 智能伙伴**（16 个）：`aily:data_asset:*`（3 个）+ `aily:file:*`（2 个）+ `aily:knowledge:*`（3 个）+ `aily:message:*`（2 个）+ `aily:run:*`（2 个）+ `aily:session:*`（2 个）+ `aily:skill:*`（2 个） — 智能伙伴数据资产、文件、知识库、会话、技能管理
-> - **消息基础**（5 个）：`im:message`、`im:message:send_as_bot`、`im:message.group_msg`、`im:message.p2p_msg:readonly`、`im:resource` — 消息收发 + 图片
-> - **群聊管理**（27 个）：`im:chat`、`im:chat.*`（20 个）、`im:chat:*`（6 个） — 群组 CRUD、公告、置顶、成员管理、标签页、菜单树、审核、小组件、Bot 事件等完整群聊能力
+> - **Aily 智能伙伴**（16 个）：`aily:data_asset:*`（3）+ `aily:file:*`（2）+ `aily:knowledge:*`（3）+ `aily:message:*`（2）+ `aily:run:*`（2）+ `aily:session:*`（2）+ `aily:skill:*`（2） — 智能伙伴数据资产、文件、知识库、会话、技能管理
+> - **消息核心**（11 个）：`im:message`、`im:message:send_as_bot`、`im:message.group_msg`、`im:message.group_at_msg:readonly`、`im:message.p2p_msg:readonly`、`im:message.pins:read/write_only`（2）、`im:message.reactions:read/write_only`（2）、`im:message:readonly`、`im:resource` — 消息收发 + 群消息 + @mention + 置顶 + 表情
+> - **群聊管理**（27 个）：`im:chat` + `im:chat.*`（19）+ `im:chat:*`（7） — 群组 CRUD、公告、置顶、成员管理、标签页、菜单树、审核、小组件、Bot 事件
 > - **卡片流式回复**（1 个）：`cardkit:card:write` — AI 打字机效果
-> - **Emoji 表情**（2 个）：`im:message.reactions:read`、`im:message.reactions:write_only` — AI 自动 Get 回应 + 点赞
 > - **日历**（16 个）：`calendar:calendar*` — 日历/日程 CRUD、ACL 权限、忙闲查询、订阅（`feishu_calendar` 工具）
-> - **联系人**（3 个）：`contact:contact.base:readonly`、`contact:user.base:readonly`、`contact:department.base:readonly` — 获取发送者姓名 + @mention 用户名查询 + 按部门查人
-> - **文档核心**（6 个）：`docs:doc`、`docx:document`、`docx:document.block:convert`、`docx:document:create`、`docx:document:readonly`、`docx:document:write_only` — 旧版 + 新版文档读写
-> - **文档评论**（4 个）：`docs:document.comment:*` — 创建/读取/更新评论
-> - **文档内容/媒体/订阅**（5 个）：`docs:document.content:read`、`docs:document.media:download`、`docs:document.media:upload`、`docs:document.subscription`、`docs:document.subscription:read` — 文档内容读取、媒体上传下载、订阅通知
-> - **文档复制/导出/导入**（3 个）：`docs:document:copy`、`docs:document:export`、`docs:document:import`
-> - **文档事件**（4 个）：`docs:event.document_deleted:read`、`docs:event.document_edited:read`、`docs:event.document_opened:read`、`docs:event:subscribe` — 文档变更事件监听
-> - **文档权限管理**（12 个）：`docs:permission.member*`（8 个）+ `docs:permission.setting*`（4 个） — 文档成员权限和权限设置的完整 CRUD
-> - **云盘**（14 个）：`drive:drive*`（6 个）+ `drive:export:readonly` + `drive:file*`（7 个） — 云盘读写/搜索/版本、文件上传下载/元数据/查看记录
-> - **多维表格**（2 个）：`bitable:app`、`bitable:app:readonly` — 多维表格读写
+> - **联系人**（3 个）：`contact:contact.base:readonly`、`contact:user.base:readonly`、`contact:department.base:readonly` — 获取发送者姓名 + @mention 查询 + 按部门查人
+> - **文档**（35 个）：`docs:*`（30）+ `docx:*`（5） — 旧版/新版文档读写、评论、媒体上传下载、权限管理、事件订阅
+> - **云盘**（14 个）：`drive:drive*`（6）+ `drive:export:readonly` + `drive:file*`（7） — 云盘读写/搜索/版本、文件上传下载/元数据
+> - **多维表格**（2 个）：`bitable:app`、`bitable:app:readonly`
 > - **白板**（2 个）：`board:whiteboard:node:create`、`board:whiteboard:node:read`
 > - **Wiki 知识库**（2 个）：`wiki:wiki`、`wiki:wiki:readonly`
-> - **空间文档管理**（4 个）：`space:document:delete`、`space:document:move`、`space:document:retrieve`、`space:document:shortcut` — 知识空间内文档的移动/删除/快捷方式
-> - **待办任务**（14 个）：`task:task:read/write/readonly/writeonly`（4 个）+ `task:tasklist:read/write`（2 个）+ `task:comment/read/readonly/write`（4 个）+ `task:attachment:read/write`（2 个）+ `task:section:read/write`（2 个） — 任务 CRUD、清单管理、评论、附件、分组
+> - **空间文档管理**（4 个）：`space:document:*` — 知识空间内文档的移动/删除/快捷方式
+> - **待办任务**（14 个）：`task:task:*`（4）+ `task:tasklist:*`（2）+ `task:comment:*`（4）+ `task:attachment:*`（2）+ `task:section:*`（2） — 任务 CRUD、清单、评论、附件、分组
+> - **妙记会议纪要**（6 个）：`minutes:minutes*` — 会议纪要读取/导出/统计
+> - **视频会议**（7 个）：`vc:export`、`vc:meeting`、`vc:meeting.all_meeting:readonly`、`vc:meeting:readonly`、`vc:record:readonly`、`vc:room`、`vc:room:readonly` — 会议/录制/会议室
+> - **表格**（1 个）：`sheets:spreadsheet:readonly`
 >
-> **User 权限（16 个）**：
+> **User 权限（54 个）**：
 >
-> - **Aily 智能伙伴**（16 个）：与 tenant 同名的 `aily:*` 权限 — 以用户身份调用 Aily 智能伙伴 API
+> - **Aily 智能伙伴**（16 个）：与 tenant 同名的 `aily:*` — 以用户身份调用 Aily 智能伙伴 API
+> - **消息读取**（6 个）：`im:chat:readonly`、`im:message.group_msg:get_as_user`（**群聊历史**）、`im:message.p2p_msg:get_as_user`（**私聊历史**）、`im:message.pins:read`、`im:message.reactions:read`、`im:message:readonly` — Her 以用户身份读取群聊/私聊消息，需 OAuth 授权
+> - **日历只读**（6 个）：`calendar:calendar` + `calendar:calendar.*:read`（5） — 以用户身份读取日历/日程/忙闲
+> - **文档/云盘只读**（8 个）：`docs:doc:readonly`、`docx:document:readonly`、`drive:*:readonly`（5）、`bitable:app:readonly` — 以用户身份读取文档/云盘/多维表格
+> - **联系人**（1 个）：`contact:user.base:readonly` — 以用户身份查询通讯录
+> - **搜索**（4 个）：`search:app`、`search:department:read`、`search:docs:read`、`search:message` — 以用户身份搜索消息/文档/人员
+> - **妙记**（6 个）：`minutes:minutes*` — 以用户身份读取会议纪要
+> - **其他只读**（7 个）：`sheets:spreadsheet:readonly`、`task:task:readonly`、`vc:*:readonly`（4）、`wiki:wiki:readonly` — 以用户身份读取表格/任务/视频会议/Wiki
+>
+> **User 权限需要 OAuth 授权**：user 权限需要用户本人通过 OAuth 授权后，Her 才能以用户身份调用对应 API。授权流程：Her 在私聊中发送授权链接 → 用户点击一次 → 获取 `user_access_token` → 自动刷新。详见下方步骤 4b。
+
+**步骤 4b：配置安全设置（OAuth 回调 URL）**
+
+> **此步骤是 user 权限（群聊历史、私聊历史、搜索等）生效的前提。** 不配置则 Her 只有 tenant 权限（bot 身份），无法以用户身份读取消息。
+
+1. 左侧菜单点击「安全设置」
+2. 找到「重定向 URL」部分，点击「添加」
+3. 填入该用户的 OAuth 回调 URL：
+
+```
+https://sX-uN-auth.carher.net/feishu/oauth/callback
+```
+
+其中 `sX` 是服务器前缀（`s1`/`s2`/`s3`），`N` 是用户编号。
+
+> **URL 格式规则**：
+>
+> - S1 (10.68.13.186) 上的用户 13：`https://s1-u13-auth.carher.net/feishu/oauth/callback`
+> - S2 (10.68.13.187) 上的用户 6：`https://s2-u6-auth.carher.net/feishu/oauth/callback`
+> - S3 (10.68.13.188) 上的用户 14：`https://s3-u14-auth.carher.net/feishu/oauth/callback`
+> - Mac 本地测试：`https://uN-auth.carher.net/feishu/oauth/callback`（无服务器前缀）
+>
+> URL 由 `start-user.sh` 根据用户 ID + `TUNNEL_HOST_PREFIX`（来自 `server.env`）自动推导并写入 `channels.feishu.oauthRedirectUri`，无需手动计算端口。
+>
+> **Cloudflare 隧道已预分配**：每台服务器的隧道已预配置 User 1-50 的 `auth` 域名路由和 DNS 记录。新增用户无需修改隧道配置。隧道架构详见 [企业部署实录 - Cloudflare 隧道架构](/her/enterprise-deploy-log#cloudflare-隧道架构)。
 
 **步骤 5：第一次发布（让 Bot 在飞书客户端可见 + 使长连接可用）**
 
@@ -750,10 +863,12 @@ git checkout v旧版本
 
 ### 员工生命周期
 
-| 事件       | IT 操作                      | 部署者操作               | 对其他员工影响 |
-| ---------- | ---------------------------- | ------------------------ | -------------- |
-| 新员工入职 | 创建 1 个飞书 Bot（15 分钟） | 生成配置 + 启动 1 个容器 | **零影响**     |
-| 员工离职   | 注销飞书账号 + 删除 Bot      | 停止并删除该容器         | **零影响**     |
+| 事件       | IT 操作                                            | 部署者操作               | 对其他员工影响 |
+| ---------- | -------------------------------------------------- | ------------------------ | -------------- |
+| 新员工入职 | 创建飞书 Bot + 导入权限 + 配 OAuth URL（15 分钟）  | CSV 加行 + 启动容器      | **零影响**     |
+| 员工离职   | 注销飞书账号 + 删除 Bot                            | 停止并删除该容器         | **零影响**     |
+
+> **新增用户无需修改隧道配置**：Cloudflare 隧道已预分配 User 1-50 的全部路由和 DNS。IT 只需在飞书后台填入 OAuth URL（格式自动推导），部署者只需 `./start-user.sh --id=N`。
 
 ### 用户管理
 
@@ -831,15 +946,17 @@ CSV 含密钥，已加入 `.gitignore`，**不通过 git 同步**。
 
 ## 各通道与工具能力
 
-| 通道/工具       | 状态     | 说明                                                                                                                                                                                                                                                                           |
-| --------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 飞书            | **可用** | 每人专属 Bot + 独立容器，CardKit 流式卡片回复，已验证                                                                                                                                                                                                                          |
-| Webchat         | **可用** | 每容器独立 Webchat（各自端口），已验证                                                                                                                                                                                                                                         |
-| Telegram        | 可用     | 同飞书，每容器可额外配 Telegram Bot                                                                                                                                                                                                                                            |
-| 语音 (realtime) | **可用** | Gemini Live 原生语音已验证（本地 + Docker）。**安全已修复**：两层防护（Layer 1 端口不暴露 + Layer 2 per-container token 认证），飞书 `/voice` 命令自动生成带 token 的语音 URL。详见 [飞书架构文档 - 安全架构](her-feishu-bot-architecture#安全架构两层防护模型2026-02-15-设计) |
-| Web Search      | **可用** | Perplexity Sonar 搜索引擎，复用 OpenRouter API key，已验证                                                                                                                                                                                                                     |
-| Browser Use     | **可用** | 容器内 Chromium headless 浏览器，可打开网页/截图/读取 JS 渲染内容，已验证                                                                                                                                                                                                      |
-| Web Fetch       | **可用** | HTTP 网页抓取 + 正文提取（纯静态页面），默认启用                                                                                                                                                                                                                               |
+| 通道/工具         | 状态     | 说明                                                                                                                                                                                                                                                                           |
+| ----------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 飞书私聊          | **可用** | 每人专属 Bot + 独立容器，CardKit 流式卡片回复，已验证                                                                                                                                                                                                                          |
+| 飞书群聊          | **可用** | 群聊消息 `text/post` 输出（非卡片），`feishu_group_history` 工具读取群聊历史（支持 `tenant_access_token` fallback），已验证 |
+| 飞书群聊消息读取  | **可用** | `feishu_group_history` 工具：time range、pagination、thread 拉取、本地归档交叉引用。需 user 权限 `im:message.group_msg:get_as_user`（OAuth 授权） |
+| Webchat           | **可用** | 每容器独立 Webchat（各自端口），已验证                                                                                                                                                                                                                                         |
+| Telegram          | 可用     | 同飞书，每容器可额外配 Telegram Bot                                                                                                                                                                                                                                            |
+| 语音 (realtime)   | **可用** | Gemini Live 原生语音已验证（本地 + Docker）。两层防护（端口不暴露 + per-container token 认证）。详见 [飞书架构文档 - 安全架构](/her/her-feishu-bot-architecture#安全架构两层防护模型2026-02-15-设计) |
+| Web Search        | **可用** | Perplexity Sonar 搜索引擎，复用 OpenRouter API key，已验证                                                                                                                                                                                                                     |
+| Browser Use       | **可用** | 容器内 Chromium headless 浏览器，可打开网页/截图/读取 JS 渲染内容，已验证                                                                                                                                                                                                      |
+| Web Fetch         | **可用** | HTTP 网页抓取 + 正文提取（纯静态页面），默认启用                                                                                                                                                                                                                               |
 
 ---
 
@@ -870,5 +987,5 @@ CSV 含密钥，已加入 `.gitignore`，**不通过 git 同步**。
 | 单点故障   | **无**：1 容器崩只影响 1 人                                                                                        |
 | 升级       | **滚动升级**：逐容器重启，每次只影响 1 人 2-3 秒                                                                   |
 | 代码修改   | **零**（纯配置 + Docker），与上游零冲突                                                                            |
-| 飞书 Bot   | IT 手动创建（无 API，~50 小时一次性工作）                                                                          |
+| 飞书 Bot   | IT 手动创建（无 API，每个 ~15 分钟：创建 + 导入 215 权限 + 配 OAuth URL + 两次发布）                               |
 | 月费用     | ~$2,000-7,000（取决于模型和语音使用量）                                                                            |
