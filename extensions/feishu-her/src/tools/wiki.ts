@@ -9,7 +9,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { stringEnum } from "openclaw/plugin-sdk";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import { getFeishuClient } from "../outbound.js";
-import { resolveDriveShareUrl } from "./share-url.js";
+import { resolveDriveShareUrl, type DriveDocType } from "./share-url.js";
 
 function json(data: unknown) {
   return {
@@ -48,6 +48,44 @@ function optionalStringParam(value: unknown, field: string): string | undefined 
     return undefined;
   }
   return requireStringParam(value, field);
+}
+
+// ── URL parsing ──
+
+const FEISHU_PATH_TYPES: Record<string, DriveDocType> = {
+  wiki: "wiki",
+  docx: "docx",
+  doc: "doc",
+  sheets: "sheet",
+  bitable: "bitable",
+  mindnotes: "mindnote",
+  file: "file",
+  slides: "slides",
+};
+
+function extractTokenFromUrl(input: string): { token: string; docType: DriveDocType } {
+  const trimmed = input.trim();
+  // Already a bare token (no slashes, no protocol)
+  if (!trimmed.includes("/")) {
+    return { token: trimmed, docType: "wiki" };
+  }
+  try {
+    const url = new URL(trimmed.startsWith("http") ? trimmed : `https://placeholder/${trimmed}`);
+    const segments = url.pathname.split("/").filter(Boolean);
+    // Match patterns like /wiki/TOKEN, /docx/TOKEN, /sheets/TOKEN
+    for (let i = 0; i < segments.length; i++) {
+      const dtype = FEISHU_PATH_TYPES[segments[i]];
+      if (dtype && i + 1 < segments.length) {
+        return { token: segments[i + 1], docType: dtype };
+      }
+    }
+    // Fallback: last path segment as token
+    const last = segments[segments.length - 1];
+    if (last) return { token: last, docType: "wiki" };
+  } catch {
+    // Not a valid URL, use as-is
+  }
+  return { token: trimmed, docType: "wiki" };
 }
 
 // ── Actions ──
@@ -267,17 +305,23 @@ export function registerFeishuWikiTools(api: OpenClawPluginApi) {
               if (!params.token) {
                 return json({ error: "token is required for resolve_url" });
               }
-              const share = await resolveDriveShareUrl(firstAccount, params.token, "wiki");
+              // Extract token and doc type from full URLs like
+              // https://xxx.feishu.cn/wiki/TOKEN or /docx/TOKEN
+              const { token: resolvedToken, docType } = extractTokenFromUrl(params.token);
+              const share = await resolveDriveShareUrl(firstAccount, resolvedToken, docType);
               if (!share.ok) {
                 return json({
                   error: share.error,
                   code: share.code,
                   msg: share.msg,
                   http_status: share.http_status,
+                  attempted_token: resolvedToken,
+                  attempted_doc_type: docType,
                 });
               }
               return json({
-                token: params.token,
+                token: resolvedToken,
+                doc_type: docType,
                 share_url: share.share_url,
               });
             }

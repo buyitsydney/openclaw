@@ -1769,7 +1769,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // onReplyStart: create the card stream when the AI actually starts processing
   // (after session lane queuing — never fires for queued messages).
   const startCardStream = async () => {
-    if (isCommand || cardStream) return;
+    // Group chats: send text/post instead of interactive cards so other bots
+    // (and the history API) can read Her's output. Card streaming is private-chat only.
+    if (isGroup || isCommand || cardStream) return;
     try {
       cardStream = await createFeishuCardStream({
         account,
@@ -1794,6 +1796,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   let cardStreamPrefix = "";
   let cardStreamLastPartial = "";
   let cardStreamFinalText = "";
+  let groupAccumulatedText = "";
 
   const updateCardStream = (text?: string) => {
     if (!text || !cardStream?.started) return;
@@ -1882,9 +1885,33 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           `[${account.accountId}] deliver: kind=${info.kind} hasText=${!!payload.text} textLen=${payload.text?.length ?? 0} hasMedia=${hasMedia}${skippedMedia > 0 ? ` (skipped ${skippedMedia} duplicate media)` : ""}`,
         );
 
+        // Group chats without card stream: accumulate text and send as a single
+        // message after the full turn completes, avoiding fragmented bubbles.
+        if (isGroup && !cardStream?.started && payload.text) {
+          groupAccumulatedText = groupAccumulatedText
+            ? groupAccumulatedText + "\n\n" + payload.text
+            : payload.text;
+          log?.info(
+            `[${account.accountId}] deliver: group text accumulated (${groupAccumulatedText.length} chars total)`,
+          );
+          setStatus({ lastOutboundAt: Date.now() });
+          if (hasMedia) {
+            await deliverFeishuReply({
+              payload: { mediaUrls },
+              account,
+              chatId,
+              isGroup,
+              replyToMessageId: messageId,
+              log,
+              setStatus,
+              config,
+              core,
+            });
+          }
+          return;
+        }
+
         if (cardStream?.started && payload.text) {
-          // reasoning blocks and verbose tool results must always be sent as
-          // separate Feishu messages so the user can see them alongside the card.
           const isReasoningBlock =
             info.kind === "block" && payload.text.trimStart().startsWith("Reasoning:");
           const isVerboseTool = info.kind === "tool";
@@ -1894,9 +1921,6 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           );
 
           if (!isReasoningBlock && !isVerboseTool) {
-            // deliver is called after the entire turn ends (all paragraphs at once).
-            // onPartialReply + paragraph boundary detection already displayed everything.
-            // Just accumulate text for finalize (summary). Do NOT update the card.
             cardStreamFinalText = cardStreamFinalText
               ? cardStreamFinalText + "\n\n" + payload.text
               : payload.text;
@@ -1905,7 +1929,6 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
             );
             setStatus({ lastOutboundAt: Date.now() });
 
-            // Media attachments still need separate delivery.
             if (hasMedia) {
               await deliverFeishuReply({
                 payload: { mediaUrls },
@@ -1927,7 +1950,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           );
         }
 
-        // Card stream not active or no text — deliver normally.
+        // Card stream not active, group text not accumulating, or no text — deliver normally.
         await deliverFeishuReply({
           payload: { ...payload, mediaUrls: hasMedia ? mediaUrls : undefined, mediaUrl: undefined },
           account,
@@ -1955,6 +1978,20 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       onPartialReply: !isCommand ? (payload) => updateCardStream(payload.text) : undefined,
     },
   });
+  // Group chats: flush accumulated text as a single post message.
+  if (isGroup && groupAccumulatedText) {
+    await deliverFeishuReply({
+      payload: { text: groupAccumulatedText },
+      account,
+      chatId,
+      isGroup,
+      replyToMessageId: messageId,
+      log,
+      setStatus,
+      config,
+      core,
+    });
+  }
   // Append status footer (model + context usage) to the card before closing.
   if (cardStream?.started && cardStreamFinalText) {
     const footer = buildCardStatusFooter({ storePath, sessionKey: route.sessionKey, config });
