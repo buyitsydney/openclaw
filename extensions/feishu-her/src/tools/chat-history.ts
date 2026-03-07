@@ -18,7 +18,13 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { stringEnum } from "openclaw/plugin-sdk";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
-import { callFeishuApiWithUserToken, getValidUserToken, type FeishuUserToken } from "../oauth.js";
+import {
+  callFeishuApiWithUserToken,
+  getValidUserToken,
+  requireUserToken,
+  resolveOAuthRedirectUri,
+  type FeishuUserToken,
+} from "../oauth.js";
 import { getFeishuClient } from "../outbound.js";
 
 function json(data: unknown) {
@@ -474,6 +480,7 @@ export function registerFeishuChatHistoryTool(api: OpenClawPluginApi) {
   const accounts = listEnabledFeishuAccounts(api.config);
   if (accounts.length === 0) return;
   const firstAccount: ResolvedFeishuAccount = accounts[0];
+  const redirectUri = resolveOAuthRedirectUri(api.config as Record<string, unknown>);
 
   api.registerTool(
     {
@@ -489,20 +496,19 @@ export function registerFeishuChatHistoryTool(api: OpenClawPluginApi) {
         "- coverage='full' means text fully readable. 'partial' means metadata only (image/file/audio). " +
         "'none' means content degraded (interactive cards, video).\n" +
         "- To check if a user was @mentioned: compare mentions[i].id with the user's own open_id.\n" +
-        "- For comprehensive group summaries, set include_thread_replies=true.",
+        "- For comprehensive group summaries, set include_thread_replies=true.\n\n" +
+        "If authorization is needed, the tool returns an auth_url — send it to the user as a clickable link.",
       parameters: ChatHistorySchema,
       // oxlint-disable-next-line typescript/no-explicit-any
       async execute(_toolCallId: string, params: any) {
-        const userToken = await getValidUserToken(firstAccount);
-        if (!userToken) {
-          return json({
-            error: "no_user_token",
-            message:
-              "User has not authorized Feishu access, or the token has expired. " +
-              "Please ask the user to re-authorize via the Feishu OAuth flow.",
-            action_needed: "Send the user a Feishu authorization link.",
-          });
-        }
+        const guard = await requireUserToken({
+          account: firstAccount,
+          redirectUri,
+          tokenPromise: getValidUserToken(firstAccount),
+          toolLabel: "群聊历史",
+        });
+        if (!guard.ok) return guard.authResponse;
+        const userToken = guard.token;
 
         try {
           switch (params.action) {

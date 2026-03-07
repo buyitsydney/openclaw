@@ -20,8 +20,9 @@ import { stringEnum } from "openclaw/plugin-sdk";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
   callFeishuApiWithUserToken,
-  getAuthUrlForChat,
   getValidUserToken,
+  requireUserToken,
+  resolveOAuthRedirectUri,
   type FeishuUserToken,
 } from "../oauth.js";
 import { getFeishuClient } from "../outbound.js";
@@ -65,22 +66,6 @@ function json(data: unknown) {
   };
 }
 
-function authRequiredResult(account: ResolvedFeishuAccount, redirectUri: string) {
-  const authInfo = {
-    error: "user_auth_required",
-    message:
-      "需要用户 OAuth 授权才能读取飞书妙记。请发送以下授权链接给用户，让用户在飞书中点击授权。",
-    instructions:
-      "Send the user this authorization link. After they authorize, retry the minutes action.",
-    note: "The redirect_uri must be configured in the Feishu app backend security settings.",
-    redirect_uri: redirectUri,
-  };
-  return json(authInfo);
-}
-
-function buildAuthUrl(account: ResolvedFeishuAccount, redirectUri: string, chatId: string) {
-  return getAuthUrlForChat(account, chatId, redirectUri);
-}
 
 // ── Drive search: find "智能纪要" documents ──
 
@@ -1043,12 +1028,7 @@ export function registerFeishuMinutesTools(api: OpenClawPluginApi): void {
   if (accounts.length === 0) return;
   const firstAccount: ResolvedFeishuAccount = accounts[0];
   const getClient = () => getFeishuClient(firstAccount);
-
-  // Resolve redirect URI from config, with sensible default
-  const feishuConfig = (api.config.channels?.["feishu"] ?? {}) as Record<string, unknown>;
-  const minutesConfig = (feishuConfig.minutes ?? {}) as Record<string, unknown>;
-  const redirectUri =
-    (minutesConfig.oauthRedirectUri as string) ?? "https://auth.carher.net/feishu/oauth/callback";
+  const redirectUri = resolveOAuthRedirectUri(api.config as Record<string, unknown>);
 
   api.registerTool(
     {
@@ -1064,20 +1044,14 @@ export function registerFeishuMinutesTools(api: OpenClawPluginApi): void {
       // oxlint-disable-next-line typescript/no-explicit-any
       async execute(_toolCallId: string, params: any) {
         try {
-          const userToken = await getValidUserToken(firstAccount);
-
-          if (!userToken) {
-            // Build auth URL with a placeholder chatId;
-            // Her will send the link to the user in the current conversation
-            const authUrl = buildAuthUrl(firstAccount, redirectUri, firstAccount.accountId);
-            return json({
-              error: "user_auth_required",
-              message:
-                "需要用户 OAuth 授权才能读取飞书妙记。请将下方链接发送给用户，" +
-                "用户在飞书中点击后完成授权，然后重试。",
-              auth_url: authUrl,
-            });
-          }
+          const guard = await requireUserToken({
+            account: firstAccount,
+            redirectUri,
+            tokenPromise: getValidUserToken(firstAccount),
+            toolLabel: "飞书妙记",
+          });
+          if (!guard.ok) return guard.authResponse;
+          const userToken = guard.token;
 
           const client = getClient();
 

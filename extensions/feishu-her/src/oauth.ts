@@ -1,12 +1,13 @@
 /**
- * Feishu OAuth — user_access_token management for minutes/calendar/drive APIs.
+ * Feishu OAuth — user_access_token management for all tools that need user identity.
  *
  * Flow:
- *   1. Tool detects no valid token → returns guidance for Her to send auth card
- *   2. Her sends interactive card with "点击授权" URL button
- *   3. User clicks → Feishu OAuth page → user confirms → redirect to callback
- *   4. Callback exchanges code for token, persists to disk, notifies user
- *   5. Subsequent tool calls use the stored user_access_token
+ *   1. Tool calls requireUserToken() → checks for valid token
+ *   2. If missing, returns auth URL in a ready-to-return tool result
+ *   3. Her sends the link to the user as a clickable card
+ *   4. User clicks → Feishu OAuth page → user confirms → redirect to callback
+ *   5. Callback exchanges code for token, persists to disk, notifies user
+ *   6. Subsequent tool calls use the stored user_access_token
  */
 
 import { randomBytes } from "node:crypto";
@@ -250,6 +251,22 @@ function markStateCompleted(nonce: string, state: OAuthState): void {
   setTimeout(() => completedStates.delete(nonce), COMPLETED_TTL_MS);
 }
 
+export function buildOAuthSuccessPageHtml(displayName: string): string {
+  return (
+    `<h2>授权成功</h2><p>${displayName}，飞书授权已完成。` +
+    "Her 现在可以读取你授权范围内的飞书内容了。</p>" +
+    "<p>你可以关闭此页面，回到飞书继续对话。</p>"
+  );
+}
+
+export function buildOAuthSuccessNotificationText(displayName: string): string {
+  return (
+    `**授权成功** ✓\n${displayName}，飞书授权已完成。\n` +
+    "我现在可以读取你授权范围内的飞书内容了。\n" +
+    "你可以继续让我查看群聊历史、会议纪要等需要用户权限的内容。"
+  );
+}
+
 // ── OAuth callback handler ──
 
 type OAuthCallbackDeps = {
@@ -333,11 +350,10 @@ export async function handleOAuthCallback(
           callbackDeps.log(
             `OAuth code already used but token exists for ${existing.name ?? existing.open_id} — showing success`,
           );
+          const displayName = existing.name ?? "用户";
           res.statusCode = 200;
           res.setHeader("Content-Type", "text/html; charset=utf-8");
-          res.end(
-            `<h2>授权成功</h2><p>${existing.name ?? "用户"}，授权已完成。你可以关闭此页面，回到飞书继续对话。</p>`,
-          );
+          res.end(buildOAuthSuccessPageHtml(displayName));
           return;
         }
       }
@@ -384,9 +400,7 @@ export async function handleOAuthCallback(
     const displayName = userToken.name ?? "用户";
     res.statusCode = 200;
     res.setHeader("Content-Type", "text/html; charset=utf-8");
-    res.end(
-      `<h2>授权成功</h2><p>${displayName}，Her 现在可以读取你的飞书妙记/会议纪要了。</p><p>你可以关闭此页面，回到飞书继续对话。</p>`,
-    );
+    res.end(buildOAuthSuccessPageHtml(displayName));
 
     // Notify user in Feishu chat (best-effort).
     // state.chatId may be a placeholder (e.g. "default") when the tool lacks the real chat ID;
@@ -395,7 +409,7 @@ export async function handleOAuthCallback(
       sendFeishuRichText({
         account,
         chatId: state.chatId,
-        text: `**授权成功** ✓\n${displayName}，我现在可以读取你的飞书妙记和会议纪要了。\n你可以说"帮我看看今天的会议纪要"来试试。`,
+        text: buildOAuthSuccessNotificationText(displayName),
       }).catch(() => {
         // best-effort notification
       });
@@ -514,4 +528,59 @@ export async function callFeishuApiWithUserToken<T = unknown>(params: {
   } finally {
     await release();
   }
+}
+
+// ── Unified user-token guard ──
+
+export type RequireUserTokenResult =
+  | { ok: true; token: FeishuUserToken }
+  | { ok: false; authResponse: { content: { type: "text"; text: string }[]; details: unknown } };
+
+/**
+ * Unified guard: check for a valid user_access_token and, if missing,
+ * return a tool result containing the auth URL so Her can forward it.
+ *
+ * Every tool that needs user_access_token should call this once at the top.
+ */
+export function requireUserToken(params: {
+  account: ResolvedFeishuAccount;
+  redirectUri: string;
+  tokenPromise: Promise<FeishuUserToken | null>;
+  toolLabel: string;
+}): Promise<RequireUserTokenResult> {
+  return params.tokenPromise.then((token) => {
+    if (token) return { ok: true as const, token };
+    const chatId = params.account.accountId;
+    const authUrl = getAuthUrlForChat(params.account, chatId, params.redirectUri);
+    const details = {
+      error: "user_auth_required",
+      message:
+        `需要用户 OAuth 授权才能使用${params.toolLabel}。` +
+        "请将下方链接发送给用户，用户在飞书中点击后完成授权，然后重试。",
+      auth_url: authUrl,
+    };
+    return {
+      ok: false as const,
+      authResponse: {
+        content: [{ type: "text" as const, text: JSON.stringify(details, null, 2) }],
+        details,
+      },
+    };
+  });
+}
+
+/**
+ * Resolve the OAuth redirect URI from plugin config.
+ * Looks at channels.feishu.oauthRedirectUri first (new unified location),
+ * then falls back to channels.feishu.minutes.oauthRedirectUri (legacy).
+ */
+export function resolveOAuthRedirectUri(config: Record<string, unknown>): string {
+  const feishuConfig = ((config.channels as Record<string, unknown>)?.["feishu"] ?? {}) as Record<
+    string,
+    unknown
+  >;
+  if (typeof feishuConfig.oauthRedirectUri === "string") return feishuConfig.oauthRedirectUri;
+  const minutesConfig = (feishuConfig.minutes ?? {}) as Record<string, unknown>;
+  if (typeof minutesConfig.oauthRedirectUri === "string") return minutesConfig.oauthRedirectUri;
+  return "https://auth.carher.net/feishu/oauth/callback";
 }

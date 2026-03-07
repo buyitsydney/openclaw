@@ -531,12 +531,10 @@ if feishu_id and feishu_secret:
         'enabled': True,
         'archive': True,
     }
-    # OAuth redirect URI for feishu minutes (per-user auth domain)
+    # OAuth redirect URI (unified, used by all tools needing user_access_token)
     auth_host = '${NAMED_AUTH_HOST}'
     if auth_host:
-        feishu_cfg['minutes'] = {
-            'oauthRedirectUri': f'https://{auth_host}/feishu/oauth/callback'
-        }
+        feishu_cfg['oauthRedirectUri'] = f'https://{auth_host}/feishu/oauth/callback'
     cfg.setdefault('channels', {})['feishu'] = feishu_cfg
 
 # commands.ownerAllowFrom from CSV (pipe-separated open_ids)
