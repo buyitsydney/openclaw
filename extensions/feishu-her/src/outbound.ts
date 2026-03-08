@@ -196,24 +196,45 @@ export function markdownToPost(md: string): { zh_cn: { content: PostElement[][] 
 }
 
 /** Parse a single line of Markdown text into Feishu Post inline elements.
- *  Supports: **bold**, *italic*, `inline code`, [text](url), <at user_id="xxx">name</at>.
+ *  Supports: **bold**, *italic*, `inline code`, [text](url), raw https:// URLs,
+ *  <at user_id="xxx">name</at>.
  *  If `forceBold` is true, the whole line is rendered bold (for headings). */
+function unwrapStyledMarkdownLinks(text: string): string {
+  if (
+    !text.includes("](") ||
+    (!text.includes("**[") && !text.includes("*[") && !text.includes("_["))
+  ) {
+    return text;
+  }
+
+  const segments = text.split("`");
+  for (let i = 0; i < segments.length; i += 2) {
+    segments[i] = segments[i]
+      .replace(/\*\*\*\[([^\]]+)\]\(([^)]+)\)\*\*\*/g, "[$1]($2)")
+      .replace(/\*\*\[([^\]]+)\]\(([^)]+)\)\*\*/g, "[$1]($2)")
+      .replace(/\*\[([^\]]+)\]\(([^)]+)\)\*/g, "[$1]($2)")
+      .replace(/_\[([^\]]+)\]\(([^)]+)\)_/g, "[$1]($2)");
+  }
+  return segments.join("`");
+}
+
 function parseInlineElements(text: string, forceBold = false): PostElement[][] {
+  const normalizedText = unwrapStyledMarkdownLinks(text);
   const elements: PostElement[] = [];
 
   // Regex to match inline Markdown tokens in order of precedence.
   // Bold+italic (***), bold (**), italic (*/_), inline code (`), link [text](url),
-  // Feishu @mention: <at user_id="xxx">name</at>
+  // raw URLs, Feishu @mention: <at user_id="xxx">name</at>
   const inlineRegex =
-    /(\*\*\*(.+?)\*\*\*|\*\*(.+?)\*\*|\*(.+?)\*|_(.+?)_|`(.+?)`|\[([^\]]+)\]\(([^)]+)\)|<at\s+user_id="([^"]+)">([^<]*)<\/at>)/g;
+    /(\*\*\*(.+?)\*\*\*|\*\*(.+?)\*\*|\*(.+?)\*|_(.+?)_|`(.+?)`|\[([^\]]+)\]\(([^)]+)\)|(https?:\/\/[^\s<>()]+)|<at\s+user_id="([^"]+)">([^<]*)<\/at>)/g;
 
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
-  while ((match = inlineRegex.exec(text)) !== null) {
+  while ((match = inlineRegex.exec(normalizedText)) !== null) {
     // Text before this match.
     if (match.index > lastIndex) {
-      const before = text.slice(lastIndex, match.index);
+      const before = normalizedText.slice(lastIndex, match.index);
       if (before) {
         elements.push(
           forceBold
@@ -242,16 +263,30 @@ function parseInlineElements(text: string, forceBold = false): PostElement[][] {
       // [text](url)
       elements.push({ tag: "a", text: match[7], href: match[8] });
     } else if (match[9]) {
+      // Raw URL — render as an explicit Feishu hyperlink so underscores in query
+      // parameters stay intact instead of being parsed as Markdown italics.
+      const rawUrl = match[9];
+      const normalizedUrl = normalizeExtractedUrl(rawUrl);
+      elements.push({ tag: "a", text: normalizedUrl, href: normalizedUrl });
+      const trailing = rawUrl.slice(normalizedUrl.length);
+      if (trailing) {
+        elements.push(
+          forceBold
+            ? { tag: "text", text: trailing, style: ["bold"] }
+            : { tag: "text", text: trailing },
+        );
+      }
+    } else if (match[10]) {
       // <at user_id="xxx">name</at> → Feishu Post @mention element
-      elements.push({ tag: "at", user_id: match[9] });
+      elements.push({ tag: "at", user_id: match[10] });
     }
 
     lastIndex = match.index + match[0].length;
   }
 
   // Remaining text after last match.
-  if (lastIndex < text.length) {
-    const remaining = text.slice(lastIndex);
+  if (lastIndex < normalizedText.length) {
+    const remaining = normalizedText.slice(lastIndex);
     if (remaining) {
       elements.push(
         forceBold
@@ -263,7 +298,11 @@ function parseInlineElements(text: string, forceBold = false): PostElement[][] {
 
   // If no matches at all, return the whole text as a single element.
   if (elements.length === 0) {
-    elements.push(forceBold ? { tag: "text", text, style: ["bold"] } : { tag: "text", text });
+    elements.push(
+      forceBold
+        ? { tag: "text", text: normalizedText, style: ["bold"] }
+        : { tag: "text", text: normalizedText },
+    );
   }
 
   return [elements];
@@ -278,11 +317,53 @@ function hasMarkdown(text: string): boolean {
 }
 
 const OUTBOUND_URL_PATTERN = /https?:\/\/[^\s<>()]+/gi;
+const FEISHU_OAUTH_AUTHORIZE_URL_PREFIX =
+  "https://accounts.feishu.cn/open-apis/authen/v1/authorize?";
+const FEISHU_OAUTH_AUTHORIZE_URL_PATTERN =
+  /https:\/\/accounts\.feishu\.cn\/open-apis\/authen\/v1\/authorize\?[^\s<>()]+/g;
+const FEISHU_OAUTH_LINK_LABEL = "点击授权飞书";
 const OPEN_FEISHU_HOST = "open.feishu.cn";
 const OPEN_FEISHU_DOCS_PREFIX = "/document/";
 
 function normalizeExtractedUrl(candidate: string): string {
   return candidate.replace(/[),.;!?]+$/g, "");
+}
+
+function replaceRawFeishuOAuthUrls(segment: string): string {
+  return segment.replace(FEISHU_OAUTH_AUTHORIZE_URL_PATTERN, (rawUrl, offset, fullSegment) => {
+    if (typeof offset === "number" && fullSegment.slice(Math.max(0, offset - 2), offset) === "](") {
+      return rawUrl;
+    }
+    const normalizedUrl = normalizeExtractedUrl(rawUrl);
+    const trailing = rawUrl.slice(normalizedUrl.length);
+    return `[${FEISHU_OAUTH_LINK_LABEL}](${normalizedUrl})${trailing}`;
+  });
+}
+
+export function formatFeishuUserFacingText(text: string): string {
+  if (!text.includes(FEISHU_OAUTH_AUTHORIZE_URL_PREFIX)) {
+    return text;
+  }
+
+  const lines = text.split("\n");
+  let inFence = false;
+  return lines
+    .map((line) => {
+      const trimmed = line.trimStart();
+      if (trimmed.startsWith("```")) {
+        inFence = !inFence;
+        return line;
+      }
+      if (inFence || !line.includes(FEISHU_OAUTH_AUTHORIZE_URL_PREFIX)) {
+        return line;
+      }
+      const inlineCodeSegments = line.split("`");
+      for (let i = 0; i < inlineCodeSegments.length; i += 2) {
+        inlineCodeSegments[i] = replaceRawFeishuOAuthUrls(inlineCodeSegments[i]);
+      }
+      return inlineCodeSegments.join("`");
+    })
+    .join("\n");
 }
 
 /**
@@ -326,14 +407,15 @@ export async function sendFeishuRichText(params: {
   chatId: string;
   text: string;
 }): Promise<string | undefined> {
-  assertNoForbiddenOpenPlatformUrls(params.text);
+  const displayText = formatFeishuUserFacingText(params.text);
+  assertNoForbiddenOpenPlatformUrls(displayText);
   const client = getFeishuClient(params.account);
   const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
 
   // oxlint-disable-next-line typescript/no-explicit-any
   let resp: any;
-  if (hasMarkdown(params.text)) {
-    const postContent = markdownToPost(params.text);
+  if (hasMarkdown(displayText)) {
+    const postContent = markdownToPost(displayText);
     resp = await client.im.message.create({
       params: { receive_id_type: receiveIdType },
       data: {
@@ -347,7 +429,7 @@ export async function sendFeishuRichText(params: {
       params: { receive_id_type: receiveIdType },
       data: {
         receive_id: receiveId,
-        content: JSON.stringify({ text: params.text }),
+        content: JSON.stringify({ text: displayText }),
         msg_type: "text",
       },
     });
@@ -383,12 +465,13 @@ export async function sendFeishuReply(params: {
   messageId: string;
   text: string;
 }): Promise<string | undefined> {
-  assertNoForbiddenOpenPlatformUrls(params.text);
+  const displayText = formatFeishuUserFacingText(params.text);
+  assertNoForbiddenOpenPlatformUrls(displayText);
   const client = getFeishuClient(params.account);
   // oxlint-disable-next-line typescript/no-explicit-any
   let resp: any;
-  if (hasMarkdown(params.text)) {
-    const postContent = markdownToPost(params.text);
+  if (hasMarkdown(displayText)) {
+    const postContent = markdownToPost(displayText);
     resp = await client.im.message.reply({
       path: { message_id: params.messageId },
       data: {
@@ -400,7 +483,7 @@ export async function sendFeishuReply(params: {
     resp = await client.im.message.reply({
       path: { message_id: params.messageId },
       data: {
-        content: JSON.stringify({ text: params.text }),
+        content: JSON.stringify({ text: displayText }),
         msg_type: "text",
       },
     });
@@ -969,14 +1052,14 @@ export async function createFeishuCardStream(params: {
   // ── Step 3: Stream updates via cardElement.content() ──
   const sendUpdate = async (text: string) => {
     if (stopped || !cardId) return;
-    const trimmed = text.trimEnd();
-    if (!trimmed || trimmed === lastSentText) return;
-    lastSentText = trimmed;
+    const rendered = formatFeishuUserFacingText(text.trimEnd());
+    if (!rendered || rendered === lastSentText) return;
+    lastSentText = rendered;
     lastSentAt = Date.now();
     try {
       await client.cardkit.v1.cardElement.content({
         path: { card_id: cardId, element_id: STREAM_ELEMENT_ID },
-        data: { content: trimmed, sequence: sequence++ },
+        data: { content: rendered, sequence: sequence++ },
       });
     } catch (err) {
       stopped = true;
@@ -1044,12 +1127,12 @@ export async function createFeishuCardStream(params: {
   // Called after stop() to push the full content before finalize closes streaming.
   const sendFinal = async (text: string) => {
     if (!cardId) return;
-    const trimmed = text.trimEnd();
-    if (!trimmed) return;
+    const rendered = formatFeishuUserFacingText(text.trimEnd());
+    if (!rendered) return;
     try {
       await client.cardkit.v1.cardElement.content({
         path: { card_id: cardId, element_id: STREAM_ELEMENT_ID },
-        data: { content: trimmed, sequence: sequence++ },
+        data: { content: rendered, sequence: sequence++ },
       });
     } catch (err) {
       params.warn?.(`Feishu card stream sendFinal failed: ${String(err)}`);

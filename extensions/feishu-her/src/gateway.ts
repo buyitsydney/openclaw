@@ -26,6 +26,7 @@ import {
   sendFeishuRichText,
   sendFeishuReply,
   createFeishuCardStream,
+  formatFeishuUserFacingText,
   uploadFeishuImage,
   sendFeishuImage,
   uploadFeishuAudio,
@@ -372,6 +373,7 @@ function scheduleCardCacheFlush(): void {
 
 function cacheCardText(messageId: string, text: string): void {
   loadCardCacheFromDisk();
+  const renderedText = formatFeishuUserFacingText(text);
   if (cardTextCache.size >= CARD_CACHE_MAX) {
     const now = Date.now();
     // First pass: evict expired entries.
@@ -389,7 +391,7 @@ function cacheCardText(messageId: string, text: string): void {
       }
     }
   }
-  cardTextCache.set(messageId, { text, ts: Date.now() });
+  cardTextCache.set(messageId, { text: renderedText, ts: Date.now() });
   scheduleCardCacheFlush();
 }
 
@@ -450,12 +452,13 @@ function scheduleSentMsgFlush(): void {
 
 export function recordSentMessage(chatId: string, messageId: string, preview?: string): void {
   loadSentMessageLog();
+  const renderedPreview = preview ? formatFeishuUserFacingText(preview) : undefined;
   let list = sentMessageLog.get(chatId);
   if (!list) {
     list = [];
     sentMessageLog.set(chatId, list);
   }
-  const trimmedPreview = preview?.slice(0, 60).replace(/\n/g, " ");
+  const trimmedPreview = renderedPreview?.slice(0, 60).replace(/\n/g, " ");
   list.push({
     messageId,
     sentAt: Date.now(),
