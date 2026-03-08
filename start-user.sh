@@ -562,6 +562,11 @@ else
   echo -e "  · 飞书: 未配置"
 fi
 
+# --- Shared skills dir (host -> container) ---
+SHARED_SKILLS_DIR="$HOME/.openclaw/skills"
+mkdir -p "$SHARED_SKILLS_DIR"
+echo -e "${GREEN}  ✓ Shared skills: ${SHARED_SKILLS_DIR}${NC}"
+
 # --- Compute webchat URL from token + port (before docker run) ---
 AUTH_TOKEN=$(python3 -c "
 import json
@@ -614,6 +619,7 @@ docker run -d \
   -p "${PORT_OAUTH}:18891" \
   -v "carher-${USER_ID}-data:/data/.openclaw" \
   -v "${GCLOUD_ADC}:/gcloud/application_default_credentials.json:ro" \
+  -v "${SHARED_SKILLS_DIR}:/data/.openclaw/skills" \
   -v "${CONFIG_MOUNT}:/data/.openclaw/openclaw.json:ro" \
   -v "${SCRIPT_DIR}/docker/carher-config.json:/data/.openclaw/carher-config.json:ro" \
   -v "${SCRIPT_DIR}/docker/shared-config.json5:/data/.openclaw/shared-config.json5:ro" \
