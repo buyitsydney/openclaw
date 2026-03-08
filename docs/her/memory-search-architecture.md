@@ -1065,7 +1065,142 @@ memorySearch: {
 
 ---
 
-## 十三、TODO 优先级清单
+## 十三、跨 Session Recall 验证（2026-03-08）
+
+### 13.1 问题定义
+
+当前配置已开启：
+
+- `sources: ["memory", "sessions"]`
+- `experimental.sessionMemory: true`
+
+但这**不等于**“所有历史 session 都会进入索引”。
+
+根因在于 `src/memory/session-files.ts` 当前只筛选：
+
+```ts
+.filter((name) => name.endsWith(".jsonl"))
+```
+
+这会导致：
+
+- 活跃 session（`*.jsonl`）会进入 `sessions` source
+- `/new` 或 `/reset` 后归档出的 `.jsonl.reset.*` **不会**进入索引
+- 因而频繁 `/new` 的用户会出现“明明历史对话还在磁盘上，但 memory search 找不到”的现象
+
+### 13.2 确定性实验设计
+
+为避免实验内部互相污染，本次没有直接和 Her 连续对话，而是采用**离线固定夹具 + 每题独立 stateDir** 的方式：
+
+- 同一份固定 session 语料
+- 旧代码 / 新代码分别回放
+- 每轮独立 `stateDir`
+- 每轮独立 `memory/main.sqlite`
+- 每轮独立搜索查询集
+
+这样可以同时隔离：
+
+- session transcript 污染
+- sqlite index 污染
+- 上一题新增内容对下一题的影响
+
+测试题覆盖 6 类查询：
+
+- 中文关键词
+- 英文关键词
+- ID 查询
+- 中文语义改写
+- 英文语义改写
+- 中文模糊语义
+
+### 13.3 实验结论
+
+#### `/new` / 跨 session 场景
+
+- 旧方案：`0/6` 命中
+- 新方案（把 `.jsonl.reset.*` 纳入索引）：`6/6` 命中
+
+量化结果：
+
+| 指标         | 旧方案    | 新方案    |
+| ------------ | --------- | --------- |
+| 命中数       | `0/6`     | `6/6`     |
+| files        | `2`       | `5`       |
+| chunks       | `10`      | `55`      |
+| sqlite       | `4.81 MB` | `7.06 MB` |
+| sync 时间    | `9.10s`   | `21.40s`  |
+| 平均搜索时间 | `3.05s`   | `2.54s`   |
+
+**结论**：跨 session recall 差异非常大，而且是机制性差异，不是随机波动。
+
+#### 长时间不 `/new` 的单 session 场景
+
+- 旧方案：`6/6` 命中
+- 新方案：`6/6` 命中
+
+量化结果：
+
+| 指标   | 旧方案    | 新方案    |
+| ------ | --------- | --------- |
+| 命中数 | `6/6`     | `6/6`     |
+| files  | `2`       | `2`       |
+| chunks | `32`      | `32`      |
+| sqlite | `5.91 MB` | `5.91 MB` |
+
+**结论**：如果用户长期不做 `/new`，这次改动对 recall 机制本身没有本质影响；变化只会出现在“产生了 `.reset` archive”的用户身上。
+
+### 13.4 云端现状快照（S1 只读巡检）
+
+2026-03-08 只读检查 `carher-1` 与 `carher-13`，结论如下：
+
+- 两个容器的核心配置一致
+- 都开启了 `memorySearch.sources = ["memory", "sessions"]`
+- 都开启了 `experimental.sessionMemory = true`
+- 都**没有**启用 `session-memory` hook
+
+这说明当前线上问题的关键不在 hook，而在 **`.reset` archive 没有进入 `sessions` 索引**。
+
+真实数据快照：
+
+#### `carher-1`
+
+- 活跃 `.jsonl`：`111` 个，`17,674,806 B`
+- `.reset` 归档：`19` 个，`23,760,344 B`
+- `memory/`：`19` 个文件，`57,459 B`
+
+#### `carher-13`
+
+- 活跃 `.jsonl`：`2208` 个，`35,618,847 B`
+- `.reset` 归档：`284` 个，`79,253,585 B`
+- `memory/`：`51` 个文件，`90,264 B`
+
+### 13.5 风险、成本与上线建议
+
+风险不在“是否有效”，而在“有效之后的代价”：
+
+- sqlite 会变大
+- 初次 sync / reindex 会更慢
+- 历史 archive 进入候选集后，搜索结果可能更杂
+
+但 embedding 成本非常低。按 OpenRouter 上 `BAAI/bge-m3` 当时公开价格 `$0.01 / 1M input tokens` 粗略上限估算：
+
+- `carher-1`：两周旧方案约 `$0.0308`，新方案约 `$0.0722`，增量约 `$0.0413`
+- `carher-13`：两周旧方案约 `$0.0621`，新方案约 `$0.1999`，增量约 `$0.1378`
+
+线性外推 1 年：
+
+- `carher-1`：旧方案约 `$0.804`，新方案约 `$1.881`，年增量约 `$1.077`
+- `carher-13`：旧方案约 `$1.619`，新方案约 `$5.213`，年增量约 `$3.593`
+
+**结论**：
+
+- 功能收益明确，成本不是阻碍
+- 真正需要灰度观察的是：sqlite 增长、sync 时间、搜索噪音
+- 如果后续落地，建议优先灰度到 `carher-13` 这类重度 `/new` 用户，而不是直接全量推广
+
+---
+
+## 十四、TODO 优先级清单
 
 ### P0 — 紧急（影响中文搜索基本可用性）
 
@@ -1080,7 +1215,7 @@ memorySearch: {
 
 | #   | 任务                                            | 状态                    | 说明                                                                                                                                                                                                                                                                                                                                                                                                           |
 | --- | ----------------------------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A   | **memory search 搜索所有历史 session**          | 🟢 upstream PR #20183   | `session-files.ts:28` 用 `.endsWith(".jsonl")` 排除了 `.reset` 归档。92 个 `.reset` 文件共 37.9MB，是当前索引内容(17.7MB)的 213%。**upstream 已有 PR [#20183](https://github.com/openclaw/openclaw/pull/20183) 完全修复此问题**（VACInc，mergeable_state: clean，+370/-9，9 files，5 个测试文件全覆盖）。等 merge 后升级即可，无需本地 patch                                                                   |
+| A   | **memory search 搜索所有历史 session**          | 🟢 upstream PR #20183   | 2026-03-08 的隔离回放实验已确定性证明：旧逻辑只索引 `*.jsonl`，跨 session 场景 `0/6`；纳入 `.jsonl.reset.*` 后 `6/6`。详见「跨 Session Recall 验证（2026-03-08）」。**upstream 已有 PR [#20183](https://github.com/openclaw/openclaw/pull/20183) 对应这个修复方向**，后续可优先等待 merge 或择机本地最小 patch。                                                                                               |
 | B   | **飞书 session 生命周期管理（新建/列表/切换）** | 🟡 upstream Issue #9959 | 需求：飞书中能 `/new` 新建、`/sessions` 列表、`/switch <id>` 切换旧 session。**upstream Issue [#9959](https://github.com/openclaw/openclaw/issues/9959) 已提出完全一致的需求**，指出底层全部就绪（TUI `/session <key>` + Gateway `sessions.list` RPC + Agent `sessions_list` tool + Dashboard/WebChat/macOS UI），仅缺 chat 命令入口。0 comments，无人领取。可考虑在 `feishu-her` 扩展层实现或贡献 upstream PR |
 
 **关联说明**：任务 A 是任务 B 的前置条件。任务 A 已有 upstream PR 待合并；任务 B 已有 upstream Issue 但无实现。

@@ -701,23 +701,23 @@ console.log('opus contextWindow:', m?.contextWindow);
 
 每台服务器一个 Cloudflare Named Tunnel，通过 systemd 自启动。
 
-| 服务器 | IP           | 隧道名     | 隧道 UUID                            | 预分配用户 |
-| ------ | ------------ | ---------- | ------------------------------------ | ---------- |
-| S1     | 10.68.13.186 | carher-s1  | d18effca-6456-4b6c-b735-94dbbdc83299 | User 1-50  |
-| S2     | 10.68.13.187 | carher-s2  | d4180094-9f8a-4693-99ee-721412df1b4e | User 1-50  |
-| S3     | 10.68.13.188 | carher-s3  | 750fb00c-6572-4d7c-bed4-60c1a9c3107f | User 1-50  |
+| 服务器 | IP           | 隧道名    | 隧道 UUID                            | 预分配用户 |
+| ------ | ------------ | --------- | ------------------------------------ | ---------- |
+| S1     | 10.68.13.186 | carher-s1 | d18effca-6456-4b6c-b735-94dbbdc83299 | User 1-50  |
+| S2     | 10.68.13.187 | carher-s2 | d4180094-9f8a-4693-99ee-721412df1b4e | User 1-50  |
+| S3     | 10.68.13.188 | carher-s3 | 750fb00c-6572-4d7c-bed4-60c1a9c3107f | User 1-50  |
 
 ### 端口规则
 
 每个用户 N 的端口基址 = `29000 + (N-1) * 10`：
 
-| 用途       | 端口偏移 | 容器端口 | 域名后缀      |
-| ---------- | -------- | -------- | ------------- |
-| Gateway    | +1       | 18789    | （无外部域名） |
-| Realtime   | +2       | —        | （内部）       |
-| Frontend   | +3       | 8000     | `-fe`         |
-| WS Proxy   | +4       | 8080     | `-proxy`      |
-| OAuth      | +5       | 18891    | `-auth`       |
+| 用途     | 端口偏移 | 容器端口 | 域名后缀       |
+| -------- | -------- | -------- | -------------- |
+| Gateway  | +1       | 18789    | （无外部域名） |
+| Realtime | +2       | —        | （内部）       |
+| Frontend | +3       | 8000     | `-fe`          |
+| WS Proxy | +4       | 8080     | `-proxy`       |
+| OAuth    | +5       | 18891    | `-auth`        |
 
 域名格式：`sN-uID-{fe,proxy,auth}.carher.net`
 
@@ -725,12 +725,12 @@ console.log('opus contextWindow:', m?.contextWindow);
 
 ### 关键文件位置
 
-| 文件                                    | 路径                                                      |
-| --------------------------------------- | --------------------------------------------------------- |
-| 隧道配置                                | `/etc/cloudflared/config.yml`                             |
-| 隧道凭证                                | `/etc/cloudflared/<uuid>.json`                            |
-| Cloudflare 证书                         | `/etc/cloudflared/cert.pem`                               |
-| systemd 服务                            | `/etc/systemd/system/cloudflared.service`                 |
+| 文件            | 路径                                      |
+| --------------- | ----------------------------------------- |
+| 隧道配置        | `/etc/cloudflared/config.yml`             |
+| 隧道凭证        | `/etc/cloudflared/<uuid>.json`            |
+| Cloudflare 证书 | `/etc/cloudflared/cert.pem`               |
+| systemd 服务    | `/etc/systemd/system/cloudflared.service` |
 
 ### 新增用户流程
 
@@ -817,5 +817,23 @@ cloudflared tunnel list
 # 重启（配置变更后）
 sudo systemctl restart cloudflared
 ```
+
+### 2026-03-08
+
+- 完成 **跨 Session Recall** 的确定性离线验证（未修改线上容器、未污染真实会话数据）
+- 验证方式：
+  - 固定 session 夹具
+  - 旧/新代码分别回放
+  - 每轮独立 `stateDir`
+  - 每轮独立 sqlite index
+- 结论：
+  - 旧逻辑只索引 `*.jsonl`，不会索引 `.jsonl.reset.*`
+  - `/new` 后跨 session recall：旧方案 `0/6`，新方案 `6/6`
+  - 长时间不 `/new` 的单 session 场景：旧新方案均 `6/6`
+- 同日只读巡检 S1：
+  - `carher-1` 与 `carher-13` 都开启了 `memorySearch.sources=["memory","sessions"]`
+  - 两者都未启用 `session-memory` hook
+  - 说明线上问题核心是 `.reset` archive 没进入 `sessions` 索引，而不是 hook 没开
+- 详细实验设计、量化结果、风险与成本推演，见 `docs/her/memory-search-architecture.md` 的「跨 Session Recall 验证（2026-03-08）」章节
 
 <!-- 后续操作记录追加在这里 -->
