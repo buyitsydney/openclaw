@@ -6,7 +6,7 @@
  */
 
 import crypto from "node:crypto";
-import { existsSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { homedir } from "node:os";
 import { join, dirname, extname } from "node:path";
@@ -19,6 +19,7 @@ import type {
 } from "openclaw/plugin-sdk";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { resolveGroupOwnerIds } from "./accounts.js";
+import { archiveGroupMessage, archiveSentFeishuBinaryMessage } from "./group-archive.js";
 import { rewriteModelShortcutCommand } from "./model-shortcuts.js";
 import {
   getFeishuClient,
@@ -887,62 +888,6 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
       { once: true },
     );
   });
-}
-
-// ── Group chat message archive ──────────────────────────────────────────
-
-/** Resolve the base directory for group chat archives.
- *  Uses OPENCLAW_HOME env var if set (Docker), otherwise ~/.openclaw. */
-function resolveGroupArchiveDir(): string {
-  const base = process.env.OPENCLAW_HOME ?? join(homedir(), ".openclaw");
-  return join(base, "feishu-groups");
-}
-
-type GroupIndexEntry = { name: string; lastMessage: string };
-
-/** Append a message to the group's JSONL archive and update index.json.
- *  Creates directories + files on first call for a given chatId. */
-function archiveGroupMessage(params: {
-  chatId: string;
-  chatName: string | null;
-  senderId: string;
-  senderName: string;
-  text: string;
-  msgId: string;
-}): void {
-  const archiveDir = resolveGroupArchiveDir();
-  const chatDir = join(archiveDir, params.chatId);
-
-  // Ensure directories exist.
-  if (!existsSync(chatDir)) {
-    mkdirSync(chatDir, { recursive: true });
-  }
-
-  // Append message to JSONL.
-  const record = {
-    ts: Math.floor(Date.now() / 1000),
-    sender: params.senderName || params.senderId,
-    senderId: params.senderId,
-    text: params.text,
-    msgId: params.msgId,
-  };
-  appendFileSync(join(chatDir, "messages.jsonl"), JSON.stringify(record) + "\n");
-
-  // Update index.json.
-  const indexPath = join(archiveDir, "index.json");
-  let index: Record<string, GroupIndexEntry> = {};
-  try {
-    if (existsSync(indexPath)) {
-      index = JSON.parse(readFileSync(indexPath, "utf-8"));
-    }
-  } catch {
-    // Corrupted index — start fresh.
-  }
-  index[params.chatId] = {
-    name: params.chatName || index[params.chatId]?.name || params.chatId,
-    lastMessage: new Date().toISOString(),
-  };
-  writeFileSync(indexPath, JSON.stringify(index, null, 2) + "\n");
 }
 
 // ── Mention parsing helpers ─────────────────────────────────────────────
@@ -2069,26 +2014,92 @@ async function deliverFeishuReply(params: {
       const isVideo = media.contentType?.startsWith("video/");
       const isImage = media.contentType?.startsWith("image/");
       if (isAudio) {
+        const fileName = url.split("/").pop()?.split("?")[0] ?? `audio-${Date.now()}.ogg`;
         const fileKey = await uploadFeishuAudio({ account, buffer: media.buffer });
         const mid = await sendFeishuAudio({ account, chatId, fileKey });
-        if (mid) recordSentMessage(chatId, mid, "[audio]");
+        if (mid) {
+          recordSentMessage(chatId, mid, "[audio]");
+          try {
+            await archiveSentFeishuBinaryMessage({
+              chatId,
+              messageId: mid,
+              senderId: account.appId,
+              buffer: media.buffer,
+              contentType: media.contentType,
+              fileName,
+              defaultBaseName: "sent-audio",
+              log,
+            });
+          } catch (err) {
+            log?.error(`[${account.accountId}] sent audio archive failed: ${String(err)}`);
+          }
+        }
         setStatus({ lastOutboundAt: Date.now() });
       } else if (isVideo) {
         const fileName = url.split("/").pop()?.split("?")[0] ?? `video-${Date.now()}.mp4`;
         const fileKey = await uploadFeishuFile({ account, buffer: media.buffer, fileName });
         const mid = await sendFeishuVideo({ account, chatId, fileKey });
-        if (mid) recordSentMessage(chatId, mid, "[video]");
+        if (mid) {
+          recordSentMessage(chatId, mid, "[video]");
+          try {
+            await archiveSentFeishuBinaryMessage({
+              chatId,
+              messageId: mid,
+              senderId: account.appId,
+              buffer: media.buffer,
+              contentType: media.contentType,
+              fileName,
+              defaultBaseName: "sent-video",
+              log,
+            });
+          } catch (err) {
+            log?.error(`[${account.accountId}] sent video archive failed: ${String(err)}`);
+          }
+        }
         setStatus({ lastOutboundAt: Date.now() });
       } else if (isImage) {
+        const fileName = url.split("/").pop()?.split("?")[0] ?? `image-${Date.now()}.png`;
         const imageKey = await uploadFeishuImage({ account, buffer: media.buffer });
         const mid = await sendFeishuImage({ account, chatId, imageKey });
-        if (mid) recordSentMessage(chatId, mid, "[image]");
+        if (mid) {
+          recordSentMessage(chatId, mid, "[image]");
+          try {
+            await archiveSentFeishuBinaryMessage({
+              chatId,
+              messageId: mid,
+              senderId: account.appId,
+              buffer: media.buffer,
+              contentType: media.contentType,
+              fileName,
+              defaultBaseName: "sent-image",
+              log,
+            });
+          } catch (err) {
+            log?.error(`[${account.accountId}] sent image archive failed: ${String(err)}`);
+          }
+        }
         setStatus({ lastOutboundAt: Date.now() });
       } else {
         const fileName = url.split("/").pop()?.split("?")[0] ?? `file-${Date.now()}`;
         const fileKey = await uploadFeishuFile({ account, buffer: media.buffer, fileName });
         const mid = await sendFeishuFile({ account, chatId, fileKey });
-        if (mid) recordSentMessage(chatId, mid, `[file: ${fileName}]`);
+        if (mid) {
+          recordSentMessage(chatId, mid, `[file: ${fileName}]`);
+          try {
+            await archiveSentFeishuBinaryMessage({
+              chatId,
+              messageId: mid,
+              senderId: account.appId,
+              buffer: media.buffer,
+              contentType: media.contentType,
+              fileName,
+              defaultBaseName: "sent-file",
+              log,
+            });
+          } catch (err) {
+            log?.error(`[${account.accountId}] sent file archive failed: ${String(err)}`);
+          }
+        }
         setStatus({ lastOutboundAt: Date.now() });
       }
     } catch (err) {

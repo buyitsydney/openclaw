@@ -20,6 +20,7 @@ import {
   type ResolvedFeishuAccount,
 } from "./accounts.js";
 import { startFeishuGateway, recordSentMessage } from "./gateway.js";
+import { archiveSentFeishuBinaryMessage } from "./group-archive.js";
 import {
   sendFeishuText,
   sendFeishuRichText,
@@ -264,6 +265,9 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
     },
     sendMedia: async ({ to, text, mediaUrl, accountId, cfg }) => {
       const account = resolveFeishuAccount({ cfg, accountId });
+      const log = getFeishuRuntime().logging.getChildLogger({
+        subsystem: "gateway/channels/feishu",
+      });
       let lastMid: string | undefined;
       if (mediaUrl) {
         try {
@@ -278,19 +282,68 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
           });
           if (media?.buffer) {
             if (media.contentType?.startsWith("audio/")) {
+              const fileName =
+                mediaUrl.split("/").pop()?.split("?")[0] ?? `audio-${Date.now()}.ogg`;
               const fileKey = await uploadFeishuAudio({ account, buffer: media.buffer });
               lastMid = await sendFeishuAudio({ account, chatId: to, fileKey });
-              if (lastMid) recordSentMessage(to, lastMid, "[audio]");
+              if (lastMid) {
+                recordSentMessage(to, lastMid, "[audio]");
+                try {
+                  await archiveSentFeishuBinaryMessage({
+                    chatId: to,
+                    messageId: lastMid,
+                    senderId: account.appId,
+                    buffer: media.buffer,
+                    contentType: media.contentType,
+                    fileName,
+                    defaultBaseName: "sent-audio",
+                  });
+                } catch (err) {
+                  log.error(`[${account.accountId}] sent audio archive failed: ${String(err)}`);
+                }
+              }
             } else if (media.contentType?.startsWith("video/")) {
               const fileName =
                 mediaUrl.split("/").pop()?.split("?")[0] ?? `video-${Date.now()}.mp4`;
               const fileKey = await uploadFeishuFile({ account, buffer: media.buffer, fileName });
               lastMid = await sendFeishuVideo({ account, chatId: to, fileKey });
-              if (lastMid) recordSentMessage(to, lastMid, "[video]");
+              if (lastMid) {
+                recordSentMessage(to, lastMid, "[video]");
+                try {
+                  await archiveSentFeishuBinaryMessage({
+                    chatId: to,
+                    messageId: lastMid,
+                    senderId: account.appId,
+                    buffer: media.buffer,
+                    contentType: media.contentType,
+                    fileName,
+                    defaultBaseName: "sent-video",
+                  });
+                } catch (err) {
+                  log.error(`[${account.accountId}] sent video archive failed: ${String(err)}`);
+                }
+              }
             } else if (media.contentType?.startsWith("image/")) {
+              const fileName =
+                mediaUrl.split("/").pop()?.split("?")[0] ?? `image-${Date.now()}.png`;
               const imageKey = await uploadFeishuImage({ account, buffer: media.buffer });
               lastMid = await sendFeishuImage({ account, chatId: to, imageKey });
-              if (lastMid) recordSentMessage(to, lastMid, "[image]");
+              if (lastMid) {
+                recordSentMessage(to, lastMid, "[image]");
+                try {
+                  await archiveSentFeishuBinaryMessage({
+                    chatId: to,
+                    messageId: lastMid,
+                    senderId: account.appId,
+                    buffer: media.buffer,
+                    contentType: media.contentType,
+                    fileName,
+                    defaultBaseName: "sent-image",
+                  });
+                } catch (err) {
+                  log.error(`[${account.accountId}] sent image archive failed: ${String(err)}`);
+                }
+              }
             } else {
               const fileName = mediaUrl.split("/").pop()?.split("?")[0] ?? `file-${Date.now()}`;
               const fileKey = await uploadFeishuFile({
@@ -299,7 +352,22 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
                 fileName,
               });
               lastMid = await sendFeishuFile({ account, chatId: to, fileKey });
-              if (lastMid) recordSentMessage(to, lastMid, `[file] ${fileName}`);
+              if (lastMid) {
+                recordSentMessage(to, lastMid, `[file] ${fileName}`);
+                try {
+                  await archiveSentFeishuBinaryMessage({
+                    chatId: to,
+                    messageId: lastMid,
+                    senderId: account.appId,
+                    buffer: media.buffer,
+                    contentType: media.contentType,
+                    fileName,
+                    defaultBaseName: "sent-file",
+                  });
+                } catch (err) {
+                  log.error(`[${account.accountId}] sent file archive failed: ${String(err)}`);
+                }
+              }
             }
           }
         } catch (err) {

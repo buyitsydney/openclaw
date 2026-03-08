@@ -11,13 +11,18 @@
  *   get_message   — fetch a single message by ID
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { stringEnum } from "openclaw/plugin-sdk";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
+import {
+  applyArchiveTextToMessage,
+  archiveGroupMessage,
+  buildArchiveFailureText,
+  createArchiveTextForBuffer,
+  loadArchiveEntries,
+  type GroupArchiveEntry,
+} from "../group-archive.js";
 import {
   callFeishuApiWithUserToken,
   getValidUserToken,
@@ -25,7 +30,7 @@ import {
   resolveOAuthRedirectUri,
   type FeishuUserToken,
 } from "../oauth.js";
-import { getFeishuClient } from "../outbound.js";
+import { downloadFeishuFile, downloadFeishuImage, getFeishuClient } from "../outbound.js";
 
 function json(data: unknown) {
   return {
@@ -56,6 +61,7 @@ type NormalizedMessage = {
   msg_type: string;
   sender_id: string;
   sender_type: string;
+  chat_id?: string;
   create_time: string;
   create_time_human: string;
   text: string;
@@ -65,6 +71,7 @@ type NormalizedMessage = {
   root_id?: string;
   mentions?: Array<{ id: string; name: string; key: string }>;
   file_key?: string;
+  file_name?: string;
   image_key?: string;
   coverage: "full" | "partial" | "none";
 };
@@ -98,6 +105,7 @@ function normalizeMessage(raw: any): NormalizedMessage {
   const body = raw.body?.content ?? "{}";
   let text = "";
   let fileKey: string | undefined;
+  let fileName: string | undefined;
   let imageKey: string | undefined;
   let coverage: "full" | "partial" | "none" = "full";
 
@@ -117,18 +125,21 @@ function normalizeMessage(raw: any): NormalizedMessage {
         break;
       case "file":
         fileKey = parsed.file_key;
-        text = `[file: ${parsed.file_name ?? fileKey ?? "unknown"}]`;
+        fileName = parsed.file_name ?? fileKey ?? "unknown";
+        text = `[file: ${fileName}]`;
         coverage = "partial";
         break;
       case "audio":
         fileKey = parsed.file_key;
+        fileName = parsed.file_name ?? "voice.ogg";
         text = `[audio: ${fileKey ?? "unknown"}]`;
         coverage = "partial";
         break;
       case "media":
         imageKey = parsed.image_key;
         fileKey = parsed.file_key;
-        text = `[video: ${parsed.file_name ?? "unknown"}, duration=${parsed.duration ?? "?"}s, cover=${imageKey ?? "none"}]`;
+        fileName = parsed.file_name ?? "unknown";
+        text = `[video: ${fileName}, duration=${parsed.duration ?? "?"}s, cover=${imageKey ?? "none"}]`;
         coverage = "partial";
         break;
       case "interactive":
@@ -165,6 +176,7 @@ function normalizeMessage(raw: any): NormalizedMessage {
     msg_type: msgType,
     sender_id: raw.sender?.id ?? "",
     sender_type: raw.sender?.sender_type ?? "",
+    ...(raw.chat_id && { chat_id: raw.chat_id }),
     create_time: raw.create_time ?? "",
     create_time_human: createTimeMs ? new Date(createTimeMs).toISOString() : "",
     text,
@@ -174,48 +186,10 @@ function normalizeMessage(raw: any): NormalizedMessage {
     ...(raw.root_id && { root_id: raw.root_id }),
     ...(mentions && mentions.length > 0 && { mentions }),
     ...(fileKey && { file_key: fileKey }),
+    ...(fileName && { file_name: fileName }),
     ...(imageKey && { image_key: imageKey }),
     coverage,
   };
-}
-
-// ── Local archive cross-reference ──
-// The real-time event handler archives ALL user messages (including video) with
-// downloaded file paths. The history API can't recover video/interactive content,
-// but the local archive has it. Cross-reference by message_id.
-
-type ArchiveEntry = {
-  ts: number;
-  sender: string;
-  senderId: string;
-  text: string;
-  msgId: string;
-};
-
-function resolveGroupArchiveDir(): string {
-  const base = process.env.OPENCLAW_HOME ?? join(homedir(), ".openclaw");
-  return join(base, "feishu-groups");
-}
-
-function loadArchiveEntries(chatId: string): Map<string, ArchiveEntry> {
-  const archivePath = join(resolveGroupArchiveDir(), chatId, "messages.jsonl");
-  const map = new Map<string, ArchiveEntry>();
-  if (!existsSync(archivePath)) return map;
-  try {
-    const content = readFileSync(archivePath, "utf-8");
-    for (const line of content.split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        const entry = JSON.parse(line) as ArchiveEntry;
-        if (entry.msgId) map.set(entry.msgId, entry);
-      } catch {
-        // skip malformed lines
-      }
-    }
-  } catch {
-    // archive unreadable
-  }
-  return map;
 }
 
 const ARCHIVE_SUPPLEMENTABLE = new Set([
@@ -228,24 +202,124 @@ const ARCHIVE_SUPPLEMENTABLE = new Set([
   "audio",
 ]);
 
-function supplementFromArchive(
-  messages: NormalizedMessage[],
-  archive: Map<string, ArchiveEntry>,
-): void {
-  for (const msg of messages) {
-    if (!ARCHIVE_SUPPLEMENTABLE.has(msg.msg_type)) continue;
-    const entry = archive.get(msg.message_id);
-    if (!entry) continue;
-    // Archive text includes local file paths from real-time download.
-    // Append it so Her has both API metadata and local file info.
-    const localInfo = entry.text;
-    if (msg.coverage === "none") {
-      msg.text = localInfo;
-      msg.coverage = "partial";
-    } else {
-      msg.text += `\n[local archive: ${localInfo}]`;
+function buildCoverageSummary(messages: NormalizedMessage[]) {
+  const coverage = { full: 0, partial: 0, none: 0 };
+  for (const message of messages) coverage[message.coverage]++;
+  return coverage;
+}
+
+function buildArchiveFileName(message: NormalizedMessage): string {
+  if (message.file_name) return message.file_name;
+  switch (message.msg_type) {
+    case "image":
+      return `image-${message.message_id}.jpg`;
+    case "audio":
+      return `audio-${message.message_id}.ogg`;
+    case "media":
+      return `video-${message.message_id}.mp4`;
+    default:
+      return `file-${message.message_id}`;
+  }
+}
+
+function buildArchiveErrorReason(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message.trim();
+  const message = String(error).trim();
+  return message || "archive_failed";
+}
+
+async function ensureArchivedMessages(params: {
+  account: ResolvedFeishuAccount;
+  messages: NormalizedMessage[];
+  chatId?: string;
+}) {
+  const archives = new Map<string, Map<string, GroupArchiveEntry>>();
+
+  const resolveArchive = (chatId: string): Map<string, GroupArchiveEntry> => {
+    let archive = archives.get(chatId);
+    if (!archive) {
+      archive = loadArchiveEntries(chatId);
+      archives.set(chatId, archive);
     }
-    if (msg.msg_type === "nonsupport") msg.msg_type = "media_local";
+    return archive;
+  };
+
+  for (const message of params.messages) {
+    if (!ARCHIVE_SUPPLEMENTABLE.has(message.msg_type)) continue;
+
+    const chatId = params.chatId ?? message.chat_id;
+    const archive = chatId ? resolveArchive(chatId) : undefined;
+    const existing = archive?.get(message.message_id);
+    if (existing) {
+      applyArchiveTextToMessage(message, existing.text);
+      if (message.msg_type === "nonsupport") message.msg_type = "media_local";
+      continue;
+    }
+
+    let archiveText: string | null = null;
+    const fileName = buildArchiveFileName(message);
+    try {
+      if (message.msg_type === "image" && message.image_key) {
+        const imageData = await downloadFeishuImage({
+          account: params.account,
+          messageId: message.message_id,
+          imageKey: message.image_key,
+        });
+        if (imageData) {
+          archiveText = await createArchiveTextForBuffer({
+            buffer: imageData.buffer,
+            contentType: imageData.contentType,
+            fileName,
+            defaultBaseName: `image-${message.message_id}`,
+          });
+        }
+      } else if (message.file_key) {
+        const fileData = await downloadFeishuFile({
+          account: params.account,
+          messageId: message.message_id,
+          fileKey: message.file_key,
+        });
+        if (fileData) {
+          const effectiveContentType =
+            fileName.endsWith(".ogg") && fileData.contentType === "application/octet-stream"
+              ? "audio/ogg"
+              : fileData.contentType;
+          archiveText = await createArchiveTextForBuffer({
+            buffer: fileData.buffer,
+            contentType: effectiveContentType,
+            fileName,
+            defaultBaseName: `${message.msg_type}-${message.message_id}`,
+          });
+        }
+      }
+    } catch (error) {
+      archiveText = buildArchiveFailureText(fileName, buildArchiveErrorReason(error));
+    }
+
+    if (!archiveText) continue;
+
+    if (chatId) {
+      const ts = message.create_time ? Math.floor(Number(message.create_time) / 1000) : undefined;
+      archiveGroupMessage({
+        chatId,
+        chatName: null,
+        senderId: message.sender_id,
+        senderName: message.sender_id,
+        text: archiveText,
+        msgId: message.message_id,
+        ts,
+      });
+      archive?.set(message.message_id, {
+        ts: ts ?? Math.floor(Date.now() / 1000),
+        sender: message.sender_id,
+        senderId: message.sender_id,
+        text: archiveText,
+        msgId: message.message_id,
+      });
+    }
+
+    applyArchiveTextToMessage(message, archiveText);
+    if (message.msg_type === "nonsupport") message.msg_type = "media_local";
   }
 }
 
@@ -340,8 +414,7 @@ async function fetchChatHistory(params: {
     if (!hasMore || !pageToken || remaining <= 0) break;
   }
 
-  const coverage = { full: 0, partial: 0, none: 0 };
-  for (const m of messages) coverage[m.coverage]++;
+  const coverage = buildCoverageSummary(messages);
 
   return {
     messages,
@@ -517,7 +590,7 @@ export function registerFeishuChatHistoryTool(api: OpenClawPluginApi) {
             case "list_thread":
               return await handleListThread(firstAccount, userToken, params);
             case "get_message":
-              return await handleGetMessage(userToken, params);
+              return await handleGetMessage(firstAccount, userToken, params);
             default:
               return json({ error: `Unknown action: ${params.action}` });
           }
@@ -582,14 +655,12 @@ async function handleListHistory(
     }
   }
 
-  // Cross-reference with local archive for messages the API can't fully read
-  // (video shows as "nonsupport", interactive cards are degraded).
-  const archive = loadArchiveEntries(params.chat_id);
-  if (archive.size > 0) {
-    supplementFromArchive(result.messages, archive);
-    result.coverage_summary = { full: 0, partial: 0, none: 0 };
-    for (const m of result.messages) result.coverage_summary[m.coverage]++;
-  }
+  await ensureArchivedMessages({
+    account,
+    messages: result.messages,
+    chatId: params.chat_id,
+  });
+  result.coverage_summary = buildCoverageSummary(result.messages);
 
   if (params.include_thread_replies) {
     const threaded = result.messages.filter((m) => m.has_thread && m.thread_id);
@@ -601,6 +672,10 @@ async function handleListHistory(
           token,
           threadId: m.thread_id!,
           pageSize: API_PAGE_SIZE,
+        });
+        await ensureArchivedMessages({
+          account,
+          messages: threadResult.messages,
         });
         if (threadResult.messages.length > 0) {
           threadReplies[m.thread_id!] = threadResult.messages;
@@ -665,6 +740,11 @@ async function handleListThread(
     }
   }
 
+  await ensureArchivedMessages({
+    account,
+    messages: result.messages,
+  });
+
   return json({
     ...result,
     thread_id: params.thread_id,
@@ -675,7 +755,11 @@ async function handleListThread(
 }
 
 // oxlint-disable-next-line typescript/no-explicit-any
-async function handleGetMessage(userToken: FeishuUserToken, params: any) {
+async function handleGetMessage(
+  account: ResolvedFeishuAccount,
+  userToken: FeishuUserToken,
+  params: any,
+) {
   if (!params.message_id) {
     return json({ error: "message_id is required for get_message action" });
   }
@@ -683,6 +767,11 @@ async function handleGetMessage(userToken: FeishuUserToken, params: any) {
   const message = await fetchSingleMessage({
     token: userToken.access_token,
     messageId: params.message_id,
+  });
+
+  await ensureArchivedMessages({
+    account,
+    messages: [message],
   });
 
   return json({
