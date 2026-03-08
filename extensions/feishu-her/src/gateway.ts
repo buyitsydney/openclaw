@@ -6,7 +6,7 @@
  */
 
 import crypto from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { homedir } from "node:os";
 import { join, dirname, extname } from "node:path";
@@ -44,6 +44,11 @@ import {
   type FeishuCardStream,
 } from "./outbound.js";
 import { getFeishuRuntime } from "./runtime.js";
+import {
+  accumulateGroupedReplyText,
+  buildFeishuStatusFooter,
+  finalizeGroupedReplyText,
+} from "./status-footer.js";
 
 // ── Content-type inference for local files ────────────────────────────────
 /** Infer MIME content-type from a file path extension. */
@@ -73,67 +78,6 @@ function inferContentType(filePath: string): string | undefined {
     ".zip": "application/zip",
   };
   return map[ext] ?? "application/octet-stream";
-}
-
-// ── CardKit status footer helpers ────────────────────────────────────────
-// Appended to every AI reply card to show model + context usage at a glance.
-
-/** Shorten model ID to a display name (e.g., "claude-sonnet-4-20250514" → "Sonnet 4"). */
-function shortenModelName(model?: string): string {
-  if (!model) return "unknown";
-  const claude = model.match(/claude-(\w+)-([\d][\d.-]*)/);
-  if (claude) {
-    const family = claude[1].charAt(0).toUpperCase() + claude[1].slice(1);
-    const version = claude[2].replace(/-/g, ".");
-    return `${family} ${version}`;
-  }
-  if (model.startsWith("gpt-")) return model.replace(/-\d{4}-\d{2}-\d{2}$/, "");
-  if (model.startsWith("gemini-")) return model.replace(/-\d{4,}$/, "");
-  return model.length > 24 ? model.slice(0, 24) + "…" : model;
-}
-
-/** Format token count for compact display (e.g., 42000 → "42k"). */
-function formatTokenCompact(value?: number): string {
-  if (value === undefined || !Number.isFinite(value) || value <= 0) return "?";
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k`;
-  return String(Math.round(value));
-}
-
-/** Build a concise status footer for CardKit cards from the session store.
- *  Same data source as /status. Returns empty string if unavailable. */
-function buildCardStatusFooter(params: {
-  storePath: string;
-  sessionKey: string;
-  config: OpenClawConfig;
-}): string {
-  try {
-    const raw = readFileSync(params.storePath, "utf-8");
-    const store = JSON.parse(raw);
-    const entry = store?.[params.sessionKey];
-    if (!entry) return "";
-
-    const model = entry.modelOverride ?? entry.model;
-    const totalTokens = entry.totalTokens ?? (entry.inputTokens ?? 0) + (entry.outputTokens ?? 0);
-    const contextTokens =
-      entry.contextTokens ?? params.config?.agents?.defaults?.contextTokens ?? null;
-
-    const modelLabel = shortenModelName(model);
-    const totalLabel = formatTokenCompact(totalTokens);
-    const ctxLabel = contextTokens ? formatTokenCompact(contextTokens) : "?";
-    const pct =
-      contextTokens && totalTokens ? Math.round((totalTokens / contextTokens) * 100) : null;
-    const compactions = entry.compactionCount ?? 0;
-
-    const usageText =
-      pct !== null ? `${totalLabel}/${ctxLabel} (${pct}%)` : `${totalLabel}/${ctxLabel}`;
-
-    const warn = pct !== null && pct >= 70;
-    const icon = warn ? "⚠️" : "🧠";
-    return `\n\n---\n${icon} **${modelLabel}** · 📊 ${usageText} · 🧹 ${compactions}次压缩`;
-  } catch {
-    return "";
-  }
 }
 
 // ── Anthropic Max quota probe ────────────────────────────────────────────
@@ -1836,9 +1780,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         // Group chats without card stream: accumulate text and send as a single
         // message after the full turn completes, avoiding fragmented bubbles.
         if (isGroup && !cardStream?.started && payload.text) {
-          groupAccumulatedText = groupAccumulatedText
-            ? groupAccumulatedText + "\n\n" + payload.text
-            : payload.text;
+          groupAccumulatedText = accumulateGroupedReplyText(groupAccumulatedText, payload.text);
           log?.info(
             `[${account.accountId}] deliver: group text accumulated (${groupAccumulatedText.length} chars total)`,
           );
@@ -1928,8 +1870,10 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   });
   // Group chats: flush accumulated text as a single post message.
   if (isGroup && groupAccumulatedText) {
+    const footer = buildFeishuStatusFooter({ storePath, sessionKey: route.sessionKey, config });
+    const finalGroupText = finalizeGroupedReplyText(groupAccumulatedText, footer);
     await deliverFeishuReply({
-      payload: { text: groupAccumulatedText },
+      payload: { text: finalGroupText },
       account,
       chatId,
       isGroup,
@@ -1942,7 +1886,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   }
   // Append status footer (model + context usage) to the card before closing.
   if (cardStream?.started && cardStreamFinalText) {
-    const footer = buildCardStatusFooter({ storePath, sessionKey: route.sessionKey, config });
+    const footer = buildFeishuStatusFooter({ storePath, sessionKey: route.sessionKey, config });
     if (footer) {
       cardStreamFinalText += footer;
     }
