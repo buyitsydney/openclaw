@@ -47,6 +47,14 @@ const FeishuSearchSchema = Type.Object({
       description: "Optional Wiki knowledge-space ID to restrict wiki search.",
     }),
   ),
+  include_bitable: Type.Optional(
+    Type.Boolean({
+      description:
+        "Include bitable (multi-dimensional tables) in Drive search results. " +
+        "Default false — bitables produce heavy noise because field names and cell data are all indexed. " +
+        "Set true only when explicitly searching for a specific bitable.",
+    }),
+  ),
 });
 
 type SearchScope = (typeof SEARCH_SCOPES)[number];
@@ -132,6 +140,8 @@ function parseLimit(value: unknown): number {
 
 const ALL_SCOPE_SOURCE_QUOTA = 5;
 
+const DRIVE_DOC_TYPES_WITHOUT_BITABLE = ["doc", "docx", "sheet", "slides", "mindnote", "file"];
+
 function toDriveDocType(value: string): DriveDocType | null {
   switch (value) {
     case "wiki":
@@ -153,6 +163,7 @@ async function searchDrive(
   userToken: string,
   query: string,
   limit: number,
+  docsTypes: string[],
 ): Promise<SearchResult[]> {
   const res = await callFeishuApiWithUserToken<DriveSearchResponse>({
     method: "POST",
@@ -163,7 +174,7 @@ async function searchDrive(
       count: limit,
       offset: 0,
       owner_ids: [],
-      docs_types: [],
+      docs_types: docsTypes,
     },
   });
   if (res.code !== 0) {
@@ -294,6 +305,8 @@ export function registerFeishuSearchTool(api: OpenClawPluginApi): void {
               : undefined;
           const driveLimit = scope === "all" ? Math.min(limit, ALL_SCOPE_SOURCE_QUOTA) : limit;
           const wikiLimit = scope === "all" ? Math.min(limit, ALL_SCOPE_SOURCE_QUOTA) : limit;
+          const includeBitable = (params as Record<string, unknown>).include_bitable === true;
+          const docsTypes = includeBitable ? [] : DRIVE_DOC_TYPES_WITHOUT_BITABLE;
 
           const guard = await requireUserToken({
             account: firstAccount,
@@ -307,7 +320,7 @@ export function registerFeishuSearchTool(api: OpenClawPluginApi): void {
           const [driveResults, wikiResults] = await Promise.all([
             scope === "wiki"
               ? Promise.resolve([])
-              : searchDrive(firstAccount, userToken, query, driveLimit),
+              : searchDrive(firstAccount, userToken, query, driveLimit, docsTypes),
             scope === "drive"
               ? Promise.resolve([])
               : searchWiki(firstAccount, userToken, query, wikiLimit, spaceId),

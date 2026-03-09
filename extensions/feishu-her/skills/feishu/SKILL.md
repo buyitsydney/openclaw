@@ -199,7 +199,9 @@ Bot 对 Wiki 节点、文档、多维表格记录没有删除权限，无法通�
   - Wiki 节点搜索：`wiki/v2/nodes/search`（索引标题 + 正文）
 - `scope=all`（默认）时，Drive 和 Wiki 各最多返回 5 条（5+5 配额），避免 Drive 噪音淹没 Wiki
 - 返回结果会显式标记 `source=drive|wiki`，**不会猜测跨源去重**
-- Drive 搜索对 bitable 噪音较大（字段名/数据都被索引），Wiki 搜索通常更精准
+- **默认排除 bitable**：Drive 搜索默认不返回多维表格结果（字段名/行数据都被索引，噪音极大）
+  - 需要搜 bitable 时传 `include_bitable: true`（例如用户明确说"找一下XX表"）
+  - Wiki 搜索不受此参数影响
 - 如果命中的是 Drive 文档：
   - 结果里看 `drive_doc_token`
   - 后续需要读正文时，用 `feishu_doc`

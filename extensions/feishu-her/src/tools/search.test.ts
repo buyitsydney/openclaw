@@ -177,7 +177,7 @@ describe("feishu_search tool", () => {
         count: 5,
         offset: 0,
         owner_ids: [],
-        docs_types: [],
+        docs_types: ["doc", "docx", "sheet", "slides", "mindnote", "file"],
       },
     });
     expect(resolveDriveShareUrlMock).toHaveBeenCalledWith(
@@ -298,6 +298,45 @@ describe("feishu_search tool", () => {
         url_resolve_error: "drive_meta_batch_query_missing_url",
       },
     ]);
+  });
+
+  it("includes bitable when include_bitable is true", async () => {
+    callFeishuApiWithUserTokenMock.mockResolvedValueOnce({
+      code: 0,
+      msg: "success",
+      data: {
+        docs_entities: [
+          {
+            docs_token: "bitable_1",
+            docs_type: "bitable",
+            title: "项目管理表",
+          },
+        ],
+      },
+    });
+
+    const { api, registerTool } = createApi();
+    registerFeishuSearchTool(api);
+    const tool = getTool(registerTool, "feishu_search");
+
+    await tool.execute("tc_bitable", {
+      query: "项目管理",
+      scope: "drive",
+      include_bitable: true,
+    });
+
+    expect(callFeishuApiWithUserTokenMock).toHaveBeenCalledWith({
+      method: "POST",
+      endpoint: "/suite/docs-api/search/object",
+      userToken: "user_token",
+      body: {
+        search_key: "项目管理",
+        count: 10,
+        offset: 0,
+        owner_ids: [],
+        docs_types: [],
+      },
+    });
   });
 
   it("keeps wiki results visible under all-scope 5+5 quota", async () => {
