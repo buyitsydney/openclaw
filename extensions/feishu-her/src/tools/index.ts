@@ -20,6 +20,7 @@ import { registerFeishuDocTools } from "./docx.js";
 import { registerFeishuDriveTools } from "./drive.js";
 import { registerFeishuMessageTools } from "./message.js";
 import { registerFeishuMinutesTools } from "./minutes.js";
+import { registerFeishuSearchTool } from "./search.js";
 import { registerFeishuSheetTools } from "./sheet.js";
 import { registerFeishuTaskTools } from "./task.js";
 import { registerFeishuWikiTools } from "./wiki.js";
@@ -27,6 +28,7 @@ import { registerFeishuWikiTools } from "./wiki.js";
 /** Register all feishu ecosystem tools (doc, wiki, drive, bitable, chat, directory, calendar, task, message, minutes). */
 export function registerAllFeishuTools(api: OpenClawPluginApi): void {
   registerFeishuDocTools(api);
+  registerFeishuSearchTool(api);
   registerFeishuWikiTools(api);
   registerFeishuDriveTools(api);
   registerFeishuBitableTools(api);

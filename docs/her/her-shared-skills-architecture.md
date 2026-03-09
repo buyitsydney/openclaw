@@ -28,21 +28,25 @@
 
 ## 2. 现状与关键事实
 
-### 2.1 三类技能来源
+### 2.1 源码真实技能来源
 
-OpenClaw 运行时会从多个来源加载 skill，CarHer 当前实际涉及三类：
+OpenClaw 源码里真实会扫描 5 类 skill 目录：
 
 1. **bundled skills**
 2. **managed/shared skills**
-3. **workspace skills**
+3. **personal agents skills**
+4. **project agents skills**
+5. **workspace skills**
 
-其中：
+对应路径分别是：
 
-- `repo/skills/` 在当前 CarHer 运行方式下，会被解析成 **bundled skills**
-- `~/.openclaw/skills/` 是 **managed/shared skills**
-- `<workspace>/skills/` 才是 **workspace skills**
+- `repo/skills/` → bundled skills
+- `~/.openclaw/skills/` → managed/shared skills
+- `~/.agents/skills/` → personal agents skills
+- `<workspace>/.agents/skills/` → project agents skills
+- `<workspace>/skills/` → workspace skills
 
-这三者不是一个东西。
+这 5 层不是一个东西，也不是同一优先级。
 
 ### 2.2 repo 下的 `skills/` 为什么会被找到
 
@@ -126,8 +130,8 @@ CarHer 当前应以源码中的真实优先级为准：
 结论：
 
 - **最高优先级是 `<workspace>/skills`**
-- **企业共享技能推荐放 `~/.openclaw/skills`**
-- 同名 skill 不会重复注入，后者覆盖前者
+- **同名 skill 不会重复注入，后者覆盖前者**
+- 但从 CarHer 部署视角，不必把这 5 层都暴露给业务使用；应该再抽象成更稳定的 4 层业务模型
 
 ### 3.2 为什么不是所有 skill 都加载
 
@@ -169,7 +173,8 @@ OpenClaw 不是“只要存在就全部启用”，而是先经过资格过滤�
 
 - **bundled** 继续承担“基线技能集”的职责。
 - **shared** 负责企业全员共享的新增 skill 或临时覆盖 skill。
-- **workspace** 只留给单机 / 单 agent 的特例覆盖，避免污染全局策略。
+- **部门层** 与 **个人层** 必须明确区分，并且优先级稳定。
+- **`<workspace>/skills` 不作为 CarHer 正式发布层**；它优先级太高，且与当前仓库规则冲突。
 
 ### 4.2 目标架构
 
@@ -179,16 +184,75 @@ OpenClaw 不是“只要存在就全部启用”，而是先经过资格过滤�
 repo/skills/
   └─ 作为 bundled 基线技能（随代码版本发布）
 
-host shared skills dir
-  └─ 同步到 ~/.openclaw/skills/
-     └─ 作为企业共享覆盖层
+host global skills dir
+  └─ ~/.openclaw/skills/
+     └─ 作为全员共享层
 
-agent workspace
-  └─ <workspace>/skills/
-     └─ 保留给单 agent 特例，不作为企业共享发布主通道
+host department skills dir
+  └─ ~/.agents/skills/
+     └─ 作为部门共享层（Docker 中需额外挂载）
+
+agent workspace dir
+  └─ <workspace>/.agents/skills/
+     └─ 作为个人专属层
 ```
 
-### 4.3 为什么不建议把企业共享技能放到 workspace
+### 4.3 CarHer 推荐的四层业务映射
+
+对 CarHer 来说，真正应该向业务暴露的是下面 4 层，而不是直接暴露源码里的 5 个目录概念：
+
+1. **默认层**
+   - 业务含义：系统自带、所有人默认有的基线能力
+   - 实际路径：`repo/skills/`
+   - 源码层映射：bundled skills
+
+2. **全员层**
+   - 业务含义：200 人统一共享的公司级 skill
+   - 实际路径：`~/.openclaw/skills/`
+   - 源码层映射：managed/shared skills
+
+3. **部门层**
+   - 业务含义：某一组用户共享，但不是全员共享
+   - 推荐实际路径：`~/.agents/skills/`
+   - 源码层映射：personal agents skills
+   - 注意：这里“personal”是源码命名；在 CarHer 部署里，完全可以把它重新定义成“部门层”
+
+4. **个人层**
+   - 业务含义：只属于某一个用户 / 某一个容器 / 某一个 Her
+   - 推荐实际路径：`<workspace>/.agents/skills/`
+   - 源码层映射：project agents skills
+
+这样做的原因是：它刚好满足 CarHer 想要的业务优先级：
+
+```text
+默认 < 全员 < 部门 < 个人
+```
+
+对应源码真实优先级正好也是：
+
+```text
+bundled < managed/shared < ~/.agents/skills < <workspace>/.agents/skills
+```
+
+因此不需要改 upstream，只要把不同层级映射到对的目录即可。
+
+### 4.4 为什么个人层不要用 `<workspace>/skills`
+
+虽然 `<workspace>/skills` 仍然比 `<workspace>/.agents/skills` 更高，但不建议在 CarHer 正式方案里使用：
+
+- 它是源码里的最高优先级，太容易把其他层全部压掉
+- 当前仓库规则已经明确不把它作为正式 skill 发布通道
+- 排障时会比 `.agents/skills` 更难定位来源
+
+因此，CarHer 个人层推荐固定使用：
+
+- `<workspace>/.agents/skills/`
+
+而不是：
+
+- `<workspace>/skills/`
+
+### 4.5 为什么不建议把企业共享技能放到 workspace
 
 因为 workspace 是最高优先级。
 
@@ -205,7 +269,48 @@ agent workspace
 - **发布脚本同步到 shared 目录**
 - **运行时由 `~/.openclaw/skills` 覆盖 bundled**
 
-### 4.4 生效机制
+### 4.6 Docker 持久化与挂载原则
+
+四层业务架构要真正可用，关键不只是“代码支持”，还要看 Docker 重建后文件是否仍在。
+
+#### 默认层
+
+- 路径：`/app/skills`
+- 来源：镜像内 bundled skills
+- 是否随 Docker 重建保留：**是**
+- 说明：它本来就是镜像内容
+
+#### 全员层
+
+- 路径：`/data/.openclaw/skills`
+- 当前映射：宿主机 `~/.openclaw/skills -> /data/.openclaw/skills`
+- 是否随 Docker 重建保留：**是**
+- 说明：已经通过宿主机 bind mount 解决
+
+#### 部门层
+
+- 推荐容器路径：`/data/.agents/skills`
+- 对应源码层：`~/.agents/skills`
+- 是否默认保留：**否**
+- 原因：Docker 当前只挂载了 `/data/.openclaw`，没有挂载 `/data/.agents`
+- 结论：如果要让“部门层”在 Docker 中长期存在，必须额外增加宿主机目录挂载，例如：
+  - `宿主机部门目录 -> /data/.agents/skills`
+
+#### 个人层
+
+- 推荐容器路径：`/data/.openclaw/workspace/.agents/skills`
+- 对应源码层：`<workspace>/.agents/skills`
+- 是否随 Docker 重建保留：**是**
+- 原因：默认 workspace 在 `/data/.openclaw/workspace`，而 `/data/.openclaw` 已经是 Docker volume
+- 结论：如果把个人 skill 放在 `<workspace>/.agents/skills`，即使重建 Docker，只要 volume 不删，它仍然存在
+
+**因此：**
+
+- 用户问“个人 skill 重启 Docker 后还能继续存在吗？”
+- **答案是：如果个人 skill 放在 `<workspace>/.agents/skills`，能。**
+- **如果误放在 Docker 里的 `~/.agents/skills`（即 `/data/.agents/skills`），默认不能，除非额外挂载。**
+
+### 4.7 生效机制
 
 当前推荐的稳定生效方式：
 
@@ -220,6 +325,26 @@ agent workspace
 - 低峰时段的 daily reset
 
 而不是把方案建立在 watcher 必然成功的前提上。
+
+### 4.8 推荐测试顺序
+
+四层方案不要一上来全测，建议按最小闭环逐层验证：
+
+1. **先测个人层**
+   - 原因：风险最小，只影响一个 Her
+   - 做法：在目标 Her 的 `<workspace>/.agents/skills/<name>/SKILL.md` 放一个测试 skill
+   - 验证：开新 session，发送固定测试口令，确认只该用户生效
+   - 持久化：重建 Docker 后再次测试，确认仍然存在
+
+2. **再测部门层**
+   - 原因：它需要新增 Docker 挂载，是部署层改动
+   - 做法：给一个测试部门准备宿主机目录，并挂载到目标容器 `/data/.agents/skills`
+   - 验证：同部门多用户生效，非该部门用户不生效
+
+3. **最后测全员层**
+   - 原因：影响范围最大
+   - 做法：用 `~/.openclaw/skills` 发布共享 skill
+   - 验证：Admin Her + 测试容器 + 服务器测试容器全部新 session 生效
 
 ---
 
@@ -271,7 +396,37 @@ agent workspace
    - 反例：`shared-flow-e2e` 是本次临时新增到 repo 的 skill，但现有 `docker1` 容器镜像里并没有 `/app/skills/shared-flow-e2e`
    - 因此删除 shared 版后，Docker 新 session 不能回退到 bundled；本机 Her 可以看到 repo skill，但旧容器镜像不行
 
-### 5.4 本次本地实现已完成
+### 5.4 个人层 vs 共享层优先级验证
+
+在 `docker1` 中同时放置同名 skill `hot-reload-test`，内容不同：
+
+- **共享层** `/data/.openclaw/skills/hot-reload-test/` → 回复 `SHARED层命中`
+- **个人层** `/data/.openclaw/workspace/.agents/skills/hot-reload-test/` → 回复 `PERSONAL层命中`
+
+验证结果：
+
+1. `/new` 后发送触发词 → 回复 `PERSONAL层命中`
+   - 证明：**个人层 > 共享层**，与源码优先级 `agents-skills-project > openclaw-managed` 一致
+2. 删除个人层，只保留共享层 → `/new` 后回复 `SHARED层命中`
+   - 证明：**个人层删除后自动回退到共享层**
+
+结论：
+
+- 四层业务优先级 `默认 < 全员 < 部门 < 个人` 在运行时被 100% 验证
+- 个人层可以覆盖共享层的同名 skill，删除后自动回退
+
+### 5.5 `~/.openclaw/skills` 支持 watcher 热加载
+
+从源码 `src/agents/skills/refresh.ts` 确认：`path.join(CONFIG_DIR, "skills")` 即 `~/.openclaw/skills` 被 `chokidar` 主动监控。
+
+实际测试中，`docker1` 的 `tester` agent 在该目录新增 skill 后，无需 `/new` 即可在下一轮对话命中。
+
+工程建议：
+
+- 正式发布仍以 **新 session 生效** 作为可靠保证
+- watcher 热加载可作为 **加速手段**，但不应作为唯一依赖
+
+### 5.6 本次本地实现已完成
 
 为支持正式 rollout，本地已经完成两项工程实现：
 

@@ -126,6 +126,7 @@ Pin 消息（不是群顶部置顶）：
 | **文件发送**   | 发送本地文件到飞书聊天（PPT/PDF/DOCX等，≤30MB）               | `message` + media   | ✅               |
 | **群聊**       | 群管理、成员管理、菜单/发言权限、标签页、置顶                 | `feishu_chat_*`     | ✅（见上方映射） |
 | **通讯录**     | 用户、部门                                                    | `feishu_directory`  | ✅ 企业版含姓名  |
+| **统一搜索**   | 同时搜索云盘文档 + Wiki 节点                                  | `feishu_search`     | ✅ MVP           |
 | **知识空间**   | 列空间、遍历节点、节点详情                                    | `feishu_wiki`       | ✅               |
 | **Wiki 管理**  | 创建节点（docx/bitable/sheet）、重命名、移动                  | `feishu_wiki`       | ✅               |
 | **文档读取**   | 读正文、表格、代码、画板（自动导出 PNG）                      | `feishu_doc`        | ✅               |
@@ -166,6 +167,46 @@ Bot 对 Wiki 节点、文档、多维表格记录没有删除权限，无法通�
 - 它们是**完全独立的系统**。用户说"我的空间"通常指 Wiki，不是云盘
 - **用户不可见 = 没有**：凡是用户看不到的应用私有空间资源，一律视为不可用，禁止对外表述为"你的云盘/你的文档"。
 - 已启用代码级保护：`feishu_drive(list/create_folder/create_online/move/upload_file)` 与 `feishu_doc(create)` 必须提供 `folder_token`；禁止 `folder_token=0` 和任何 root/app-space 默认写入。
+
+### 3.1 统一搜索（MVP）
+
+**底层能力限制（必须理解）：**
+
+- 飞书公开搜索 API 是**分词关键词匹配**，**不是语义搜索**
+- 自然语言长句（如"her之间的文件是怎么共享的"）会返回 0 条结果
+- 只有短关键词（如"共享"、"search"、"回归测试"）才能有效命中
+- 飞书 App 内置的"知识问答"是 RAG 语义搜索，和公开 API 是完全不同的系统
+
+**正确的搜索姿势：**
+
+1. **永远不要把用户的自然语言原样传给 `feishu_search`**
+2. 先从用户问题中**提取 2-3 个核心关键词**，每个词 2-4 个字
+3. 用这些关键词分别搜索，或组合搜索
+4. 如果第一轮没找到，**换同义词、缩短关键词、尝试中英文**再搜
+5. 搜索结果只有标题和 token，**需要用 `feishu_doc` 读正文**才能回答用户问题
+
+**示例：**
+
+- 用户问："her之间的文件是怎么共享的"
+  - ❌ 错误：`feishu_search(query="her之间的文件是怎么共享的")` → 0 条
+  - ✅ 正确：先搜 `feishu_search(query="共享")` 或 `feishu_search(query="her 共享")`
+  - ✅ 找到后：用 `feishu_doc` 读取正文，再回答用户
+
+**工具行为：**
+
+- `feishu_search` 会并行搜索两条稳定链路：
+  - Drive 文档搜索：`search/object`（索引标题 + 正文 + bitable 字段）
+  - Wiki 节点搜索：`wiki/v2/nodes/search`（索引标题 + 正文）
+- `scope=all`（默认）时，Drive 和 Wiki 各最多返回 5 条（5+5 配额），避免 Drive 噪音淹没 Wiki
+- 返回结果会显式标记 `source=drive|wiki`，**不会猜测跨源去重**
+- Drive 搜索对 bitable 噪音较大（字段名/数据都被索引），Wiki 搜索通常更精准
+- 如果命中的是 Drive 文档：
+  - 结果里看 `drive_doc_token`
+  - 后续需要读正文时，用 `feishu_doc`
+- 如果命中的是 Wiki：
+  - 结果里看 `wiki_obj_token`
+  - 后续需要读正文时，用 `feishu_doc` 读取 `wiki_obj_token`
+- 当前不要依赖 `search-v2/doc_wiki/search`，真实租户实测不可依赖。
 
 ### 4. 云盘分享记忆（CRITICAL）
 
