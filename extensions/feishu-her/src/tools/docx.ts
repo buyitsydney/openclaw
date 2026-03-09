@@ -12,6 +12,7 @@ import { Type } from "@sinclair/typebox";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { stringEnum } from "openclaw/plugin-sdk";
+import { sniffMimeFromBase64 } from "../../../../src/media/sniff-mime-from-base64.js";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import { getFeishuClient, downloadWhiteboardImage } from "../outbound.js";
 import { resolveDriveShareUrl } from "./share-url.js";
@@ -627,8 +628,49 @@ type BoardBlockInfo = {
   blockId: string;
   whiteboardToken: string;
   imageBase64?: string;
+  contentType?: string;
   error?: string;
 };
+
+function normalizeImageMimeType(contentType: string | undefined): string | undefined {
+  const mimeType = contentType?.split(";")[0]?.trim().toLowerCase();
+  return mimeType?.startsWith("image/") ? mimeType : undefined;
+}
+
+async function resolveInlineBoardImageMimeType(board: BoardBlockInfo): Promise<string> {
+  if (!board.imageBase64) {
+    throw new Error(`board ${board.blockId} is missing image payload`);
+  }
+
+  const sniffedMimeType = normalizeImageMimeType(await sniffMimeFromBase64(board.imageBase64));
+  if (sniffedMimeType) {
+    return sniffedMimeType;
+  }
+
+  const headerMimeType = normalizeImageMimeType(board.contentType);
+  if (headerMimeType) {
+    return headerMimeType;
+  }
+
+  throw new Error(`board ${board.blockId} image MIME could not be determined`);
+}
+
+async function buildInlineBoardImages(boardImages: BoardBlockInfo[]) {
+  const inlineImages: Array<{ base64: string; mimeType: string; label: string }> = [];
+  for (const board of boardImages) {
+    if (!board.imageBase64) {
+      continue;
+    }
+
+    inlineImages.push({
+      base64: board.imageBase64,
+      mimeType: await resolveInlineBoardImageMimeType(board),
+      label: `whiteboard_${board.blockId}`,
+    });
+  }
+
+  return inlineImages;
+}
 
 /** Extract whiteboard tokens from block type 43 blocks. */
 // oxlint-disable-next-line typescript/no-explicit-any
@@ -661,7 +703,7 @@ function extractBoardBlocks(blocks: any[]): BoardBlockInfo[] {
   return results;
 }
 
-/** Fetch whiteboard images for board blocks. Returns base64 encoded PNGs. */
+/** Fetch whiteboard images for board blocks with their original MIME metadata. */
 async function fetchBoardImages(
   account: ResolvedFeishuAccount,
   boardBlocks: BoardBlockInfo[],
@@ -677,6 +719,7 @@ async function fetchBoardImages(
         results.push({
           ...bb,
           imageBase64: img.buffer.toString("base64"),
+          contentType: img.contentType,
         });
       } else {
         results.push({ ...bb, error: "download_failed_or_empty" });
@@ -739,13 +782,7 @@ async function readDoc(client: Lark.Client, docToken: string, account?: Resolved
   };
 
   // Return with inline image content blocks so the AI can "see" whiteboard content.
-  const inlineImages = (boardImages ?? [])
-    .filter((bi) => bi.imageBase64)
-    .map((bi) => ({
-      base64: bi.imageBase64!,
-      mimeType: "image/png",
-      label: `whiteboard_${bi.blockId}`,
-    }));
+  const inlineImages = await buildInlineBoardImages(boardImages ?? []);
 
   if (inlineImages.length > 0) {
     return jsonWithImages(result, inlineImages);
@@ -1050,13 +1087,7 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
                     })),
                   }),
               };
-              const listImages = (boardData ?? [])
-                .filter((bi) => bi.imageBase64)
-                .map((bi) => ({
-                  base64: bi.imageBase64!,
-                  mimeType: "image/png",
-                  label: `whiteboard_${bi.blockId}`,
-                }));
+              const listImages = await buildInlineBoardImages(boardData ?? []);
               if (listImages.length > 0) {
                 return jsonWithImages(listResult, listImages);
               }

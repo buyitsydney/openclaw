@@ -1,0 +1,28 @@
+{
+  "capturedIssue": {
+    "source": "carher-13 session log",
+    "capturedAt": "2026-03-09T09:16:29.080Z",
+    "title": "智能纪要：03-09 | 平台化进展会 2026年3月9日",
+    "declaredMimeType": "image/png",
+    "sniffedMimeType": "image/jpeg",
+    "base64Prefix": "/9j/4AAQSkZJRgABAQAAAQABAAD/4gIoSUNDX1BST0ZJTEUAAQEAAAIYAAAAAAIQ",
+    "byteLength": 315290
+  },
+  "simulatedDoc": {
+    "title": "智能纪要：03-09 | 平台化进展会 2026年3月9日",
+    "docToken": "captured-doc-token-redacted",
+    "blocks": [
+      {
+        "block_id": "board_block_1",
+        "block_type": 43,
+        "board": {
+          "token": "whiteboard_token_1"
+        }
+      }
+    ],
+    "downloadedWhiteboardImage": {
+      "contentType": "image/jpeg",
+      "base64": "/9j/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAACAAIDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAACP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AKMAZyYf/9k="
+    }
+  }
+}

@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -20,12 +20,40 @@ import { registerFeishuDocTools } from "./docx.js";
 
 type ToolDef = {
   name: string;
-  execute: (toolCallId: string, params: Record<string, unknown>) => Promise<{ details: unknown }>;
+  execute: (
+    toolCallId: string,
+    params: Record<string, unknown>,
+  ) => Promise<{ content?: unknown; details: unknown }>;
 };
+
+type WhiteboardMimeFixture = {
+  capturedIssue: {
+    title: string;
+  };
+  simulatedDoc: {
+    title: string;
+    blocks: Array<{ block_id: string; block_type: number; board?: { token?: string } }>;
+    downloadedWhiteboardImage: {
+      contentType: string;
+      base64: string;
+    };
+  };
+};
+
+const whiteboardMimeFixture = JSON.parse(
+  readFileSync(
+    new URL(
+      "../../../../test/fixtures/feishu-docx-whiteboard-jpeg-mime-mismatch.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+) as WhiteboardMimeFixture;
 
 describe("feishu-her feishu_doc anti-regression", () => {
   const convertMock = vi.hoisted(() => vi.fn());
   const createDocMock = vi.hoisted(() => vi.fn());
+  const docGetMock = vi.hoisted(() => vi.fn());
   const descendantCreateMock = vi.hoisted(() => vi.fn());
   const blockListMock = vi.hoisted(() => vi.fn());
   const blockGetMock = vi.hoisted(() => vi.fn());
@@ -51,6 +79,7 @@ describe("feishu-her feishu_doc anti-regression", () => {
         document: {
           convert: convertMock,
           create: createDocMock,
+          get: docGetMock,
           rawContent: rawContentMock,
         },
         documentBlock: {
@@ -85,6 +114,15 @@ describe("feishu-her feishu_doc anti-regression", () => {
         document: {
           document_id: "doc_created_1",
           title: "created",
+        },
+      },
+    });
+    docGetMock.mockResolvedValue({
+      code: 0,
+      data: {
+        document: {
+          title: whiteboardMimeFixture.simulatedDoc.title,
+          revision_id: "rev_1",
         },
       },
     });
@@ -134,6 +172,18 @@ describe("feishu-her feishu_doc anti-regression", () => {
     return tool!;
   }
 
+  function getImageBlock(result: { content?: unknown }) {
+    const content = Array.isArray(result.content) ? result.content : [];
+    return content.find(
+      (block): block is { type: "image"; data: string; mimeType: string } =>
+        !!block &&
+        typeof block === "object" &&
+        (block as { type?: unknown }).type === "image" &&
+        typeof (block as { data?: unknown }).data === "string" &&
+        typeof (block as { mimeType?: unknown }).mimeType === "string",
+    );
+  }
+
   it("list_blocks should paginate and return all blocks", async () => {
     blockListMock
       .mockResolvedValueOnce({
@@ -171,6 +221,64 @@ describe("feishu-her feishu_doc anti-regression", () => {
     const details = result.details as { blocks: Array<{ block_id: string }> };
     expect(details.blocks).toHaveLength(2);
     expect(details.blocks.map((b) => b.block_id)).toEqual(["p1", "p2"]);
+  });
+
+  it("read should preserve JPEG MIME for whiteboard images", async () => {
+    rawContentMock.mockResolvedValue({
+      code: 0,
+      data: { content: "minutes content" },
+    });
+    blockListMock.mockResolvedValue({
+      code: 0,
+      data: {
+        items: whiteboardMimeFixture.simulatedDoc.blocks,
+        has_more: false,
+      },
+    });
+    downloadWhiteboardImageMock.mockResolvedValue({
+      buffer: Buffer.from(
+        whiteboardMimeFixture.simulatedDoc.downloadedWhiteboardImage.base64,
+        "base64",
+      ),
+      contentType: whiteboardMimeFixture.simulatedDoc.downloadedWhiteboardImage.contentType,
+    });
+
+    const tool = registerAndGetTool();
+    const result = await tool.execute("tool-call", {
+      action: "read",
+      doc_token: "doc_with_board",
+    });
+
+    const image = getImageBlock(result);
+    expect(image).toBeDefined();
+    expect(image?.mimeType).toBe("image/jpeg");
+  });
+
+  it("list_blocks should preserve JPEG MIME for whiteboard images", async () => {
+    blockListMock.mockResolvedValue({
+      code: 0,
+      data: {
+        items: whiteboardMimeFixture.simulatedDoc.blocks,
+        has_more: false,
+      },
+    });
+    downloadWhiteboardImageMock.mockResolvedValue({
+      buffer: Buffer.from(
+        whiteboardMimeFixture.simulatedDoc.downloadedWhiteboardImage.base64,
+        "base64",
+      ),
+      contentType: whiteboardMimeFixture.simulatedDoc.downloadedWhiteboardImage.contentType,
+    });
+
+    const tool = registerAndGetTool();
+    const result = await tool.execute("tool-call", {
+      action: "list_blocks",
+      doc_token: "doc_with_board",
+    });
+
+    const image = getImageBlock(result);
+    expect(image).toBeDefined();
+    expect(image?.mimeType).toBe("image/jpeg");
   });
 
   it("append should read content from source_file", async () => {
