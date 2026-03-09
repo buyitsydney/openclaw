@@ -1,7 +1,7 @@
 # 飞书 Search 架构设计
 
-> 日期：2026-03-08
-> 状态：MVP 已实现，docker1 实测验证通过
+> 日期：2026-03-09（最后更新：2026-03-09 23:30 UTC+8）
+> 状态：**可上线** · 全量回归 47/47 PASS · 新增 `feishu_deep_search` + `feishu_conversation_search` + `memory-bridge` 已验证通过 · 搜索召回仍受飞书服务端索引延迟与漏召回影响
 
 ---
 
@@ -34,6 +34,7 @@
    - **双路搜索**
    - **应用层统一结果**
    - **按需展开正文**
+6. 对 Drive 原始文件（`object_type=file`，如 PDF / DOCX / PPTX / XLSX），当前 Her 已验证可以在**搜索命中后**继续自动读取正文；但“能不能搜到”仍取决于飞书自己的服务端索引，而不是 Her 的读取链路。
 
 ---
 
@@ -79,6 +80,49 @@
 - 飞书索引是**分词关键词匹配**，不是语义搜索
 - 自然语言查询会失败，必须用短关键词
 - Drive 和 Wiki 索引完全隔离
+
+### 3.2.2 补充实验（2026-03-09 file 读取链路）
+
+本次补充验证覆盖了两条独立链路：
+
+- 本地 Her：搜索 `任职资格管理办法`，命中 Drive `file` 后继续读取 `CL-31-07 任职资格管理办法 A1.pdf`，成功返回正文预览
+- `docker1`：同样完成 `feishu_search -> feishu_doc(action="read", doc_type="file")` 的真实链路验证
+
+确认结论：
+
+- 当前 Her 已经不是“只能搜到 file，读不了正文”
+- 之前的 404 根因是把 Drive `file` 错误分发到了普通 doc 读取路径；该链路已修正
+- 若 `feishu_search` 返回 `0 命中`，优先判断为**飞书索引未命中/未就绪**，而不是 Her 读取失败
+- 因此，文档状态应区分：
+  - **读取能力**：已打通
+  - **搜索召回能力**：仍受飞书平台索引边界约束
+
+### 3.2.3 全量回归（2026-03-09 Knowledge Q&A 四期实现后）
+
+新增工具（`feishu_deep_search`、`feishu_conversation_search`、`memory-bridge`）实现并部署后的全量回归：
+
+**测试环境**：本地 `docker1`（2 个私聊 session + 1 个群聊 @mention）
+
+**结果**：47 项测试 · 47 PASS · 0 FAIL · 0 回退
+
+搜索模块压力测试（8/8）：
+
+| 工具                                   | 测试项                                                       | 结果 |
+| -------------------------------------- | ------------------------------------------------------------ | ---- |
+| `feishu_search`                        | 关键词"测试方案" → 10 条（Drive 5 + Wiki 5）                 | ✅   |
+| `feishu_search(scope=wiki)`            | 关键词"search" → 2 条 Wiki                                   | ✅   |
+| `feishu_search(include_bitable)`       | bitable 参数生效                                             | ✅   |
+| `feishu_deep_search`                   | 4 组关键词 → 19 raw / 10 merged（Drive+Wiki+Minutes+群归档） | ✅   |
+| `feishu_conversation_search(groups)`   | "回归测试" → 群聊归档命中                                    | ✅   |
+| `feishu_conversation_search(sessions)` | session 历史搜索正常                                         | ✅   |
+| `memory_search`                        | 语义搜索本地记忆 → 8 条                                      | ✅   |
+| `feishu_minutes(search)`               | "团队分工" → AI 摘要 + match_sources                         | ✅   |
+
+文档读取压力测试（10/10）：PDF、PPTX、DOCX、ZIP、MP4、Sheet、Bitable 全类型覆盖。
+
+其他模块（29/29）：chat/members/directory/wiki/drive/calendar/minutes/task CRUD 全通。
+
+**已知非代码问题**：群聊 @mention 时触发 "AI service temporarily overloaded"（Claude API 并发限流），非本次代码变更导致。
 
 ### 3.2 Wiki 真值
 

@@ -7,6 +7,7 @@ import {
   saveReport,
   type BuildReportOpts,
 } from "./src/compaction-report.js";
+import { syncGroupArchivesToMemory } from "./src/memory-bridge.js";
 import { initOAuthCallback, startOAuthServer } from "./src/oauth.js";
 import { setFeishuRuntime } from "./src/runtime.js";
 import { registerAllFeishuTools } from "./src/tools/index.js";
@@ -53,6 +54,18 @@ const plugin = {
       const oauthPort = (minutesConfig.oauthPort as number) ?? undefined;
       startOAuthServer({ port: oauthPort, log: logOAuth, warn: warnOAuth });
     }
+
+    // Background sync: write group archives to memory dir for semantic indexing
+    setTimeout(() => {
+      try {
+        const result = syncGroupArchivesToMemory();
+        if (result.synced > 0) {
+          api.logger.info?.(`memory-bridge: synced ${result.synced} group archives to memory`);
+        }
+      } catch (e) {
+        api.logger.info?.(`memory-bridge: initial archive sync failed: ${String(e)}`);
+      }
+    }, 5_000);
 
     api.on("after_compaction", (event, ctx) => {
       const sessionFile = event.sessionFile;

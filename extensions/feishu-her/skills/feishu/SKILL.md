@@ -120,29 +120,31 @@ Pin 消息（不是群顶部置顶）：
 
 ## 能力总览
 
-| 类别           | 能力                                                          | 工具                | 状态             |
-| -------------- | ------------------------------------------------------------- | ------------------- | ---------------- |
-| **消息**       | 发送消息（群/个人）                                           | `message`           | ✅               |
-| **文件发送**   | 发送本地文件到飞书聊天（PPT/PDF/DOCX等，≤30MB）               | `message` + media   | ✅               |
-| **群聊**       | 群管理、成员管理、菜单/发言权限、标签页、置顶                 | `feishu_chat_*`     | ✅（见上方映射） |
-| **通讯录**     | 用户、部门                                                    | `feishu_directory`  | ✅ 企业版含姓名  |
-| **统一搜索**   | 同时搜索云盘文档 + Wiki 节点                                  | `feishu_search`     | ✅ MVP           |
-| **知识空间**   | 列空间、遍历节点、节点详情                                    | `feishu_wiki`       | ✅               |
-| **Wiki 管理**  | 创建节点（docx/bitable/sheet）、重命名、移动                  | `feishu_wiki`       | ✅               |
-| **文档读取**   | 读正文、表格、代码、画板（自动导出 PNG）                      | `feishu_doc`        | ✅               |
-| **文档写入**   | write（覆盖）、append（追加）、create（新建）                 | `feishu_doc`        | ✅               |
-| **增量编辑**   | insert_blocks（中间插入）、delete_range（批量删除）           | `feishu_doc`        | ✅               |
-| **Block 操作** | list_blocks、get_block、update_block、delete_block            | `feishu_doc`        | ✅               |
-| **多维表格读** | get_meta、list_fields、list_records、get_record               | `feishu_bitable`    | ✅               |
-| **多维表格写** | create_record、update_record                                  | `feishu_bitable`    | ✅               |
-| **云盘**       | list、create_folder、create_online、move、delete、upload_file | `feishu_drive`      | ✅ Bot 限制见下  |
-| **群聊归档**   | 本地 JSONL 归档读取和总结                                     | `exec` (jq)         | ✅               |
-| **日历建会**   | 建会+自动邀请参会人（对方日历自动收到）                       | `feishu_calendar`   | ✅               |
-| **日历忙闲**   | 查任何人忙碌时间段（无需共享）                                | `feishu_calendar`   | ✅               |
-| **待办任务**   | 创建/查询/更新/删除/子任务/挂清单                             | `feishu_task_*`     | ✅ 协作 P0       |
-| **任务清单**   | 创建/查询/列出/更新/成员增删                                  | `feishu_tasklist_*` | ✅ 协作 P0       |
-| **消息撤回**   | 撤回 bot 24h 内发送的消息（含文字/卡片/图片/文件）            | `feishu_message`    | ✅               |
-| **删除限制**   | 文档/Wiki/Bitable 删除                                        | —                   | ❌ 无权限（403） |
+| 类别           | 能力                                                          | 工具                         | 状态             |
+| -------------- | ------------------------------------------------------------- | ---------------------------- | ---------------- |
+| **消息**       | 发送消息（群/个人）                                           | `message`                    | ✅               |
+| **文件发送**   | 发送本地文件到飞书聊天（PPT/PDF/DOCX等，≤30MB）               | `message` + media            | ✅               |
+| **群聊**       | 群管理、成员管理、菜单/发言权限、标签页、置顶                 | `feishu_chat_*`              | ✅（见上方映射） |
+| **通讯录**     | 用户、部门                                                    | `feishu_directory`           | ✅ 企业版含姓名  |
+| **统一搜索**   | 同时搜索云盘文档 + Wiki 节点                                  | `feishu_search`              | ✅ MVP           |
+| **深度搜索**   | 多源聚合搜索（文档+Wiki+妙记+群聊归档）                       | `feishu_deep_search`         | ✅               |
+| **会话搜索**   | 跨群/跨会话关键词搜索（本地归档+Her会话历史）                 | `feishu_conversation_search` | ✅               |
+| **知识空间**   | 列空间、遍历节点、节点详情                                    | `feishu_wiki`                | ✅               |
+| **Wiki 管理**  | 创建节点（docx/bitable/sheet）、重命名、移动                  | `feishu_wiki`                | ✅               |
+| **文档读取**   | 读正文、表格、代码、画板（自动导出 PNG）                      | `feishu_doc`                 | ✅               |
+| **文档写入**   | write（覆盖）、append（追加）、create（新建）                 | `feishu_doc`                 | ✅               |
+| **增量编辑**   | insert_blocks（中间插入）、delete_range（批量删除）           | `feishu_doc`                 | ✅               |
+| **Block 操作** | list_blocks、get_block、update_block、delete_block            | `feishu_doc`                 | ✅               |
+| **多维表格读** | get_meta、list_fields、list_records、get_record               | `feishu_bitable`             | ✅               |
+| **多维表格写** | create_record、update_record                                  | `feishu_bitable`             | ✅               |
+| **云盘**       | list、create_folder、create_online、move、delete、upload_file | `feishu_drive`               | ✅ Bot 限制见下  |
+| **群聊归档**   | 本地 JSONL 归档读取和总结                                     | `exec` (jq)                  | ✅               |
+| **日历建会**   | 建会+自动邀请参会人（对方日历自动收到）                       | `feishu_calendar`            | ✅               |
+| **日历忙闲**   | 查任何人忙碌时间段（无需共享）                                | `feishu_calendar`            | ✅               |
+| **待办任务**   | 创建/查询/更新/删除/子任务/挂清单                             | `feishu_task_*`              | ✅ 协作 P0       |
+| **任务清单**   | 创建/查询/列出/更新/成员增删                                  | `feishu_tasklist_*`          | ✅ 协作 P0       |
+| **消息撤回**   | 撤回 bot 24h 内发送的消息（含文字/卡片/图片/文件）            | `feishu_message`             | ✅               |
+| **删除限制**   | 文档/Wiki/Bitable 删除                                        | —                            | ❌ 无权限（403） |
 
 ## ⚠️ 重要限制（必读！）
 
@@ -192,7 +194,26 @@ Bot 对 Wiki 节点、文档、多维表格记录没有删除权限，无法通�
   - ✅ 正确：先搜 `feishu_search(query="共享")` 或 `feishu_search(query="her 共享")`
   - ✅ 找到后：用 `feishu_doc` 读取正文，再回答用户
 
-**工具行为：**
+**搜索工具选择（CRITICAL — 必须遵守）：**
+
+| 场景                                 | 应该用的工具                 | 说明                                            |
+| ------------------------------------ | ---------------------------- | ----------------------------------------------- |
+| 单关键词快速查文档                   | `feishu_search`              | 如"搜一下劳动合同"                              |
+| 多关键词 / 深度搜索 / 用户问"帮我找" | **`feishu_deep_search`**     | 传 keywords 数组，一次覆盖 Drive+Wiki+妙记+群聊 |
+| 搜群聊记录 / 会话历史                | `feishu_conversation_search` | 搜本地归档的群聊和 Her 会话                     |
+| 语义搜索 / 回忆类问题                | `memory_search`              | 可用自然语言                                    |
+| 读文档正文                           | `feishu_doc`                 | 搜索只返回标题，读正文必须二次调用              |
+
+**禁止**：面对多关键词需求时调用多次 `feishu_search`。用 `feishu_deep_search(keywords=[...])` 一次搞定。
+
+**搜索结果输出规则（CRITICAL — 必须遵守）：**
+
+- **每条搜索结果必须附带可点击的文档链接**（使用搜索结果中的 `url` 字段）
+- 输出格式：`[文档标题](url)` — 必须是 Markdown 链接
+- 如果搜索结果没有 `url`，用 `https://xcne5kzbipob.feishu.cn/{type}/{token}` 拼接
+- **严禁**只列出文档标题而不给链接
+
+**`feishu_search` 工具行为：**
 
 - `feishu_search` 会并行搜索两条稳定链路：
   - Drive 文档搜索：`search/object`（索引标题 + 正文 + bitable 字段）
@@ -204,11 +225,89 @@ Bot 对 Wiki 节点、文档、多维表格记录没有删除权限，无法通�
   - Wiki 搜索不受此参数影响
 - 如果命中的是 Drive 文档：
   - 结果里看 `drive_doc_token`
-  - 后续需要读正文时，用 `feishu_doc`
+  - 后续需要读正文时，用结果里的 `read_params`
+  - 如果 `object_type=file`，读取时必须带 `doc_type="file"`，不能按普通 docx 读
 - 如果命中的是 Wiki：
   - 结果里看 `wiki_obj_token`
-  - 后续需要读正文时，用 `feishu_doc` 读取 `wiki_obj_token`
+  - 后续需要读正文时，优先直接使用结果里的 `read_params`
 - 当前不要依赖 `search-v2/doc_wiki/search`，真实租户实测不可依赖。
+
+### 3.2 Research Mode（深度搜索）
+
+当用户的问题需要跨多个数据源查找信息时（如"最近讨论了什么""帮我整理关于XX的所有资料""XX是什么决策"），Her 应自动进入 Research Mode。
+
+**触发条件**（满足任一即进入）：
+
+- 用户问题涉及"最近""所有""整理""总结""找一下""回顾"等检索类意图
+- 问题答案不太可能在单一文档中，需要综合多来源
+- 用户明确要求搜索或查找
+
+**可用工具：**
+
+- `feishu_deep_search(keywords=["kw1","kw2","kw3"])` — **首选**。一次调用自动搜索 Drive+Wiki+妙记+群聊归档，传入 2-4 组关键词
+- `feishu_conversation_search(keyword="xxx")` — 跨群+跨会话关键词搜索（搜本地群聊归档和 Her 会话历史）
+- `memory_search(query="自然语言问题")` — 语义搜索本地记忆（可用自然语言，不限于关键词）
+- `feishu_doc(action="read")` — 读取搜索结果的文档正文；优先直接复用搜索结果里的 `read_params`
+
+**进度反馈规则（CRITICAL — 用户体验核心）：**
+
+Research Mode 涉及多步工具调用，每步可能耗时数秒。**严禁长时间沉默**——用户看到的是飞书聊天界面，超过 5 秒没有文字输出就会以为卡死了。
+
+**硬规则：每完成一步工具调用后，必须立即输出一段简短的进度文字告诉用户你在干什么、找到了什么。**
+
+示例进度文字：
+
+- 搜索后：`"搜到了 12 条结果（Drive 5 / Wiki 3 / 妙记 4）。我来读取最相关的几篇……"`
+- 读取后：`"已读完《任职资格管理办法》和《员工管理制度》，正在整理答案……"`
+- 最终：完整的结构化回答
+
+**禁止**：默默调用 5-10 次工具后一次性输出大段结果。用户必须每隔几秒看到你在推进。
+
+---
+
+**Research Mode 执行流程：**
+
+1. **查询分解**：从用户问题中提取 2-3 组不同角度的关键词（每组 2-4 个字）
+   - 例："最近如何思考飞书search api接入的" → `["飞书 搜索", "search api", "搜索架构"]`
+   - 关键词之间不要重复，要覆盖不同维度（中/英文、同义词、上下位概念）
+
+2. **多源并行搜索** → **立即告诉用户搜到了多少条、来自哪些源**：
+   - `feishu_deep_search(keywords=[...])` — 一次调用覆盖 Drive/Wiki/妙记/群聊归档
+   - `memory_search(query=用户原始问题)` — 语义搜索本地记忆
+   - 如需精确搜索会话历史：`feishu_conversation_search(keyword="xxx")`
+   - ⚡ **搜索完成后，先输出搜索摘要**（如"找到 8 条相关结果，来自 Wiki 3 篇、Drive 2 篇、妙记 3 场"），再进入下一步
+
+3. **结果筛选与精读** → **告诉用户正在读哪些文档**：
+   - 合并所有来源的搜索结果，去重（同一文档标题出现在多组关键词结果中只保留一次）
+   - 对 top 3-5 条最相关结果，直接用搜索结果返回的 `read_params` 调 `feishu_doc`
+   - ⚡ **读取前先告诉用户**（如"正在读取《XX》和《YY》的正文……"）
+   - 会议纪要如果 `ai_summary` 不够详细，可用 `get` 展开
+
+4. **结构化输出**：
+   - 先给出**总结**（直接回答用户问题的核心结论）
+   - 再分层展开**详细分析**（按主题或时间线组织）
+   - 最后列出**参考来源**（文档标题 + 链接，每条注明来源类型：文档/Wiki/会议/群聊）
+
+**示例流程：**
+
+用户问："最近关于 AI 采购的讨论进展如何？"
+
+```
+Step 1: 关键词 → ["AI 采购", "AI 预算", "采购方案"]
+Step 2: feishu_deep_search(keywords=[...]) + memory_search("AI 采购进展")
+     → 输出："搜到 7 条相关内容（Wiki 2 / Drive 3 / 妙记 2），我来看看最重要的几篇。"
+Step 3: feishu_doc 读取 top 3
+     → 输出："已读完《AI采购方案v2》和《Q2预算审批》，正在整理……"
+Step 4: 结构化回答 + 参考来源列表（每条必须附带 [标题](链接)）
+```
+
+**注意事项：**
+
+- Research Mode 用 `feishu_deep_search` 一次调用即可覆盖多源，不要用 `feishu_search` 多次调用替代
+- `memory_search` 是语义搜索，可以用自然语言；`feishu_search`/`feishu_deep_search` 必须用短关键词
+- 不要在每个搜索都没有结果时才放弃，换同义词/缩短关键词再试一轮
+- **每条搜索结果必须附带链接**（`[标题](url)`），这是硬性要求，不能省略
+- **每步之间必须输出进度文字**——严禁连续调用多个工具而不给用户任何文字反馈
 
 ### 4. 云盘分享记忆（CRITICAL）
 
@@ -670,7 +769,8 @@ feishu_message(action="list_sent", chat_id="oc_xxx", count=5)
 
 **读取：**
 
-- `feishu_doc(action="read", doc_token="xxx")` — 读取全文（含画板自动导出 PNG）。检查 `hint` 和 `block_types` 判断是否需要 `list_blocks`
+- `feishu_doc(action="read", doc_token="xxx")` — 读取 doc/wiki 全文（含画板自动导出 PNG）。检查 `hint` 和 `block_types` 判断是否需要 `list_blocks`
+- `feishu_doc(action="read", doc_token="xxx", doc_type="file")` — 读取 Drive 原始文件（PDF / DOCX / PPTX / XLSX 等）
 - `feishu_doc(action="list_blocks", doc_token="xxx")` — 完整 block 数据（含表格、图片）
 - `feishu_doc(action="get_block", doc_token="xxx", block_id="doxcnXXX")` — 单个 block
 - `feishu_doc(action="create", title="xxx", folder_token="fldcnXXX")` — 在用户可见文件夹中新建文档（必须传 `folder_token`）
