@@ -93,6 +93,8 @@ type SearchResult =
       title: string;
       object_type: string;
       drive_doc_token: string;
+      read_tool: "feishu_doc";
+      read_params: { action: "read"; doc_token: string; doc_type: string };
       owner_id?: string;
       url?: string;
       url_resolve_error?: string;
@@ -102,6 +104,8 @@ type SearchResult =
       title: string;
       object_type: "wiki_node";
       wiki_node_id: string;
+      read_tool: "feishu_doc";
+      read_params?: { action: "read"; doc_token: string };
       wiki_space_id?: string;
       wiki_obj_token?: string;
       wiki_obj_type_raw?: number | string;
@@ -198,6 +202,12 @@ async function searchDrive(
       title: item.title.trim(),
       object_type: item.docs_type.trim(),
       drive_doc_token: item.docs_token.trim(),
+      read_tool: "feishu_doc" as const,
+      read_params: {
+        action: "read" as const,
+        doc_token: item.docs_token.trim(),
+        doc_type: item.docs_type.trim(),
+      },
       ...(typeof item.owner_id === "string" && item.owner_id.trim().length > 0
         ? { owner_id: item.owner_id.trim() }
         : {}),
@@ -264,6 +274,15 @@ async function searchWiki(
       title: item.title.trim(),
       object_type: "wiki_node" as const,
       wiki_node_id: item.node_id.trim(),
+      read_tool: "feishu_doc" as const,
+      ...(typeof item.obj_token === "string" && item.obj_token.trim().length > 0
+        ? {
+            read_params: {
+              action: "read" as const,
+              doc_token: item.obj_token.trim(),
+            },
+          }
+        : {}),
       ...(typeof item.space_id === "string" && item.space_id.trim().length > 0
         ? { wiki_space_id: item.space_id.trim() }
         : {}),

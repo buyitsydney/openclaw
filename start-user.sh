@@ -275,7 +275,7 @@ echo ""
 echo -e "${YELLOW}🚗 CarHer User ${USER_ID} — 启动${NC}"
 echo ""
 
-# --- Auto-rebuild: compare build hash (git SHA + dirty diff hash) with image label ---
+# --- Auto-rebuild: compare full workspace snapshot hash with image label ---
 if [ -n "$DEV_MODE" ]; then
   # Dev mode: skip full rebuild, just ensure base image exists for node_modules/pip
   if ! docker image inspect carher:local &>/dev/null; then
@@ -292,15 +292,7 @@ if [ -n "$DEV_MODE" ]; then
   fi
   echo -e "${GREEN}  ✓ Dev 模式: bind mount 源码，跳过镜像重建${NC}"
 else
-  CURRENT_SHA=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
-  SOURCE_DIRS="src/ extensions/ skills/ docker/ scripts/ patches/ ui/ package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.json Dockerfile.carher"
-  DIFF_OUTPUT=$(git diff HEAD -- $SOURCE_DIRS 2>/dev/null || true)
-  if [ -n "$DIFF_OUTPUT" ]; then
-    DIRTY_HASH=$(printf '%s' "$DIFF_OUTPUT" | sha256 | cut -d' ' -f1)
-    CURRENT_BUILD_HASH="${CURRENT_SHA}-dirty-${DIRTY_HASH:0:16}"
-  else
-    CURRENT_BUILD_HASH="$CURRENT_SHA"
-  fi
+  CURRENT_BUILD_HASH=$(node scripts/workspace-build-hash.mjs)
 
   IMAGE_BUILD_HASH=$(docker inspect carher:local --format '{{index .Config.Labels "carher.build.hash"}}' 2>/dev/null || echo "none")
 
@@ -310,7 +302,7 @@ else
   elif [ "$IMAGE_BUILD_HASH" = "none" ] || [ "$IMAGE_BUILD_HASH" = "unknown" ] || [ "$IMAGE_BUILD_HASH" = "" ]; then
     NEED_REBUILD="镜像无版本标记（旧版构建）"
   elif [ "$CURRENT_BUILD_HASH" != "$IMAGE_BUILD_HASH" ]; then
-    NEED_REBUILD="源码已变更 (镜像: ${IMAGE_BUILD_HASH:0:16}, 当前: ${CURRENT_BUILD_HASH:0:16})"
+    NEED_REBUILD="工作区快照已变更 (镜像: ${IMAGE_BUILD_HASH:0:16}, 当前: ${CURRENT_BUILD_HASH:0:16})"
   fi
 
   if [ -n "$NEED_REBUILD" ]; then

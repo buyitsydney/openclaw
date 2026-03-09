@@ -30,11 +30,34 @@ echo ""
 cp "$SCRIPT_DIR/docker/shared-config.json5" "$HOME/.openclaw/shared-config.json5"
 echo -e "${GREEN}  ✓ shared-config.json5 已同步到 ~/.openclaw/${NC}"
 
-# 确定性重编译（后端 dist + 控制台 UI）
-echo -e "${YELLOW}[1/5] 重编译后端与前端资源...${NC}"
-pnpm build
-pnpm ui:build
-echo -e "${GREEN}  ✓ 编译完成${NC}"
+# 基于完整工作区快照决定是否需要重新编译（包含 tracked + untracked 文件）
+WORKSPACE_BUILD_HASH=$(node scripts/workspace-build-hash.mjs)
+BUILD_CACHE_DIR="$HOME/.openclaw/.cache"
+BUILD_HASH_FILE="$BUILD_CACHE_DIR/start-sh.workspace-build.hash"
+BACKEND_BUILD_SENTINEL="$SCRIPT_DIR/dist/index.js"
+UI_BUILD_SENTINEL="$SCRIPT_DIR/ui/dist/index.html"
+mkdir -p "$BUILD_CACHE_DIR"
+PREVIOUS_BUILD_HASH=$(cat "$BUILD_HASH_FILE" 2>/dev/null || true)
+
+NEED_BUILD=""
+if [ ! -f "$BACKEND_BUILD_SENTINEL" ]; then
+  NEED_BUILD="dist/index.js 缺失"
+elif [ ! -f "$UI_BUILD_SENTINEL" ]; then
+  NEED_BUILD="ui/dist/index.html 缺失"
+elif [ "$PREVIOUS_BUILD_HASH" != "$WORKSPACE_BUILD_HASH" ]; then
+  NEED_BUILD="工作区快照已变更 (${WORKSPACE_BUILD_HASH:0:16})"
+fi
+
+echo -e "${YELLOW}[1/5] 检查后端与前端构建...${NC}"
+if [ -n "$NEED_BUILD" ]; then
+  echo -e "${YELLOW}  ⟳ 重新编译: ${NEED_BUILD}${NC}"
+  pnpm build
+  pnpm ui:build
+  printf '%s' "$WORKSPACE_BUILD_HASH" > "$BUILD_HASH_FILE"
+  echo -e "${GREEN}  ✓ 编译完成 (${WORKSPACE_BUILD_HASH:0:16})${NC}"
+else
+  echo -e "${GREEN}  ✓ 构建已是最新 (${WORKSPACE_BUILD_HASH:0:16})${NC}"
+fi
 echo ""
 
 # 杀掉已有的 Gateway 进程

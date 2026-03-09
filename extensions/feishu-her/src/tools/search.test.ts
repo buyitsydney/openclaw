@@ -154,6 +154,12 @@ describe("feishu_search tool", () => {
         title: "企业知识在her之间共享",
         object_type: "docx",
         drive_doc_token: "doc_drive_1",
+        read_tool: "feishu_doc",
+        read_params: {
+          action: "read",
+          doc_token: "doc_drive_1",
+          doc_type: "docx",
+        },
         owner_id: "ou_owner",
         url: "https://example.feishu.cn/docx/doc_drive_1",
       },
@@ -162,6 +168,11 @@ describe("feishu_search tool", () => {
         title: "飞书搜索架构",
         object_type: "wiki_node",
         wiki_node_id: "wiki_node_1",
+        read_tool: "feishu_doc",
+        read_params: {
+          action: "read",
+          doc_token: "wiki_obj_1",
+        },
         wiki_space_id: "space_1",
         wiki_obj_token: "wiki_obj_1",
         wiki_obj_type_raw: 8,
@@ -295,6 +306,12 @@ describe("feishu_search tool", () => {
         title: "企业知识在her之间共享",
         object_type: "docx",
         drive_doc_token: "doc_drive_1",
+        read_tool: "feishu_doc",
+        read_params: {
+          action: "read",
+          doc_token: "doc_drive_1",
+          doc_type: "docx",
+        },
         url_resolve_error: "drive_meta_batch_query_missing_url",
       },
     ]);
@@ -390,6 +407,7 @@ describe("feishu_search tool", () => {
       title: "飞书搜索架构",
       object_type: "wiki_node",
       wiki_node_id: "wiki_node_1",
+      read_tool: "feishu_doc",
       url: "https://example.feishu.cn/wiki/wiki_node_1",
     });
   });

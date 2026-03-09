@@ -7,7 +7,9 @@
 
 **最终方案：200 Bot + 200 Docker（每人一个独立 OpenClaw 容器）**
 
-**验证状态 (2026-03-07 更新)：飞书并发测试通过、数据隔离已确认、Webchat 隔离已确认、自动镜像重建已实现、Web Search (Perplexity) 已验证、Browser Use (Chromium headless) 已验证、Context Window 240K 保护已配置、CardKit 状态 Footer 已实现、Config $include 零分叉架构已验证（本地 + Docker 全环境 0 error）、语音 Gemini Live 已验证（本地 + Docker）、@mention 发送已验证（本地 + Docker，需 contact:user.base:readonly 权限）、飞书待办 Task v2 P1 全量能力已验证（本机 Her + docker1 Her 双端通过）、群聊消息读取已验证（`feishu_group_history` 工具 + `tenant_access_token` fallback）、OAuth user_access_token 授权已验证（S1/S3 carher-13/14）、Cloudflare 隧道三台服务器已部署（S1/S2/S3 各预分配 50 用户），权限 215 个（161 tenant + 54 user）**
+**验证状态 (2026-03-09 更新)：飞书并发测试通过、数据隔离已确认、Webchat 隔离已确认、自动镜像重建已实现、Web Search (Perplexity) 已验证、Browser Use (Chromium headless) 已验证、Context Window 240K 保护已配置、CardKit 状态 Footer 已实现、Config $include 零分叉架构已验证（本地 + Docker 全环境 0 error）、语音 Gemini Live 已验证（本地 + Docker）、@mention 发送已验证（本地 + Docker，需 contact:user.base:readonly 权限）、飞书待办 Task v2 P1 全量能力已验证（本机 Her + docker1 Her 双端通过）、群聊消息读取已验证（`feishu_group_history` 工具 + `tenant_access_token` fallback）、OAuth user_access_token 授权已验证（S1/S3 carher-13/14）、Feishu Drive 原始文件读取链路已验证（本地 Her + docker1：搜索命中后可继续读取 PDF / DOCX / PPTX / XLSX 正文）、Cloudflare 隧道三台服务器已部署（S1/S2/S3 各预分配 50 用户），权限 215 个（161 tenant + 54 user）**
+
+> 补充边界（2026-03-09）：Drive 原始文件的**正文读取能力**已经打通；但关键词搜索是否命中，仍受飞书服务端索引影响，可能出现索引延迟或漏召回。因此当前结论是“可上线使用”，但不能承诺“任意新上传 PDF 都会立即被搜到”。
 
 ---
 
@@ -27,12 +29,12 @@
 
 ### 软件环境（服务器上安装）
 
-| 软件        | 安装命令                                                                                                                         | 用途                                |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| Docker      | `curl -fsSL https://get.docker.com \| sh`                                                                                        | 容器运行环境                        |
-| Git         | `apt install git`                                                                                                                | 拉取部署代码                        |
-| Python 3    | `apt install python3`                                                                                                            | 配置生成脚本依赖                    |
-| tmux        | `apt install tmux`                                                                                                               | 终端会话持久化（start.sh 自动使用） |
+| 软件        | 安装命令                                                                                                                         | 用途                                                              |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| Docker      | `curl -fsSL https://get.docker.com \| sh`                                                                                        | 容器运行环境                                                      |
+| Git         | `apt install git`                                                                                                                | 拉取部署代码                                                      |
+| Python 3    | `apt install python3`                                                                                                            | 配置生成脚本依赖                                                  |
+| tmux        | `apt install tmux`                                                                                                               | 终端会话持久化（start.sh 自动使用）                               |
 | cloudflared | `curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \| tee /usr/share/keyrings/cloudflare.gpg && apt install cloudflared` | Cloudflare 隧道（**必需**，OAuth 回调 + 语音 + Webchat 远程访问） |
 
 ### 账号与密钥（P0，必须提前申请）
@@ -109,19 +111,19 @@ ls ~/.config/gcloud/application_default_credentials.json
 
 **隧道已在 S1/S2/S3 上配置完毕，且每台服务器已预分配 User 1-50 的全部路由。** 新增用户无需修改隧道配置。
 
-| 服务器 | IP           | 隧道名    | 预分配用户 | 状态 |
-| ------ | ------------ | --------- | ---------- | ---- |
+| 服务器 | IP           | 隧道名    | 预分配用户 | 状态   |
+| ------ | ------------ | --------- | ---------- | ------ |
 | S1     | 10.68.13.186 | carher-s1 | User 1-50  | 运行中 |
 | S2     | 10.68.13.187 | carher-s2 | User 1-50  | 运行中 |
 | S3     | 10.68.13.188 | carher-s3 | User 1-50  | 运行中 |
 
 每个用户 N 在服务器 sX 上有 3 个域名（全部已预注册 DNS）：
 
-| 域名 | 用途 | 容器端口 | 宿主机端口 |
-| ---- | ---- | -------- | ---------- |
-| `sX-uN-fe.carher.net` | 前端/Webchat | 8000 | base+3 |
-| `sX-uN-proxy.carher.net` | WebSocket 代理 | 8080 | base+4 |
-| `sX-uN-auth.carher.net` | OAuth 回调 | 18891 | base+5 |
+| 域名                     | 用途           | 容器端口 | 宿主机端口 |
+| ------------------------ | -------------- | -------- | ---------- |
+| `sX-uN-fe.carher.net`    | 前端/Webchat   | 8000     | base+3     |
+| `sX-uN-proxy.carher.net` | WebSocket 代理 | 8080     | base+4     |
+| `sX-uN-auth.carher.net`  | OAuth 回调     | 18891    | base+5     |
 
 > 隧道通过 systemd 自启动（`/etc/systemd/system/cloudflared.service`），服务器重启后自动恢复。配置文件位于 `/etc/cloudflared/config.yml`。
 >
@@ -437,7 +439,7 @@ git checkout v旧版本
 | 1   | 创建应用 + 启用机器人 | 命名格式：`{人名}的her`（如：老杨的her），添加「机器人」能力 |
 | 2   | 记录凭证              | 复制 App ID + App Secret                                     |
 | 3   | 批量导入权限          | 粘贴 JSON 导入 215 个权限（161 tenant + 54 user）            |
-| 3b  | 配置安全设置          | 安全设置 → 重定向 URL → 添加 OAuth 回调 URL                 |
+| 3b  | 配置安全设置          | 安全设置 → 重定向 URL → 添加 OAuth 回调 URL                  |
 | 4   | 第一次发布            | 可用范围 = 指定人员，只选一人（见下方说明）                  |
 | 5   | 确认 Bot 可见         | 让目标员工搜索 Bot，确认能找到                               |
 | 6   | 交给部署者            | 等部署者确认 WSClient connected                              |
@@ -863,10 +865,10 @@ https://sX-uN-auth.carher.net/feishu/oauth/callback
 
 ### 员工生命周期
 
-| 事件       | IT 操作                                            | 部署者操作               | 对其他员工影响 |
-| ---------- | -------------------------------------------------- | ------------------------ | -------------- |
-| 新员工入职 | 创建飞书 Bot + 导入权限 + 配 OAuth URL（15 分钟）  | CSV 加行 + 启动容器      | **零影响**     |
-| 员工离职   | 注销飞书账号 + 删除 Bot                            | 停止并删除该容器         | **零影响**     |
+| 事件       | IT 操作                                           | 部署者操作          | 对其他员工影响 |
+| ---------- | ------------------------------------------------- | ------------------- | -------------- |
+| 新员工入职 | 创建飞书 Bot + 导入权限 + 配 OAuth URL（15 分钟） | CSV 加行 + 启动容器 | **零影响**     |
+| 员工离职   | 注销飞书账号 + 删除 Bot                           | 停止并删除该容器    | **零影响**     |
 
 > **新增用户无需修改隧道配置**：Cloudflare 隧道已预分配 User 1-50 的全部路由和 DNS。IT 只需在飞书后台填入 OAuth URL（格式自动推导），部署者只需 `./start-user.sh --id=N`。
 
@@ -946,17 +948,17 @@ CSV 含密钥，已加入 `.gitignore`，**不通过 git 同步**。
 
 ## 各通道与工具能力
 
-| 通道/工具         | 状态     | 说明                                                                                                                                                                                                                                                                           |
-| ----------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 飞书私聊          | **可用** | 每人专属 Bot + 独立容器，CardKit 流式卡片回复，已验证                                                                                                                                                                                                                          |
-| 飞书群聊          | **可用** | 群聊消息 `text/post` 输出（非卡片），`feishu_group_history` 工具读取群聊历史（支持 `tenant_access_token` fallback），已验证 |
-| 飞书群聊消息读取  | **可用** | `feishu_group_history` 工具：time range、pagination、thread 拉取、本地归档交叉引用。需 user 权限 `im:message.group_msg:get_as_user`（OAuth 授权） |
-| Webchat           | **可用** | 每容器独立 Webchat（各自端口），已验证                                                                                                                                                                                                                                         |
-| Telegram          | 可用     | 同飞书，每容器可额外配 Telegram Bot                                                                                                                                                                                                                                            |
-| 语音 (realtime)   | **可用** | Gemini Live 原生语音已验证（本地 + Docker）。两层防护（端口不暴露 + per-container token 认证）。详见 [飞书架构文档 - 安全架构](/her/her-feishu-bot-architecture#安全架构两层防护模型2026-02-15-设计) |
-| Web Search        | **可用** | Perplexity Sonar 搜索引擎，复用 OpenRouter API key，已验证                                                                                                                                                                                                                     |
-| Browser Use       | **可用** | 容器内 Chromium headless 浏览器，可打开网页/截图/读取 JS 渲染内容，已验证                                                                                                                                                                                                      |
-| Web Fetch         | **可用** | HTTP 网页抓取 + 正文提取（纯静态页面），默认启用                                                                                                                                                                                                                               |
+| 通道/工具        | 状态     | 说明                                                                                                                                                                                                 |
+| ---------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 飞书私聊         | **可用** | 每人专属 Bot + 独立容器，CardKit 流式卡片回复，已验证                                                                                                                                                |
+| 飞书群聊         | **可用** | 群聊消息 `text/post` 输出（非卡片），`feishu_group_history` 工具读取群聊历史（支持 `tenant_access_token` fallback），已验证                                                                          |
+| 飞书群聊消息读取 | **可用** | `feishu_group_history` 工具：time range、pagination、thread 拉取、本地归档交叉引用。需 user 权限 `im:message.group_msg:get_as_user`（OAuth 授权）                                                    |
+| Webchat          | **可用** | 每容器独立 Webchat（各自端口），已验证                                                                                                                                                               |
+| Telegram         | 可用     | 同飞书，每容器可额外配 Telegram Bot                                                                                                                                                                  |
+| 语音 (realtime)  | **可用** | Gemini Live 原生语音已验证（本地 + Docker）。两层防护（端口不暴露 + per-container token 认证）。详见 [飞书架构文档 - 安全架构](/her/her-feishu-bot-architecture#安全架构两层防护模型2026-02-15-设计) |
+| Web Search       | **可用** | Perplexity Sonar 搜索引擎，复用 OpenRouter API key，已验证                                                                                                                                           |
+| Browser Use      | **可用** | 容器内 Chromium headless 浏览器，可打开网页/截图/读取 JS 渲染内容，已验证                                                                                                                            |
+| Web Fetch        | **可用** | HTTP 网页抓取 + 正文提取（纯静态页面），默认启用                                                                                                                                                     |
 
 ---
 

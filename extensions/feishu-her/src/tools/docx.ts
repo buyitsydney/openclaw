@@ -14,6 +14,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { stringEnum } from "openclaw/plugin-sdk";
 import { sniffMimeFromBase64 } from "../../../../src/media/sniff-mime-from-base64.js";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
+import { readDriveFileContextByToken } from "../drive-file-read.js";
 import { getFeishuClient, downloadDocxImage, downloadWhiteboardImage } from "../outbound.js";
 import { resolveDriveShareUrl } from "./share-url.js";
 
@@ -914,6 +915,22 @@ async function readDoc(client: Lark.Client, docToken: string, account?: Resolved
   return json(result);
 }
 
+async function readDriveFile(account: ResolvedFeishuAccount, fileToken: string) {
+  const result = await readDriveFileContextByToken({
+    account,
+    fileToken,
+  });
+  if (!result.ok) {
+    throw new Error(result.reason);
+  }
+  return json({
+    title: result.title,
+    content_type: result.contentType,
+    object_type: "file",
+    content: result.content,
+  });
+}
+
 /** Back up document content before destructive write. Returns backup file path or undefined. */
 async function backupDocContent(
   client: Lark.Client,
@@ -1052,6 +1069,16 @@ const DOC_ACTIONS = [
   "insert_blocks",
   "delete_range",
 ] as const;
+const DOC_TYPES = [
+  "doc",
+  "docx",
+  "sheet",
+  "slides",
+  "mindnote",
+  "bitable",
+  "file",
+  "wiki",
+] as const;
 
 const FeishuDocSchema = Type.Object({
   action: stringEnum(DOC_ACTIONS, { description: "Document operation to perform" }),
@@ -1059,6 +1086,12 @@ const FeishuDocSchema = Type.Object({
     Type.String({
       description:
         "Document token (extract from URL /docx/XXX). Required for all actions except create.",
+    }),
+  ),
+  doc_type: Type.Optional(
+    stringEnum(DOC_TYPES, {
+      description:
+        "Document type for read operations. Required when reading Drive search results with object_type=file.",
     }),
   ),
   content: Type.Optional(
@@ -1160,6 +1193,9 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
           const client = getClient();
           switch (params.action) {
             case "read":
+              if (params.doc_type === "file") {
+                return await readDriveFile(firstAccount, params.doc_token);
+              }
               return await readDoc(client, params.doc_token, firstAccount);
             case "write": {
               const content = resolveContent(params);

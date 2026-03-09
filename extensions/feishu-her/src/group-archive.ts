@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, extname, join, parse } from "node:path";
+import { extractPdfContent } from "../../../src/media/pdf-extract.ts";
 
 export type ArchiveLogSink = {
   info?: (message: string) => void;
@@ -19,6 +20,8 @@ export type GroupArchiveEntry = {
 
 const OFFICE_EXTS = new Set([".pptx", ".docx", ".xlsx", ".odt", ".odp", ".ods", ".rtf"]);
 const MAX_OFFICE_CHARS = 100_000;
+const MAX_PDF_PAGES = 5;
+const MAX_PDF_PIXELS = 3_000_000;
 
 function resolveStateDir(): string {
   const override = process.env.OPENCLAW_STATE_DIR?.trim() || process.env.CLAWDBOT_STATE_DIR?.trim();
@@ -300,20 +303,41 @@ export async function buildArchiveTextFromSavedFile(params: {
   fileName: string;
   savedPath: string;
   log?: ArchiveLogSink;
+  includePathLine?: boolean;
 }): Promise<string> {
   const ext = extname(params.fileName).toLowerCase();
   const pathLine = buildArchivePathLine(params.fileName, params.savedPath);
-  if (!OFFICE_EXTS.has(ext)) return pathLine;
+  const includePathLine = params.includePathLine ?? true;
+  const appendPathLine = (text: string): string =>
+    includePathLine ? `${text}\n${pathLine}` : text;
+  if (ext === ".pdf") {
+    try {
+      const buffer = readFileSync(params.savedPath);
+      const extracted = await extractPdfContent({
+        buffer,
+        maxPages: MAX_PDF_PAGES,
+        maxPixels: MAX_PDF_PIXELS,
+        minTextChars: 1,
+      });
+      const text = extracted.text.slice(0, MAX_OFFICE_CHARS).trim();
+      if (!text) return includePathLine ? pathLine : "";
+      return appendPathLine(`<file name="${params.fileName}">\n${text}\n</file>`);
+    } catch (err) {
+      params.log?.error?.(`pdf extraction failed (${params.fileName}): ${String(err)}`);
+      return includePathLine ? pathLine : "";
+    }
+  }
+  if (!OFFICE_EXTS.has(ext)) return includePathLine ? pathLine : "";
 
   try {
     const { parseOffice } = await import("officeparser");
     const ast = await parseOffice(params.savedPath, { extractAttachments: true });
     const text = formatOfficeAst(ast, MAX_OFFICE_CHARS);
-    if (!text) return pathLine;
-    return `<file name="${params.fileName}">\n${text}\n</file>\n${pathLine}`;
+    if (!text) return includePathLine ? pathLine : "";
+    return appendPathLine(`<file name="${params.fileName}">\n${text}\n</file>`);
   } catch (err) {
     params.log?.error?.(`office extraction failed (${params.fileName}): ${String(err)}`);
-    return pathLine;
+    return includePathLine ? pathLine : "";
   }
 }
 
@@ -323,6 +347,7 @@ export async function createArchiveTextForBuffer(params: {
   fileName?: string;
   defaultBaseName: string;
   log?: ArchiveLogSink;
+  includePathLine?: boolean;
 }): Promise<string> {
   const saved = await saveArchiveBuffer({
     buffer: params.buffer,
@@ -334,6 +359,7 @@ export async function createArchiveTextForBuffer(params: {
     fileName: saved.fileName,
     savedPath: saved.path,
     log: params.log,
+    includePathLine: params.includePathLine,
   });
 }
 

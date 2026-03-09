@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const listEnabledFeishuAccountsMock = vi.hoisted(() => vi.fn());
 const getFeishuClientMock = vi.hoisted(() => vi.fn());
 const downloadWhiteboardImageMock = vi.hoisted(() => vi.fn());
+const readDriveFileContextByTokenMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../accounts.js", () => ({
   listEnabledFeishuAccounts: listEnabledFeishuAccountsMock,
@@ -14,6 +15,10 @@ vi.mock("../accounts.js", () => ({
 vi.mock("../outbound.js", () => ({
   getFeishuClient: getFeishuClientMock,
   downloadWhiteboardImage: downloadWhiteboardImageMock,
+}));
+
+vi.mock("../drive-file-read.js", () => ({
+  readDriveFileContextByToken: readDriveFileContextByTokenMock,
 }));
 
 import { registerFeishuDocTools } from "./docx.js";
@@ -113,6 +118,13 @@ describe("feishu-her feishu_doc e2e anti-regression", () => {
       },
     ]);
     downloadWhiteboardImageMock.mockResolvedValue(null);
+    readDriveFileContextByTokenMock.mockResolvedValue({
+      ok: true,
+      token: "file_1",
+      title: "file.pdf",
+      contentType: "application/pdf",
+      content: '<file name="file.pdf">\nhello\n</file>',
+    });
   });
 
   function registerToolWithClient(client: unknown) {

@@ -7,6 +7,7 @@ const listEnabledFeishuAccountsMock = vi.hoisted(() => vi.fn());
 const getFeishuClientMock = vi.hoisted(() => vi.fn());
 const downloadDocxImageMock = vi.hoisted(() => vi.fn());
 const downloadWhiteboardImageMock = vi.hoisted(() => vi.fn());
+const readDriveFileContextByTokenMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../accounts.js", () => ({
   listEnabledFeishuAccounts: listEnabledFeishuAccountsMock,
@@ -16,6 +17,10 @@ vi.mock("../outbound.js", () => ({
   getFeishuClient: getFeishuClientMock,
   downloadDocxImage: downloadDocxImageMock,
   downloadWhiteboardImage: downloadWhiteboardImageMock,
+}));
+
+vi.mock("../drive-file-read.js", () => ({
+  readDriveFileContextByToken: readDriveFileContextByTokenMock,
 }));
 
 import { registerFeishuDocTools } from "./docx.js";
@@ -183,6 +188,13 @@ describe("feishu-her feishu_doc anti-regression", () => {
     childrenCreateMock.mockResolvedValue({ code: 0, data: { children: [] } });
     downloadDocxImageMock.mockResolvedValue(null);
     downloadWhiteboardImageMock.mockResolvedValue(null);
+    readDriveFileContextByTokenMock.mockResolvedValue({
+      ok: true,
+      token: "file_1",
+      title: "file.pdf",
+      contentType: "application/pdf",
+      content: '<file name="file.pdf">\nhello\n</file>',
+    });
   });
 
   function registerAndGetTool() {
@@ -292,6 +304,27 @@ describe("feishu-her feishu_doc anti-regression", () => {
     const image = getImageBlock(result);
     expect(image).toBeDefined();
     expect(image?.mimeType).toBe("image/jpeg");
+  });
+
+  it("read should support drive file tokens when doc_type=file", async () => {
+    const tool = registerAndGetTool();
+    const result = await tool.execute("tool-call", {
+      action: "read",
+      doc_token: "file_token_1",
+      doc_type: "file",
+    });
+
+    expect(readDriveFileContextByTokenMock).toHaveBeenCalledWith({
+      account: expect.objectContaining({ accountId: "default" }),
+      fileToken: "file_token_1",
+    });
+    expect(rawContentMock).not.toHaveBeenCalled();
+    expect(result.details).toEqual({
+      title: "file.pdf",
+      content_type: "application/pdf",
+      object_type: "file",
+      content: '<file name="file.pdf">\nhello\n</file>',
+    });
   });
 
   it("list_blocks should preserve JPEG MIME for whiteboard images", async () => {

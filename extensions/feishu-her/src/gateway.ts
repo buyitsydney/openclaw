@@ -19,6 +19,7 @@ import type {
 } from "openclaw/plugin-sdk";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { resolveGroupOwnerIds } from "./accounts.js";
+import { buildDriveFileContextFromText } from "./drive-file-read.js";
 import { archiveGroupMessage, archiveSentFeishuBinaryMessage } from "./group-archive.js";
 import { rewriteModelShortcutCommand } from "./model-shortcuts.js";
 import {
@@ -1253,6 +1254,15 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   if (cleanText !== rawCleanText) {
     log?.info(`[${account.accountId}] rewritten model shortcut: ${rawCleanText} -> ${cleanText}`);
   }
+  const driveFileContextFromCurrentText = cleanText
+    ? await buildDriveFileContextFromText({
+        account,
+        text: cleanText,
+      })
+    : "";
+  const effectiveCleanText = driveFileContextFromCurrentText
+    ? `${cleanText}\n${driveFileContextFromCurrentText}`
+    : cleanText;
   const isGroup = chatType === "group";
 
   // Allow through if: has text, is a reply (quoted msg context will be injected),
@@ -1537,9 +1547,17 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     try {
       const quoted = await getQuotedMessageContent({ account, parentMessageId: parentId, log });
       if (quoted?.content) {
-        quotedContext = `\n[Quoted message (message_id=${parentId}): "${quoted.content.slice(0, 500)}"]`;
+        const quotedDriveFileContext = await buildDriveFileContextFromText({
+          account,
+          text: quoted.content,
+        });
+        quotedContext =
+          `\n[Quoted message (message_id=${parentId}): "${quoted.content.slice(0, 500)}"]` +
+          (quotedDriveFileContext ? `\n${quotedDriveFileContext}` : "");
         // Prefix with message_id so AI can extract it even in DMs where core strips reply_to_id.
-        quotedBodyForReply = `[message_id=${parentId}]\n${quoted.content.slice(0, 2000)}`;
+        quotedBodyForReply =
+          `[message_id=${parentId}]\n${quoted.content.slice(0, 2000)}` +
+          (quotedDriveFileContext ? `\n${quotedDriveFileContext}` : "");
         log?.info(
           `[${account.accountId}] quoted msg fetched: ${parentId} -> ${quoted.content.slice(0, 80)}`,
         );
@@ -1604,7 +1622,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     sessionKey: route.sessionKey,
   });
   const enrichedFrom = senderDisplayName ? `${senderDisplayName} (${senderId})` : senderId;
-  const enrichedBody = cleanText + quotedContext;
+  const enrichedBody = effectiveCleanText + quotedContext;
   const body = core.channel.reply.formatAgentEnvelope({
     channel: "Feishu",
     from: enrichedFrom,
