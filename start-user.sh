@@ -242,10 +242,8 @@ if [ "$ACTION" = "voice-reset" ]; then
   echo ""
   # Print updated vendor URLs with real token
   TP="${TUNNEL_HOST_PREFIX:-}"
-  case "$USER_ID" in
-    2) NAMED_PROXY_HOST="${TP}vendor-proxy.carher.net"; NAMED_FE_HOST="${TP}vendor-fe.carher.net" ;;
-    *) NAMED_PROXY_HOST="${TP}u${USER_ID}-proxy.carher.net"; NAMED_FE_HOST="${TP}u${USER_ID}-fe.carher.net" ;;
-  esac
+  NAMED_PROXY_HOST="${TP}u${USER_ID}-proxy.carher.net"
+  NAMED_FE_HOST="${TP}u${USER_ID}-fe.carher.net"
   echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
   echo -e "${CYAN}  厂商对接信息（直接复制发给厂商）${NC}"
   echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
@@ -442,10 +440,7 @@ CUSTOM_CONFIG="${SCRIPT_DIR}/docker/user-configs/carher-config-${USER_ID}.json"
 mkdir -p "${SCRIPT_DIR}/docker/user-configs"
 
 # Pre-compute auth hostname (needed by Python config below, before full domain resolution)
-case "$USER_ID" in
-  2) NAMED_AUTH_HOST="${TUNNEL_HOST_PREFIX:-}vendor-auth.carher.net" ;;
-  *) NAMED_AUTH_HOST="${TUNNEL_HOST_PREFIX:-}u${USER_ID}-auth.carher.net" ;;
-esac
+NAMED_AUTH_HOST="${TUNNEL_HOST_PREFIX:-}u${USER_ID}-auth.carher.net"
 
 # Always generate a per-user config (may inject feishu credentials)
 python3 -c "
@@ -562,10 +557,17 @@ else
   echo -e "  · 飞书: 未配置"
 fi
 
-# --- Shared skills dir (host -> container) ---
+# --- Skills dirs (host -> container) ---
+# 全员层: all users share the same company-wide skills
 SHARED_SKILLS_DIR="$HOME/.openclaw/skills"
 mkdir -p "$SHARED_SKILLS_DIR"
-echo -e "${GREEN}  ✓ Shared skills: ${SHARED_SKILLS_DIR}${NC}"
+echo -e "${GREEN}  ✓ 全员 skills: ${SHARED_SKILLS_DIR}${NC}"
+
+# 部门层: per-department skills (default dept unless configured)
+DEPT_NAME="${CARHER_DEPT:-default}"
+DEPT_SKILLS_DIR="$HOME/.openclaw/dept-skills/${DEPT_NAME}"
+mkdir -p "$DEPT_SKILLS_DIR"
+echo -e "${GREEN}  ✓ 部门 skills: ${DEPT_SKILLS_DIR} (dept=${DEPT_NAME})${NC}"
 
 # --- Compute webchat URL from token + port (before docker run) ---
 AUTH_TOKEN=$(python3 -c "
@@ -583,10 +585,10 @@ fi
 
 # --- Resolve domain names (needed for VOICE env vars and URL display) ---
 TP="${TUNNEL_HOST_PREFIX:-}"
-case "$USER_ID" in
-  2) NAMED_RT_HOST="${TP}vendor.carher.net"; NAMED_PROXY_HOST="${TP}vendor-proxy.carher.net"; NAMED_FE_HOST="${TP}vendor-fe.carher.net"; NAMED_AUTH_HOST="${TP}vendor-auth.carher.net" ;;
-  *) NAMED_RT_HOST="${TP}u${USER_ID}.carher.net"; NAMED_PROXY_HOST="${TP}u${USER_ID}-proxy.carher.net"; NAMED_FE_HOST="${TP}u${USER_ID}-fe.carher.net"; NAMED_AUTH_HOST="${TP}u${USER_ID}-auth.carher.net" ;;
-esac
+NAMED_RT_HOST="${TP}u${USER_ID}.carher.net"
+NAMED_PROXY_HOST="${TP}u${USER_ID}-proxy.carher.net"
+NAMED_FE_HOST="${TP}u${USER_ID}-fe.carher.net"
+NAMED_AUTH_HOST="${TP}u${USER_ID}-auth.carher.net"
 
 echo -e "${YELLOW}启动容器 ${CONTAINER_NAME}...${NC}"
 echo -e "  端口映射: GW=${PORT_GW} FE=${PORT_FE} WS=${PORT_WS} OAuth=${PORT_OAUTH} (RT=内部，不暴露)"
@@ -620,6 +622,7 @@ docker run -d \
   -v "carher-${USER_ID}-data:/data/.openclaw" \
   -v "${GCLOUD_ADC}:/gcloud/application_default_credentials.json:ro" \
   -v "${SHARED_SKILLS_DIR}:/data/.openclaw/skills" \
+  -v "${DEPT_SKILLS_DIR}:/data/.agents/skills" \
   -v "${CONFIG_MOUNT}:/data/.openclaw/openclaw.json:ro" \
   -v "${SCRIPT_DIR}/docker/carher-config.json:/data/.openclaw/carher-config.json:ro" \
   -v "${SCRIPT_DIR}/docker/shared-config.json5:/data/.openclaw/shared-config.json5:ro" \
