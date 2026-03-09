@@ -14,7 +14,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { stringEnum } from "openclaw/plugin-sdk";
 import { sniffMimeFromBase64 } from "../../../../src/media/sniff-mime-from-base64.js";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
-import { getFeishuClient, downloadWhiteboardImage } from "../outbound.js";
+import { getFeishuClient, downloadDocxImage, downloadWhiteboardImage } from "../outbound.js";
 import { resolveDriveShareUrl } from "./share-url.js";
 
 // ── Helpers ──
@@ -632,6 +632,15 @@ type BoardBlockInfo = {
   error?: string;
 };
 
+type DocxImageBlockInfo = {
+  blockId: string;
+  imageToken: string;
+  caption?: string;
+  imageBase64?: string;
+  contentType?: string;
+  error?: string;
+};
+
 function normalizeImageMimeType(contentType: string | undefined): string | undefined {
   const mimeType = contentType?.split(";")[0]?.trim().toLowerCase();
   return mimeType?.startsWith("image/") ? mimeType : undefined;
@@ -672,6 +681,41 @@ async function buildInlineBoardImages(boardImages: BoardBlockInfo[]) {
   return inlineImages;
 }
 
+async function resolveInlineDocxImageMimeType(image: DocxImageBlockInfo): Promise<string> {
+  if (!image.imageBase64) {
+    throw new Error(`image block ${image.blockId} is missing image payload`);
+  }
+
+  const sniffedMimeType = normalizeImageMimeType(await sniffMimeFromBase64(image.imageBase64));
+  if (sniffedMimeType) {
+    return sniffedMimeType;
+  }
+
+  const headerMimeType = normalizeImageMimeType(image.contentType);
+  if (headerMimeType) {
+    return headerMimeType;
+  }
+
+  throw new Error(`image block ${image.blockId} MIME could not be determined`);
+}
+
+async function buildInlineDocxImages(docxImages: DocxImageBlockInfo[]) {
+  const inlineImages: Array<{ base64: string; mimeType: string; label: string }> = [];
+  for (const image of docxImages) {
+    if (!image.imageBase64) {
+      continue;
+    }
+
+    inlineImages.push({
+      base64: image.imageBase64,
+      mimeType: await resolveInlineDocxImageMimeType(image),
+      label: `docx_image_${image.blockId}`,
+    });
+  }
+
+  return inlineImages;
+}
+
 /** Extract whiteboard tokens from block type 43 blocks. */
 // oxlint-disable-next-line typescript/no-explicit-any
 function extractBoardBlocks(blocks: any[]): BoardBlockInfo[] {
@@ -699,6 +743,31 @@ function extractBoardBlocks(blocks: any[]): BoardBlockInfo[] {
         error: "token_guessed_from_block_id",
       });
     }
+  }
+  return results;
+}
+
+// oxlint-disable-next-line typescript/no-explicit-any
+function extractDocxImageBlocks(blocks: any[]): DocxImageBlockInfo[] {
+  const results: DocxImageBlockInfo[] = [];
+  for (const block of blocks) {
+    if (block.block_type !== 27) continue;
+    const token = block.image?.token;
+    if (!token || typeof token !== "string") {
+      results.push({
+        blockId: block.block_id,
+        imageToken: "",
+        caption: block.image?.caption?.content,
+        error: "missing_image_token",
+      });
+      continue;
+    }
+
+    results.push({
+      blockId: block.block_id,
+      imageToken: token,
+      caption: block.image?.caption?.content,
+    });
   }
   return results;
 }
@@ -731,6 +800,41 @@ async function fetchBoardImages(
   return results;
 }
 
+async function fetchDocxImages(
+  account: ResolvedFeishuAccount,
+  imageBlocks: DocxImageBlockInfo[],
+): Promise<DocxImageBlockInfo[]> {
+  const results: DocxImageBlockInfo[] = [];
+  for (const imageBlock of imageBlocks) {
+    if (!imageBlock.imageToken) {
+      results.push(imageBlock);
+      continue;
+    }
+
+    try {
+      const image = await downloadDocxImage({
+        account,
+        imageToken: imageBlock.imageToken,
+      });
+      if (image) {
+        results.push({
+          ...imageBlock,
+          imageBase64: image.buffer.toString("base64"),
+          contentType: image.contentType,
+        });
+      } else {
+        results.push({ ...imageBlock, error: "download_failed_or_empty" });
+      }
+    } catch (err) {
+      results.push({
+        ...imageBlock,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return results;
+}
+
 async function readDoc(client: Lark.Client, docToken: string, account?: ResolvedFeishuAccount) {
   const [contentRes, infoRes, blocks] = await Promise.all([
     client.docx.document.rawContent({ path: { document_id: docToken } }),
@@ -756,6 +860,12 @@ async function readDoc(client: Lark.Client, docToken: string, account?: Resolved
     boardImages = await fetchBoardImages(account, boardBlocks);
   }
 
+  const docxImageBlocks = extractDocxImageBlocks(blocks);
+  let docxImages: DocxImageBlockInfo[] | undefined;
+  if (docxImageBlocks.length > 0 && account) {
+    docxImages = await fetchDocxImages(account, docxImageBlocks);
+  }
+
   const result = {
     // oxlint-disable-next-line typescript/no-explicit-any
     title: (infoRes as any).data?.document?.title,
@@ -779,10 +889,24 @@ async function readDoc(client: Lark.Client, docToken: string, account?: Resolved
           ...(bi.error && { error: bi.error }),
         })),
       }),
+    ...(docxImages &&
+      docxImages.length > 0 && {
+        image_count: docxImages.length,
+        image_hint: `This document contains ${docxImages.length} embedded image block(s). Their images are attached below for vision analysis.`,
+        images: docxImages.map((img) => ({
+          block_id: img.blockId,
+          image_token: img.imageToken,
+          ...(img.caption && { caption: img.caption }),
+          ...(img.error && { error: img.error }),
+        })),
+      }),
   };
 
-  // Return with inline image content blocks so the AI can "see" whiteboard content.
-  const inlineImages = await buildInlineBoardImages(boardImages ?? []);
+  // Return with inline image content blocks so the AI can "see" embedded boards and images.
+  const inlineImages = [
+    ...(await buildInlineBoardImages(boardImages ?? [])),
+    ...(await buildInlineDocxImages(docxImages ?? [])),
+  ];
 
   if (inlineImages.length > 0) {
     return jsonWithImages(result, inlineImages);
@@ -1075,6 +1199,11 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
               if (boards.length > 0) {
                 boardData = await fetchBoardImages(firstAccount, boards);
               }
+              const imageBlocks = extractDocxImageBlocks(items);
+              let imageData: DocxImageBlockInfo[] | undefined;
+              if (imageBlocks.length > 0) {
+                imageData = await fetchDocxImages(firstAccount, imageBlocks);
+              }
               const listResult = {
                 blocks: items,
                 ...(boardData &&
@@ -1086,8 +1215,21 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
                       ...(bi.error && { error: bi.error }),
                     })),
                   }),
+                ...(imageData &&
+                  imageData.length > 0 && {
+                    image_count: imageData.length,
+                    images: imageData.map((img) => ({
+                      block_id: img.blockId,
+                      image_token: img.imageToken,
+                      ...(img.caption && { caption: img.caption }),
+                      ...(img.error && { error: img.error }),
+                    })),
+                  }),
               };
-              const listImages = await buildInlineBoardImages(boardData ?? []);
+              const listImages = [
+                ...(await buildInlineBoardImages(boardData ?? [])),
+                ...(await buildInlineDocxImages(imageData ?? [])),
+              ];
               if (listImages.length > 0) {
                 return jsonWithImages(listResult, listImages);
               }

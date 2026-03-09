@@ -557,6 +557,40 @@ export async function downloadFeishuImage(params: {
   return { buffer, contentType: typeof contentType === "string" ? contentType : "image/jpeg" };
 }
 
+/** Download a docx inline image using its image token via the Drive media API.
+ *  The token comes from docx block_type=27 `image.token`. */
+export async function downloadDocxImage(params: {
+  account: ResolvedFeishuAccount;
+  imageToken: string;
+}): Promise<{ buffer: Buffer; contentType?: string } | null> {
+  const client = getFeishuClient(params.account);
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const token = await (client as any).tokenManager.getTenantAccessToken({});
+  if (!token) return null;
+
+  const url = `https://open.feishu.cn/open-apis/drive/v1/medias/${params.imageToken}/download`;
+  const { response: res, release } = await fetchWithSsrFGuard({
+    url,
+    init: {
+      headers: { Authorization: `Bearer ${token}` },
+    },
+    policy: { allowedHostnames: FEISHU_ALLOWED_HOSTNAMES },
+    auditContext: "feishu-download-docx-image",
+  });
+  try {
+    if (!res.ok) return null;
+    const contentType = res.headers.get("content-type") ?? "application/octet-stream";
+    const buffer = Buffer.from(await res.arrayBuffer());
+    if (buffer.length === 0) return null;
+    return {
+      buffer,
+      contentType: typeof contentType === "string" ? contentType : "application/octet-stream",
+    };
+  } finally {
+    await release();
+  }
+}
+
 /** Download a file attachment from a Feishu message using the message resource API.
  *  Same endpoint as downloadFeishuImage but with type="file".
  *  Handles PPT, PDF, DOCX, images-as-files, and any other file attachments.

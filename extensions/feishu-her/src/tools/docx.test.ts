@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const listEnabledFeishuAccountsMock = vi.hoisted(() => vi.fn());
 const getFeishuClientMock = vi.hoisted(() => vi.fn());
+const downloadDocxImageMock = vi.hoisted(() => vi.fn());
 const downloadWhiteboardImageMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../accounts.js", () => ({
@@ -13,6 +14,7 @@ vi.mock("../accounts.js", () => ({
 
 vi.mock("../outbound.js", () => ({
   getFeishuClient: getFeishuClientMock,
+  downloadDocxImage: downloadDocxImageMock,
   downloadWhiteboardImage: downloadWhiteboardImageMock,
 }));
 
@@ -40,6 +42,24 @@ type WhiteboardMimeFixture = {
   };
 };
 
+type DocxInlineImageFixture = {
+  capturedIssue: {
+    title: string;
+  };
+  simulatedDoc: {
+    title: string;
+    blocks: Array<{
+      block_id: string;
+      block_type: number;
+      image?: { token?: string; caption?: { content?: string } };
+    }>;
+    downloadedDocxImage: {
+      contentType: string;
+      base64: string;
+    };
+  };
+};
+
 const whiteboardMimeFixture = JSON.parse(
   readFileSync(
     new URL(
@@ -49,6 +69,13 @@ const whiteboardMimeFixture = JSON.parse(
     "utf8",
   ),
 ) as WhiteboardMimeFixture;
+
+const docxInlineImageFixture = JSON.parse(
+  readFileSync(
+    new URL("../../../../test/fixtures/feishu-docx-inline-image-download.json", import.meta.url),
+    "utf8",
+  ),
+) as DocxInlineImageFixture;
 
 describe("feishu-her feishu_doc anti-regression", () => {
   const convertMock = vi.hoisted(() => vi.fn());
@@ -154,6 +181,7 @@ describe("feishu-her feishu_doc anti-regression", () => {
       },
     });
     childrenCreateMock.mockResolvedValue({ code: 0, data: { children: [] } });
+    downloadDocxImageMock.mockResolvedValue(null);
     downloadWhiteboardImageMock.mockResolvedValue(null);
   });
 
@@ -175,6 +203,18 @@ describe("feishu-her feishu_doc anti-regression", () => {
   function getImageBlock(result: { content?: unknown }) {
     const content = Array.isArray(result.content) ? result.content : [];
     return content.find(
+      (block): block is { type: "image"; data: string; mimeType: string } =>
+        !!block &&
+        typeof block === "object" &&
+        (block as { type?: unknown }).type === "image" &&
+        typeof (block as { data?: unknown }).data === "string" &&
+        typeof (block as { mimeType?: unknown }).mimeType === "string",
+    );
+  }
+
+  function getImageBlocks(result: { content?: unknown }) {
+    const content = Array.isArray(result.content) ? result.content : [];
+    return content.filter(
       (block): block is { type: "image"; data: string; mimeType: string } =>
         !!block &&
         typeof block === "object" &&
@@ -279,6 +319,58 @@ describe("feishu-her feishu_doc anti-regression", () => {
     const image = getImageBlock(result);
     expect(image).toBeDefined();
     expect(image?.mimeType).toBe("image/jpeg");
+  });
+
+  it("read should download inline docx images", async () => {
+    rawContentMock.mockResolvedValue({
+      code: 0,
+      data: { content: "minutes content" },
+    });
+    blockListMock.mockResolvedValue({
+      code: 0,
+      data: {
+        items: docxInlineImageFixture.simulatedDoc.blocks,
+        has_more: false,
+      },
+    });
+    downloadDocxImageMock.mockResolvedValue({
+      buffer: Buffer.from(docxInlineImageFixture.simulatedDoc.downloadedDocxImage.base64, "base64"),
+      contentType: docxInlineImageFixture.simulatedDoc.downloadedDocxImage.contentType,
+    });
+
+    const tool = registerAndGetTool();
+    const result = await tool.execute("tool-call", {
+      action: "read",
+      doc_token: "doc_with_inline_images",
+    });
+
+    const images = getImageBlocks(result);
+    expect(images).toHaveLength(1);
+    expect(images[0]?.mimeType).toBe("image/png");
+  });
+
+  it("list_blocks should download inline docx images", async () => {
+    blockListMock.mockResolvedValue({
+      code: 0,
+      data: {
+        items: docxInlineImageFixture.simulatedDoc.blocks,
+        has_more: false,
+      },
+    });
+    downloadDocxImageMock.mockResolvedValue({
+      buffer: Buffer.from(docxInlineImageFixture.simulatedDoc.downloadedDocxImage.base64, "base64"),
+      contentType: docxInlineImageFixture.simulatedDoc.downloadedDocxImage.contentType,
+    });
+
+    const tool = registerAndGetTool();
+    const result = await tool.execute("tool-call", {
+      action: "list_blocks",
+      doc_token: "doc_with_inline_images",
+    });
+
+    const images = getImageBlocks(result);
+    expect(images).toHaveLength(1);
+    expect(images[0]?.mimeType).toBe("image/png");
   });
 
   it("append should read content from source_file", async () => {
