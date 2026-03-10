@@ -15,6 +15,12 @@ import { stringEnum } from "openclaw/plugin-sdk";
 import { sniffMimeFromBase64 } from "../../../../src/media/sniff-mime-from-base64.js";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import { readDriveFileContextByToken } from "../drive-file-read.js";
+import {
+  callFeishuApiWithUserToken,
+  getValidUserToken,
+  requireUserToken,
+  resolveOAuthRedirectUri,
+} from "../oauth.js";
 import { getFeishuClient, downloadDocxImage, downloadWhiteboardImage } from "../outbound.js";
 import { resolveDriveShareUrl } from "./share-url.js";
 
@@ -58,6 +64,27 @@ function json(data: unknown) {
     details: data,
   };
 }
+
+type DocxRawContentResponse = {
+  content?: string;
+};
+
+type DocxDocumentInfoResponse = {
+  document?: {
+    title?: string;
+    revision_id?: string;
+  };
+};
+
+type DocxBlockListResponse = {
+  items?: unknown[];
+  has_more?: boolean;
+  page_token?: string;
+};
+
+type DocxBlockGetResponse = {
+  block?: unknown;
+};
 
 /** Build a tool result that includes both JSON text and inline images for vision. */
 function jsonWithImages(
@@ -377,6 +404,24 @@ async function listAllDocBlocks(client: Lark.Client, docToken: string): Promise<
     const res: any = await client.docx.documentBlock.list({
       path: { document_id: docToken },
       params: pageToken ? { page_token: pageToken, page_size: 500 } : { page_size: 500 },
+    });
+    if (res.code !== 0) throw new Error(res.msg);
+    allBlocks.push(...(res.data?.items ?? []));
+    pageToken = res.data?.has_more ? res.data?.page_token : undefined;
+  } while (pageToken);
+  return allBlocks;
+}
+
+// oxlint-disable-next-line typescript/no-explicit-any
+async function listAllDocBlocksByUser(userToken: string, docToken: string): Promise<any[]> {
+  const allBlocks: any[] = [];
+  let pageToken: string | undefined;
+  do {
+    const res = await callFeishuApiWithUserToken<DocxBlockListResponse>({
+      method: "GET",
+      endpoint: `/docx/v1/documents/${encodeURIComponent(docToken)}/blocks`,
+      userToken,
+      query: pageToken ? { page_token: pageToken, page_size: "500" } : { page_size: "500" },
     });
     if (res.code !== 0) throw new Error(res.msg);
     allBlocks.push(...(res.data?.items ?? []));
@@ -915,6 +960,101 @@ async function readDoc(client: Lark.Client, docToken: string, account?: Resolved
   return json(result);
 }
 
+async function readDocByUser(
+  account: ResolvedFeishuAccount,
+  userToken: string,
+  docToken: string,
+) {
+  const [contentRes, infoRes, blocks] = await Promise.all([
+    callFeishuApiWithUserToken<DocxRawContentResponse>({
+      method: "GET",
+      endpoint: `/docx/v1/documents/${encodeURIComponent(docToken)}/raw_content`,
+      userToken,
+    }),
+    callFeishuApiWithUserToken<DocxDocumentInfoResponse>({
+      method: "GET",
+      endpoint: `/docx/v1/documents/${encodeURIComponent(docToken)}`,
+      userToken,
+    }),
+    listAllDocBlocksByUser(userToken, docToken),
+  ]);
+  if (contentRes.code !== 0) throw new Error(contentRes.msg);
+  if (infoRes.code !== 0) throw new Error(infoRes.msg);
+  const blockCounts: Record<string, number> = {};
+  const structuredTypes: string[] = [];
+  for (const b of blocks) {
+    const type = b.block_type ?? 0;
+    const name = BLOCK_TYPE_NAMES[type] || `type_${type}`;
+    blockCounts[name] = (blockCounts[name] || 0) + 1;
+    if (STRUCTURED_BLOCK_TYPES.has(type) && !structuredTypes.includes(name))
+      structuredTypes.push(name);
+  }
+
+  const boardBlocks = extractBoardBlocks(blocks);
+  let boardImages: BoardBlockInfo[] | undefined;
+  if (boardBlocks.length > 0) {
+    boardImages = await fetchBoardImages(account, boardBlocks);
+  }
+
+  const docxImageBlocks = extractDocxImageBlocks(blocks);
+  let docxImages: DocxImageBlockInfo[] | undefined;
+  if (docxImageBlocks.length > 0) {
+    docxImages = await fetchDocxImages(account, docxImageBlocks);
+  }
+
+  const result = {
+    title: infoRes.data?.document?.title,
+    content: contentRes.data?.content,
+    revision_id: infoRes.data?.document?.revision_id,
+    block_count: blocks.length,
+    block_types: blockCounts,
+    ...(structuredTypes.length > 0 && {
+      hint: `This document contains ${structuredTypes.join(", ")} which are NOT included in the plain text above. Use feishu_doc with action: "list_blocks" to get full content.`,
+    }),
+    ...(boardImages &&
+      boardImages.length > 0 && {
+        board_count: boardImages.length,
+        board_hint: `This document contains ${boardImages.length} embedded whiteboard(s)/canvas(es). Their images are attached below for vision analysis.`,
+        boards: boardImages.map((bi) => ({
+          block_id: bi.blockId,
+          whiteboard_token: bi.whiteboardToken,
+          ...(bi.error && { error: bi.error }),
+        })),
+      }),
+    ...(docxImages &&
+      docxImages.length > 0 && {
+        image_count: docxImages.length,
+        image_hint: `This document contains ${docxImages.length} embedded image block(s). Their images are attached below for vision analysis.`,
+        images: docxImages.map((img) => ({
+          block_id: img.blockId,
+          image_token: img.imageToken,
+          ...(img.caption && { caption: img.caption }),
+          ...(img.error && { error: img.error }),
+        })),
+      }),
+  };
+
+  const inlineImages = [
+    ...(await buildInlineBoardImages(boardImages ?? [])),
+    ...(await buildInlineDocxImages(docxImages ?? [])),
+  ];
+
+  if (inlineImages.length > 0) {
+    return jsonWithImages(result, inlineImages);
+  }
+  return json(result);
+}
+
+async function getBlockByUser(userToken: string, docToken: string, blockId: string) {
+  const res = await callFeishuApiWithUserToken<DocxBlockGetResponse>({
+    method: "GET",
+    endpoint: `/docx/v1/documents/${encodeURIComponent(docToken)}/blocks/${encodeURIComponent(blockId)}`,
+    userToken,
+  });
+  if (res.code !== 0) throw new Error(res.msg);
+  return { block: res.data?.block };
+}
+
 async function readDriveFile(account: ResolvedFeishuAccount, fileToken: string) {
   const result = await readDriveFileContextByToken({
     account,
@@ -1179,6 +1319,7 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
   if (accounts.length === 0) return;
   const firstAccount: ResolvedFeishuAccount = accounts[0];
   const getClient = () => getFeishuClient(firstAccount);
+  const oauthRedirectUri = resolveOAuthRedirectUri(api.config as Record<string, unknown>);
 
   api.registerTool(
     {
@@ -1191,12 +1332,23 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
       async execute(_toolCallId: string, params: any) {
         try {
           const client = getClient();
+          const requireReadAccess = () =>
+            requireUserToken({
+              account: firstAccount,
+              redirectUri: oauthRedirectUri,
+              tokenPromise: getValidUserToken(firstAccount),
+              toolLabel: "飞书文档读取",
+            });
           switch (params.action) {
             case "read":
               if (params.doc_type === "file") {
                 return await readDriveFile(firstAccount, params.doc_token);
               }
-              return await readDoc(client, params.doc_token, firstAccount);
+              return await (async () => {
+                const guard = await requireReadAccess();
+                if (!guard.ok) return guard.authResponse;
+                return readDocByUser(firstAccount, guard.token.access_token, params.doc_token);
+              })();
             case "write": {
               const content = resolveContent(params);
               return json(await writeDoc(client, params.doc_token, content));
@@ -1227,8 +1379,10 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
               return json(created);
             }
             case "list_blocks": {
+              const guard = await requireReadAccess();
+              if (!guard.ok) return guard.authResponse;
               // Paginated: fetches all blocks even for 500+ block documents.
-              const items = await listAllDocBlocks(client, params.doc_token);
+              const items = await listAllDocBlocksByUser(guard.token.access_token, params.doc_token);
               // Detect board blocks and fetch their images automatically.
               const boards = extractBoardBlocks(items);
               let boardData: BoardBlockInfo[] | undefined;
@@ -1272,13 +1426,11 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
               return json(listResult);
             }
             case "get_block": {
-              const res = await client.docx.documentBlock.get({
-                path: { document_id: params.doc_token, block_id: params.block_id },
-              });
-              // oxlint-disable-next-line typescript/no-explicit-any
-              if ((res as any).code !== 0) throw new Error((res as any).msg);
-              // oxlint-disable-next-line typescript/no-explicit-any
-              return json({ block: (res as any).data?.block });
+              const guard = await requireReadAccess();
+              if (!guard.ok) return guard.authResponse;
+              return json(
+                await getBlockByUser(guard.token.access_token, params.doc_token, params.block_id),
+              );
             }
             case "update_block": {
               // Read current block to get existing elements.

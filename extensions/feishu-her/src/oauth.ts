@@ -167,16 +167,10 @@ async function refreshUserToken(
   }
 }
 
-/**
- * Get a valid user_access_token. Auto-refreshes if the access_token is expired
- * but refresh_token is still valid.
- * Returns null if no token exists, refresh_token has expired, or token is
- * missing scopes that OAUTH_SCOPES now requires (triggers re-authorization).
- */
-export async function getValidUserToken(
+async function ensureValidUserToken(
   account: ResolvedFeishuAccount,
+  token: FeishuUserToken | null,
 ): Promise<FeishuUserToken | null> {
-  const token = findAnyUserToken();
   if (!token) return null;
 
   const now = Date.now();
@@ -197,6 +191,25 @@ export async function getValidUserToken(
   // access_token expired or about to expire → refresh
   const client = getFeishuClient(account);
   return refreshUserToken(client, token);
+}
+
+/**
+ * Get a valid user_access_token. Auto-refreshes if the access_token is expired
+ * but refresh_token is still valid.
+ * Returns null if no token exists, refresh_token has expired, or token is
+ * missing scopes that OAUTH_SCOPES now requires (triggers re-authorization).
+ */
+export async function getValidUserToken(
+  account: ResolvedFeishuAccount,
+): Promise<FeishuUserToken | null> {
+  return ensureValidUserToken(account, findAnyUserToken());
+}
+
+export async function getValidUserTokenForOpenId(
+  account: ResolvedFeishuAccount,
+  openId: string,
+): Promise<FeishuUserToken | null> {
+  return ensureValidUserToken(account, loadUserToken(openId));
 }
 
 // ── OAuth URL ──
@@ -525,6 +538,44 @@ export async function callFeishuApiWithUserToken<T = unknown>(params: {
     };
   } catch {
     return { code: -1, msg: "non_json_response", data: null };
+  } finally {
+    await release();
+  }
+}
+
+export async function downloadFeishuMessageResourceWithUserToken(params: {
+  userToken: string;
+  messageId: string;
+  fileKey: string;
+  type: "file" | "image";
+}): Promise<{ buffer: Buffer; contentType?: string } | null> {
+  const url = new URL(
+    `https://open.feishu.cn/open-apis/im/v1/messages/${params.messageId}/resources/${params.fileKey}`,
+  );
+  url.searchParams.set("type", params.type);
+  const { response, release } = await fetchWithSsrFGuard({
+    url: url.toString(),
+    init: {
+      headers: {
+        Authorization: `Bearer ${params.userToken}`,
+      },
+    },
+    policy: { allowedHostnames: FEISHU_ALLOWED_HOSTNAMES },
+    auditContext: `feishu-user-resource:${params.type}:${params.messageId}`,
+  });
+  try {
+    if (!response.ok) {
+      const body = (await response.text()).trim();
+      throw new Error(
+        `feishu user resource download failed: HTTP ${response.status}${body ? ` ${body.slice(0, 200)}` : ""}`,
+      );
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.length === 0) return null;
+    return {
+      buffer,
+      contentType: response.headers.get("content-type")?.trim() ?? "application/octet-stream",
+    };
   } finally {
     await release();
   }

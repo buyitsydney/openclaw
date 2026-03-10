@@ -8,6 +8,12 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { stringEnum } from "openclaw/plugin-sdk";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
+import {
+  callFeishuApiWithUserToken,
+  getValidUserToken,
+  requireUserToken,
+  resolveOAuthRedirectUri,
+} from "../oauth.js";
 import { getFeishuClient } from "../outbound.js";
 
 function json(data: unknown) {
@@ -41,6 +47,80 @@ const FIELD_TYPE_NAMES: Record<number, string> = {
   1005: "AutoNumber",
 };
 
+type BitableAppResponse = {
+  app?: {
+    name?: string;
+  };
+};
+
+type BitableTableListResponse = {
+  items?: Array<{
+    table_id?: string;
+    name?: string;
+  }>;
+};
+
+type BitableFieldListResponse = {
+  items?: Array<{
+    field_id?: string;
+    field_name?: string;
+    type?: number;
+    is_primary?: boolean;
+    property?: unknown;
+  }>;
+};
+
+type BitableRecordListResponse = {
+  items?: unknown[];
+  has_more?: boolean;
+  page_token?: string;
+  total?: number;
+};
+
+type BitableRecordGetResponse = {
+  record?: unknown;
+};
+
+type WikiNodeResolveResponse = {
+  node?: {
+    obj_type?: string;
+    obj_token?: string;
+  };
+};
+
+type UserBitableApiResult<TData> = {
+  ok: boolean;
+  code: number;
+  msg: string;
+  data: TData | null;
+  http_status: number;
+  method: string;
+  endpoint: string;
+};
+
+async function callBitableUserApi<TData>(params: {
+  userToken: string;
+  method: "GET";
+  endpoint: string;
+  query?: Record<string, string>;
+}): Promise<UserBitableApiResult<TData>> {
+  const result = await callFeishuApiWithUserToken<TData>({
+    method: params.method,
+    endpoint: params.endpoint,
+    userToken: params.userToken,
+    query: params.query,
+  });
+  return {
+    ok: result.code === 0,
+    code: result.code,
+    msg: result.msg,
+    data: result.data,
+    http_status: 200,
+    method: params.method,
+    endpoint: params.endpoint,
+  };
+}
+
 // ── Core functions ──
 
 function parseBitableUrl(url: string): { token: string; tableId?: string; isWiki: boolean } | null {
@@ -70,6 +150,26 @@ async function resolveAppToken(
   return res.data.node.obj_token!;
 }
 
+async function resolveAppTokenByUser(
+  userToken: string,
+  parsed: { token: string; isWiki: boolean },
+): Promise<string> {
+  if (!parsed.isWiki) return parsed.token;
+  const res = await callBitableUserApi<WikiNodeResolveResponse>({
+    userToken,
+    method: "GET",
+    endpoint: "/wiki/v2/spaces/get_node",
+    query: { token: parsed.token },
+  });
+  if (!res.ok) throw new Error(res.msg);
+  if (res.data?.node?.obj_type !== "bitable") {
+    throw new Error(`Node is not a bitable (type: ${res.data?.node?.obj_type})`);
+  }
+  const objToken = res.data?.node?.obj_token?.trim();
+  if (!objToken) throw new Error("bitable obj_token missing");
+  return objToken;
+}
+
 async function getBitableMeta(client: Lark.Client, url: string) {
   const parsed = parseBitableUrl(url);
   if (!parsed) throw new Error("Invalid URL format. Expected /base/XXX or /wiki/XXX URL");
@@ -87,6 +187,44 @@ async function getBitableMeta(client: Lark.Client, url: string) {
         table_id: t.table_id!,
         name: t.name!,
       }));
+    }
+  }
+  return {
+    app_token: appToken,
+    table_id: parsed.tableId,
+    name: res.data?.app?.name,
+    url_type: parsed.isWiki ? "wiki" : "base",
+    ...(tables.length > 0 && { tables }),
+    hint: parsed.tableId
+      ? `Use app_token="${appToken}" and table_id="${parsed.tableId}" for other bitable actions`
+      : `Use app_token="${appToken}" for other bitable actions. Select a table_id from the tables list.`,
+  };
+}
+
+async function getBitableMetaByUser(userToken: string, url: string) {
+  const parsed = parseBitableUrl(url);
+  if (!parsed) throw new Error("Invalid URL format. Expected /base/XXX or /wiki/XXX URL");
+  const appToken = await resolveAppTokenByUser(userToken, parsed);
+  const res = await callBitableUserApi<BitableAppResponse>({
+    userToken,
+    method: "GET",
+    endpoint: `/bitable/v1/apps/${encodeURIComponent(appToken)}`,
+  });
+  if (!res.ok) throw new Error(res.msg);
+  let tables: { table_id: string; name: string }[] = [];
+  if (!parsed.tableId) {
+    const tablesRes = await callBitableUserApi<BitableTableListResponse>({
+      userToken,
+      method: "GET",
+      endpoint: `/bitable/v1/apps/${encodeURIComponent(appToken)}/tables`,
+    });
+    if (tablesRes.ok) {
+      tables = (tablesRes.data?.items ?? [])
+        .filter((t) => typeof t.table_id === "string" && typeof t.name === "string")
+        .map((t) => ({
+          table_id: t.table_id!,
+          name: t.name!,
+        }));
     }
   }
   return {
@@ -121,6 +259,26 @@ async function listFields(client: Lark.Client, appToken: string, tableId: string
   };
 }
 
+async function listFieldsByUser(userToken: string, appToken: string, tableId: string) {
+  const res = await callBitableUserApi<BitableFieldListResponse>({
+    userToken,
+    method: "GET",
+    endpoint: `/bitable/v1/apps/${encodeURIComponent(appToken)}/tables/${encodeURIComponent(tableId)}/fields`,
+  });
+  if (!res.ok) throw new Error(res.msg);
+  return {
+    fields: (res.data?.items ?? []).map((f) => ({
+      field_id: f.field_id,
+      field_name: f.field_name,
+      type: f.type,
+      type_name: FIELD_TYPE_NAMES[f.type ?? 0] || `type_${f.type}`,
+      is_primary: f.is_primary,
+      ...(f.property && { property: f.property }),
+    })),
+    total: (res.data?.items ?? []).length,
+  };
+}
+
 async function listRecords(
   client: Lark.Client,
   appToken: string,
@@ -142,12 +300,52 @@ async function listRecords(
   };
 }
 
+async function listRecordsByUser(
+  userToken: string,
+  appToken: string,
+  tableId: string,
+  pageSize?: number,
+  pageToken?: string,
+) {
+  const res = await callBitableUserApi<BitableRecordListResponse>({
+    userToken,
+    method: "GET",
+    endpoint: `/bitable/v1/apps/${encodeURIComponent(appToken)}/tables/${encodeURIComponent(tableId)}/records`,
+    query: {
+      page_size: String(pageSize ?? 100),
+      ...(pageToken ? { page_token: pageToken } : {}),
+    },
+  });
+  if (!res.ok) throw new Error(res.msg);
+  return {
+    records: res.data?.items ?? [],
+    has_more: res.data?.has_more ?? false,
+    page_token: res.data?.page_token,
+    total: res.data?.total,
+  };
+}
+
 async function getRecord(client: Lark.Client, appToken: string, tableId: string, recordId: string) {
   // oxlint-disable-next-line typescript/no-explicit-any
   const res: any = await client.bitable.appTableRecord.get({
     path: { app_token: appToken, table_id: tableId, record_id: recordId },
   });
   if (res.code !== 0) throw new Error(res.msg);
+  return { record: res.data?.record };
+}
+
+async function getRecordByUser(
+  userToken: string,
+  appToken: string,
+  tableId: string,
+  recordId: string,
+) {
+  const res = await callBitableUserApi<BitableRecordGetResponse>({
+    userToken,
+    method: "GET",
+    endpoint: `/bitable/v1/apps/${encodeURIComponent(appToken)}/tables/${encodeURIComponent(tableId)}/records/${encodeURIComponent(recordId)}`,
+  });
+  if (!res.ok) throw new Error(res.msg);
   return { record: res.data?.record };
 }
 
@@ -224,6 +422,7 @@ export function registerFeishuBitableTools(api: OpenClawPluginApi) {
   if (accounts.length === 0) return;
   const firstAccount: ResolvedFeishuAccount = accounts[0];
   const getClient = () => getFeishuClient(firstAccount);
+  const oauthRedirectUri = resolveOAuthRedirectUri(api.config as Record<string, unknown>);
 
   api.registerTool(
     {
@@ -236,25 +435,51 @@ export function registerFeishuBitableTools(api: OpenClawPluginApi) {
       async execute(_toolCallId: string, params: any) {
         try {
           const client = getClient();
+          const requireReadAccess = () =>
+            requireUserToken({
+              account: firstAccount,
+              redirectUri: oauthRedirectUri,
+              tokenPromise: getValidUserToken(firstAccount),
+              toolLabel: "飞书多维表格读取",
+            });
           switch (params.action) {
-            case "get_meta":
-              return json(await getBitableMeta(client, params.url));
-            case "list_fields":
-              return json(await listFields(client, params.app_token, params.table_id));
-            case "list_records":
+            case "get_meta": {
+              const guard = await requireReadAccess();
+              if (!guard.ok) return guard.authResponse;
+              return json(await getBitableMetaByUser(guard.token.access_token, params.url));
+            }
+            case "list_fields": {
+              const guard = await requireReadAccess();
+              if (!guard.ok) return guard.authResponse;
               return json(
-                await listRecords(
-                  client,
+                await listFieldsByUser(guard.token.access_token, params.app_token, params.table_id),
+              );
+            }
+            case "list_records": {
+              const guard = await requireReadAccess();
+              if (!guard.ok) return guard.authResponse;
+              return json(
+                await listRecordsByUser(
+                  guard.token.access_token,
                   params.app_token,
                   params.table_id,
                   params.page_size,
                   params.page_token,
                 ),
               );
-            case "get_record":
+            }
+            case "get_record": {
+              const guard = await requireReadAccess();
+              if (!guard.ok) return guard.authResponse;
               return json(
-                await getRecord(client, params.app_token, params.table_id, params.record_id),
+                await getRecordByUser(
+                  guard.token.access_token,
+                  params.app_token,
+                  params.table_id,
+                  params.record_id,
+                ),
               );
+            }
             case "create_record":
               return json(
                 await createRecord(client, params.app_token, params.table_id, params.fields),

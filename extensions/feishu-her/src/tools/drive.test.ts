@@ -8,6 +8,10 @@ const getFeishuClientMock = vi.hoisted(() => vi.fn());
 const callChatApiMock = vi.hoisted(() => vi.fn());
 const resolveDriveShareUrlMock = vi.hoisted(() => vi.fn());
 const fetchWithSsrFGuardMock = vi.hoisted(() => vi.fn());
+const callFeishuApiWithUserTokenMock = vi.hoisted(() => vi.fn());
+const getValidUserTokenMock = vi.hoisted(() => vi.fn());
+const requireUserTokenMock = vi.hoisted(() => vi.fn());
+const resolveOAuthRedirectUriMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../accounts.js", () => ({
   listEnabledFeishuAccounts: listEnabledFeishuAccountsMock,
@@ -32,6 +36,13 @@ vi.mock("openclaw/plugin-sdk", async () => {
     fetchWithSsrFGuard: fetchWithSsrFGuardMock,
   };
 });
+
+vi.mock("../oauth.js", () => ({
+  callFeishuApiWithUserToken: callFeishuApiWithUserTokenMock,
+  getValidUserToken: getValidUserTokenMock,
+  requireUserToken: requireUserTokenMock,
+  resolveOAuthRedirectUri: resolveOAuthRedirectUriMock,
+}));
 
 import { registerFeishuDriveTools } from "./drive.js";
 
@@ -86,7 +97,7 @@ describe("feishu-her feishu_drive visibility guard", () => {
   }
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     listEnabledFeishuAccountsMock.mockReturnValue([
       {
         accountId: "default",
@@ -95,6 +106,18 @@ describe("feishu-her feishu_drive visibility guard", () => {
         appSecret: "app_secret",
       },
     ]);
+    getValidUserTokenMock.mockResolvedValue({
+      access_token: "user_token",
+      open_id: "ou_user",
+    });
+    requireUserTokenMock.mockResolvedValue({
+      ok: true,
+      token: {
+        access_token: "user_token",
+        open_id: "ou_user",
+      },
+    });
+    resolveOAuthRedirectUriMock.mockReturnValue("https://example.com/callback");
     getFeishuClientMock.mockReturnValue({
       tokenManager: {
         getTenantAccessToken: vi.fn().mockResolvedValue("tenant_token"),
@@ -129,6 +152,11 @@ describe("feishu-her feishu_drive visibility guard", () => {
       release: vi.fn().mockResolvedValue(undefined),
     }));
     callChatApiMock.mockResolvedValue(makeApiResult({}));
+    callFeishuApiWithUserTokenMock.mockResolvedValue({
+      code: 0,
+      msg: "ok",
+      data: { files: [] },
+    });
     resolveDriveShareUrlMock.mockResolvedValue({
       ok: true,
       share_url: "https://example.feishu.cn/file/box_1",
@@ -143,13 +171,17 @@ describe("feishu-her feishu_drive visibility guard", () => {
     }
   });
 
-  it("rejects list without folder_token", async () => {
+  it("lists user root when folder_token is omitted", async () => {
     const tool = registerAndGetTool();
     const result = await tool.execute("tc1", { action: "list" });
-    const details = result.details as { error?: string };
+    const details = result.details as { files?: unknown[] };
 
-    expect(details.error).toContain("folder_token is required");
-    expect(listMock).not.toHaveBeenCalled();
+    expect(details.files).toEqual([]);
+    expect(callFeishuApiWithUserTokenMock).toHaveBeenCalledWith({
+      method: "GET",
+      endpoint: "/drive/v1/files",
+      userToken: "user_token",
+    });
   });
 
   it("rejects create_folder with folder_token=0", async () => {
@@ -161,7 +193,7 @@ describe("feishu-her feishu_drive visibility guard", () => {
     });
     const details = result.details as { error?: string };
 
-    expect(details.error).toContain("forbids folder_token=0");
+    expect(details.error).toContain("requires a real folder token");
     expect(createFolderMock).not.toHaveBeenCalled();
   });
 
@@ -169,9 +201,21 @@ describe("feishu-her feishu_drive visibility guard", () => {
     const tool = registerAndGetTool();
     await tool.execute("tc3", { action: "list", folder_token: "fld_shared" });
 
-    expect(listMock).toHaveBeenCalledWith({
-      params: { folder_token: "fld_shared" },
+    expect(callFeishuApiWithUserTokenMock).toHaveBeenCalledWith({
+      method: "GET",
+      endpoint: "/drive/v1/files",
+      userToken: "user_token",
+      query: { folder_token: "fld_shared" },
     });
+  });
+
+  it("rejects list with folder_token=root", async () => {
+    const tool = registerAndGetTool();
+    const result = await tool.execute("tc_root", { action: "list", folder_token: "root" });
+    const details = result.details as { error?: string };
+
+    expect(details.error).toContain("Root listing must omit folder_token");
+    expect(callFeishuApiWithUserTokenMock).not.toHaveBeenCalled();
   });
 
   it("creates online sheet in shared folder", async () => {

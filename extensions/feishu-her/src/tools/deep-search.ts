@@ -21,6 +21,7 @@ import {
   requireUserToken,
   resolveOAuthRedirectUri,
 } from "../oauth.js";
+import { searchRootDriveItemsByTitle } from "./drive-browse.js";
 import { resolveDriveShareUrl, type DriveDocType } from "./share-url.js";
 
 function json(data: unknown) {
@@ -157,7 +158,9 @@ async function searchDriveKeyword(
     const docType = toDriveDocType(item.docs_type ?? "");
     let url: string | undefined;
     if (docType) {
-      const resolved = await resolveDriveShareUrl(account, item.docs_token, docType);
+      const resolved = await resolveDriveShareUrl(account, item.docs_token, docType, {
+        userToken,
+      });
       if (resolved.ok) url = resolved.share_url;
     }
     results.push({
@@ -169,6 +172,26 @@ async function searchDriveKeyword(
         object_type: item.docs_type,
         drive_doc_token: item.docs_token,
         keyword,
+      },
+    });
+  }
+  const rootFolders = await searchRootDriveItemsByTitle(userToken, keyword, {
+    limit: PER_KEYWORD_LIMIT,
+    types: ["folder"],
+  });
+  const seenTokens = new Set(results.map((item) => item.token).filter((item): item is string => !!item));
+  for (const folder of rootFolders) {
+    if (seenTokens.has(folder.token)) continue;
+    results.push({
+      source: "drive",
+      title: folder.name,
+      token: folder.token,
+      url: folder.url,
+      extra: {
+        object_type: "folder",
+        drive_doc_token: folder.token,
+        keyword,
+        discovered_via: "root_browse",
       },
     });
   }
@@ -453,8 +476,9 @@ export function registerFeishuDeepSearchTool(api: OpenClawPluginApi): void {
             results: merged,
             ...(searchErrors.length > 0 ? { warnings: searchErrors } : {}),
             hint:
-              "Results are keyword-matched. Use feishu_doc to read full content of " +
-              "relevant documents (drive_doc_token or wiki_obj_token). Use memory_search " +
+              "Results are keyword-matched. Drive results also supplement root-level folders " +
+              "via user-root browse when Feishu search misses them. Use feishu_doc to read full " +
+              "content of relevant documents (drive_doc_token or wiki_obj_token). Use memory_search " +
               "for semantic recall from local memory.",
           });
         } catch (err) {

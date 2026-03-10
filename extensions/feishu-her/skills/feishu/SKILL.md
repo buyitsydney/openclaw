@@ -123,6 +123,7 @@ Pin 消息（不是群顶部置顶）：
 | 类别           | 能力                                                          | 工具                         | 状态             |
 | -------------- | ------------------------------------------------------------- | ---------------------------- | ---------------- |
 | **消息**       | 发送消息（群/个人）                                           | `message`                    | ✅               |
+| **图片/视觉**  | 看图（私聊/群聊/引用图片/post内嵌图/视频封面）                | 自动 vision                  | ✅ 见 3.1        |
 | **文件发送**   | 发送本地文件到飞书聊天（PPT/PDF/DOCX等，≤30MB）               | `message` + media            | ✅               |
 | **群聊**       | 群管理、成员管理、菜单/发言权限、标签页、置顶                 | `feishu_chat_*`              | ✅（见上方映射） |
 | **通讯录**     | 用户、部门                                                    | `feishu_directory`           | ✅ 企业版含姓名  |
@@ -168,9 +169,41 @@ Bot 对 Wiki 节点、文档、多维表格记录没有删除权限，无法通�
 - **云盘（Drive）**= 独立的文件存储系统，类似百度网盘 → 用 `feishu_drive`
 - 它们是**完全独立的系统**。用户说"我的空间"通常指 Wiki，不是云盘
 - **用户不可见 = 没有**：凡是用户看不到的应用私有空间资源，一律视为不可用，禁止对外表述为"你的云盘/你的文档"。
-- 已启用代码级保护：`feishu_drive(list/create_folder/create_online/move/upload_file)` 与 `feishu_doc(create)` 必须提供 `folder_token`；禁止 `folder_token=0` 和任何 root/app-space 默认写入。
+- **Drive 读取默认按用户权限理解**：`feishu_drive(action="list")` 在**省略** `folder_token` 时，会直接列出**用户自己的 Drive 根目录**（user-first 读路径）。
+- **根目录严禁写成 `folder_token=0` 或 `folder_token=root`**：飞书 Drive API 对这两种写法会直接报错；根目录的正确方式永远是“省略 `folder_token`”。
+- **禁止把 root list / folder 发现 / 文档读取成功归因于 tenant**：若 `feishu_drive(list)`、`feishu_search`、`feishu_doc` 读到了用户可见内容，对外必须表述为“按用户自己的飞书权限可见/可读”。
+- **tenant / app-space 不是用户云盘**：只有在明确讨论 bot 自己的写入空间或旧写路径时，才允许提到 tenant；默认读链路一律先按 user-first 理解。
+- 已启用代码级保护：`feishu_drive(create_folder/create_online/move/upload_file)` 与 `feishu_doc(create)` 仍必须提供显式 `folder_token`；禁止 `folder_token=0` 和任何 root/app-space 默认写入。
 
-### 3.1 统一搜索（MVP）
+### 3.1 图片 / 视觉能力（CRITICAL — 必须遵守！）
+
+Her **完全具备看图能力**，以下场景均已自动处理，**严禁说"我看不到图片"**：
+
+| 场景 | 系统行为 | Her 看到的 |
+|------|----------|-----------|
+| 私聊/群聊直发图片（`msgType=image`） | 自动下载 → vision | 图片内容 ✅ |
+| 富文本（`post`）内嵌图片 | 自动提取 image_key 并下载 → vision | 图片内容 ✅ |
+| 引用/回复一条图片消息 | 自动下载被引用图片 → vision | 图片内容 ✅ |
+| jpg/png 作为文件发送（`msgType=file`，`image/*`） | 按图片处理 → vision | 图片内容 ✅ |
+| 视频消息（`msgType=media`） | 封面图 → vision + 视频文件路径 | 封面 ✅，完整视频 ❌ |
+| 音频/语音 | STT 转文字 | 转录文本 ✅ |
+| PPT/PDF/DOCX/XLSX | officeparser 提取文字 | 文本内容 ✅ |
+
+**硬规则**：除非日志中明确出现 `image download failed`，否则**绝对不允许**对用户说"我看不到图片/无法查看图片内容"。收到图片就直接描述你看到的内容。
+
+### 3.2 合并转发（merge_forward）— 已关闭
+
+- `merge_forward` 类型消息**已硬关闭**，不会展开子消息。
+- 收到后统一显示 `[merged forward disabled]`。
+- **此限制仅针对 merge_forward，不影响上方 3.1 列出的任何能力。**
+
+### 3.3 Busy 队列消息处理
+
+- 当上下文里出现 `[Queued messages while agent was busy]` 时，**把每个 `Queued #n` 当成独立用户回合**，按顺序逐条回答。
+- 如果某条只有“这个呢 / 那这个呢 / 这个可以吗”之类指代词，**只能**绑定到它紧邻的引用消息、回复对象或附件描述，禁止跨到更早的 queued 项。
+- 若多个 queued 项指向不同附件/不同引用对象，回答时要显式分段说明“第 1 条 / 第 2 条”，不要混成一个结论。
+
+### 3.4 统一搜索（MVP）
 
 **底层能力限制（必须理解）：**
 
@@ -232,7 +265,7 @@ Bot 对 Wiki 节点、文档、多维表格记录没有删除权限，无法通�
   - 后续需要读正文时，优先直接使用结果里的 `read_params`
 - 当前不要依赖 `search-v2/doc_wiki/search`，真实租户实测不可依赖。
 
-### 3.2 Research Mode（深度搜索）
+### 3.3 Research Mode（深度搜索）
 
 当用户的问题需要跨多个数据源查找信息时（如"最近讨论了什么""帮我整理关于XX的所有资料""XX是什么决策"），Her 应自动进入 Research Mode。
 
@@ -821,14 +854,17 @@ feishu_message(action="list_sent", chat_id="oc_xxx", count=5)
 
 ### 云盘（Drive）
 
-- `feishu_drive(action="list", folder_token="fldcnXXX")` — 列指定文件夹（`folder_token` 必填）
+- `feishu_drive(action="list")` — 列**用户自己的 Drive 根目录**（user-first；根目录时不要传 `folder_token`）
+- `feishu_drive(action="list", folder_token="fldcnXXX")` — 列指定文件夹
 - `feishu_drive(action="create_folder", name="xxx", folder_token="fldcnXXX")` — 在指定可见目录下创建文件夹
 - `feishu_drive(action="create_online", folder_token="fldcnXXX", title="预算表", online_type="sheet")` — 在指定可见目录创建在线文件（`online_type`: `docx|sheet|bitable`）
 - `feishu_drive(action="move", file_token="xxx", file_type="docx", folder_token="fldcnXXX")` — 移动到指定可见目录
 - `feishu_drive(action="delete", file_token="xxx", file_type="docx")` — 删除
 - `feishu_drive(action="upload_file", folder_token="fldcnXXX", file_path="/absolute/path/report.pptx")` — 分片上传本地文件到云盘目录（支持大文件，自动 prepare/part/finish）
 - 收到新的文件夹链接时，先解析并写入 `MEMORY.md -> Drive Shares`，再执行 `feishu_drive`
-- 严禁无 `folder_token` 操作 Drive；若用户未提供可见目录 token，直接报错并要求分享链接。
+- **只对 root list 允许省略 `folder_token`**；其余写操作仍必须提供显式目录 token。
+- **严禁**把根目录写成 `folder_token=0` 或 `folder_token=root`；若用户这样说，必须纠正为“请直接省略 `folder_token`”。
+- **对外解释时，禁止说“tenant 权限成功”**；如果根目录或某个目录可读，统一表述为“该内容对当前用户可见，所以 Her 也可读”。
 - 聊天附件发送（`message`）和云盘上传是两条链路：聊天附件仍受 30MB 限制；大文件必须走 `feishu_drive(action="upload_file", ...)`。
 - `upload_file` 是长耗时链路（prepare/part/finish）；**必须由 subagent 执行**，主会话禁止直传阻塞。
 - 已确认可用工具：`sessions_spawn` / `subagents`。上传任务必须走 `sessions_spawn(runtime="subagent")`。

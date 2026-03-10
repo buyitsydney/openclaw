@@ -17,6 +17,7 @@ import {
   requireUserToken,
   resolveOAuthRedirectUri,
 } from "../oauth.js";
+import { searchRootDriveItemsByTitle } from "./drive-browse.js";
 import { resolveDriveShareUrl, type DriveDocType } from "./share-url.js";
 
 function json(data: unknown) {
@@ -98,6 +99,17 @@ type SearchResult =
       owner_id?: string;
       url?: string;
       url_resolve_error?: string;
+    }
+  | {
+      source: "drive";
+      title: string;
+      object_type: "folder";
+      drive_doc_token: string;
+      read_tool: "feishu_drive";
+      read_params: { action: "list"; folder_token: string };
+      owner_id?: string;
+      url?: string;
+      discovered_via: "root_browse";
     }
   | {
       source: "wiki";
@@ -222,7 +234,9 @@ async function searchDrive(
           url_resolve_error: `unsupported_doc_type:${item.object_type}`,
         };
       }
-      const resolved = await resolveDriveShareUrl(account, item.drive_doc_token, docType);
+      const resolved = await resolveDriveShareUrl(account, item.drive_doc_token, docType, {
+        userToken,
+      });
       if (!resolved.ok) {
         return {
           ...item,
@@ -236,7 +250,29 @@ async function searchDrive(
     }),
   );
 
-  return enriched;
+  const rootFolderResults = await searchRootDriveItemsByTitle(userToken, query, {
+    limit,
+    types: ["folder"],
+  });
+  const seenTokens = new Set(enriched.map((item) => item.drive_doc_token));
+  const supplemented = rootFolderResults
+    .filter((item) => !seenTokens.has(item.token))
+    .map((item) => ({
+      source: "drive" as const,
+      title: item.name,
+      object_type: "folder" as const,
+      drive_doc_token: item.token,
+      read_tool: "feishu_drive" as const,
+      read_params: {
+        action: "list" as const,
+        folder_token: item.token,
+      },
+      ...(item.owner_id ? { owner_id: item.owner_id } : {}),
+      ...(item.url ? { url: item.url } : {}),
+      discovered_via: "root_browse" as const,
+    }));
+
+  return [...enriched, ...supplemented];
 }
 
 async function searchWiki(
@@ -308,7 +344,7 @@ export function registerFeishuSearchTool(api: OpenClawPluginApi): void {
       label: "Feishu Search",
       description:
         "Search Feishu user-visible content using the user's own OAuth permissions. " +
-        "MVP searches two stable sources in parallel: Drive documents and Wiki nodes. " +
+        "MVP searches two stable sources in parallel: Drive documents/root folders and Wiki nodes. " +
         "Results are source-tagged and not cross-deduped. If authorization is needed, " +
         "the tool returns an auth_url — send it to the user as a clickable link.",
       parameters: FeishuSearchSchema,
@@ -368,7 +404,8 @@ export function registerFeishuSearchTool(api: OpenClawPluginApi): void {
               wiki: wikiResults.length,
               merged: merged.length,
             },
-            note: "Drive and Wiki are searched independently. The same content may appear twice if it exists in both systems or is exposed through different object models.",
+            note:
+              "Drive and Wiki are searched independently. Root-level Drive folders are supplemented via user-root browse because Feishu's docs search may miss folders.",
           });
         } catch (err) {
           return json({ error: err instanceof Error ? err.message : String(err) });

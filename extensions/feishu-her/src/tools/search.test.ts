@@ -50,7 +50,7 @@ function getTool(registerTool: ReturnType<typeof vi.fn>, name: string): ToolDef 
 
 describe("feishu_search tool", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     listEnabledFeishuAccountsMock.mockReturnValue([
       {
         accountId: "default",
@@ -75,6 +75,11 @@ describe("feishu_search tool", () => {
       ok: true,
       share_url: "https://example.feishu.cn/docx/doc_drive_1",
       meta: {},
+    });
+    callFeishuApiWithUserTokenMock.mockResolvedValue({
+      code: 0,
+      msg: "success",
+      data: {},
     });
   });
 
@@ -195,6 +200,7 @@ describe("feishu_search tool", () => {
       expect.objectContaining({ accountId: "default" }),
       "doc_drive_1",
       "docx",
+      { userToken: "user_token" },
     );
     expect(callFeishuApiWithUserTokenMock).toHaveBeenNthCalledWith(2, {
       method: "POST",
@@ -206,6 +212,11 @@ describe("feishu_search tool", () => {
       query: {
         page_size: "5",
       },
+    });
+    expect(callFeishuApiWithUserTokenMock).toHaveBeenNthCalledWith(3, {
+      method: "GET",
+      endpoint: "/drive/v1/files",
+      userToken: "user_token",
     });
   });
 
@@ -232,8 +243,62 @@ describe("feishu_search tool", () => {
     const details = result.details as { counts: { drive: number; wiki: number; merged: number } };
 
     expect(details.counts).toEqual({ drive: 1, wiki: 0, merged: 1 });
-    expect(callFeishuApiWithUserTokenMock).toHaveBeenCalledOnce();
+    expect(callFeishuApiWithUserTokenMock).toHaveBeenCalledTimes(2);
     expect(resolveDriveShareUrlMock).toHaveBeenCalledOnce();
+  });
+
+  it("supplements root folder matches when docs search misses folders", async () => {
+    callFeishuApiWithUserTokenMock
+      .mockResolvedValueOnce({
+        code: 0,
+        msg: "success",
+        data: {
+          docs_entities: [],
+        },
+      })
+      .mockResolvedValueOnce({
+        code: 0,
+        msg: "success",
+        data: {
+          files: [
+            {
+              token: "fld_root_1",
+              name: "测试bot权限",
+              type: "folder",
+              url: "https://example.feishu.cn/drive/folder/fld_root_1",
+              owner_id: "ou_owner",
+            },
+          ],
+        },
+      });
+
+    const { api, registerTool } = createApi();
+    registerFeishuSearchTool(api);
+    const tool = getTool(registerTool, "feishu_search");
+
+    const result = await tool.execute("tc_root_folder", { query: "测试bot权限", scope: "drive" });
+    const details = result.details as {
+      counts: { drive: number; wiki: number; merged: number };
+      results: Array<Record<string, unknown>>;
+    };
+
+    expect(details.counts).toEqual({ drive: 1, wiki: 0, merged: 1 });
+    expect(details.results).toEqual([
+      {
+        source: "drive",
+        title: "测试bot权限",
+        object_type: "folder",
+        drive_doc_token: "fld_root_1",
+        read_tool: "feishu_drive",
+        read_params: {
+          action: "list",
+          folder_token: "fld_root_1",
+        },
+        owner_id: "ou_owner",
+        url: "https://example.feishu.cn/drive/folder/fld_root_1",
+        discovered_via: "root_browse",
+      },
+    ]);
   });
 
   it("passes optional wiki space_id to wiki search", async () => {
@@ -279,19 +344,27 @@ describe("feishu_search tool", () => {
       ok: false,
       error: "drive_meta_batch_query_missing_url",
     });
-    callFeishuApiWithUserTokenMock.mockResolvedValueOnce({
-      code: 0,
-      msg: "success",
-      data: {
-        docs_entities: [
-          {
-            docs_token: "doc_drive_1",
-            docs_type: "docx",
-            title: "企业知识在her之间共享",
-          },
-        ],
-      },
-    });
+    callFeishuApiWithUserTokenMock
+      .mockResolvedValueOnce({
+        code: 0,
+        msg: "success",
+        data: {
+          docs_entities: [
+            {
+              docs_token: "doc_drive_1",
+              docs_type: "docx",
+              title: "企业知识在her之间共享",
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        code: 0,
+        msg: "success",
+        data: {
+          files: [],
+        },
+      });
 
     const { api, registerTool } = createApi();
     registerFeishuSearchTool(api);

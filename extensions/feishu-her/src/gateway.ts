@@ -21,7 +21,16 @@ import type { ResolvedFeishuAccount } from "./accounts.js";
 import { resolveGroupOwnerIds } from "./accounts.js";
 import { buildDriveFileContextFromText } from "./drive-file-read.js";
 import { archiveGroupMessage, archiveSentFeishuBinaryMessage } from "./group-archive.js";
+import {
+  expandFetchedMessageItem,
+  type FeishuFetchedMessageItem,
+} from "./merge-forward.js";
 import { rewriteModelShortcutCommand } from "./model-shortcuts.js";
+import {
+  callFeishuApiWithUserToken,
+  downloadFeishuMessageResourceWithUserToken,
+  getValidUserTokenForOpenId,
+} from "./oauth.js";
 import {
   getFeishuClient,
   sendFeishuText,
@@ -50,6 +59,9 @@ import {
   buildFeishuStatusFooter,
   finalizeGroupedReplyText,
 } from "./status-footer.js";
+import { cacheMessageText } from "./message-text-cache.js";
+
+const MERGE_FORWARD_DISABLED_TEXT = "[merged forward disabled]";
 
 // ── Content-type inference for local files ────────────────────────────────
 /** Infer MIME content-type from a file path extension. */
@@ -481,52 +493,144 @@ export type FeishuMessageInfo = {
   imageKeys?: string[];
 };
 
+type MergeForwardSourceAccess = {
+  fetchItems: (messageId: string) => Promise<FeishuFetchedMessageItem[]>;
+  downloadFile: (params: { messageId: string; fileKey: string }) => Promise<{ buffer: Buffer; contentType?: string } | null>;
+  downloadImage: (params: {
+    messageId: string;
+    imageKey: string;
+  }) => Promise<{ buffer: Buffer; contentType?: string } | null>;
+};
+
+function isUserTokenMessageGetUnsupported(code: number | undefined, msg: string | undefined): boolean {
+  return code === 230001 && /not supported/i.test(msg ?? "");
+}
+
+async function fetchMessageItemsViaBotClient(
+  account: ResolvedFeishuAccount,
+  messageId: string,
+): Promise<FeishuFetchedMessageItem[]> {
+  const client = getFeishuClient(account);
+  const response = (await client.im.message.get({
+    path: { message_id: messageId },
+  })) as {
+    code?: number;
+    msg?: string;
+    data?: { items?: FeishuFetchedMessageItem[] };
+  };
+  if (response.code !== 0) {
+    throw new Error(`message.get failed: code=${response.code ?? "unknown"} msg=${response.msg ?? ""}`);
+  }
+  return Array.isArray(response.data?.items) ? response.data.items : [];
+}
+
+async function buildMergeForwardSourceAccess(params: {
+  account: ResolvedFeishuAccount;
+  senderOpenId: string;
+  log?: ChannelLogSink;
+}): Promise<MergeForwardSourceAccess | undefined> {
+  if (!params.senderOpenId) return undefined;
+  const token = await getValidUserTokenForOpenId(params.account, params.senderOpenId);
+  if (!token) {
+    params.log?.info?.(
+      `[${params.account.accountId}] no user token for merge_forward source recovery: ${params.senderOpenId}`,
+    );
+    return undefined;
+  }
+  return {
+    fetchItems: async (messageId: string) => {
+      const response = await callFeishuApiWithUserToken<{ items: unknown[] }>({
+        method: "GET",
+        endpoint: `/im/v1/messages/${messageId}`,
+        userToken: token.access_token,
+      });
+      if (response.code === 0) {
+        return (response.data?.items ?? []) as FeishuFetchedMessageItem[];
+      }
+      if (isUserTokenMessageGetUnsupported(response.code, response.msg)) {
+        return fetchMessageItemsViaBotClient(params.account, messageId);
+      }
+      throw new Error(`user-token message.get failed: code=${response.code ?? "unknown"} msg=${response.msg ?? ""}`);
+    },
+    downloadFile: ({ messageId, fileKey }) =>
+      downloadFeishuMessageResourceWithUserToken({
+        userToken: token.access_token,
+        messageId,
+        fileKey,
+        type: "file",
+      }),
+    downloadImage: ({ messageId, imageKey }) =>
+      downloadFeishuMessageResourceWithUserToken({
+        userToken: token.access_token,
+        messageId,
+        fileKey: imageKey,
+        type: "image",
+      }),
+  };
+}
+
 async function getQuotedMessageContent(params: {
   account: ResolvedFeishuAccount;
   parentMessageId: string;
   log?: ChannelLogSink;
+  mergeForwardSourceAccess?: MergeForwardSourceAccess;
 }): Promise<FeishuMessageInfo | null> {
   const { account, parentMessageId, log } = params;
   try {
     const client = getFeishuClient(account);
-    // oxlint-disable-next-line typescript/no-explicit-any
-    const response: any = await client.im.message.get({
+    const response = (await client.im.message.get({
       path: { message_id: parentMessageId },
-    });
+    })) as {
+      code?: number;
+      data?: { items?: FeishuFetchedMessageItem[] };
+    };
     if (response?.code !== 0) return null;
-    const item = response?.data?.items?.[0];
+    const items = Array.isArray(response?.data?.items) ? response.data.items : [];
+    const item = items[0];
     if (!item) return null;
     let content: string = item.body?.content ?? "";
     const quotedImageKeys: string[] = [];
-    try {
-      const parsed = JSON.parse(content);
-      if (item.msg_type === "text" && parsed.text) {
-        content = parsed.text;
-      } else if (item.msg_type === "post") {
-        // Handle both flat format and locale-wrapped format.
-        content = extractPostText(parsed, quotedImageKeys) ?? content;
-      } else if (item.msg_type === "interactive") {
-        // CardKit streaming cards return degraded body via im.message.get.
-        // Primary: look up cached final text (we cached it when the stream finished).
-        loadCardCacheFromDisk();
-        const cached = cardTextCache.get(parentMessageId);
-        if (cached) {
-          content = cached.text;
-          log?.info(`[${account.accountId}] quoted interactive msg resolved from cache`);
-        } else {
-          // Fallback: extract text from the degraded legacy element structure.
-          content = flattenInteractiveBody(parsed, quotedImageKeys) ?? content;
-          log?.info(`[${account.accountId}] quoted interactive msg fallback parse (cache miss)`);
+    if (item.msg_type === "merge_forward") {
+      content = MERGE_FORWARD_DISABLED_TEXT;
+    } else {
+      try {
+        const parsed = JSON.parse(content);
+        if (item.msg_type === "text" && parsed.text) {
+          content = parsed.text;
+        } else if (item.msg_type === "post") {
+          // Handle both flat format and locale-wrapped format.
+          content = extractPostText(parsed, quotedImageKeys) ?? content;
+        } else if (item.msg_type === "interactive") {
+          // CardKit streaming cards return degraded body via im.message.get.
+          // Primary: look up cached final text (we cached it when the stream finished).
+          loadCardCacheFromDisk();
+          const cached = cardTextCache.get(parentMessageId);
+          if (cached) {
+            content = cached.text;
+            log?.info(`[${account.accountId}] quoted interactive msg resolved from cache`);
+          } else {
+            // Fallback: extract text from the degraded legacy element structure.
+            content = flattenInteractiveBody(parsed, quotedImageKeys) ?? content;
+            log?.info(`[${account.accountId}] quoted interactive msg fallback parse (cache miss)`);
+          }
+        } else if (item.msg_type === "image") {
+          // Standalone image message: collect key for downstream download.
+          if (parsed.image_key) {
+            quotedImageKeys.push(parsed.image_key);
+          }
+          content = "[image]";
+        } else if (
+          item.msg_type === "file" ||
+          item.msg_type === "audio" ||
+          item.msg_type === "media" ||
+          item.msg_type === "video"
+        ) {
+          const expanded = await expandFetchedMessageItem({ account, item, log });
+          if (expanded.text) content = expanded.text;
         }
-      } else if (item.msg_type === "image") {
-        // Standalone image message: collect key for downstream download.
-        if (parsed.image_key) {
-          quotedImageKeys.push(parsed.image_key);
-        }
-        content = "[image]";
+      } catch {
+        // Keep raw content if parsing fails.
       }
-    } catch {
-      // Keep raw content if parsing fails.
     }
     return {
       messageId: item.message_id ?? parentMessageId,
@@ -1026,7 +1130,18 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // ── Extract text, collect embedded image keys and file attachment info ──
   const imageKeys: string[] = [];
   const fileInfo: FeishuFileInfo[] = [];
-  const rawText = extractTextContent(content, msgType, imageKeys, fileInfo);
+  const mergeForwardSourceAccess =
+    msgType === "merge_forward" || Boolean(parentId)
+      ? await buildMergeForwardSourceAccess({
+          account,
+          senderOpenId: senderId,
+          log,
+        })
+      : undefined;
+  let rawText = extractTextContent(content, msgType, imageKeys, fileInfo);
+  if (!rawText && msgType === "merge_forward" && messageId) {
+    rawText = MERGE_FORWARD_DISABLED_TEXT;
+  }
 
   // ── Download images (standalone image msgs + images embedded in post) ──
   let mediaPath: string | undefined;
@@ -1253,6 +1368,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   const cleanText = rewriteModelShortcutCommand(rawCleanText);
   if (cleanText !== rawCleanText) {
     log?.info(`[${account.accountId}] rewritten model shortcut: ${rawCleanText} -> ${cleanText}`);
+  }
+  if (messageId && cleanText) {
+    cacheMessageText(messageId, cleanText);
   }
   const driveFileContextFromCurrentText = cleanText
     ? await buildDriveFileContextFromText({
@@ -1545,7 +1663,12 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   let quotedBodyForReply: string | undefined;
   if (parentId) {
     try {
-      const quoted = await getQuotedMessageContent({ account, parentMessageId: parentId, log });
+      const quoted = await getQuotedMessageContent({
+        account,
+        parentMessageId: parentId,
+        log,
+        mergeForwardSourceAccess,
+      });
       if (quoted?.content) {
         const quotedDriveFileContext = await buildDriveFileContextFromText({
           account,

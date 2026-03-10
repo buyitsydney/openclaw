@@ -8,6 +8,10 @@ const getFeishuClientMock = vi.hoisted(() => vi.fn());
 const downloadDocxImageMock = vi.hoisted(() => vi.fn());
 const downloadWhiteboardImageMock = vi.hoisted(() => vi.fn());
 const readDriveFileContextByTokenMock = vi.hoisted(() => vi.fn());
+const callFeishuApiWithUserTokenMock = vi.hoisted(() => vi.fn());
+const getValidUserTokenMock = vi.hoisted(() => vi.fn());
+const requireUserTokenMock = vi.hoisted(() => vi.fn());
+const resolveOAuthRedirectUriMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../accounts.js", () => ({
   listEnabledFeishuAccounts: listEnabledFeishuAccountsMock,
@@ -21,6 +25,13 @@ vi.mock("../outbound.js", () => ({
 
 vi.mock("../drive-file-read.js", () => ({
   readDriveFileContextByToken: readDriveFileContextByTokenMock,
+}));
+
+vi.mock("../oauth.js", () => ({
+  callFeishuApiWithUserToken: callFeishuApiWithUserTokenMock,
+  getValidUserToken: getValidUserTokenMock,
+  requireUserToken: requireUserTokenMock,
+  resolveOAuthRedirectUri: resolveOAuthRedirectUriMock,
 }));
 
 import { registerFeishuDocTools } from "./docx.js";
@@ -188,6 +199,71 @@ describe("feishu-her feishu_doc anti-regression", () => {
     childrenCreateMock.mockResolvedValue({ code: 0, data: { children: [] } });
     downloadDocxImageMock.mockResolvedValue(null);
     downloadWhiteboardImageMock.mockResolvedValue(null);
+    getValidUserTokenMock.mockResolvedValue({
+      access_token: "user_token",
+      open_id: "ou_user",
+    });
+    requireUserTokenMock.mockResolvedValue({
+      ok: true,
+      token: {
+        access_token: "user_token",
+        open_id: "ou_user",
+      },
+    });
+    resolveOAuthRedirectUriMock.mockReturnValue("https://example.com/callback");
+    callFeishuApiWithUserTokenMock.mockImplementation(async (request: {
+      endpoint: string;
+      query?: Record<string, string>;
+    }) => {
+      const segments = request.endpoint.split("/");
+      const documentId = decodeURIComponent(segments[4] ?? "");
+      if (request.endpoint.endsWith("/raw_content")) {
+        const res = await rawContentMock({
+          path: { document_id: documentId },
+        });
+        return {
+          code: res.code ?? 0,
+          msg: res.msg ?? "ok",
+          data: res.data ?? null,
+        };
+      }
+      if (request.endpoint.endsWith("/blocks")) {
+        const params = request.query?.page_token
+          ? {
+              page_token: request.query.page_token,
+              page_size: Number(request.query.page_size ?? "500"),
+            }
+          : { page_size: Number(request.query?.page_size ?? "500") };
+        const res = await blockListMock({
+          path: { document_id: documentId },
+          params,
+        });
+        return {
+          code: res.code ?? 0,
+          msg: res.msg ?? "ok",
+          data: res.data ?? null,
+        };
+      }
+      if (request.endpoint.includes("/blocks/")) {
+        const blockId = decodeURIComponent(segments[6] ?? "");
+        const res = await blockGetMock({
+          path: { document_id: documentId, block_id: blockId },
+        });
+        return {
+          code: res.code ?? 0,
+          msg: res.msg ?? "ok",
+          data: res.data ?? null,
+        };
+      }
+      const res = await docGetMock({
+        path: { document_id: documentId },
+      });
+      return {
+        code: res.code ?? 0,
+        msg: res.msg ?? "ok",
+        data: res.data ?? null,
+      };
+    });
     readDriveFileContextByTokenMock.mockResolvedValue({
       ok: true,
       token: "file_1",

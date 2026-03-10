@@ -8,6 +8,12 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { stringEnum } from "openclaw/plugin-sdk";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
+import {
+  callFeishuApiWithUserToken,
+  getValidUserToken,
+  requireUserToken,
+  resolveOAuthRedirectUri,
+} from "../oauth.js";
 import { getFeishuClient } from "../outbound.js";
 import { resolveDriveShareUrl, type DriveDocType } from "./share-url.js";
 
@@ -88,48 +94,80 @@ function extractTokenFromUrl(input: string): { token: string; docType: DriveDocT
   return { token: trimmed, docType: "wiki" };
 }
 
-// ── Actions ──
+type WikiSpaceItem = {
+  space_id?: string;
+  name?: string;
+  description?: string;
+  visibility?: string;
+};
 
-async function listSpaces(client: Lark.Client) {
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const res: any = await client.wiki.space.list({});
+type WikiSpacesResponse = {
+  items?: WikiSpaceItem[];
+};
+
+type WikiNodeItem = {
+  node_token?: string;
+  obj_token?: string;
+  obj_type?: string;
+  title?: string;
+  has_child?: boolean;
+};
+
+type WikiNodesResponse = {
+  items?: WikiNodeItem[];
+};
+
+type WikiNodeResponse = {
+  node?: {
+    node_token?: string;
+    space_id?: string;
+    obj_token?: string;
+    obj_type?: string;
+    title?: string;
+    parent_node_token?: string;
+    has_child?: boolean;
+    creator?: unknown;
+    node_create_time?: string;
+  };
+};
+
+async function listSpacesByUser(userToken: string) {
+  const res = await callFeishuApiWithUserToken<WikiSpacesResponse>({
+    method: "GET",
+    endpoint: "/wiki/v2/spaces",
+    userToken,
+  });
   if (res.code !== 0) throw new Error(res.msg);
-  const spaces = (res.data?.items ?? []).map(
-    (s: { space_id?: string; name?: string; description?: string; visibility?: string }) => ({
-      space_id: s.space_id,
-      name: s.name,
-      description: s.description,
-      visibility: s.visibility,
-    }),
-  );
+  const spaces = (res.data?.items ?? []).map((s) => ({
+    space_id: s.space_id,
+    name: s.name,
+    description: s.description,
+    visibility: s.visibility,
+  }));
   return { spaces, ...(spaces.length === 0 && { hint: WIKI_ACCESS_HINT }) };
 }
 
-async function listNodes(client: Lark.Client, spaceId: string, parentNodeToken?: string) {
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const res: any = await client.wiki.spaceNode.list({
-    path: { space_id: spaceId },
-    params: { parent_node_token: parentNodeToken },
+async function listNodesByUser(
+  userToken: string,
+  spaceId: string,
+  parentNodeToken?: string,
+) {
+  const res = await callFeishuApiWithUserToken<WikiNodesResponse>({
+    method: "GET",
+    endpoint: `/wiki/v2/spaces/${encodeURIComponent(spaceId)}/nodes`,
+    userToken,
+    query: parentNodeToken ? { parent_node_token: parentNodeToken } : undefined,
   });
   if (res.code !== 0) throw new Error(res.msg);
-  const nodes = (res.data?.items ?? []).map(
-    (n: {
-      node_token?: string;
-      obj_token?: string;
-      obj_type?: string;
-      title?: string;
-      has_child?: boolean;
-    }) => ({
-      node_token: n.node_token,
-      obj_token: n.obj_token,
-      obj_type: n.obj_type,
-      title: n.title,
-      has_child: n.has_child,
-    }),
-  );
+  const nodes = (res.data?.items ?? []).map((n) => ({
+    node_token: n.node_token,
+    obj_token: n.obj_token,
+    obj_type: n.obj_type,
+    title: n.title,
+    has_child: n.has_child,
+  }));
   return {
     nodes,
-    // Guide AI to use feishu_doc for reading document content (including embedded whiteboards).
     hint:
       nodes.length > 0
         ? "To read a document's full content (including embedded whiteboards/boards), use feishu_doc with action: 'read' and the obj_token as doc_token. Board/whiteboard images are automatically exported as vision-compatible PNG."
@@ -137,9 +175,13 @@ async function listNodes(client: Lark.Client, spaceId: string, parentNodeToken?:
   };
 }
 
-async function getNode(client: Lark.Client, token: string) {
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const res: any = await client.wiki.space.getNode({ params: { token } });
+async function getNodeByUser(userToken: string, token: string) {
+  const res = await callFeishuApiWithUserToken<WikiNodeResponse>({
+    method: "GET",
+    endpoint: "/wiki/v2/spaces/get_node",
+    userToken,
+    query: { token },
+  });
   if (res.code !== 0) throw new Error(res.msg);
   const node = res.data?.node;
   return {
@@ -154,6 +196,8 @@ async function getNode(client: Lark.Client, token: string) {
     create_time: node?.node_create_time,
   };
 }
+
+// ── Actions ──
 
 async function createNode(
   client: Lark.Client,
@@ -246,6 +290,7 @@ export function registerFeishuWikiTools(api: OpenClawPluginApi) {
   if (accounts.length === 0) return;
   const firstAccount: ResolvedFeishuAccount = accounts[0];
   const getClient = () => getFeishuClient(firstAccount);
+  const oauthRedirectUri = resolveOAuthRedirectUri(api.config as Record<string, unknown>);
 
   api.registerTool(
     {
@@ -259,18 +304,47 @@ export function registerFeishuWikiTools(api: OpenClawPluginApi) {
         try {
           const client = getClient();
           switch (params.action) {
-            case "spaces":
-              return json(await listSpaces(client));
-            case "nodes":
+            case "spaces": {
+              const guard = await requireUserToken({
+                account: firstAccount,
+                redirectUri: oauthRedirectUri,
+                tokenPromise: getValidUserToken(firstAccount),
+                toolLabel: "飞书知识库读取",
+              });
+              if (!guard.ok) return guard.authResponse;
+              return json(await listSpacesByUser(guard.token.access_token));
+            }
+            case "nodes": {
+              const guard = await requireUserToken({
+                account: firstAccount,
+                redirectUri: oauthRedirectUri,
+                tokenPromise: getValidUserToken(firstAccount),
+                toolLabel: "飞书知识库读取",
+              });
+              if (!guard.ok) return guard.authResponse;
               return json(
-                await listNodes(
-                  client,
+                await listNodesByUser(
+                  guard.token.access_token,
                   requireStringParam(params.space_id, "space_id"),
                   optionalStringParam(params.parent_node_token, "parent_node_token"),
                 ),
               );
-            case "get":
-              return json(await getNode(client, requireStringParam(params.token, "token")));
+            }
+            case "get": {
+              const guard = await requireUserToken({
+                account: firstAccount,
+                redirectUri: oauthRedirectUri,
+                tokenPromise: getValidUserToken(firstAccount),
+                toolLabel: "飞书知识库读取",
+              });
+              if (!guard.ok) return guard.authResponse;
+              return json(
+                await getNodeByUser(
+                  guard.token.access_token,
+                  requireStringParam(params.token, "token"),
+                ),
+              );
+            }
             case "create":
               // Require explicit parent and object type to avoid implicit root/default creation.
               return json(
@@ -302,13 +376,22 @@ export function registerFeishuWikiTools(api: OpenClawPluginApi) {
                 ),
               );
             case "resolve_url": {
+              const guard = await requireUserToken({
+                account: firstAccount,
+                redirectUri: oauthRedirectUri,
+                tokenPromise: getValidUserToken(firstAccount),
+                toolLabel: "飞书知识库读取",
+              });
+              if (!guard.ok) return guard.authResponse;
               if (!params.token) {
                 return json({ error: "token is required for resolve_url" });
               }
               // Extract token and doc type from full URLs like
               // https://xxx.feishu.cn/wiki/TOKEN or /docx/TOKEN
               const { token: resolvedToken, docType } = extractTokenFromUrl(params.token);
-              const share = await resolveDriveShareUrl(firstAccount, resolvedToken, docType);
+              const share = await resolveDriveShareUrl(firstAccount, resolvedToken, docType, {
+                userToken: guard.token.access_token,
+              });
               if (!share.ok) {
                 return json({
                   error: share.error,

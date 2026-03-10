@@ -3,6 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const listEnabledFeishuAccountsMock = vi.hoisted(() => vi.fn());
 const getFeishuClientMock = vi.hoisted(() => vi.fn());
 const resolveDriveShareUrlMock = vi.hoisted(() => vi.fn());
+const callFeishuApiWithUserTokenMock = vi.hoisted(() => vi.fn());
+const getValidUserTokenMock = vi.hoisted(() => vi.fn());
+const requireUserTokenMock = vi.hoisted(() => vi.fn());
+const resolveOAuthRedirectUriMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../accounts.js", () => ({
   listEnabledFeishuAccounts: listEnabledFeishuAccountsMock,
@@ -14,6 +18,13 @@ vi.mock("../outbound.js", () => ({
 
 vi.mock("./share-url.js", () => ({
   resolveDriveShareUrl: resolveDriveShareUrlMock,
+}));
+
+vi.mock("../oauth.js", () => ({
+  callFeishuApiWithUserToken: callFeishuApiWithUserTokenMock,
+  getValidUserToken: getValidUserTokenMock,
+  requireUserToken: requireUserTokenMock,
+  resolveOAuthRedirectUri: resolveOAuthRedirectUriMock,
 }));
 
 import { registerFeishuWikiTools } from "./wiki.js";
@@ -70,10 +81,45 @@ describe("feishu wiki tool", () => {
       },
     ]);
     getFeishuClientMock.mockReturnValue(mockClient);
+    getValidUserTokenMock.mockResolvedValue({
+      access_token: "user_token",
+      open_id: "ou_user",
+    });
+    requireUserTokenMock.mockResolvedValue({
+      ok: true,
+      token: {
+        access_token: "user_token",
+        open_id: "ou_user",
+      },
+    });
+    resolveOAuthRedirectUriMock.mockReturnValue("https://example.com/callback");
     resolveDriveShareUrlMock.mockResolvedValue({
       ok: true,
       share_url: "https://tenant.feishu.cn/wiki/token",
       meta: {},
+    });
+    callFeishuApiWithUserTokenMock.mockImplementation(async (request: { endpoint: string }) => {
+      if (request.endpoint === "/wiki/v2/spaces/get_node") {
+        return {
+          code: 0,
+          msg: "ok",
+          data: {
+            node: {
+              node_token: "wikiNode1",
+              obj_token: "docxToken1",
+              obj_type: "docx",
+              title: "Wiki Node",
+            },
+          },
+        };
+      }
+      return {
+        code: 0,
+        msg: "ok",
+        data: {
+          items: [],
+        },
+      };
     });
     mockClient.wiki.space.getNode.mockResolvedValue({
       code: 0,
@@ -116,7 +162,12 @@ describe("feishu wiki tool", () => {
       token: "wikiNode1",
     });
 
-    expect(mockClient.wiki.space.getNode).toHaveBeenCalledWith({ params: { token: "wikiNode1" } });
+    expect(callFeishuApiWithUserTokenMock).toHaveBeenCalledWith({
+      method: "GET",
+      endpoint: "/wiki/v2/spaces/get_node",
+      userToken: "user_token",
+      query: { token: "wikiNode1" },
+    });
     expect(resolveDriveShareUrlMock).not.toHaveBeenCalled();
 
     const details = result.details as { obj_token?: string; share_url?: string };
@@ -167,6 +218,7 @@ describe("feishu wiki tool", () => {
       expect.objectContaining({ accountId: "default" }),
       "wikiNode3",
       "wiki",
+      { userToken: "user_token" },
     );
 
     const details = result.details as { share_url?: string };

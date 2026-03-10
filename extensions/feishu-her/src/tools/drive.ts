@@ -12,8 +12,14 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { fetchWithSsrFGuard, stringEnum } from "openclaw/plugin-sdk";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
+import {
+  getValidUserToken,
+  requireUserToken,
+  resolveOAuthRedirectUri,
+} from "../oauth.js";
 import { getFeishuClient } from "../outbound.js";
 import { callChatApi } from "./chat-api.js";
+import { listDriveItemsByUser } from "./drive-browse.js";
 import { resolveDriveShareUrl, type DriveDocType } from "./share-url.js";
 
 function json(data: unknown) {
@@ -77,10 +83,19 @@ function requireStringParam(value: unknown, field: string): string {
 
 function requireFolderToken(value: unknown, action: string): string {
   const token = requireStringParam(value, "folder_token");
-  if (token === "0") {
+  if (token === "0" || token.toLowerCase() === "root") {
     throw new Error(
-      `${action} forbids folder_token=0. Bot app root space is disabled; provide a user-shared folder token.`,
+      `${action} requires a real folder token. For root listing, omit folder_token entirely. Root is not supported for write actions.`,
     );
+  }
+  return token;
+}
+
+function parseListFolderToken(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  const token = requireStringParam(value, "folder_token");
+  if (token === "0" || token.toLowerCase() === "root") {
+    throw new Error("Root listing must omit folder_token; folder_token=0/root is invalid in Feishu Drive API.");
   }
   return token;
 }
@@ -232,25 +247,8 @@ async function callDriveMultipartApi<TData>(
 
 // ── Actions ──
 
-async function listFolder(client: Lark.Client, folderToken: string) {
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const res: any = await client.drive.file.list({
-    params: { folder_token: folderToken },
-  });
-  if (res.code !== 0) throw new Error(res.msg);
-  return {
-    // oxlint-disable-next-line typescript/no-explicit-any
-    files: (res.data?.files ?? []).map((f: any) => ({
-      token: f.token,
-      name: f.name,
-      type: f.type,
-      url: f.url,
-      created_time: f.created_time,
-      modified_time: f.modified_time,
-      owner_id: f.owner_id,
-    })),
-    next_page_token: res.data?.next_page_token,
-  };
+async function listFolderByUser(userToken: string, folderToken?: string) {
+  return listDriveItemsByUser(userToken, folderToken);
 }
 
 async function createFolder(client: Lark.Client, name: string, folderToken: string) {
@@ -518,13 +516,15 @@ export function registerFeishuDriveTools(api: OpenClawPluginApi) {
   if (accounts.length === 0) return;
   const firstAccount: ResolvedFeishuAccount = accounts[0];
   const getClient = () => getFeishuClient(firstAccount);
+  const oauthRedirectUri = resolveOAuthRedirectUri(api.config as Record<string, unknown>);
 
   api.registerTool(
     {
       name: "feishu_drive",
       label: "Feishu Drive",
       description:
-        "Feishu cloud storage operations on user-shared folders only. Actions: list, create_folder, create_online, move, delete, upload_file",
+        "Feishu cloud storage operations using user-visible Drive contents. " +
+        "list without folder_token browses the user's Drive root. Other write actions still require an explicit folder token.",
       parameters: FeishuDriveSchema,
       // oxlint-disable-next-line typescript/no-explicit-any
       async execute(_toolCallId: string, params: any) {
@@ -532,8 +532,15 @@ export function registerFeishuDriveTools(api: OpenClawPluginApi) {
           const client = getClient();
           switch (params.action) {
             case "list": {
-              const folderToken = requireFolderToken(params.folder_token, "list");
-              return json(await listFolder(client, folderToken));
+              const folderToken = parseListFolderToken(params.folder_token);
+              const guard = await requireUserToken({
+                account: firstAccount,
+                redirectUri: oauthRedirectUri,
+                tokenPromise: getValidUserToken(firstAccount),
+                toolLabel: "飞书云盘读取",
+              });
+              if (!guard.ok) return guard.authResponse;
+              return json(await listFolderByUser(guard.token.access_token, folderToken));
             }
             case "create_folder": {
               const name = requireStringParam(params.name, "name");

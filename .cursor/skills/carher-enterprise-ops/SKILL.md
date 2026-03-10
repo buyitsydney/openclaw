@@ -77,32 +77,66 @@ sshpass -p 'PWD' ssh USER@IP "docker exec carher-N cat /tmp/openclaw/openclaw-\$
 **铁律 2：未经用户同意，严禁擅自批量/并行重启 docker！**
 
 - **全量重启/批量重启必须先向用户报告完整方案（含服务器顺序、容器列表、预计耗时），等用户明确确认后才能执行，绝不允许自作主张**
-- 每个容器重建前必须**即时**检查活跃状态（禁止提前批量检查后再批量重建，因为中间时间差会导致检查结果过期）
-- `start-user.sh` 的镜像缓存机制：首次执行会 docker build（比较 git SHA + dirty hash vs 镜像 label），后续同服务器上的容器复用 `carher:local` 镜像（秒级启动，不重复编译）
-- 因此同一台服务器上串行执行多个容器是安全的（只有第一个触发 build）
-- 多台服务器可以并行（各自独立镜像缓存），但仍需用户确认
+- 每个容器重建前必须检查活跃状态（15 分钟内有 `deliver:` 消息则跳过）
 
-**单个容器重建步骤（每个容器必须严格执行）：**
+### 镜像缓存机制（必须理解！）
+
+`start-user.sh` 比较 `git SHA + dirty diff hash` 与 `carher:local` 镜像 label：
+- **不一致** → 触发 `docker build`（约 60-90s）
+- **一致** → 跳过 build，直接启动容器（gateway 启动约 35-40s）
+
+同一台服务器的所有容器**共享同一个 `carher:local` 镜像**，所以：
+- 第一个容器触发 build 后，后续容器全部复用缓存
+- **缓存就绪后，同一台服务器上的多个容器可以并行启动，互不干扰**
+
+### 批量升级正确流程（两阶段）
+
+**阶段 1：镜像重建（三台服务器并行，各启动 1 个容器）**
 
 ```bash
-# 1. 即时检查该容器活跃状态（>0 则跳过，等下一轮）
+# S1、S2、S3 各挑 1 个 IDLE 容器并行启动，触发 docker build
+# 三台服务器并行执行，约 90s 全部完成
+sshpass -p 'PWD' ssh USER@S1 "cd /Data/CarHer && ./start-user.sh --id=X" &
+sshpass -p 'PWD' ssh USER@S2 "cd /Data/CarHer && ./start-user.sh --id=Y" &
+sshpass -p 'PWD' ssh USER@S3 "cd /Data/CarHer && ./start-user.sh --id=Z" &
+wait
+```
+
+**阶段 2：并行重启所有剩余容器（镜像已缓存，全部并行）**
+
+```bash
+# 1. 批量检查所有待重启容器的 15min 活跃度
+for id in 2 3 4 5 ...; do
+  LAST=$(docker logs --since=15m carher-$id 2>&1 | grep -c "deliver:")
+  if [ "$LAST" -gt 0 ]; then echo "carher-$id: ACTIVE (跳过)"
+  else echo "carher-$id: IDLE"; fi
+done
+
+# 2. 所有 IDLE 容器并行重启（用 & 后台执行 + wait 等待全部完成）
+for id in <IDLE容器列表>; do
+  ./start-user.sh --id=$id > /tmp/restart-$id.log 2>&1 &
+done
+wait
+
+# 3. 批量验证所有容器连接状态
+for id in <所有容器>; do
+  echo "carher-$id: $(docker logs carher-$id --since=120s 2>&1 | grep -c 'WSClient connected') connections"
+done
+```
+
+**关键：阶段 2 的并行重启在一台服务器上同时启动所有容器，总耗时 ≈ 单个容器启动时间（约 40s），而非 N × 40s！**
+
+**单个容器重建步骤（非批量场景）：**
+
+```bash
+# 1. 检查该容器活跃状态（>0 则跳过）
 sshpass -p 'PWD' ssh USER@IP "docker logs carher-N --since=15m 2>&1 | grep -c 'deliver:'"
 
-# 2. 确认 0 条消息后，立即重建（不要插入其他容器的检查）
+# 2. 确认 0 条消息后重建
 sshpass -p 'PWD' ssh USER@IP "cd /Data/CarHer && ./start-user.sh --id=N 2>&1 | tail -5"
 
-# 3. 确认 WSClient connected 后，再处理下一个容器
+# 3. 确认 WSClient connected
 sshpass -p 'PWD' ssh USER@IP "docker logs carher-N --since=120s 2>&1 | grep 'WSClient connected'"
-```
-
-**批量升级正确流程示例（S1 有容器 1,3,4,5）：**
-
-```
-检查 carher-1 活跃 → 0 → 重建 carher-1 → 确认连接 →
-检查 carher-3 活跃 → 2条 → 跳过 →
-检查 carher-4 活跃 → 0 → 重建 carher-4 → 确认连接 →
-检查 carher-5 活跃 → 0 → 重建 carher-5 → 确认连接 →
-S1 完成，转 S2...
 ```
 
 重建会自动执行：

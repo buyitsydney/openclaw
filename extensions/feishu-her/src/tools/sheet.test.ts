@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const listEnabledFeishuAccountsMock = vi.hoisted(() => vi.fn());
 const callChatApiMock = vi.hoisted(() => vi.fn());
+const callFeishuApiWithUserTokenMock = vi.hoisted(() => vi.fn());
+const getValidUserTokenMock = vi.hoisted(() => vi.fn());
+const requireUserTokenMock = vi.hoisted(() => vi.fn());
+const resolveOAuthRedirectUriMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../accounts.js", () => ({
   listEnabledFeishuAccounts: listEnabledFeishuAccountsMock,
@@ -14,6 +18,13 @@ vi.mock("./chat-api.js", async () => {
     callChatApi: callChatApiMock,
   };
 });
+
+vi.mock("../oauth.js", () => ({
+  callFeishuApiWithUserToken: callFeishuApiWithUserTokenMock,
+  getValidUserToken: getValidUserTokenMock,
+  requireUserToken: requireUserTokenMock,
+  resolveOAuthRedirectUri: resolveOAuthRedirectUriMock,
+}));
 
 import { registerFeishuSheetTools } from "./sheet.js";
 
@@ -53,6 +64,18 @@ describe("feishu sheet tool", () => {
         config: {},
       },
     ]);
+    getValidUserTokenMock.mockResolvedValue({
+      access_token: "user_token",
+      open_id: "ou_user",
+    });
+    requireUserTokenMock.mockResolvedValue({
+      ok: true,
+      token: {
+        access_token: "user_token",
+        open_id: "ou_user",
+      },
+    });
+    resolveOAuthRedirectUriMock.mockReturnValue("https://example.com/callback");
     callChatApiMock.mockResolvedValue({
       ok: true,
       code: 0,
@@ -61,6 +84,11 @@ describe("feishu sheet tool", () => {
       http_status: 200,
       method: "GET",
       endpoint: "/x",
+    });
+    callFeishuApiWithUserTokenMock.mockResolvedValue({
+      code: 0,
+      msg: "ok",
+      data: { id: "x" },
     });
   });
 
@@ -73,8 +101,7 @@ describe("feishu sheet tool", () => {
   });
 
   it("get_share_url resolves canonical share URL via drive meta batch query", async () => {
-    callChatApiMock.mockResolvedValueOnce({
-      ok: true,
+    callFeishuApiWithUserTokenMock.mockResolvedValueOnce({
       code: 0,
       msg: "Success",
       data: {
@@ -86,9 +113,6 @@ describe("feishu sheet tool", () => {
           },
         ],
       },
-      http_status: 200,
-      method: "POST",
-      endpoint: "/drive/v1/metas/batch_query",
     });
 
     const { api, registerTool } = createApi();
@@ -100,10 +124,11 @@ describe("feishu sheet tool", () => {
       spreadsheet_token: "shtShare1",
     });
 
-    expect(callChatApiMock).toHaveBeenCalledWith(
+    expect(callFeishuApiWithUserTokenMock).toHaveBeenCalledWith(
       expect.objectContaining({
         method: "POST",
         endpoint: "/drive/v1/metas/batch_query",
+        userToken: "user_token",
         body: {
           request_docs: [{ doc_token: "shtShare1", doc_type: "sheet" }],
           with_url: true,
@@ -130,10 +155,11 @@ describe("feishu sheet tool", () => {
       url: "https://sample.feishu.cn/sheets/shtAbc123?sheet=0b12",
     });
 
-    expect(callChatApiMock).toHaveBeenCalledWith(
+    expect(callFeishuApiWithUserTokenMock).toHaveBeenCalledWith(
       expect.objectContaining({
         method: "GET",
         endpoint: "/sheets/v2/spreadsheets/shtAbc123/metainfo",
+        userToken: "user_token",
       }),
     );
   });
@@ -152,10 +178,11 @@ describe("feishu sheet tool", () => {
       user_id_type: "open_id",
     });
 
-    expect(callChatApiMock).toHaveBeenCalledWith(
+    expect(callFeishuApiWithUserTokenMock).toHaveBeenCalledWith(
       expect.objectContaining({
         method: "GET",
         endpoint: "/sheets/v2/spreadsheets/shtRead1/values/5e859b%21A1%3AB2",
+        userToken: "user_token",
         query: {
           valueRenderOption: "Formula",
           dateTimeRenderOption: "FormattedString",
@@ -176,10 +203,11 @@ describe("feishu sheet tool", () => {
       ranges: ["5e859b!A1:B1", "5e859b!A2:B2"],
     });
 
-    expect(callChatApiMock).toHaveBeenCalledWith(
+    expect(callFeishuApiWithUserTokenMock).toHaveBeenCalledWith(
       expect.objectContaining({
         method: "GET",
         endpoint: "/sheets/v2/spreadsheets/shtRead2/values_batch_get",
+        userToken: "user_token",
         query: {
           ranges: "5e859b!A1:B1,5e859b!A2:B2",
         },

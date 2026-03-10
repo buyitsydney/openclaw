@@ -50,7 +50,7 @@ function getTool(registerTool: ReturnType<typeof vi.fn>, name: string): ToolDef 
 
 describe("feishu_deep_search tool", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     listEnabledFeishuAccountsMock.mockReturnValue([
       { accountId: "default", enabled: true, appId: "app_id", appSecret: "app_secret" },
     ]);
@@ -67,6 +67,11 @@ describe("feishu_deep_search tool", () => {
       ok: true,
       share_url: "https://example.feishu.cn/docx/xxx",
       meta: {},
+    });
+    callFeishuApiWithUserTokenMock.mockResolvedValue({
+      code: 0,
+      msg: "success",
+      data: {},
     });
   });
 
@@ -193,8 +198,53 @@ describe("feishu_deep_search tool", () => {
       include_group_archive: false,
     });
 
-    // Only 2 API calls: drive + wiki (no minutes)
-    expect(callFeishuApiWithUserTokenMock).toHaveBeenCalledTimes(2);
+    // Drive docs + wiki + root-folder supplement (no minutes)
+    expect(callFeishuApiWithUserTokenMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("supplements root folder matches for drive results", async () => {
+    callFeishuApiWithUserTokenMock
+      .mockResolvedValueOnce({ code: 0, msg: "success", data: { docs_entities: [] } })
+      .mockResolvedValueOnce({ code: 0, msg: "success", data: { items: [] } })
+      .mockResolvedValueOnce({ code: 0, msg: "success", data: { docs_entities: [] } })
+      .mockResolvedValueOnce({
+        code: 0,
+        msg: "success",
+        data: {
+          files: [
+            {
+              token: "fld_root_1",
+              name: "测试bot权限",
+              type: "folder",
+              url: "https://example.feishu.cn/drive/folder/fld_root_1",
+            },
+          ],
+        },
+      });
+
+    const { api, registerTool } = createApi();
+    registerFeishuDeepSearchTool(api);
+    const tool = getTool(registerTool, "feishu_deep_search");
+
+    const result = await tool.execute("tc_root_folder", {
+      keywords: ["测试bot权限"],
+      include_group_archive: false,
+    });
+    const details = result.details as { results: Array<Record<string, unknown>> };
+    const folderResult = details.results.find((item) => item.token === "fld_root_1");
+
+    expect(folderResult).toMatchObject({
+      source: "drive",
+      title: "测试bot权限",
+      token: "fld_root_1",
+      url: "https://example.feishu.cn/drive/folder/fld_root_1",
+      extra: {
+        object_type: "folder",
+        drive_doc_token: "fld_root_1",
+        keyword: "测试bot权限",
+        discovered_via: "root_browse",
+      },
+    });
   });
 
   it("returns auth response when user token is not available", async () => {

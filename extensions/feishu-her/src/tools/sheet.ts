@@ -2,6 +2,12 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { stringEnum } from "openclaw/plugin-sdk";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
+import {
+  callFeishuApiWithUserToken,
+  getValidUserToken,
+  requireUserToken,
+  resolveOAuthRedirectUri,
+} from "../oauth.js";
 import { callChatApi, makeLocalErrorResult, makeToolResult } from "./chat-api.js";
 import { resolveDriveShareUrl } from "./share-url.js";
 
@@ -101,6 +107,16 @@ type SheetParams = {
   insert_data_option?: (typeof INSERT_DATA_OPTIONS)[number];
 };
 
+type UserSheetApiResult<TData> = {
+  ok: boolean;
+  code: number;
+  msg: string;
+  data: TData | null;
+  http_status: number;
+  method: string;
+  endpoint: string;
+};
+
 function getFirstAccountOrNull(api: OpenClawPluginApi): ResolvedFeishuAccount | null {
   const accounts = listEnabledFeishuAccounts(api.config);
   return accounts[0] ?? null;
@@ -177,9 +193,33 @@ function validateValueRanges(
   return null;
 }
 
+async function callSheetUserApi<TData>(params: {
+  userToken: string;
+  method: "GET" | "POST";
+  endpoint: string;
+  query?: Record<string, string>;
+}): Promise<UserSheetApiResult<TData>> {
+  const result = await callFeishuApiWithUserToken<TData>({
+    method: params.method,
+    endpoint: params.endpoint,
+    userToken: params.userToken,
+    query: params.query,
+  });
+  return {
+    ok: result.code === 0,
+    code: result.code,
+    msg: result.msg,
+    data: result.data,
+    http_status: 200,
+    method: params.method,
+    endpoint: params.endpoint,
+  };
+}
+
 export function registerFeishuSheetTools(api: OpenClawPluginApi) {
   const account = getFirstAccountOrNull(api);
   if (!account) return;
+  const oauthRedirectUri = resolveOAuthRedirectUri(api.config as Record<string, unknown>);
 
   api.registerTool(
     {
@@ -194,10 +234,21 @@ export function registerFeishuSheetTools(api: OpenClawPluginApi) {
         if ("error" in tokenResolved) return makeLocalErrorResult(tokenResolved.error);
         const token = tokenResolved.token;
         const encodedToken = encodeURIComponent(token);
+        const requireReadAccess = () =>
+          requireUserToken({
+            account,
+            redirectUri: oauthRedirectUri,
+            tokenPromise: getValidUserToken(account),
+            toolLabel: "飞书表格读取",
+          });
 
         switch (params.action) {
           case "get_share_url": {
-            const share = await resolveDriveShareUrl(account, token, "sheet");
+            const guard = await requireReadAccess();
+            if (!guard.ok) return guard.authResponse;
+            const share = await resolveDriveShareUrl(account, token, "sheet", {
+              userToken: guard.token.access_token,
+            });
             if (!share.ok) {
               const details =
                 share.code !== undefined
@@ -221,8 +272,10 @@ export function registerFeishuSheetTools(api: OpenClawPluginApi) {
             });
           }
           case "get_meta": {
-            const result = await callChatApi({
-              account,
+            const guard = await requireReadAccess();
+            if (!guard.ok) return guard.authResponse;
+            const result = await callSheetUserApi({
+              userToken: guard.token.access_token,
               method: "GET",
               endpoint: `/sheets/v2/spreadsheets/${encodedToken}/metainfo`,
             });
@@ -231,8 +284,10 @@ export function registerFeishuSheetTools(api: OpenClawPluginApi) {
           case "read_range": {
             const rangeError = validateRange(params.range, "range");
             if (rangeError) return makeLocalErrorResult(rangeError);
-            const result = await callChatApi({
-              account,
+            const guard = await requireReadAccess();
+            if (!guard.ok) return guard.authResponse;
+            const result = await callSheetUserApi({
+              userToken: guard.token.access_token,
               method: "GET",
               endpoint: `/sheets/v2/spreadsheets/${encodedToken}/values/${encodePathSegmentStrict(params.range!)}`,
               query: {
@@ -255,8 +310,10 @@ export function registerFeishuSheetTools(api: OpenClawPluginApi) {
               const rangeError = validateRange(item, "ranges");
               if (rangeError) return makeLocalErrorResult(rangeError);
             }
-            const result = await callChatApi({
-              account,
+            const guard = await requireReadAccess();
+            if (!guard.ok) return guard.authResponse;
+            const result = await callSheetUserApi({
+              userToken: guard.token.access_token,
               method: "GET",
               endpoint: `/sheets/v2/spreadsheets/${encodedToken}/values_batch_get`,
               query: {

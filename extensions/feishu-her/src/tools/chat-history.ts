@@ -23,9 +23,11 @@ import {
   loadArchiveEntries,
   type GroupArchiveEntry,
 } from "../group-archive.js";
+import type { FeishuFetchedMessageItem } from "../merge-forward.js";
 import {
   callFeishuApiWithUserToken,
   getValidUserToken,
+  getValidUserTokenForOpenId,
   requireUserToken,
   resolveOAuthRedirectUri,
   type FeishuUserToken,
@@ -38,6 +40,8 @@ function json(data: unknown) {
     details: data,
   };
 }
+
+const MERGE_FORWARD_DISABLED_TEXT = "[merged forward disabled]";
 
 // ── Time helpers ──
 
@@ -153,6 +157,10 @@ function normalizeMessage(raw: any): NormalizedMessage {
       case "system":
         text = parsed.content ?? body;
         break;
+      case "merge_forward":
+        text = MERGE_FORWARD_DISABLED_TEXT;
+        coverage = "none";
+        break;
       default:
         // Feishu returns "nonsupport" for video messages in history API
         if (msgType === "nonsupport") {
@@ -190,6 +198,74 @@ function normalizeMessage(raw: any): NormalizedMessage {
     ...(imageKey && { image_key: imageKey }),
     coverage,
   };
+}
+
+type HistoryApiError = Error & {
+  feishuCode?: number;
+  unsupportedForCurrentToken?: boolean;
+};
+
+function isUnsupportedForCurrentToken(code: number | undefined, msg: string | undefined): boolean {
+  return code === APP_TYPE_UNSUPPORTED_CODE || (code === 230001 && /not supported/i.test(msg ?? ""));
+}
+
+function isUnsupportedTokenError(error: unknown): boolean {
+  return Boolean((error as HistoryApiError | undefined)?.unsupportedForCurrentToken);
+}
+
+function buildHistoryApiError(code: number | undefined, msg: string | undefined): HistoryApiError {
+  const error = new Error(`Feishu API error: code=${code ?? "unknown"} msg=${msg ?? ""}`) as HistoryApiError;
+  if (typeof code === "number") error.feishuCode = code;
+  if (isUnsupportedForCurrentToken(code, msg)) error.unsupportedForCurrentToken = true;
+  return error;
+}
+
+async function fetchMessageItemsViaTenantToken(params: {
+  account: ResolvedFeishuAccount;
+  messageId: string;
+}): Promise<FeishuFetchedMessageItem[]> {
+  const client = getFeishuClient(params.account);
+  const res = (await client.im.message.get({
+    path: { message_id: params.messageId },
+  })) as {
+    code?: number;
+    msg?: string;
+    data?: { items?: FeishuFetchedMessageItem[] };
+  };
+  if (res.code !== 0) {
+    throw buildHistoryApiError(res.code, res.msg);
+  }
+  return Array.isArray(res.data?.items) ? res.data.items : [];
+}
+
+async function fetchMessageItemsWithToken(params: {
+  account: ResolvedFeishuAccount;
+  token: string;
+  messageId: string;
+}): Promise<FeishuFetchedMessageItem[]> {
+  const res = await callFeishuApiWithUserToken<{ items: unknown[] }>({
+    method: "GET",
+    endpoint: `/im/v1/messages/${params.messageId}`,
+    userToken: params.token,
+  });
+  if (res.code === 0) {
+    return (res.data?.items ?? []) as FeishuFetchedMessageItem[];
+  }
+  if (isUnsupportedForCurrentToken(res.code, res.msg)) {
+    return fetchMessageItemsViaTenantToken({
+      account: params.account,
+      messageId: params.messageId,
+    });
+  }
+  throw buildHistoryApiError(res.code, res.msg);
+}
+
+async function hydrateMergeForwardMessage(params: {
+  message: NormalizedMessage;
+}) {
+  if (params.message.msg_type !== "merge_forward" || !params.message.message_id) return;
+  params.message.text = MERGE_FORWARD_DISABLED_TEXT;
+  params.message.coverage = "none";
 }
 
 const ARCHIVE_SUPPLEMENTABLE = new Set([
@@ -245,6 +321,12 @@ async function ensureArchivedMessages(params: {
   };
 
   for (const message of params.messages) {
+    if (message.msg_type === "merge_forward") {
+      message.text = MERGE_FORWARD_DISABLED_TEXT;
+      message.coverage = "none";
+      continue;
+    }
+
     if (!ARCHIVE_SUPPLEMENTABLE.has(message.msg_type)) continue;
 
     const chatId = params.chatId ?? message.chat_id;
@@ -323,9 +405,9 @@ async function ensureArchivedMessages(params: {
   }
 }
 
-// ── Tenant token fallback for enterprises where user_access_token
-// is rejected with 231204 ("b2c/b2b app not support") on im/v1/messages.
-// The tenant_access_token uses the same API and response format.
+// ── Tenant token fallback for enterprises where Feishu rejects a user token
+// on /im/v1/messages with an "app/token not supported" error. The
+// tenant_access_token uses the same API and response format.
 
 const APP_TYPE_UNSUPPORTED_CODE = 231204;
 
@@ -358,6 +440,7 @@ type ListHistoryResult = {
 };
 
 async function fetchChatHistory(params: {
+  account: ResolvedFeishuAccount;
   token: string;
   chatId: string;
   startMs: number;
@@ -393,18 +476,17 @@ async function fetchChatHistory(params: {
       query,
     });
 
-    if (res.code === APP_TYPE_UNSUPPORTED_CODE) {
-      throw Object.assign(new Error(`Feishu API error: code=${res.code} msg=${res.msg}`), {
-        feishuCode: APP_TYPE_UNSUPPORTED_CODE,
-      });
-    }
     if (res.code !== 0) {
-      throw new Error(`Feishu API error: code=${res.code} msg=${res.msg}`);
+      throw buildHistoryApiError(res.code, res.msg);
     }
 
     const items = res.data?.items ?? [];
     for (const item of items) {
-      messages.push(normalizeMessage(item));
+      const normalized = normalizeMessage(item);
+      await hydrateMergeForwardMessage({
+        message: normalized,
+      });
+      messages.push(normalized);
       remaining--;
       if (remaining <= 0) break;
     }
@@ -430,6 +512,7 @@ async function fetchChatHistory(params: {
 }
 
 async function fetchThreadMessages(params: {
+  account: ResolvedFeishuAccount;
   token: string;
   threadId: string;
   pageSize: number;
@@ -458,40 +541,42 @@ async function fetchThreadMessages(params: {
     query,
   });
 
-  if (res.code === APP_TYPE_UNSUPPORTED_CODE) {
-    throw Object.assign(new Error(`Feishu API error: code=${res.code} msg=${res.msg}`), {
-      feishuCode: APP_TYPE_UNSUPPORTED_CODE,
-    });
-  }
   if (res.code !== 0) {
-    throw new Error(`Feishu API error: code=${res.code} msg=${res.msg}`);
+    throw buildHistoryApiError(res.code, res.msg);
   }
 
   const items = res.data?.items ?? [];
+  const messages: NormalizedMessage[] = [];
+  for (const item of items) {
+    const normalized = normalizeMessage(item);
+    await hydrateMergeForwardMessage({
+      message: normalized,
+    });
+    messages.push(normalized);
+  }
   return {
-    messages: items.map(normalizeMessage),
+    messages,
     has_more: res.data?.has_more ?? false,
     ...(res.data?.page_token && { page_token: res.data.page_token }),
   };
 }
 
 async function fetchSingleMessage(params: {
+  account: ResolvedFeishuAccount;
   token: string;
   messageId: string;
 }): Promise<NormalizedMessage> {
-  const res = await callFeishuApiWithUserToken<{ items: unknown[] }>({
-    method: "GET",
-    endpoint: `/im/v1/messages/${params.messageId}`,
-    userToken: params.token,
+  const items = await fetchMessageItemsWithToken({
+    account: params.account,
+    token: params.token,
+    messageId: params.messageId,
   });
-
-  if (res.code !== 0) {
-    throw new Error(`Feishu API error: code=${res.code} msg=${res.msg}`);
-  }
-
-  const items = res.data?.items ?? [];
   if (items.length === 0) throw new Error("Message not found");
-  return normalizeMessage(items[0]);
+  const message = normalizeMessage(items[0]);
+  await hydrateMergeForwardMessage({
+    message,
+  });
+  return message;
 }
 
 // ── Schema ──
@@ -556,7 +641,7 @@ export function registerFeishuChatHistoryTool(api: OpenClawPluginApi) {
   const redirectUri = resolveOAuthRedirectUri(api.config as Record<string, unknown>);
 
   api.registerTool(
-    {
+    (toolCtx) => ({
       name: "feishu_group_history",
       label: "Feishu Group Chat History",
       description:
@@ -568,16 +653,21 @@ export function registerFeishuChatHistoryTool(api: OpenClawPluginApi) {
         "- Messages with has_thread=true have thread replies. Use list_thread to fetch them.\n" +
         "- coverage='full' means text fully readable. 'partial' means metadata only (image/file/audio). " +
         "'none' means content degraded (interactive cards, video).\n" +
+        "- merge_forward: disabled deliberately. The tool returns a fixed placeholder and never expands nested content.\n" +
         "- To check if a user was @mentioned: compare mentions[i].id with the user's own open_id.\n" +
         "- For comprehensive group summaries, set include_thread_replies=true.\n\n" +
         "If authorization is needed, the tool returns an auth_url — send it to the user as a clickable link.",
       parameters: ChatHistorySchema,
       // oxlint-disable-next-line typescript/no-explicit-any
       async execute(_toolCallId: string, params: any) {
+        // Bind reads to the trusted current requester instead of an arbitrary stored user token.
+        const requesterSenderId = toolCtx.requesterSenderId?.trim();
         const guard = await requireUserToken({
           account: firstAccount,
           redirectUri,
-          tokenPromise: getValidUserToken(firstAccount),
+          tokenPromise: requesterSenderId
+            ? getValidUserTokenForOpenId(firstAccount, requesterSenderId)
+            : getValidUserToken(firstAccount),
           toolLabel: "群聊历史",
         });
         if (!guard.ok) return guard.authResponse;
@@ -599,7 +689,7 @@ export function registerFeishuChatHistoryTool(api: OpenClawPluginApi) {
           return json({ error: msg });
         }
       },
-    },
+    }),
     { name: "feishu_group_history" },
   );
   api.logger.info?.("feishu: registered feishu_group_history tool");
@@ -631,6 +721,7 @@ async function handleListHistory(
   let result: ListHistoryResult;
   try {
     result = await fetchChatHistory({
+      account,
       token,
       chatId: params.chat_id,
       startMs,
@@ -639,10 +730,11 @@ async function handleListHistory(
       pageToken: params.page_token,
     });
   } catch (err) {
-    if ((err as { feishuCode?: number }).feishuCode === APP_TYPE_UNSUPPORTED_CODE) {
+    if (isUnsupportedTokenError(err)) {
       token = await getTenantAccessToken(account);
       usedTenantFallback = true;
       result = await fetchChatHistory({
+        account,
         token,
         chatId: params.chat_id,
         startMs,
@@ -669,6 +761,7 @@ async function handleListHistory(
     for (const m of threaded) {
       try {
         const threadResult = await fetchThreadMessages({
+          account,
           token,
           threadId: m.thread_id!,
           pageSize: API_PAGE_SIZE,
@@ -720,16 +813,18 @@ async function handleListThread(
   let result: { messages: NormalizedMessage[]; has_more: boolean; page_token?: string };
   try {
     result = await fetchThreadMessages({
+      account,
       token,
       threadId: params.thread_id,
       pageSize: Math.min(limit, API_PAGE_SIZE),
       pageToken: params.page_token,
     });
   } catch (err) {
-    if ((err as { feishuCode?: number }).feishuCode === APP_TYPE_UNSUPPORTED_CODE) {
+    if (isUnsupportedTokenError(err)) {
       token = await getTenantAccessToken(account);
       usedTenantFallback = true;
       result = await fetchThreadMessages({
+        account,
         token,
         threadId: params.thread_id,
         pageSize: Math.min(limit, API_PAGE_SIZE),
@@ -765,6 +860,7 @@ async function handleGetMessage(
   }
 
   const message = await fetchSingleMessage({
+    account,
     token: userToken.access_token,
     messageId: params.message_id,
   });
