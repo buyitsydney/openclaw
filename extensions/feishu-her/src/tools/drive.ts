@@ -19,7 +19,7 @@ import {
 } from "../oauth.js";
 import { getFeishuClient } from "../outbound.js";
 import { callChatApi } from "./chat-api.js";
-import { listDriveItemsByUser } from "./drive-browse.js";
+import { listDriveItemsByUser, type DriveBrowseItem } from "./drive-browse.js";
 import { resolveDriveShareUrl, type DriveDocType } from "./share-url.js";
 
 function json(data: unknown) {
@@ -57,6 +57,24 @@ type DriveUploadFinishData = {
   file_token?: string;
 };
 
+type DriveFolderListItem = Required<Pick<DriveBrowseItem, "token" | "name">> &
+  DriveBrowseItem & {
+    type: "folder";
+  };
+
+type DriveFileListItem = Required<Pick<DriveBrowseItem, "token" | "name" | "type">> &
+  DriveBrowseItem;
+
+type DriveListResult = {
+  scope: "root" | "folder";
+  folder_count: number;
+  file_count: number;
+  folders: DriveFolderListItem[];
+  files: DriveFileListItem[];
+  next_page_token?: string;
+  folder_token?: string;
+};
+
 const DRIVE_FILE_TYPES = new Set([
   "doc",
   "docx",
@@ -91,13 +109,19 @@ function requireFolderToken(value: unknown, action: string): string {
   return token;
 }
 
-function parseListFolderToken(value: unknown): string | undefined {
-  if (value === undefined) return undefined;
+function requireListFolderToken(value: unknown): string {
   const token = requireStringParam(value, "folder_token");
   if (token === "0" || token.toLowerCase() === "root") {
-    throw new Error("Root listing must omit folder_token; folder_token=0/root is invalid in Feishu Drive API.");
+    throw new Error("list_folder requires a real folder token. Root browsing must use action=list_root.");
   }
   return token;
+}
+
+function rejectFolderTokenForRoot(value: unknown): void {
+  if (value === undefined) return;
+  throw new Error(
+    "list_root does not accept folder_token. To browse a specific folder, use action=list_folder.",
+  );
 }
 
 function requireFileType(value: unknown): string {
@@ -247,8 +271,44 @@ async function callDriveMultipartApi<TData>(
 
 // ── Actions ──
 
-async function listFolderByUser(userToken: string, folderToken?: string) {
-  return listDriveItemsByUser(userToken, folderToken);
+function isDriveFolderItem(item: DriveBrowseItem): item is DriveFolderListItem {
+  return (
+    item.type === "folder" &&
+    typeof item.token === "string" &&
+    item.token.trim().length > 0 &&
+    typeof item.name === "string" &&
+    item.name.trim().length > 0
+  );
+}
+
+function isDriveFileItem(item: DriveBrowseItem): item is DriveFileListItem {
+  return (
+    item.type !== "folder" &&
+    typeof item.type === "string" &&
+    item.type.trim().length > 0 &&
+    typeof item.token === "string" &&
+    item.token.trim().length > 0 &&
+    typeof item.name === "string" &&
+    item.name.trim().length > 0
+  );
+}
+
+function toDriveListResult(params: {
+  scope: "root" | "folder";
+  folderToken?: string;
+  result: Awaited<ReturnType<typeof listDriveItemsByUser>>;
+}): DriveListResult {
+  const folders = params.result.files.filter(isDriveFolderItem);
+  const files = params.result.files.filter(isDriveFileItem);
+  return {
+    scope: params.scope,
+    ...(params.folderToken ? { folder_token: params.folderToken } : {}),
+    folder_count: folders.length,
+    file_count: files.length,
+    folders,
+    files,
+    ...(params.result.next_page_token ? { next_page_token: params.result.next_page_token } : {}),
+  };
 }
 
 async function createFolder(client: Lark.Client, name: string, folderToken: string) {
@@ -466,7 +526,8 @@ async function uploadFileByMultipart(
 // ── Schema ──
 
 const DRIVE_ACTIONS = [
-  "list",
+  "list_root",
+  "list_folder",
   "create_folder",
   "create_online",
   "move",
@@ -479,7 +540,7 @@ const FeishuDriveSchema = Type.Object({
   folder_token: Type.Optional(
     Type.String({
       description:
-        "Folder token (required for list/create_folder/create_online/move target/upload_file). Root/app-space access is disabled.",
+        "Folder token (required for list_folder/create_folder/create_online/move target/upload_file). Do not pass it to list_root.",
     }),
   ),
   name: Type.Optional(Type.String({ description: "Folder name (required for create_folder)" })),
@@ -524,15 +585,16 @@ export function registerFeishuDriveTools(api: OpenClawPluginApi) {
       label: "Feishu Drive",
       description:
         "Feishu cloud storage operations using user-visible Drive contents. " +
-        "list without folder_token browses the user's Drive root. Other write actions still require an explicit folder token.",
+        "Use list_root to browse the user's Drive root, and list_folder to open a specific folder token. " +
+        "Write actions still require an explicit folder token.",
       parameters: FeishuDriveSchema,
       // oxlint-disable-next-line typescript/no-explicit-any
       async execute(_toolCallId: string, params: any) {
         try {
           const client = getClient();
           switch (params.action) {
-            case "list": {
-              const folderToken = parseListFolderToken(params.folder_token);
+            case "list_root": {
+              rejectFolderTokenForRoot(params.folder_token);
               const guard = await requireUserToken({
                 account: firstAccount,
                 redirectUri: oauthRedirectUri,
@@ -540,7 +602,29 @@ export function registerFeishuDriveTools(api: OpenClawPluginApi) {
                 toolLabel: "飞书云盘读取",
               });
               if (!guard.ok) return guard.authResponse;
-              return json(await listFolderByUser(guard.token.access_token, folderToken));
+              return json(
+                toDriveListResult({
+                  scope: "root",
+                  result: await listDriveItemsByUser(guard.token.access_token),
+                }),
+              );
+            }
+            case "list_folder": {
+              const folderToken = requireListFolderToken(params.folder_token);
+              const guard = await requireUserToken({
+                account: firstAccount,
+                redirectUri: oauthRedirectUri,
+                tokenPromise: getValidUserToken(firstAccount),
+                toolLabel: "飞书云盘读取",
+              });
+              if (!guard.ok) return guard.authResponse;
+              return json(
+                toDriveListResult({
+                  scope: "folder",
+                  folderToken,
+                  result: await listDriveItemsByUser(guard.token.access_token, folderToken),
+                }),
+              );
             }
             case "create_folder": {
               const name = requireStringParam(params.name, "name");

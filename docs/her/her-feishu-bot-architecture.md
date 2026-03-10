@@ -2,17 +2,26 @@
 
 通过飞书（Lark）机器人与 OpenClaw 对话，让用户在飞书客户端内获得 AI 助手体验。
 
-**状态：飞书通道（消息 + 文档 + Wiki + Drive + Sheet + Bitable + Task v2 + Chat 管理全套）已完成本地 Her / docker1 双路回归并通过（2026-03-03 大升级）**（含 Chat 工具拆分 6 模块、云盘在线文件创建 docx/sheet/bitable、大文件分片上传、URL 统一走 resolveDriveShareUrl 零拼接、outbound URL 守卫、message 工具独立、异步上传 subagent 约束、delivery-recovery 永久错误识别）
+**状态：飞书通道主链路（消息 + 文档 + Wiki + Drive + Sheet + Bitable + Task v2 + Chat 管理）已完成多轮本地 Her / docker1 tester 回归；其中 Drive/Wiki 只读主链路与 `list_root` / `list_folder` contract 已验证生效，但当前仍不应宣称“全套能力 100% 零风险上线”。**（含 Chat 工具拆分 6 模块、云盘在线文件创建 docx/sheet/bitable、大文件分片上传、URL 统一走 resolveDriveShareUrl 零拼接、outbound URL 守卫、message 工具独立、异步上传 subagent 约束、delivery-recovery 永久错误识别）
 
 ## 核心结论
 
 - **对现有 OpenClaw 核心代码：零修改** -- 已验证
 - **对现有 Her（realtime 插件）代码：零修改** -- 已验证
 - **全部新增代码限制在 `extensions/feishu-her/` 目录内** -- 已验证（原 extensions/feishu/，重命名以物理隔离于 upstream）
-- **风险评估：极低** -- 已通过端到端测试确认
+- **风险评估：中低** -- Drive/Wiki 只读主链路可灰度，但仍存在推理层权限误判与局部写链路脆弱点
 - **实际新增代码：~1800 行**（包含 cron 直投修复 + 富文本解析修复 + 图片收发 + 图片接收（vision）+ 目标解析 + 命令授权修复 + 富文本回复 + CardKit 流式卡片 + 群聊归档）
 - **本次上线策略（2026-03-03）**：先上线已实现能力；企业多 Her 互拉群“产品化”列为下个迭代的 P0 TODO
 - **互拉群接口事实（已二次实测）**：`member_id_type=app_id` 可拉 bot 入群（`code=0`）；`members/list` 无法反查 bot（`member_id_type=app_id` 返回 `99992402`，`open_id` 列表仅返回人类）
+
+---
+
+## 2026-03-10 状态复核
+
+- `feishu_drive` 的目录浏览语义已收敛为 `list_root` / `list_folder`，真实 session 中已确认不再使用旧的模糊 `list`
+- 当前主要风险不在 Drive root API 本身，而在模型可能把“目录列表可见”直接说成“权限已验证正确”
+- `docker1` 最新全量回归最终完成并产出报告，但过程中仍出现过 `feishu_sheet.append` 参数格式修正与 `TT: undefined function: 3` 告警
+- 因此当前更准确的上线口径应为：**主链路可灰度、可继续用户验证，不是零风险全量放量**
 
 ---
 

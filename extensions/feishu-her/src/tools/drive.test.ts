@@ -171,17 +171,77 @@ describe("feishu-her feishu_drive visibility guard", () => {
     }
   });
 
-  it("lists user root when folder_token is omitted", async () => {
+  it("lists user root with deterministic folders/files split", async () => {
     const tool = registerAndGetTool();
-    const result = await tool.execute("tc1", { action: "list" });
-    const details = result.details as { files?: unknown[] };
+    callFeishuApiWithUserTokenMock.mockResolvedValueOnce({
+      code: 0,
+      msg: "ok",
+      data: {
+        files: [
+          {
+            token: "fld_root_1",
+            name: "测试云盘bot权限",
+            type: "folder",
+            owner_id: "ou_user",
+            url: "https://example.feishu.cn/drive/folder/fld_root_1",
+          },
+          {
+            token: "file_root_1",
+            name: "客户工程院-罗开杰-HMI负责人.pdf",
+            type: "file",
+            owner_id: "ou_user",
+            url: "https://example.feishu.cn/file/file_root_1",
+          },
+        ],
+      },
+    });
+    const result = await tool.execute("tc1", { action: "list_root" });
+    const details = result.details as {
+      scope?: string;
+      folder_count?: number;
+      file_count?: number;
+      folders?: unknown[];
+      files?: unknown[];
+    };
 
-    expect(details.files).toEqual([]);
+    expect(details.scope).toBe("root");
+    expect(details.folder_count).toBe(1);
+    expect(details.file_count).toBe(1);
+    expect(details.folders).toEqual([
+      {
+        token: "fld_root_1",
+        name: "测试云盘bot权限",
+        type: "folder",
+        owner_id: "ou_user",
+        url: "https://example.feishu.cn/drive/folder/fld_root_1",
+      },
+    ]);
+    expect(details.files).toEqual([
+      {
+        token: "file_root_1",
+        name: "客户工程院-罗开杰-HMI负责人.pdf",
+        type: "file",
+        owner_id: "ou_user",
+        url: "https://example.feishu.cn/file/file_root_1",
+      },
+    ]);
     expect(callFeishuApiWithUserTokenMock).toHaveBeenCalledWith({
       method: "GET",
       endpoint: "/drive/v1/files",
       userToken: "user_token",
     });
+  });
+
+  it("rejects list_root when folder_token is provided", async () => {
+    const tool = registerAndGetTool();
+    const result = await tool.execute("tc_root_bad", {
+      action: "list_root",
+      folder_token: "fld_shared",
+    });
+    const details = result.details as { error?: string };
+
+    expect(details.error).toContain("list_root does not accept folder_token");
+    expect(callFeishuApiWithUserTokenMock).not.toHaveBeenCalled();
   });
 
   it("rejects create_folder with folder_token=0", async () => {
@@ -197,10 +257,58 @@ describe("feishu-her feishu_drive visibility guard", () => {
     expect(createFolderMock).not.toHaveBeenCalled();
   });
 
-  it("lists shared folder when folder_token provided", async () => {
+  it("lists a specific folder with deterministic folders/files split", async () => {
     const tool = registerAndGetTool();
-    await tool.execute("tc3", { action: "list", folder_token: "fld_shared" });
+    callFeishuApiWithUserTokenMock.mockResolvedValueOnce({
+      code: 0,
+      msg: "ok",
+      data: {
+        files: [
+          {
+            token: "fld_child_1",
+            name: "技术资料",
+            type: "folder",
+            parent_token: "fld_shared",
+          },
+          {
+            token: "docx_1",
+            name: "方案文档",
+            type: "docx",
+            parent_token: "fld_shared",
+          },
+        ],
+      },
+    });
+    const result = await tool.execute("tc3", { action: "list_folder", folder_token: "fld_shared" });
+    const details = result.details as {
+      scope?: string;
+      folder_token?: string;
+      folder_count?: number;
+      file_count?: number;
+      folders?: unknown[];
+      files?: unknown[];
+    };
 
+    expect(details.scope).toBe("folder");
+    expect(details.folder_token).toBe("fld_shared");
+    expect(details.folder_count).toBe(1);
+    expect(details.file_count).toBe(1);
+    expect(details.folders).toEqual([
+      {
+        token: "fld_child_1",
+        name: "技术资料",
+        type: "folder",
+        parent_token: "fld_shared",
+      },
+    ]);
+    expect(details.files).toEqual([
+      {
+        token: "docx_1",
+        name: "方案文档",
+        type: "docx",
+        parent_token: "fld_shared",
+      },
+    ]);
     expect(callFeishuApiWithUserTokenMock).toHaveBeenCalledWith({
       method: "GET",
       endpoint: "/drive/v1/files",
@@ -209,12 +317,12 @@ describe("feishu-her feishu_drive visibility guard", () => {
     });
   });
 
-  it("rejects list with folder_token=root", async () => {
+  it("rejects list_folder with folder_token=root", async () => {
     const tool = registerAndGetTool();
-    const result = await tool.execute("tc_root", { action: "list", folder_token: "root" });
+    const result = await tool.execute("tc_root", { action: "list_folder", folder_token: "root" });
     const details = result.details as { error?: string };
 
-    expect(details.error).toContain("Root listing must omit folder_token");
+    expect(details.error).toContain("list_folder requires a real folder token");
     expect(callFeishuApiWithUserTokenMock).not.toHaveBeenCalled();
   });
 

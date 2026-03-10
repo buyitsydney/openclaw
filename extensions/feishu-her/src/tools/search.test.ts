@@ -291,7 +291,7 @@ describe("feishu_search tool", () => {
         drive_doc_token: "fld_root_1",
         read_tool: "feishu_drive",
         read_params: {
-          action: "list",
+          action: "list_folder",
           folder_token: "fld_root_1",
         },
         owner_id: "ou_owner",

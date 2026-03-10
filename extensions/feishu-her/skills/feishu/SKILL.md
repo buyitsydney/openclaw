@@ -169,9 +169,9 @@ Bot 对 Wiki 节点、文档、多维表格记录没有删除权限，无法通�
 - **云盘（Drive）**= 独立的文件存储系统，类似百度网盘 → 用 `feishu_drive`
 - 它们是**完全独立的系统**。用户说"我的空间"通常指 Wiki，不是云盘
 - **用户不可见 = 没有**：凡是用户看不到的应用私有空间资源，一律视为不可用，禁止对外表述为"你的云盘/你的文档"。
-- **Drive 读取默认按用户权限理解**：`feishu_drive(action="list")` 在**省略** `folder_token` 时，会直接列出**用户自己的 Drive 根目录**（user-first 读路径）。
-- **根目录严禁写成 `folder_token=0` 或 `folder_token=root`**：飞书 Drive API 对这两种写法会直接报错；根目录的正确方式永远是“省略 `folder_token`”。
-- **禁止把 root list / folder 发现 / 文档读取成功归因于 tenant**：若 `feishu_drive(list)`、`feishu_search`、`feishu_doc` 读到了用户可见内容，对外必须表述为“按用户自己的飞书权限可见/可读”。
+- **Drive 读取默认按用户权限理解**：`feishu_drive(action="list_root")` 会直接列出**用户自己的 Drive 根目录**（user-first 读路径）；`feishu_drive(action="list_folder", folder_token="...")` 只打开一个明确目录。
+- **根目录严禁写成 `folder_token=0` 或 `folder_token=root`**：根目录只能用 `action="list_root"`；`list_folder` 必须传真实 `folder_token`。
+- **禁止把 root list / folder 发现 / 文档读取成功归因于 tenant**：若 `feishu_drive(list_root/list_folder)`、`feishu_search`、`feishu_doc` 读到了用户可见内容，对外必须表述为“按用户自己的飞书权限可见/可读”。
 - **tenant / app-space 不是用户云盘**：只有在明确讨论 bot 自己的写入空间或旧写路径时，才允许提到 tenant；默认读链路一律先按 user-first 理解。
 - 已启用代码级保护：`feishu_drive(create_folder/create_online/move/upload_file)` 与 `feishu_doc(create)` 仍必须提供显式 `folder_token`；禁止 `folder_token=0` 和任何 root/app-space 默认写入。
 
@@ -348,7 +348,8 @@ Step 4: 结构化回答 + 参考来源列表（每条必须附带 [标题](链�
 - 一旦拿到 `folder_token`，必须**立刻**写入工作区 `MEMORY.md` 的 `## Drive Shares` 段落，**禁止只写 `TOOLS.md`**。
 - 写入字段最少包含：`folder_token`、`url`、`folder_name`、`shared_by`、`granted_scope`（`read`/`edit`/`unknown`）、`recorded_at`。
 - 去重规则：以 `folder_token` 为唯一键；已存在则更新字段，不重复新增。
-- 执行任何 `feishu_drive` 操作前，先读取 `MEMORY.md` 的 `Drive Shares`，优先复用已记录 token。
+- 执行 `feishu_drive(action="list_folder"|create_folder|create_online|move|upload_file)` 前，先读取 `MEMORY.md` 的 `Drive Shares`，优先复用已记录 token。
+- **回答“我的云盘根目录有什么 / 有几个文件夹 / 私有目录能不能看到”时，必须先调 `feishu_drive(action="list_root")`**，禁止用 `Drive Shares`、`feishu_search` 或旧结论代替根目录列表。
 - 只有用户明确要求“忘掉/删除某个分享”时，才删除对应记录；否则长期保留，避免 `/new` 后丢失。
 - 对 `feishu_drive(action="upload_file")`，必须同步维护 `MEMORY.md` 的 `## Drive Upload Tasks` 段落，记录每个上传任务的状态机。
 - `Drive Upload Tasks` 的最小字段：`task_id`、`folder_token`、`file_name`、`file_path`、`status`、`started_at`、`last_update_at`、`result_file_token`、`result_url`、`error`。
@@ -854,16 +855,16 @@ feishu_message(action="list_sent", chat_id="oc_xxx", count=5)
 
 ### 云盘（Drive）
 
-- `feishu_drive(action="list")` — 列**用户自己的 Drive 根目录**（user-first；根目录时不要传 `folder_token`）
-- `feishu_drive(action="list", folder_token="fldcnXXX")` — 列指定文件夹
+- `feishu_drive(action="list_root")` — 列**用户自己的 Drive 根目录**（返回分离的 `folders[]` / `files[]`，直接可回答“有几个文件夹”）
+- `feishu_drive(action="list_folder", folder_token="fldcnXXX")` — 列指定文件夹（`folder_token` 必须来自上一步列表结果或分享链接）
 - `feishu_drive(action="create_folder", name="xxx", folder_token="fldcnXXX")` — 在指定可见目录下创建文件夹
 - `feishu_drive(action="create_online", folder_token="fldcnXXX", title="预算表", online_type="sheet")` — 在指定可见目录创建在线文件（`online_type`: `docx|sheet|bitable`）
 - `feishu_drive(action="move", file_token="xxx", file_type="docx", folder_token="fldcnXXX")` — 移动到指定可见目录
 - `feishu_drive(action="delete", file_token="xxx", file_type="docx")` — 删除
 - `feishu_drive(action="upload_file", folder_token="fldcnXXX", file_path="/absolute/path/report.pptx")` — 分片上传本地文件到云盘目录（支持大文件，自动 prepare/part/finish）
 - 收到新的文件夹链接时，先解析并写入 `MEMORY.md -> Drive Shares`，再执行 `feishu_drive`
-- **只对 root list 允许省略 `folder_token`**；其余写操作仍必须提供显式目录 token。
-- **严禁**把根目录写成 `folder_token=0` 或 `folder_token=root`；若用户这样说，必须纠正为“请直接省略 `folder_token`”。
+- **根目录只能用 `list_root`**；其余目录读取与写操作都必须提供显式 `folder_token`。
+- **严禁**把根目录写成 `folder_token=0` 或 `folder_token=root`；若用户这样说，必须纠正为“请改用 `action=list_root`”。
 - **对外解释时，禁止说“tenant 权限成功”**；如果根目录或某个目录可读，统一表述为“该内容对当前用户可见，所以 Her 也可读”。
 - 聊天附件发送（`message`）和云盘上传是两条链路：聊天附件仍受 30MB 限制；大文件必须走 `feishu_drive(action="upload_file", ...)`。
 - `upload_file` 是长耗时链路（prepare/part/finish）；**必须由 subagent 执行**，主会话禁止直传阻塞。

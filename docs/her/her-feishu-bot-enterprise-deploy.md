@@ -7,9 +7,13 @@
 
 **最终方案：200 Bot + 200 Docker（每人一个独立 OpenClaw 容器）**
 
-**验证状态 (2026-03-09 更新)：飞书并发测试通过、数据隔离已确认、Webchat 隔离已确认、自动镜像重建已实现、Web Search (Perplexity) 已验证、Browser Use (Chromium headless) 已验证、Context Window 240K 保护已配置、CardKit 状态 Footer 已实现、Config $include 零分叉架构已验证（本地 + Docker 全环境 0 error）、语音 Gemini Live 已验证（本地 + Docker）、@mention 发送已验证（本地 + Docker，需 contact:user.base:readonly 权限）、飞书待办 Task v2 P1 全量能力已验证（本机 Her + docker1 Her 双端通过）、群聊消息读取已验证（`feishu_group_history` 工具 + `tenant_access_token` fallback）、OAuth user_access_token 授权已验证（S1/S3 carher-13/14）、Feishu Drive 原始文件读取链路已验证（本地 Her + docker1：搜索命中后可继续读取 PDF / DOCX / PPTX / XLSX 正文）、Cloudflare 隧道三台服务器已部署（S1/S2/S3 各预分配 50 用户），权限 215 个（161 tenant + 54 user）**
+**验证状态 (2026-03-10 更新)：**
 
-> 补充边界（2026-03-09）：Drive 原始文件的**正文读取能力**已经打通；但关键词搜索是否命中，仍受飞书服务端索引影响，可能出现索引延迟或漏召回。因此当前结论是“可上线使用”，但不能承诺“任意新上传 PDF 都会立即被搜到”。
+- 飞书并发测试、数据隔离、Webchat 隔离、自动镜像重建、Web Search (Perplexity)、Browser Use (Chromium headless)、Context Window 240K 保护、CardKit 状态 Footer、Config `$include` 零分叉架构、语音 Gemini Live、`@mention` 发送、Task v2 P1、群聊消息读取、OAuth `user_access_token`、Drive 原始文件读取链路、Cloudflare 隧道三台服务器部署均已做过真实验证
+- `feishu_drive` 根目录浏览 contract 已收敛为 `list_root` / `list_folder`，本机 Her + docker1 tester 均已看到真实返回
+- 当前结论应表述为“Drive/Wiki 只读主链路可用、可继续灰度验证”，而不是“全部 Feishu-Her 功能 100% 零风险上线”
+
+> 补充边界（2026-03-10）：Drive 原始文件的**正文读取能力**已经打通；但关键词搜索是否命中，仍受飞书服务端索引影响，可能出现索引延迟或漏召回。与此同时，当前仍不能把“目录列表可见”直接等同于“内容读取权限已验证”；最新 `docker1` 全量回归过程中也出现过 `feishu_sheet.append` 列范围参数修正与 `TT: undefined function: 3` 告警。因此当前状态更准确的口径是“主链路可验证、可灰度”，而不是“全量零风险放量”。
 
 ---
 

@@ -1,7 +1,7 @@
 # 飞书 Search 架构设计
 
-> 日期：2026-03-09（最后更新：2026-03-09 23:30 UTC+8）
-> 状态：**可上线** · 全量回归 47/47 PASS · 新增 `feishu_deep_search` + `feishu_conversation_search` + `memory-bridge` 已验证通过 · 搜索召回仍受飞书服务端索引延迟与漏召回影响
+> 日期：2026-03-09（最后更新：2026-03-10 21:35 UTC+8）
+> 状态：**搜索与 Drive/Wiki 只读主链路可用，但暂不应按“零风险全量上线”对外宣称** · `feishu_drive` 根目录浏览 contract 已收敛为 `list_root` / `list_folder` 并在真实 session 中生效 · 搜索召回仍受飞书服务端索引延迟与漏召回影响 · 当前剩余风险主要在模型推理层可能把“列表可见”误判为“权限已验证”
 
 ---
 
@@ -37,6 +37,29 @@
 6. 对 Drive 原始文件（`object_type=file`，如 PDF / DOCX / PPTX / XLSX），当前 Her 已验证可以在**搜索命中后**继续自动读取正文；但“能不能搜到”仍取决于飞书自己的服务端索引，而不是 Her 的读取链路。
 
 ---
+
+## 2.1 2026-03-10 状态复核（Drive root / 权限链路）
+
+基于本地 Her、`docker1` (`carher-1`) 的真实 session 与全量日志，新增确认以下结论：
+
+1. `feishu_drive` 已不再依赖旧的 `action="list"` 语义；当前真实调用已经收敛为：
+   - `action="list_root"`：只列用户自己的 Drive 根目录
+   - `action="list_folder"`：只列显式 `folder_token` 指向的目录
+2. 根目录浏览问题的主风险点已经从“API 是否可用”转移为“模型是否会过度推断”：
+   - `list_root` / `list_folder` 本身已能稳定返回结构化 `folders[]` / `files[]`
+   - 但如果只做目录枚举、不做实际 `read`，模型仍可能把“列表可见”说成“读取权限正确”
+3. 因此当前权限判断必须拆成三层，不允许混说：
+   - `list` 可见
+   - 内容可读
+   - 可写 / 可移动 / 可删除
+4. `docker1` 的最新全量回归最终正常收尾，但过程中仍暴露两类残余风险：
+   - `feishu_sheet.append` 的列范围参数仍然脆弱，回归时出现过“格式需要修正后继续”
+   - 日志仍有 `Warning: TT: undefined function: 3` 告警，虽然本次未阻断最终回复，但不属于“零噪音稳定态”
+
+这意味着：
+
+- **Drive/Wiki 只读主链路**：可以灰度验证
+- **全部 Feishu-Her 功能**：还不能用“100% 正确、零风险上线”来描述
 
 ## 3. 真实实验结论
 

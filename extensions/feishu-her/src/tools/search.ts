@@ -106,7 +106,7 @@ type SearchResult =
       object_type: "folder";
       drive_doc_token: string;
       read_tool: "feishu_drive";
-      read_params: { action: "list"; folder_token: string };
+      read_params: { action: "list_folder"; folder_token: string };
       owner_id?: string;
       url?: string;
       discovered_via: "root_browse";
@@ -264,7 +264,7 @@ async function searchDrive(
       drive_doc_token: item.token,
       read_tool: "feishu_drive" as const,
       read_params: {
-        action: "list" as const,
+        action: "list_folder" as const,
         folder_token: item.token,
       },
       ...(item.owner_id ? { owner_id: item.owner_id } : {}),
