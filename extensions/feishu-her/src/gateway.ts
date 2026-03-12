@@ -982,6 +982,42 @@ type InboundDeps = {
   core: ReturnType<typeof getFeishuRuntime>;
 };
 
+export function buildFeishuGroupSessionMetaResolution(chatId: string, isGroup: boolean) {
+  if (!isGroup) {
+    return undefined;
+  }
+  const normalizedChatId = chatId.trim().toLowerCase();
+  if (!normalizedChatId) {
+    return undefined;
+  }
+  return {
+    key: `feishu:group:${normalizedChatId}`,
+    channel: "feishu",
+    id: normalizedChatId,
+    chatType: "group" as const,
+  };
+}
+
+export function buildFeishuInboundIdentity(params: {
+  senderId: string;
+  chatId: string;
+  isGroup: boolean;
+  groupName?: string;
+}) {
+  // Group context must be anchored to the canonical chat_id, never the current sender.
+  const canonicalGroupLabel =
+    params.isGroup ? params.groupName?.trim() || params.chatId.trim() || undefined : undefined;
+  return {
+    From: `feishu:${params.senderId}`,
+    To: `feishu:${params.chatId}`,
+    ChatType: params.isGroup ? ("group" as const) : ("direct" as const),
+    ConversationLabel: params.isGroup ? canonicalGroupLabel : params.senderId,
+    GroupSubject: canonicalGroupLabel,
+    OriginatingTo: `feishu:${params.chatId}`,
+    groupResolution: buildFeishuGroupSessionMetaResolution(params.chatId, params.isGroup),
+  };
+}
+
 /**
  * Walk the officeparser AST to produce rich text with slide separators and chart data.
  * Falls back to ast.toText() if the AST structure is unexpected.
@@ -1392,6 +1428,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     `[${account.accountId}] inbound: chat=${chatId} from=${senderId} type=${chatType}${mediaPath ? (isAudioMedia ? " +audio" : " +image") : ""}`,
   );
   setStatus({ lastInboundAt: Date.now() });
+  let groupChatName: string | undefined;
 
   // ── Group chat handling: archive + owner-only reply gating ──
   if (isGroup) {
@@ -1403,21 +1440,21 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       return;
     }
 
+    try {
+      const resolvedGroupName = await getFeishuChatName(account, chatId);
+      groupChatName = resolvedGroupName?.trim() || undefined;
+    } catch (err) {
+      log?.info(`[${account.accountId}] failed to resolve group name for ${chatId}: ${String(err)}`);
+    }
+
     // Archive all group messages (regardless of who sent them).
     const shouldArchive = groupConfig?.archive !== false;
     if (shouldArchive) {
       const senderName = extractSenderName(sender);
-      // Fetch chat name (cached) — fire-and-forget to not block processing.
-      let chatName: string | null = null;
-      try {
-        chatName = await getFeishuChatName(account, chatId);
-      } catch {
-        // Ignore — index will use chatId as fallback name.
-      }
       try {
         archiveGroupMessage({
           chatId,
-          chatName,
+          chatName: groupChatName ?? null,
           senderId,
           senderName: senderName || senderId,
           text: cleanText,
@@ -1754,17 +1791,24 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     envelope: envelopeOptions,
     body: enrichedBody,
   });
+  const inboundIdentity = buildFeishuInboundIdentity({
+    senderId,
+    chatId,
+    isGroup,
+    groupName: groupChatName,
+  });
 
   const ctxPayload = core.channel.reply.finalizeInboundContext({
     Body: body,
     RawBody: cleanText,
     CommandBody: cleanText,
-    From: `feishu:${senderId}`,
-    To: `feishu:${chatId}`,
+    From: inboundIdentity.From,
+    To: inboundIdentity.To,
     SessionKey: route.sessionKey,
     AccountId: route.accountId,
-    ChatType: isGroup ? "channel" : "direct",
-    ConversationLabel: senderId,
+    ChatType: inboundIdentity.ChatType,
+    ConversationLabel: inboundIdentity.ConversationLabel,
+    GroupSubject: inboundIdentity.GroupSubject,
     SenderId: senderId,
     Provider: "feishu",
     Surface: "feishu",
@@ -1773,7 +1817,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     ReplyToId: parentId || messageId,
     ReplyToBody: quotedBodyForReply,
     OriginatingChannel: "feishu",
-    OriginatingTo: `feishu:${chatId}`,
+    OriginatingTo: inboundIdentity.OriginatingTo,
     // Private bot: all senders are authorized to use commands (/new, /reset, etc.).
     CommandAuthorized: true,
     // Attach image media for vision processing if downloaded.
@@ -1789,6 +1833,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       storePath,
       sessionKey: ctxPayload.SessionKey ?? route.sessionKey,
       ctx: ctxPayload,
+      groupResolution: inboundIdentity.groupResolution,
     })
     .catch((err) => {
       log?.error(`feishu: failed updating session meta: ${String(err)}`);
