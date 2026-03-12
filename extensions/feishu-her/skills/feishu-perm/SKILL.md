@@ -1,48 +1,48 @@
 ---
 name: feishu-perm
 description: |
-  Feishu sharing and permission boundaries for documents, files, and collaborators. Activate when user asks about collaborators, reader/editor/full access, sharing links, permission errors, or whether a document/file can be shared or granted to someone. Triggers on 权限, 分享, collaborator, reader, editor, full_access, share_url, permission denied.
+  飞书文档/文件/协作者的分享和权限边界。当用户问协作者、读/写/完全权限、分享链接、权限错误、或某个文档/文件能否分享或授权给某人时使用。
 metadata: { "openclaw": { "emoji": "🔐" } }
 ---
 
-# Feishu Permission and Sharing Boundary
+# 飞书权限和分享边界
 
-Use this skill when the user is asking about access control or document/file sharing.
+当用户询问访问控制或文档/文件分享时使用此技能。
 
-## Current Plugin Reality
+## 当前插件现实
 
-This `feishu-her` plugin does not expose a dedicated `feishu_perm` tool like upstream.
+此 `feishu-her` 插件不暴露类似 upstream 的 `feishu_perm` 工具。
 
-Do not invent collaborator-management actions that do not exist.
+不要编造不存在的协作者管理操作。
 
-## What Is Supported
+## 支持的操作
 
-- Share real user-facing links returned by tools such as:
+- 分享工具返回的真实用户可见链接：
   - `feishu_wiki(action="resolve_url")`
   - `feishu_sheet(action="get_share_url")`
-  - create/upload results that already return a `share_url`
-- Surface Feishu permission errors and grant URLs clearly when a tool returns them
-- Use group-member or task-member tools for chat/task membership, which is different from Drive/doc collaborator permissions
+  - 创建/上传结果中已包含的 `share_url`
+- 工具返回飞书权限错误和授权 URL 时，清楚地呈现给用户
+- 群成员或任务成员工具用于聊天/任务的成员管理，与云盘/文档协作者权限不同
 
-## What Is Not Supported Here
+## 不支持的操作
 
-- Listing doc/file/folder collaborators
-- Adding collaborators to docs/files/folders
-- Removing collaborators from docs/files/folders
-- Toggling `view` / `edit` / `full_access` on docs/files/folders
+- 列出文档/文件/文件夹的协作者
+- 向文档/文件/文件夹添加协作者
+- 从文档/文件/文件夹移除协作者
+- 切换文档/文件/文件夹的 `view` / `edit` / `full_access` 权限
 
-If the user explicitly asks for one of those operations, say that this plugin does not currently expose that capability. Do not fake success.
+用户明确要求上述操作时，告知此插件目前不暴露该能力，不要假装成功。
 
-## Sharing Rules
+## 分享规则
 
-- Always share the real `share_url` returned by the relevant tool
-- Never hand-build Feishu sharing URLs
-- If the tool returns a permission/grant error, surface the grant URL so the operator can authorize the app
+- 始终分享相关工具返回的真实 `share_url`
+- 不要手工拼飞书分享 URL
+- 工具返回权限/授权错误时，呈现授权 URL 让运营者授权应用
 
-## Output Rules
+## 输出规则
 
-- Be explicit about whether you shared an existing URL, hit an unsupported permission-management request, or surfaced a permission error
-- Keep the distinction clear between:
-  - chat membership
-  - task membership
-  - document/file collaborators
+- 明确说明你是分享了已有 URL、遇到了不支持的权限管理请求、还是呈现了权限错误
+- 区分清楚：
+  - 群成员
+  - 任务成员
+  - 文档/文件协作者

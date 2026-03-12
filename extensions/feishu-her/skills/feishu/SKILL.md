@@ -1,1 +1,0 @@
-../feishu-oauth/SKILL.md

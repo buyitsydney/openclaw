@@ -13,10 +13,51 @@
 - `feishu_wiki` URL 解析：支持传入完整飞书 URL（自动提取 token 和文档类型）
 - **tenant_access_token fallback**：当 `user_access_token` 遇到 231204 错误（"b2c/b2b app not support"）时，自动 fallback 到 `tenant_access_token`，已在 carher-13 验证通过
 
-### 实现状态（2026-03-12）
+### 实现状态（2026-03-12 早期）
 
 - **群名改名后 prompt 不更新 — 已修复**：`outbound.ts` 中的 `chatNameCache`（进程级 Map）在群改名后不会刷新，导致 prompt 中群名过期。已删除该缓存，每次 inbound 重新调用飞书 API 获取最新群名。本地 her + tester 多轮压力测试验证通过。
-- **Skill 拆分**：旧 `feishu/SKILL.md`（1036 行）拆为 8 个独立 skill：`feishu-chat` / `feishu-collab` / `feishu-doc` / `feishu-drive` / `feishu-minutes` / `feishu-perm` / `feishu-search` / `feishu-wiki`
+- **Skill 拆分 v1**：旧 `feishu/SKILL.md`（1036 行）拆为 8 个独立 skill：`feishu-chat` / `feishu-collab` / `feishu-doc` / `feishu-drive` / `feishu-minutes` / `feishu-perm` / `feishu-search` / `feishu-wiki`
+
+### 实现状态（2026-03-12 Skill 架构重构 v2）
+
+**背景**：v1 拆分后，模型在跨 session 回忆（私聊↔群聊）、关键词搜索、文档搜索三类场景中频繁路由错误。根因是旧 `feishu-search` skill 同时覆盖了聊天记录搜索、文档搜索、私聊回忆、群聊回忆四种意图，模型无法从单一 description 正确判断该用哪个工具。
+
+**变更内容**：
+
+1. **删除旧 skill**：
+   - `feishu-search/`（含 `references/session-recall.md`）— 职责过宽，一个 skill 混合了四种意图
+   - `feishu/SKILL.md` — 残留的空 symlink
+
+2. **新增 4 个窄职责 skill**：
+   - `feishu-dm-transcript` — 读取私聊原文（跨 session 从群聊读私聊 + 私聊内长历史回溯）
+   - `feishu-group-transcript` — 读取某个飞书群的对话原文（群聊默认回忆 + 私聊中指定群）
+   - `feishu-chat-history-search` — 按关键词跨聊天搜索历史记录（本地群归档 + Her session）
+   - `feishu-knowledge-search` — 飞书文档/Wiki/妙记知识搜索（`feishu_search` + `feishu_deep_search`）
+
+3. **所有 skill 描述全量中文化**：description、routing 规则、"适用/不适用"说明全部改为中文，与用户交互语言一致
+
+4. **Skill description 结构化**：每个 skill 的 `description` 字段采用结构化格式，明确列出"何时用"和"不用于"，消除歧义
+
+5. **现有 8 个 skill 更新**：`feishu-chat` / `feishu-collab` / `feishu-doc` / `feishu-drive` / `feishu-minutes` / `feishu-oauth` / `feishu-perm` / `feishu-wiki` 的 description 和内部路由规则同步中文化
+
+**重构后 skill 全景（12 个）**：
+
+| Skill | 工具覆盖 | 职责 |
+|---|---|---|
+| `feishu-chat` | `feishu_chat` 系列 | 群/聊天管理 |
+| `feishu-collab` | `feishu_task`, `feishu_calendar` | 协作（任务/日历） |
+| `feishu-doc` | `feishu_doc` | 文档读写 |
+| `feishu-drive` | `feishu_drive` | 云盘操作 |
+| `feishu-wiki` | `feishu_wiki` | Wiki 操作 |
+| `feishu-minutes` | `feishu_minutes` | 妙记 |
+| `feishu-perm` | `feishu_perm` | 权限管理 |
+| `feishu-oauth` | — | OAuth 授权流程 |
+| `feishu-dm-transcript` | `sessions_history` | 私聊原文回忆 |
+| `feishu-group-transcript` | `feishu_group_history` | 群聊原文回忆 |
+| `feishu-chat-history-search` | `feishu_conversation_search` | 聊天记录关键词搜索 |
+| `feishu-knowledge-search` | `feishu_search`, `feishu_deep_search` | 文档/Wiki/妙记知识搜索 |
+
+**已知遗留**：`feishu_group_history` 返回的图片消息包含本地归档路径（`[local archive: ...]`），但模型在私聊跨群查询时不会主动 `read` 该路径查看图片内容。需在 `feishu-group-transcript` skill 中补充图片处理指导。
 
 本文不讨论抽象"群聊能力"，只回答一个更实际的问题：
 

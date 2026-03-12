@@ -1,34 +1,34 @@
 ---
 name: feishu-drive
 description: |
-  Feishu drive folders, root directory, file moves, online file creation, and large-file uploads. Activate when user asks about cloud drive, root folders, folder tokens, shared folder links, uploads, moving files, deleting files, or creating folders/files in Drive. Triggers on 云盘, drive, 根目录, 文件夹, folder_token, shared folder, upload_file, 大文件上传.
+  飞书云盘文件夹、根目录、文件移动、在线文件创建、大文件上传。当用户问及云盘、根文件夹、folder_token、共享文件夹链接、上传、移动/删除文件、或创建文件夹/文件时使用。
 metadata: { "openclaw": { "emoji": "🗂️" } }
 ---
 
-# Feishu Drive Operations
+# 飞书云盘操作
 
-Use this skill for Drive folders, uploads, and user-visible file storage. Do not use it for wiki tree navigation.
+用于云盘文件夹、上传、以及用户可见的文件存储。不用于 Wiki 树状导航。
 
-## Drive vs Wiki
+## 云盘 vs Wiki
 
-- Wiki is the document tree / knowledge space
-- Drive is the file store
-- If the user asks about root folders, uploads, files, or folder links, use Drive
+- Wiki 是文档树/知识空间
+- 云盘是文件存储
+- 用户问根文件夹、上传、文件、文件夹链接时，用云盘
 
-## Root and Folder Rules
+## 根目录和文件夹规则
 
-- Root must use `feishu_drive(action="list_root")`
-- Do not use `folder_token=0`
-- Do not use `folder_token=root`
-- Non-root reads and writes require a real `folder_token`
+- 根目录必须用 `feishu_drive(action="list_root")`
+- 不要用 `folder_token=0`
+- 不要用 `folder_token=root`
+- 非根读写需要真实 `folder_token`
 
-## User-Visible Access
+## 用户可见性
 
-- Treat readable Drive content as visible because the current user can see it
-- Do not explain success as "tenant permission"
-- If the user cannot see it, treat it as unavailable
+- 云盘中可读内容视为用户可见（因为当前用户能看到）
+- 不要把成功解释为"租户权限"
+- 如果用户确实看不到，视为不可用
 
-## Core Actions
+## 核心操作
 
 - `list_root`
 - `list_folder`
@@ -38,25 +38,25 @@ Use this skill for Drive folders, uploads, and user-visible file storage. Do not
 - `delete`
 - `upload_file`
 
-## Shared Folder Memory
+## 共享文件夹记忆
 
-When the user gives a Drive folder link or `folder_token`:
+用户给出云盘文件夹链接或 `folder_token` 时：
 
-1. Parse the real `folder_token`
-2. Write/update `MEMORY.md -> Drive Shares`
-3. Reuse that token for later Drive operations
+1. 解析真实 `folder_token`
+2. 写入/更新 `MEMORY.md -> Drive Shares`
+3. 后续云盘操作复用该 token
 
-Do not rely on stale memory when the user explicitly asks about the current root directory. For root questions, call `list_root` again.
+用户明确问当前根目录时不要依赖过期记忆，重新调用 `list_root`。
 
-## Upload Boundary
+## 上传边界
 
-- Chat attachments through `message(..., media=...)` are for files up to 30 MB
-- Larger files must use `feishu_drive(action="upload_file")`
-- `upload_file` is a long-running flow; run it via subagent / `sessions_spawn`
-- Do not fall back from Drive upload to a chat attachment or another destination
+- 聊天附件 `message(..., media=...)` 限 30 MB 以内
+- 更大的文件必须用 `feishu_drive(action="upload_file")`
+- `upload_file` 是长时间流程，通过 subagent / `sessions_spawn` 执行
+- 不得从云盘上传回退到聊天附件或其他目标
 
-## Output Rules
+## 输出规则
 
-- State whether you listed root, listed one folder, created a folder, moved a file, deleted a file, or started/completed an upload
-- If an upload is asynchronous, say that clearly and give the task id
-- If you need the task-state format or the two-stage upload SOP, read `references/upload-tasks.md`
+- 说明你是列出了根目录、列出了某个文件夹、创建了文件夹、移动了文件、删除了文件、还是启动/完成了上传
+- 如果上传是异步的，明确说明并给出 task id
+- 如需两阶段上传 SOP 或任务状态格式，读 `references/upload-tasks.md`

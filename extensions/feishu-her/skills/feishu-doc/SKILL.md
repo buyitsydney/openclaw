@@ -1,80 +1,80 @@
 ---
 name: feishu-doc
 description: |
-  Feishu document and structured content editing. Activate when user asks to read or edit a Feishu doc/docx, sync markdown into a doc, change blocks, insert content, delete a range, work with tables, sheets, or bitable fields/records. Triggers on 文档, docx, block, markdown 同步, insert_blocks, delete_range, sheet, spreadsheet, bitable, 多维表格.
+  飞书文档和结构化内容编辑。当用户要求读取或编辑飞书 doc/docx、将 markdown 同步到文档、操作 block、插入/删除内容、操作表格/Sheet/Bitable 字段和记录时使用。
 metadata: { "openclaw": { "emoji": "📝" } }
 ---
 
-# Feishu Doc Editing
+# 飞书文档编辑
 
-Use this skill for content editing inside Feishu docs, wiki-backed docs, sheets, and bitable tables.
+用于飞书文档、Wiki 页面内容、Sheet、Bitable 的内容编辑。
 
-## Resolve the Right Token
+## 解析正确的 Token
 
-- Doc URL `/docx/ABC123` -> `doc_token=ABC123`
-- Wiki URL `/wiki/ABC123` -> call `feishu_wiki(action="get")`, then use the returned `obj_token` with `feishu_doc`
-- Wiki `node_token` is not a doc token
+- 文档 URL `/docx/ABC123` -> `doc_token=ABC123`
+- Wiki URL `/wiki/ABC123` -> 先调用 `feishu_wiki(action="get")`，再用返回的 `obj_token` 操作 `feishu_doc`
+- Wiki 的 `node_token` 不是 doc token
 
-## Document Read and Verify
+## 文档读取和验证
 
-- Use `feishu_doc(action="read")` for plain text and quick inspection.
-- Use `feishu_doc(action="list_blocks")` when structure matters: tables, images, whiteboards, block order.
-- Do not claim a table/doc write succeeded until you verify with `list_blocks`.
-- For table-heavy verification, do not rely on plain `read`; it drops structure.
+- 用 `feishu_doc(action="read")` 做纯文本快速检查
+- 用 `feishu_doc(action="list_blocks")` 查看结构：表格、图片、白板、block 顺序
+- 不得在未用 `list_blocks` 验证前声称表格/文档写入已成功
+- 涉及表格的验证不要依赖纯 `read`，它会丢结构
 
-## Editing Priority
+## 编辑优先级
 
-Default to the smallest safe edit. Do not jump to full rewrite.
+默认用最小安全编辑，不要跳到全量重写：
 
-1. `update_block` with `find` / `replace_with`
-2. `update_block` with new `content`
+1. `update_block` 带 `find` / `replace_with`
+2. `update_block` 带新 `content`
 3. `insert_blocks`
 4. `delete_block` / `delete_range`
 5. `append`
-6. `write` only when the whole document should be replaced
+6. `write` 仅当需要替换整个文档时
 
-Rule:
+规则：
 
-- If the user wants one section changed, do not default to `write`.
-- If the user wants a full rewrite, `write` is fine.
+- 用户只改一段时不要默认用 `write`
+- 用户要全量重写时 `write` 可以
 
-## Sync Local Markdown
+## 同步本地 Markdown
 
-When syncing a local markdown file into Feishu:
+将本地 markdown 文件同步到飞书时：
 
-1. Resolve the target token first
-2. Prefer `source_file` for long content
-3. Write or append
-4. Verify with `list_blocks`
-5. Report concrete checks such as heading order, table count, or empty cells
+1. 先解析目标 token
+2. 长内容优先用 `source_file`
+3. 写入或追加
+4. 用 `list_blocks` 验证
+5. 报告具体检查项：标题顺序、表格数量、空单元格等
 
-Use `source_file` for anything non-trivial. Avoid pasting long markdown into `content`.
+非短文本一律用 `source_file`，不要把大段 markdown 贴进 `content`。
 
-## Create and Delete Boundaries
+## 创建和删除边界
 
-- `feishu_doc(action="create")` still requires an explicit visible `folder_token`
-- Do not assume a default root folder
-- Docs/Wiki/Bitable deletes are not generally available through this plugin; do not promise rollback after create
+- `feishu_doc(action="create")` 仍需要明确可见的 `folder_token`
+- 不要假设有默认根文件夹
+- 文档/Wiki/Bitable 的删除在此插件中通常不可用，不要在创建后承诺回滚
 
-## Sheet Rules
+## Sheet 规则
 
-- Always call `feishu_sheet(action="get_meta")` first and use the real `sheetId`
-- Do not invent `Sheet1`, `0`, or guessed IDs
-- `append` ranges must be column ranges such as `sheetId!A:A` or `sheetId!A:J`
-- Use `feishu_sheet(action="get_share_url")` when you need a real accessible sheet link
+- 必须先调用 `feishu_sheet(action="get_meta")` 获取真实 `sheetId`
+- 不要编造 `Sheet1`、`0` 或猜测的 ID
+- `append` 范围必须是列范围，如 `sheetId!A:A` 或 `sheetId!A:J`
+- 需要真实可访问的 Sheet 链接时用 `feishu_sheet(action="get_share_url")`
 
-## Bitable Rules
+## Bitable 规则
 
-- Field keys must exactly match `field_name` from `feishu_bitable(action="list_fields")`
-- Do not translate or rename field keys
-- Text fields take strings
-- SingleSelect fields take strings
-- DateTime fields take unix milliseconds
+- 字段 key 必须与 `feishu_bitable(action="list_fields")` 返回的 `field_name` 完全一致
+- 不得翻译或重命名字段 key
+- Text 字段传字符串
+- SingleSelect 字段传字符串
+- DateTime 字段传 unix 毫秒
 
-## Output Rules
+## 输出规则
 
-- State whether you changed one block, inserted a section, deleted a range, or rewrote the whole document
-- If you verified with `list_blocks`, say so
-- If you only inspected plain text, do not imply structure was verified
+- 说明你是改了一个 block、插入了一段、删除了一个范围、还是重写了整个文档
+- 如果用 `list_blocks` 做了验证，说明这一点
+- 如果只检查了纯文本，不要暗示结构已被验证
 
-If you need block-type details or table limitations, read `references/block-types.md`.
+如需 block 类型详情或表格限制，读 `references/block-types.md`。

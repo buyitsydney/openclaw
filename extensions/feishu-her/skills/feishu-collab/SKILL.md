@@ -1,17 +1,17 @@
 ---
 name: feishu-collab
 description: |
-  Feishu calendar and task collaboration workflows. Activate when user asks to create a meeting, check free/busy, see today's meetings, create or assign tasks, manage tasklists, add members to a list, or update task status/comments/attachments. Triggers on 日历, 建会, 忙闲, 有空吗, 会议邀请, task, tasklist, 待办, 清单, 指派, assignee.
+  飞书日历和任务协作。当用户要求建会、查忙闲、查看今天的会议、创建/指派任务、管理任务清单、添加清单成员、或更新任务状态/评论/附件时使用。
 metadata: { "openclaw": { "emoji": "📅" } }
 ---
 
-# Feishu Calendar and Task Collaboration
+# 飞书日历与任务协作
 
-Use this skill for calendar scheduling and task/tasklist collaboration. Use `feishu-minutes` for meeting records, summaries, or transcripts.
+用于日历排期和任务/任务清单协作。会议纪要、摘要、原文用 `feishu-minutes`。
 
-## Calendar
+## 日历
 
-Use `feishu_calendar` for:
+用 `feishu_calendar`：
 
 - `get_primary`
 - `list_events`
@@ -21,47 +21,47 @@ Use `feishu_calendar` for:
 - `check_freebusy`
 - `remove_attendees`
 
-### Scheduling Rules
+### 排期规则
 
-When the user asks to book a meeting:
+用户要求约会时：
 
-1. Create it immediately
-2. Include the requester and mentioned people in `attendee_ids`
-3. Run `check_freebusy` after creation
-4. Report any conflicts clearly
+1. 直接创建
+2. 在 `attendee_ids` 中包含发起人和提到的人
+3. 创建后运行 `check_freebusy`
+4. 有冲突时清楚报告
 
-Do not ask unnecessary permission questions first.
+不要先问不必要的权限问题。
 
-### Boundary
+### 边界
 
-- `check_freebusy` shows time conflicts, not other people's event titles
-- If the user asks what was said in a meeting, asks for meeting notes, or asks for original quotes, switch to `feishu-minutes`
+- `check_freebusy` 显示时间冲突，不是别人的会议标题
+- 如果用户问某次会议讲了什么、要会议记录、或要原话引用，切到 `feishu-minutes`
 
-## Tasks and Tasklists
+## 任务和任务清单
 
-Use task tools for:
+用任务工具处理：
 
-- creating tasks and subtasks
-- assigning owners / assignees
-- creating shared tasklists
-- adding/removing tasklist members
-- moving tasks into or out of tasklists
-- comments and attachments
+- 创建任务和子任务
+- 指派 owner / assignee
+- 创建共享任务清单
+- 添加/移除清单成员
+- 在清单中添加/移出任务
+- 评论和附件
 
-### Recommended Flow
+### 推荐流程
 
-- For "派任务给某人", use `feishu_task_create` and pass assignees explicitly with `open_id`
-- For shared lists, create the tasklist first, add members, then add tasks into the tasklist
-- If the user says they cannot see a task, check whether they are actually in the assignee/member set
+- 派任务时用 `feishu_task_create` 并明确传 `open_id` 的 assignee
+- 共享清单场景：先创建清单、再加成员、再往清单里加任务
+- 用户说看不到某个任务时，检查他是否真的在 assignee/member 中
 
-### Mental Model
+### 心智模型
 
-- Task = one work item
-- Tasklist = container
-- Shared visibility usually depends on membership and assignee configuration
+- Task = 单个工作项
+- Tasklist = 容器
+- 可见性通常取决于成员和 assignee 配置
 
-## Output Rules
+## 输出规则
 
-- Say whether you created a meeting, checked conflicts, created a task, or updated a list
-- When reporting a conflict, include who conflicts and the time range
-- Do not dump internal permission jargon unless the tool actually returns a permission failure
+- 说明你是创建了会议、检查了冲突、创建了任务、还是更新了清单
+- 报告冲突时包括冲突方和时间范围
+- 不要输出内部权限术语，除非工具确实返回了权限失败

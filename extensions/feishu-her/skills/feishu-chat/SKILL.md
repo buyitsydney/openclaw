@@ -1,117 +1,102 @@
 ---
 name: feishu-chat
 description: |
-  Feishu messaging, groups, members, mentions, message recall, images, voice, and file sending. Activate when user asks to send a message, reply in a group, @mention someone, manage members/admins/tabs/notices/pins, inspect a group, recall a sent message, or handle image/audio/chat attachments. Triggers on 群聊, 发消息, 提醒某人, @某人, 成员, 管理员, 置顶, 顶部公告, 撤回, 图片, 语音, 文件发送.
+  飞书即时聊天操作：发消息、回复、@提醒、查看群信息或成员、管理员/置顶/顶部公告/Tab、撤回已发 Bot 消息、发送图片/语音/文件。当用户要在聊天中执行动作时使用。不用于回忆以前说过什么。
 metadata: { "openclaw": { "emoji": "💬" } }
 ---
 
-# Feishu Chat Operations
+# 飞书聊天操作
 
-Use this skill for chat surfaces and message delivery. Do not use it for transcript recall, doc editing, drive upload state machines, calendar, or minutes.
+仅用于聊天界面和消息投递。不用于私聊原文回忆、群 transcript 回忆、聊天归档搜索、文档编辑、云盘上传状态机、日历、妙记。
 
-## Collect Real IDs First
+## 先获取真实 ID
 
-Before mutating anything, gather the exact IDs you need:
+操作前先确认需要的 ID：
 
-- `chat_id` for groups: `oc_xxx`
-- `message_id` for message-level operations: `om_xxx`
-- user `open_id`: `ou_xxx`
-- `member_id_type`: default to `open_id` unless the tool requires something else
+- 群 `chat_id`: `oc_xxx`
+- 消息 `message_id`: `om_xxx`
+- 用户 `open_id`: `ou_xxx`
+- `member_id_type`: 默认 `open_id`
 
-Hard rules:
+硬规则：
 
-- Do not invent `chat_id` or `open_id`.
-- If a required ID is missing, ask or look it up first.
-- Do not pretend an unsupported action succeeded.
+- 不得编造 `chat_id` 或 `open_id`
+- 缺少必需 ID 时先查找或询问
+- 不得假装不支持的操作已成功
 
-## Tool Map
+## 工具表
 
-- `feishu_chat`
-  - `list/get/members`
-- `feishu_chat_manage`
-  - `create/get/update/delete/update_owner`
-- `feishu_chat_members`
-  - `list/add/remove/is_in_chat/add_managers`
-- `feishu_chat_controls`
-  - `get_moderation/get_menu_tree`
-- `feishu_chat_tabs`
-  - `add/delete`
-- `feishu_chat_pins`
-  - `pin/unpin`
-- `feishu_chat_top_notice`
-  - `put/delete`
-- `feishu_chat_capability`
-  - `status`
-- `feishu_directory`
-  - org/user lookup
-- `message`
-  - send messages and attachments
-- `feishu_message`
-  - recall sent messages
+- `feishu_chat` — `list/get/members`
+- `feishu_chat_manage` — `create/get/update/delete/update_owner`
+- `feishu_chat_members` — `list/add/remove/is_in_chat/add_managers`
+- `feishu_chat_controls` — `get_moderation/get_menu_tree`
+- `feishu_chat_tabs` — `add/delete`
+- `feishu_chat_pins` — `pin/unpin`
+- `feishu_chat_top_notice` — `put/delete`
+- `feishu_chat_capability` — `status`
+- `feishu_directory` — 组织/用户查找
+- `message` — 发送消息和附件
+- `feishu_message` — 撤回已发消息
 
-## Message Sending
-
-Send normal text or media with:
+## 发消息
 
 ```text
 message(action="send", channel="feishu", target="oc_xxx|ou_xxx", message="...")
 ```
 
-- Use `oc_xxx` for groups.
-- Use `ou_xxx` for direct delivery.
-- Use absolute file paths for `media`.
-- If the file is over 30 MB, do not send it as chat media. Route to `feishu-drive`.
+- `oc_xxx` 发到群
+- `ou_xxx` 发到个人
+- `media` 用绝对路径
+- 超过 30 MB 的文件不走聊天附件，路由到 `feishu-drive`
 
-## Mentions
+## @提醒
 
-Use Feishu `<at>` tags, not plain-text `@名字`.
+使用飞书 `<at>` 标签，不要用纯文本 `@名字`。
 
 ```text
 <at user_id="ou_xxx">姓名</at>
 ```
 
-Workflow:
+流程：
 
-1. Get the real `open_id` from `feishu_chat_members` or `feishu_directory`.
-2. Compose the final message using `<at ...>`.
-3. For everyone, use `<at user_id="all">所有人</at>`.
+1. 从 `feishu_chat_members` 或 `feishu_directory` 获取真实 `open_id`
+2. 用 `<at ...>` 组装最终消息
+3. @所有人用 `<at user_id="all">所有人</at>`
 
-## Chat Admin Rules
+## 群管理规则
 
-- "顶部公告/强提醒" means `feishu_chat_top_notice`, not pins.
-- Only use `feishu_chat_pins` when the user explicitly means message pin/unpin.
-- When you need a capability matrix or want to explain a limitation, call `feishu_chat_capability(action="status")`.
+- "顶部公告/强提醒" 对应 `feishu_chat_top_notice`，不是 pins
+- 只有用户明确说消息置顶/取消置顶时才用 `feishu_chat_pins`
+- 需要能力矩阵或想解释限制时调用 `feishu_chat_capability(action="status")`
 
-## Message Recall
+## 消息撤回
 
-Use `feishu_message` to recall bot messages sent in the last 24 hours.
+用 `feishu_message` 撤回 24 小时内 Bot 发出的消息。
 
-- If the user replied to the message, extract `message_id` from:
-  - group chat metadata `reply_to_id`, or
-  - the first line of `Replied message` in direct chat
-- If there is no quoted target, use `feishu_message(action="list_sent")` to find the recent message first.
+- 用户回复了那条消息时，从群聊元数据 `reply_to_id` 或私聊 `Replied message` 提取 `message_id`
+- 没有引用目标时，先用 `feishu_message(action="list_sent")` 查找最近消息
 
-Keep confirmations short. Do not batch-recall without a confirmed target.
+确认要简短。没有确认目标不要批量撤回。
 
-## Images, Voice, and Queued Messages
+## 图片、语音和排队消息
 
-- Do not say "I cannot see the image" unless logs or tool output explicitly show an image-download failure.
-- Direct images, quoted images, post-embedded images, and image files are all valid vision inputs.
-- Voice/audio is auto-transcribed. Do not manually call TTS.
-- `merge_forward` is disabled; treat it as unavailable and do not promise expansion.
-- When the input contains `[Queued messages while agent was busy]`, treat each `Queued #n` as a separate user turn and answer in order.
+- 除非日志或工具输出明确显示图片下载失败，否则不要说看不到图片
+- 直接图片、引用图片、post 嵌入图片、图片文件都是合法的视觉输入
+- 语音/音频会自动转写，不要手动调用 TTS
+- `merge_forward` 已禁用，视为不可用
+- 输入包含 `[Queued messages while agent was busy]` 时，把每个 `Queued #n` 当作独立 turn 按顺序回答
 
-## Contacts and Names
+## 联系人和名字
 
-- In personal Feishu, `feishu_directory` may only return `open_id` + status.
-- If you need real display names and the target is in a group, prefer `feishu_chat_members(action="list")`.
-- For org lookup, use `feishu_directory(action="list_departments")` then `list_users`.
+- 个人版飞书中 `feishu_directory` 可能只返回 `open_id` + 状态
+- 需要真实显示名且目标在群内时，优先用 `feishu_chat_members(action="list")`
+- 组织查找用 `feishu_directory(action="list_departments")` 再 `list_users`
 
-## Document Sharing from Chat
+## 从聊天中分享文档
 
-To share a doc/wiki link into chat:
+分享文档/Wiki 链接到聊天：
 
-1. Resolve the real share URL with `feishu_wiki(action="resolve_url")` or `feishu_sheet(action="get_share_url")`.
-2. Send that URL with `message(action="send", ...)`.
+1. 用 `feishu_wiki(action="resolve_url")` 或 `feishu_sheet(action="get_share_url")` 解析真实分享 URL
+2. 用 `message(action="send", ...)` 发送
 
-Never hand-build Feishu share links.
+不要手工拼飞书分享链接。

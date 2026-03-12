@@ -1,58 +1,58 @@
 ---
 name: feishu-wiki
 description: |
-  Feishu knowledge-base navigation and wiki node management. Activate when user asks about knowledge spaces, wiki pages, node trees, moving or renaming wiki pages, resolving wiki links, or browsing personal/knowledge space structure. Triggers on 知识空间, wiki, space, node, 页面树, 移动页面, 重命名页面, resolve_url.
+  飞书知识空间导航和 Wiki 节点管理。当用户问知识空间、Wiki 页面、节点树、移动/重命名页面、解析 Wiki 链接、或浏览个人/知识空间结构时使用。
 metadata: { "openclaw": { "emoji": "📚" } }
 ---
 
-# Feishu Wiki Operations
+# 飞书 Wiki 操作
 
-Use this skill for space/node navigation and wiki-page management. Use `feishu-doc` when the task is editing the body content of a page.
+用于知识空间/节点导航和 Wiki 页面管理。编辑页面正文内容时用 `feishu-doc`。
 
-## Mental Model
+## 心智模型
 
-- Wiki is the tree-shaped knowledge space
-- Drive is the file store
-- If the user says "知识空间", "wiki", or usually "个人空间", assume wiki first
+- Wiki 是树状知识空间
+- 云盘是文件存储
+- 用户说"知识空间"、"wiki"、或通常说"个人空间"时，优先假设 Wiki
 
-## Core Actions
+## 核心操作
 
-- `feishu_wiki(action="spaces")` -> list spaces
-- `feishu_wiki(action="nodes")` -> list top-level or child nodes
-- `feishu_wiki(action="get")` -> inspect one node
-- `feishu_wiki(action="create")` -> create a node
-- `feishu_wiki(action="rename")` -> rename a node
-- `feishu_wiki(action="move")` -> move a node
-- `feishu_wiki(action="resolve_url")` -> get a real accessible link
+- `feishu_wiki(action="spaces")` -> 列出空间
+- `feishu_wiki(action="nodes")` -> 列出顶级或子节点
+- `feishu_wiki(action="get")` -> 查看单个节点
+- `feishu_wiki(action="create")` -> 创建节点
+- `feishu_wiki(action="rename")` -> 重命名节点
+- `feishu_wiki(action="move")` -> 移动节点
+- `feishu_wiki(action="resolve_url")` -> 获取真实可访问链接
 
-## Node vs Document
+## 节点 vs 文档
 
-- `node_token` identifies the wiki node
-- `obj_token` identifies the underlying document object
-- To read or edit page content, first call `feishu_wiki(action="get")`, then pass `obj_token` to `feishu_doc`
+- `node_token` 标识 Wiki 节点
+- `obj_token` 标识底层文档对象
+- 要读取或编辑页面内容，先调用 `feishu_wiki(action="get")`，再把 `obj_token` 传给 `feishu_doc`
 
-Do not confuse `node_token` with `doc_token`.
+不要把 `node_token` 和 `doc_token` 搞混。
 
-## Creation Rules
+## 创建规则
 
-- Pass explicit `obj_type` when the page type matters
-- Common types: `docx`, `sheet`, `bitable`
-- Use `parent_node_token` when the user cares about location
-- Wiki create is not a safe rollback path; do not promise API deletion afterward
+- 页面类型有要求时传明确的 `obj_type`
+- 常见类型：`docx`、`sheet`、`bitable`
+- 用户关心位置时传 `parent_node_token`
+- Wiki 创建不是安全回滚路径，不要承诺创建后可以 API 删除
 
-## Moving and Renaming
+## 移动和重命名
 
-- Use `rename` when only the title changes
-- Use `move` when the parent or space changes
-- Keep `space_id` / `target_space_id` / `target_parent_token` exact; do not guess them
+- 只改标题用 `rename`
+- 改父节点或空间用 `move`
+- `space_id` / `target_space_id` / `target_parent_token` 必须精确，不要猜
 
-## Sharing Links
+## 分享链接
 
-- Always use `feishu_wiki(action="resolve_url")` for user-facing wiki links
-- Never hand-build wiki URLs
-- If the user wants the content changed rather than the link shared, switch to `feishu-doc`
+- 用户要分享 Wiki 链接时必须用 `feishu_wiki(action="resolve_url")`
+- 不要手工拼 Wiki URL
+- 用户要改页面内容而非分享链接时，切到 `feishu-doc`
 
-## Output Rules
+## 输出规则
 
-- Say whether you navigated spaces, inspected one node, moved a node, renamed a node, or resolved a URL
-- If the body-content task was handed off to `feishu-doc`, say that explicitly
+- 说明你是导航了空间、查看了节点、移动了节点、重命名了节点、还是解析了 URL
+- 如果正文编辑任务交给了 `feishu-doc`，明确说明

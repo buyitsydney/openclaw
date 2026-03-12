@@ -1,14 +1,11 @@
 ---
 name: feishu-oauth
 description: |
-  Feishu user OAuth authorization flow. Activate when any feishu tool returns
-  user_auth_required, when the user asks about authorization, or when OAuth
-  tokens expire. Triggers on: 授权, OAuth, auth, 过期, expired, 重新授权,
-  user_auth_required, auth_url, token.
+  飞书用户 OAuth 授权流程。当任何飞书工具返回 user_auth_required、用户询问授权状态、或 OAuth token 过期时使用。
 metadata: { "openclaw": { "emoji": "🔑" } }
 ---
 
-# Feishu OAuth 用户授权
+# 飞书 OAuth 用户授权
 
 ## 哪些工具需要 OAuth
 
@@ -27,7 +24,7 @@ metadata: { "openclaw": { "emoji": "🔑" } }
 
 1. 调用上述任一工具时，如果返回 `user_auth_required` 错误和 `auth_url` 字段
 2. **将 `auth_url` 的完整 URL 原样发送给用户**，不得截断、缩写或改写
-3. 提示用户"请在飞书中点击链接完成授权"
+3. 提示用户在飞书中点击链接完成授权
 4. 用户点击链接 → 飞书授权页面 → 确认 → 自动完成
 5. 授权成功后 Her 会收到通知消息，此时重新调用之前失败的工具即可
 

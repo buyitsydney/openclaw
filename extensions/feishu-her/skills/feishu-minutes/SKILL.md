@@ -1,51 +1,46 @@
 ---
 name: feishu-minutes
 description: |
-  Feishu meeting minutes, meeting notes, AI summaries, and transcripts. Activate when user asks what a meeting discussed, asks for meeting notes or minutes, wants a transcript, asks who said something in a meeting, or wants to search past meetings by topic. Triggers on 妙记, 会议纪要, 会议记录, minutes, transcript, 原话, 谁说的, 讲了什么, meeting notes.
+  飞书妙记、会议纪要、AI 摘要和原文转写。当用户问某次会议讲了什么、要会议纪要或 AI 摘要、要原话转写、要查谁说了什么、或要按主题搜索以前的会议时使用。
 metadata: { "openclaw": { "emoji": "🎙️" } }
 ---
 
-# Feishu Minutes
+# 飞书妙记
 
-Use this skill for meeting records and post-meeting evidence. Do not route these requests to calendar unless the user only wants schedule information.
+用于会议记录和会后证据。不要把这些请求路由到日历，除非用户只关心日程安排。
 
-## OAuth First
+## OAuth 前置
 
-`feishu_minutes` needs user OAuth. See the `feishu-oauth` skill for the full authorization flow.
-If the tool returns `user_auth_required`, follow that skill's instructions exactly.
+`feishu_minutes` 需要用户 OAuth。工具返回 `user_auth_required` 时，按 `feishu-oauth` 技能的流程处理。
 
-## Action Boundaries
+## 操作边界
 
-- `list`
-  - use for time-based recall such as "今天都开了哪些会"
-- `search`
-  - use for topic lookup such as "谁提了 cursor"
-- `get`
-  - use for one meeting's AI summary/details
-- `transcript`
-  - use only when the user explicitly wants original wording, evidence, quotes, or exact speaker attribution
+- `list` — 用于基于时间的回忆
+- `search` — 用于按主题查找
+- `get` — 用于获取某次会议的 AI 摘要/详情
+- `transcript` — 仅当用户明确要求原话、证据、引用或精确发言归属时使用
 
-Do not jump straight to `transcript` for normal summary requests.
+普通摘要请求不要直接跳到 `transcript`。
 
-## Mental Model
+## 心智模型
 
-- `minute`: the formal meeting record object
-- AI summary doc: fast summary layer
-- transcript doc / transcript text: expensive evidence layer
+- `minute`：正式会议记录对象
+- AI 摘要文档：快速摘要层
+- Transcript 文档/文本：昂贵的证据层
 
-The tool can return summaries and snippets before you need the full transcript.
+工具可以在你需要完整 transcript 之前就返回摘要和片段。
 
-## Routing Rules
+## 路由规则
 
-- If the user asks "今天有什么会" and only cares about schedule, use calendar
-- If the user asks "今天的会讲了什么", "会议纪要", "原话是什么", "谁说的", use minutes
-- If `search` already provides enough evidence, answer directly without forcing `get` or `transcript`
-- If summaries look wrong and context is sufficient, correct them; otherwise escalate to `transcript`
+- 用户只关心日程安排时用日历
+- 用户问会议讲了什么、要纪要、原话、谁说的时用妙记
+- 如果 `search` 已提供足够证据，直接回答，不要强制调 `get` 或 `transcript`
+- 摘要看起来有误且上下文充足时自行修正，否则升级到 `transcript`
 
-## Output Rules
+## 输出规则
 
-- Say whether you used `list`, `search`, `get`, or `transcript`
-- Be explicit when an answer is based on AI summary vs transcript evidence
-- If you upgraded to `transcript`, explain why
+- 说明你用了 `list`、`search`、`get` 还是 `transcript`
+- 明确标注回答依据是 AI 摘要还是 transcript 证据
+- 如果升级到了 `transcript`，解释原因
 
-If you need the deeper object model or evidence-upgrade rules, read `references/object-model.md`.
+如需更深的对象模型或证据升级规则，读 `references/object-model.md`。
