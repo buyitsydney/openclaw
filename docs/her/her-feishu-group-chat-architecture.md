@@ -13,6 +13,11 @@
 - `feishu_wiki` URL 解析：支持传入完整飞书 URL（自动提取 token 和文档类型）
 - **tenant_access_token fallback**：当 `user_access_token` 遇到 231204 错误（"b2c/b2b app not support"）时，自动 fallback 到 `tenant_access_token`，已在 carher-13 验证通过
 
+### 实现状态（2026-03-12）
+
+- **群名改名后 prompt 不更新 — 已修复**：`outbound.ts` 中的 `chatNameCache`（进程级 Map）在群改名后不会刷新，导致 prompt 中群名过期。已删除该缓存，每次 inbound 重新调用飞书 API 获取最新群名。本地 her + tester 多轮压力测试验证通过。
+- **Skill 拆分**：旧 `feishu/SKILL.md`（1036 行）拆为 8 个独立 skill：`feishu-chat` / `feishu-collab` / `feishu-doc` / `feishu-drive` / `feishu-minutes` / `feishu-perm` / `feishu-search` / `feishu-wiki`
+
 本文不讨论抽象"群聊能力"，只回答一个更实际的问题：
 
 `用户在真实飞书群里，问自己的 Her"群里发生了什么、我该关注什么、帮我记住哪句话、帮我总结今天内容"时，新方案到底怎么做，哪些场景能成，哪些场景不能承诺 100%。`
