@@ -11,8 +11,6 @@ const clientCache = new Map<string, Lark.Client>();
 // Cache bot open_id per appId (fetched once via GET /bot/v3/info).
 const botOpenIdCache = new Map<string, string>();
 
-// Cache chat names per chatId (fetched once via GET /im/v1/chats/{chat_id}).
-const chatNameCache = new Map<string, string>();
 const FEISHU_ALLOWED_HOSTNAMES = ["open.feishu.cn"];
 
 export function getFeishuClient(account: ResolvedFeishuAccount): Lark.Client {
@@ -65,20 +63,18 @@ export async function getBotOpenId(account: ResolvedFeishuAccount): Promise<stri
   return null;
 }
 
-/** Fetch a Feishu chat's name via GET /im/v1/chats/{chat_id} (cached per chatId).
- *  Used for group archive index. */
+/** Fetch a Feishu chat's current name via GET /im/v1/chats/{chat_id}.
+ *  Re-fetch on every call so inbound group metadata follows chat renames
+ *  on the very next message after the rename. */
 export async function getFeishuChatName(
   account: ResolvedFeishuAccount,
   chatId: string,
 ): Promise<string | null> {
-  const cached = chatNameCache.get(chatId);
-  if (cached) return cached;
   try {
     const client = getFeishuClient(account);
     const resp = await client.im.chat.get({ path: { chat_id: chatId } });
     const name = (resp?.data?.name as string)?.trim();
     if (name) {
-      chatNameCache.set(chatId, name);
       return name;
     }
   } catch {

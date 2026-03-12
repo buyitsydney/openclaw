@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { finalizeInboundContext } from "../../../src/auto-reply/reply/inbound-context.js";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 
@@ -69,11 +69,13 @@ function createRuntime() {
   return {
     channel: {
       routing: {
-        resolveAgentRoute: vi.fn(({ accountId, peer }: { accountId: string; peer: { id: string } }) => ({
-          agentId: "main",
-          accountId,
-          sessionKey: `agent:main:feishu:group:${peer.id}`,
-        })),
+        resolveAgentRoute: vi.fn(
+          ({ accountId, peer }: { accountId: string; peer: { id: string } }) => ({
+            agentId: "main",
+            accountId,
+            sessionKey: `agent:main:feishu:group:${peer.id}`,
+          }),
+        ),
       },
       session: {
         resolveStorePath: vi.fn(() => "/tmp/feishu-session-meta-test.json"),
@@ -94,7 +96,12 @@ function createRuntime() {
   };
 }
 
-function createInboundEvent(params: { chatId: string; senderId: string; text: string; messageId: string }) {
+function createInboundEvent(params: {
+  chatId: string;
+  senderId: string;
+  text: string;
+  messageId: string;
+}) {
   return {
     message: {
       message_id: params.messageId,
@@ -117,14 +124,14 @@ function createInboundEvent(params: { chatId: string; senderId: string; text: st
   };
 }
 
-async function waitForRecordCall() {
+async function waitForRecordCalls(expectedCount: number) {
   for (let i = 0; i < 50; i += 1) {
-    if (recordSessionMetaFromInboundMock.mock.calls.length > 0) {
+    if (recordSessionMetaFromInboundMock.mock.calls.length >= expectedCount) {
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  throw new Error("recordSessionMetaFromInbound was not called");
+  throw new Error(`recordSessionMetaFromInbound did not reach ${expectedCount} calls`);
 }
 
 describe("feishu gateway inbound session metadata", () => {
@@ -161,7 +168,7 @@ describe("feishu gateway inbound session metadata", () => {
         messageId: "om_group_msg_1",
       }),
     );
-    await waitForRecordCall();
+    await waitForRecordCalls(1);
 
     const [call] = recordSessionMetaFromInboundMock.mock.calls;
     const params = call?.[0];
@@ -202,7 +209,7 @@ describe("feishu gateway inbound session metadata", () => {
         messageId: "om_group_msg_2",
       }),
     );
-    await waitForRecordCall();
+    await waitForRecordCalls(1);
 
     const [call] = recordSessionMetaFromInboundMock.mock.calls;
     const params = call?.[0];
@@ -210,6 +217,52 @@ describe("feishu gateway inbound session metadata", () => {
     expect(params?.ctx?.ConversationLabel).toBe("oc_fallback_room");
     expect(params?.ctx?.GroupSubject).toBe("oc_fallback_room");
     expect(params?.groupResolution?.id).toBe("oc_fallback_room");
+
+    abortController.abort();
+    await gatewayPromise;
+  });
+
+  it("refreshes the group label on the next inbound message after a rename", async () => {
+    getFeishuChatNameMock.mockReset();
+    getFeishuChatNameMock.mockResolvedValueOnce("群名A").mockResolvedValueOnce("群名B");
+
+    const abortController = new AbortController();
+    const gatewayPromise = startFeishuGateway({
+      account,
+      config,
+      abortSignal: abortController.signal,
+      setStatus: vi.fn(),
+      log: { info: vi.fn(), error: vi.fn() },
+    });
+    const handler = larkState.handlers["im.message.receive_v1"];
+    expect(handler).toBeTypeOf("function");
+
+    handler?.(
+      createInboundEvent({
+        chatId: "oc_rename_room",
+        senderId: "ou_owner",
+        text: "@her 第一次确认",
+        messageId: "om_group_msg_rename_1",
+      }),
+    );
+    await waitForRecordCalls(1);
+
+    handler?.(
+      createInboundEvent({
+        chatId: "oc_rename_room",
+        senderId: "ou_owner",
+        text: "@her 第二次确认",
+        messageId: "om_group_msg_rename_2",
+      }),
+    );
+    await waitForRecordCalls(2);
+
+    const firstParams = recordSessionMetaFromInboundMock.mock.calls[0]?.[0];
+    const secondParams = recordSessionMetaFromInboundMock.mock.calls[1]?.[0];
+    expect(firstParams?.ctx?.ConversationLabel).toBe("群名A");
+    expect(firstParams?.ctx?.GroupSubject).toBe("群名A");
+    expect(secondParams?.ctx?.ConversationLabel).toBe("群名B");
+    expect(secondParams?.ctx?.GroupSubject).toBe("群名B");
 
     abortController.abort();
     await gatewayPromise;

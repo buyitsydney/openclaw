@@ -1,6 +1,6 @@
 # Feishu Block Types Reference
 
-Complete reference for Feishu document block types. Use with `feishu_doc_list_blocks`, `feishu_doc_update_block`, and `feishu_doc_delete_block`.
+Complete reference for Feishu document block types. Use with `feishu_doc(action="list_blocks")`, `feishu_doc(action="update_block")`, and `feishu_doc(action="delete_block")`.
 
 ## Block Type Table
 
@@ -57,47 +57,20 @@ Complete reference for Feishu document block types. Use with `feishu_doc_list_bl
 
 ## Editing Guidelines
 
-### Text-based blocks (2-17, 19)
+### Text-Based Blocks
 
-Update text content using `feishu_doc_update_block`:
+Update text-based blocks with `feishu_doc(action="update_block")`.
 
-```json
-{
-  "doc_token": "ABC123",
-  "block_id": "block_xxx",
-  "content": "New text content"
-}
-```
+### Image Blocks
 
-### Image blocks (27)
+Image blocks cannot be updated directly with text edits. Add new images through normal doc write/append flows.
 
-Images cannot be updated directly via `update_block`. Use `feishu_doc_write` or `feishu_doc_append` with markdown to add new images.
+### Table Blocks
 
-### Table blocks (31)
+- Markdown tables are not a universal insert path.
+- Prefer `list_blocks` for table inspection.
+- Update cells or use the documented table flows instead of guessing block structure.
 
-**Important:** Table blocks CANNOT be created via the `documentBlockChildren.create` API (error 1770029). This affects `feishu_doc_write` and `feishu_doc_append` - markdown tables will be skipped with a warning.
+### Container Blocks
 
-Tables can only be read (via `list_blocks`) and individual cells (type 32) can be updated, but new tables cannot be inserted programmatically via markdown.
-
-### Container blocks (24, 25, 35)
-
-Grid and QuoteContainer are layout containers. Edit their child blocks instead.
-
-## Common Patterns
-
-### Replace specific paragraph
-
-1. `feishu_doc_list_blocks` - find the block_id
-2. `feishu_doc_update_block` - update its content
-
-### Insert content at specific location
-
-Currently, the API only supports appending to document end. For insertion at specific positions, consider:
-
-1. Read existing content
-2. Delete affected blocks
-3. Rewrite with new content in desired order
-
-### Delete multiple blocks
-
-Blocks must be deleted one at a time. Delete child blocks before parent containers.
+Grid and quote containers are layout blocks. Edit their children instead of the container wrapper.
