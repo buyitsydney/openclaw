@@ -21,10 +21,8 @@ import type { ResolvedFeishuAccount } from "./accounts.js";
 import { resolveGroupOwnerIds } from "./accounts.js";
 import { buildDriveFileContextFromText } from "./drive-file-read.js";
 import { archiveGroupMessage, archiveSentFeishuBinaryMessage } from "./group-archive.js";
-import {
-  expandFetchedMessageItem,
-  type FeishuFetchedMessageItem,
-} from "./merge-forward.js";
+import { expandFetchedMessageItem, type FeishuFetchedMessageItem } from "./merge-forward.js";
+import { cacheMessageText } from "./message-text-cache.js";
 import { rewriteModelShortcutCommand } from "./model-shortcuts.js";
 import {
   callFeishuApiWithUserToken,
@@ -59,7 +57,7 @@ import {
   buildFeishuStatusFooter,
   finalizeGroupedReplyText,
 } from "./status-footer.js";
-import { cacheMessageText } from "./message-text-cache.js";
+import { fetchChatHistory, getTenantAccessToken } from "./tools/chat-history.js";
 
 const MERGE_FORWARD_DISABLED_TEXT = "[merged forward disabled]";
 
@@ -495,14 +493,20 @@ export type FeishuMessageInfo = {
 
 type MergeForwardSourceAccess = {
   fetchItems: (messageId: string) => Promise<FeishuFetchedMessageItem[]>;
-  downloadFile: (params: { messageId: string; fileKey: string }) => Promise<{ buffer: Buffer; contentType?: string } | null>;
+  downloadFile: (params: {
+    messageId: string;
+    fileKey: string;
+  }) => Promise<{ buffer: Buffer; contentType?: string } | null>;
   downloadImage: (params: {
     messageId: string;
     imageKey: string;
   }) => Promise<{ buffer: Buffer; contentType?: string } | null>;
 };
 
-function isUserTokenMessageGetUnsupported(code: number | undefined, msg: string | undefined): boolean {
+function isUserTokenMessageGetUnsupported(
+  code: number | undefined,
+  msg: string | undefined,
+): boolean {
   return code === 230001 && /not supported/i.test(msg ?? "");
 }
 
@@ -519,7 +523,9 @@ async function fetchMessageItemsViaBotClient(
     data?: { items?: FeishuFetchedMessageItem[] };
   };
   if (response.code !== 0) {
-    throw new Error(`message.get failed: code=${response.code ?? "unknown"} msg=${response.msg ?? ""}`);
+    throw new Error(
+      `message.get failed: code=${response.code ?? "unknown"} msg=${response.msg ?? ""}`,
+    );
   }
   return Array.isArray(response.data?.items) ? response.data.items : [];
 }
@@ -550,7 +556,9 @@ async function buildMergeForwardSourceAccess(params: {
       if (isUserTokenMessageGetUnsupported(response.code, response.msg)) {
         return fetchMessageItemsViaBotClient(params.account, messageId);
       }
-      throw new Error(`user-token message.get failed: code=${response.code ?? "unknown"} msg=${response.msg ?? ""}`);
+      throw new Error(
+        `user-token message.get failed: code=${response.code ?? "unknown"} msg=${response.msg ?? ""}`,
+      );
     },
     downloadFile: ({ messageId, fileKey }) =>
       downloadFeishuMessageResourceWithUserToken({
@@ -1005,8 +1013,9 @@ export function buildFeishuInboundIdentity(params: {
   groupName?: string;
 }) {
   // Group context must be anchored to the canonical chat_id, never the current sender.
-  const canonicalGroupLabel =
-    params.isGroup ? params.groupName?.trim() || params.chatId.trim() || undefined : undefined;
+  const canonicalGroupLabel = params.isGroup
+    ? params.groupName?.trim() || params.chatId.trim() || undefined
+    : undefined;
   return {
     From: `feishu:${params.senderId}`,
     To: `feishu:${params.chatId}`,
@@ -1151,8 +1160,13 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // parent_id is the message being replied to (quoted message).
   const parentId: string = message.parent_id ?? "";
 
-  // Skip bot messages.
-  if (senderType === "bot") return;
+  const isBotSender = senderType === "bot";
+  const isGroup = chatType === "group";
+
+  // For group chats, bot messages still need archiving + pending history buffering
+  // so other bots' replies are visible in injected context.
+  // For DMs, skip bot messages entirely (no self-reply loops).
+  if (isBotSender && !isGroup) return;
 
   // Debug: log raw inbound for diagnosis (create_time helps detect replayed messages).
   const createTime: string = message.create_time ?? "";
@@ -1417,7 +1431,6 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   const effectiveCleanText = driveFileContextFromCurrentText
     ? `${cleanText}\n${driveFileContextFromCurrentText}`
     : cleanText;
-  const isGroup = chatType === "group";
 
   // Allow through if: has text, is a reply (quoted msg context will be injected),
   // or is a group @mention (bot will respond based on context).
@@ -1444,7 +1457,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       const resolvedGroupName = await getFeishuChatName(account, chatId);
       groupChatName = resolvedGroupName?.trim() || undefined;
     } catch (err) {
-      log?.info(`[${account.accountId}] failed to resolve group name for ${chatId}: ${String(err)}`);
+      log?.info(
+        `[${account.accountId}] failed to resolve group name for ${chatId}: ${String(err)}`,
+      );
     }
 
     // Archive all group messages (regardless of who sent them).
@@ -1466,6 +1481,11 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       }
     }
 
+    if (isBotSender) {
+      log?.info(`[${account.accountId}] bot msg in group archived, skipping reply`);
+      return;
+    }
+
     // Parse @mentions to detect if bot was mentioned.
     const mentions = parseMentions(message);
     let botOpenId: string | null = null;
@@ -1481,8 +1501,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     );
 
     if (!wasMentioned) {
-      // Not @mentioned — just archive (already done above), don't reply.
-      log?.info(`[${account.accountId}] group msg not mentioning bot, skipping reply`);
+      log?.info(`[${account.accountId}] group msg not mentioning bot, archived only`);
       return;
     }
 
@@ -1783,7 +1802,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   });
   const enrichedFrom = senderDisplayName ? `${senderDisplayName} (${senderId})` : senderId;
   const enrichedBody = effectiveCleanText + quotedContext;
-  const body = core.channel.reply.formatAgentEnvelope({
+  const rawBody = core.channel.reply.formatAgentEnvelope({
     channel: "Feishu",
     from: enrichedFrom,
     timestamp: Date.now(),
@@ -1791,6 +1810,42 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     envelope: envelopeOptions,
     body: enrichedBody,
   });
+
+  // On @mention in group: fetch recent messages via API and inject into context.
+  // Uses tenant_access_token (no user OAuth needed) for the /im/v1/messages API.
+  // Aligns with upstream's 20-message default (DEFAULT_MESSAGE_LIMIT).
+  const GROUP_INJECT_LIMIT = 20;
+  let groupContextPrefix = "";
+  if (isGroup) {
+    try {
+      const token = await getTenantAccessToken(account);
+      const now = Date.now();
+      const result = await fetchChatHistory({
+        account,
+        token,
+        chatId,
+        startMs: now - 2 * 60 * 60 * 1000,
+        endMs: now,
+        limit: GROUP_INJECT_LIMIT,
+      });
+      if (result.messages.length > 0) {
+        const chronological = [...result.messages].reverse();
+        const lines = chronological.map((m) => {
+          const ts = m.create_time_human || new Date(Number(m.create_time)).toISOString();
+          const who = m.sender_type === "app" ? `[bot:${m.sender_id}]` : m.sender_id;
+          return `Feishu message from ${who} at ${ts}: ${m.text}`;
+        });
+        groupContextPrefix =
+          `[Chat messages since recent activity — ${lines.length} messages for context]\n` +
+          `${lines.join("\n")}\n` +
+          `[End of recent messages]\n\n`;
+        log?.info(`[${account.accountId}] injected ${lines.length} recent group messages via API`);
+      }
+    } catch (err) {
+      log?.error(`[${account.accountId}] failed to fetch recent group messages: ${String(err)}`);
+    }
+  }
+
   const inboundIdentity = buildFeishuInboundIdentity({
     senderId,
     chatId,
@@ -1798,10 +1853,17 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     groupName: groupChatName,
   });
 
+  // BodyForAgent is what the LLM actually sees (finalizeInboundContext prefers it
+  // over CommandBody/RawBody/Body). Inject group context here so the LLM gets it.
+  const bodyForAgent = groupContextPrefix
+    ? `${groupContextPrefix}${effectiveCleanText}`
+    : undefined;
+
   const ctxPayload = core.channel.reply.finalizeInboundContext({
-    Body: body,
+    Body: rawBody,
     RawBody: cleanText,
     CommandBody: cleanText,
+    ...(bodyForAgent && { BodyForAgent: bodyForAgent }),
     From: inboundIdentity.From,
     To: inboundIdentity.To,
     SessionKey: route.sessionKey,

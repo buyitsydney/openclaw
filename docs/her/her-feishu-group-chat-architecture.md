@@ -42,22 +42,44 @@
 
 **重构后 skill 全景（12 个）**：
 
-| Skill | 工具覆盖 | 职责 |
-|---|---|---|
-| `feishu-chat` | `feishu_chat` 系列 | 群/聊天管理 |
-| `feishu-collab` | `feishu_task`, `feishu_calendar` | 协作（任务/日历） |
-| `feishu-doc` | `feishu_doc` | 文档读写 |
-| `feishu-drive` | `feishu_drive` | 云盘操作 |
-| `feishu-wiki` | `feishu_wiki` | Wiki 操作 |
-| `feishu-minutes` | `feishu_minutes` | 妙记 |
-| `feishu-perm` | `feishu_perm` | 权限管理 |
-| `feishu-oauth` | — | OAuth 授权流程 |
-| `feishu-dm-transcript` | `sessions_history` | 私聊原文回忆 |
-| `feishu-group-transcript` | `feishu_group_history` | 群聊原文回忆 |
-| `feishu-chat-history-search` | `feishu_conversation_search` | 聊天记录关键词搜索 |
-| `feishu-knowledge-search` | `feishu_search`, `feishu_deep_search` | 文档/Wiki/妙记知识搜索 |
+| Skill                        | 工具覆盖                              | 职责                   |
+| ---------------------------- | ------------------------------------- | ---------------------- |
+| `feishu-chat`                | `feishu_chat` 系列                    | 群/聊天管理            |
+| `feishu-collab`              | `feishu_task`, `feishu_calendar`      | 协作（任务/日历）      |
+| `feishu-doc`                 | `feishu_doc`                          | 文档读写               |
+| `feishu-drive`               | `feishu_drive`                        | 云盘操作               |
+| `feishu-wiki`                | `feishu_wiki`                         | Wiki 操作              |
+| `feishu-minutes`             | `feishu_minutes`                      | 妙记                   |
+| `feishu-perm`                | `feishu_perm`                         | 权限管理               |
+| `feishu-oauth`               | —                                     | OAuth 授权流程         |
+| `feishu-dm-transcript`       | `sessions_history`                    | 私聊原文回忆           |
+| `feishu-group-transcript`    | `feishu_group_history`                | 群聊原文回忆           |
+| `feishu-chat-history-search` | `feishu_conversation_search`          | 聊天记录关键词搜索     |
+| `feishu-knowledge-search`    | `feishu_search`, `feishu_deep_search` | 文档/Wiki/妙记知识搜索 |
 
 **已知遗留**：`feishu_group_history` 返回的图片消息包含本地归档路径（`[local archive: ...]`），但模型在私聊跨群查询时不会主动 `read` 该路径查看图片内容。需在 `feishu-group-transcript` skill 中补充图片处理指导。
+
+### 实现状态（2026-03-12 群聊上下文自动注入 — Push+Pull 混合架构）
+
+**背景**：upstream 官方飞书插件使用内存缓冲（`pendingHistory`）在 @mention 时注入群聊上下文，实现"零延迟"感知。本地 `feishu-her` 此前仅依赖 `feishu_group_history` 工具（LLM 主动调用，慢），群聊中 bot 对"刚才发生了什么"几乎无感知。
+
+**方案**：@mention 触发时自动通过 API 拉取最近 20 条消息（含人类 + 所有机器人），注入到 LLM 的 `BodyForAgent` 字段。
+
+**关键实现细节**：
+
+1. **API 拉取而非内存缓冲**：不维护 `chatHistories` Map，每次 @mention 时直接调 `/im/v1/messages` 拉最新 20 条。优势：包含所有 bot 消息（飞书 WebSocket 不推送 bot-to-bot 消息，内存缓冲方案无法捕获）、无状态、重启不丢失
+2. **`tenant_access_token`**：无需 user OAuth，降低授权依赖
+3. **`BodyForAgent` 注入**：`finalizeInboundContext` 优先使用 `BodyForAgent > CommandBody > RawBody > Body`，必须将注入内容放入 `BodyForAgent` 才能被 LLM 看到（早期 bug：放在 `Body` 中被 `CommandBody` 覆盖）
+4. **两层信息架构**：
+   - 第一层：自动注入（20 条，零工具调用，~500ms API 延迟）
+   - 第二层：`feishu_group_history` 工具（深度历史、图片/文件内容、私聊跨群查询）
+5. **Skill 更新**：`feishu-group-transcript/SKILL.md` 描述了两层信息来源和判断流程，指导模型何时用注入内容、何时调工具
+
+**变更文件**：
+
+- `extensions/feishu-her/src/gateway.ts` — 移除 `chatHistories` 缓冲，新增 API 拉取注入
+- `extensions/feishu-her/src/tools/chat-history.ts` — 导出 `fetchChatHistory`、`getTenantAccessToken`、`NormalizedMessage`
+- `extensions/feishu-her/skills/feishu-group-transcript/SKILL.md` — 更新两层信息来源描述
 
 本文不讨论抽象"群聊能力"，只回答一个更实际的问题：
 
@@ -114,22 +136,22 @@
 
 ### 已确认的实测事实
 
-| 能力 | 结果 | 说明 |
-| --- | --- | --- |
-| 两边 `user_access_token` 可见 `test` 群 | 通过 | 两边都能主动拉 `test` 群历史 |
-| 一个 Her 发到群里的 bot/app 消息，另一个 Her 是否实时收到 | 失败 | 双边日志和本地群归档都没有这次 probe |
-| `text` / `post` 历史回读 | 通过 | 双边都能读回正文 |
-| `text` / `post` 里的 @ 用户历史回读 | 通过 | `mentions` 数组稳定返回，`mentions.id` 会自动翻译为观察者 app 的 `open_id`（飞书标准行为），Her 用 `mentions[i].id == 自己用户 open_id` 即可判断"我的用户被 @"，8/8 测试全部 PASS |
-| `quote reply` 历史回读 | 通过 | `parent_id` / `root_id` 可回读 |
-| `thread reply` 在 `message.list(chat)` 中直接发现 | 失败 | `chat` 维度不会直接列出 thread 内回复本身 |
-| `thread` 枚举 | 通过 | 先从 root 消息拿 `thread_id`，再调用 `message.list(container_id_type=thread)` 可拉到 thread 内消息 |
-| `thread reply` 用 `message.get(message_id)` 回读 | 通过 | 能拿到正文、`parent_id`、`root_id`、`thread_id` |
-| `image` 历史回读 + 下载 | 通过 | 双边都能下资源 |
-| `file` / `audio` 历史回读 | 通过 | 但历史里返回的 `file_key` 与发送时 key 不同 |
-| `file` / `audio` 下载 | 通过 | 必须使用历史回读出来的实际 `file_key` |
-| `video` 历史回读 | 失败 | `message.list` 中表现为 `nonsupport` |
-| `video` 用 `message.get` 回读 | 失败 | 本轮两边都返回 500 |
-| `interactive` 历史回读正文 | 失败 | 只返回"请升级至最新版本客户端，以查看内容"等降级结构 |
+| 能力                                                      | 结果 | 说明                                                                                                                                                                              |
+| --------------------------------------------------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 两边 `user_access_token` 可见 `test` 群                   | 通过 | 两边都能主动拉 `test` 群历史                                                                                                                                                      |
+| 一个 Her 发到群里的 bot/app 消息，另一个 Her 是否实时收到 | 失败 | 双边日志和本地群归档都没有这次 probe                                                                                                                                              |
+| `text` / `post` 历史回读                                  | 通过 | 双边都能读回正文                                                                                                                                                                  |
+| `text` / `post` 里的 @ 用户历史回读                       | 通过 | `mentions` 数组稳定返回，`mentions.id` 会自动翻译为观察者 app 的 `open_id`（飞书标准行为），Her 用 `mentions[i].id == 自己用户 open_id` 即可判断"我的用户被 @"，8/8 测试全部 PASS |
+| `quote reply` 历史回读                                    | 通过 | `parent_id` / `root_id` 可回读                                                                                                                                                    |
+| `thread reply` 在 `message.list(chat)` 中直接发现         | 失败 | `chat` 维度不会直接列出 thread 内回复本身                                                                                                                                         |
+| `thread` 枚举                                             | 通过 | 先从 root 消息拿 `thread_id`，再调用 `message.list(container_id_type=thread)` 可拉到 thread 内消息                                                                                |
+| `thread reply` 用 `message.get(message_id)` 回读          | 通过 | 能拿到正文、`parent_id`、`root_id`、`thread_id`                                                                                                                                   |
+| `image` 历史回读 + 下载                                   | 通过 | 双边都能下资源                                                                                                                                                                    |
+| `file` / `audio` 历史回读                                 | 通过 | 但历史里返回的 `file_key` 与发送时 key 不同                                                                                                                                       |
+| `file` / `audio` 下载                                     | 通过 | 必须使用历史回读出来的实际 `file_key`                                                                                                                                             |
+| `video` 历史回读                                          | 失败 | `message.list` 中表现为 `nonsupport`                                                                                                                                              |
+| `video` 用 `message.get` 回读                             | 失败 | 本轮两边都返回 500                                                                                                                                                                |
+| `interactive` 历史回读正文                                | 失败 | 只返回"请升级至最新版本客户端，以查看内容"等降级结构                                                                                                                              |
 
 ### 关于 @ mention "漂移"的澄清
 
@@ -271,14 +293,14 @@
 
 ## 场景总表
 
-| 场景 | 旧方案 | 新方案 | 当前结论 |
-| --- | --- | --- | --- |
-| 1. 私聊问"test 群里该关注什么最新消息" | 不可靠 | 查询时主动拉群历史 + @ mention | `主路径可行（@ 已验证 8/8 PASS）` |
-| 2. 群里说"记住上面那句话" | 靠猜，不可靠 | 必须引用目标消息 | `引用 text/post/thread 时可行` |
-| 3. 群里说"总结今天内容，包括所有信息" | 假完整 | 主动拉历史 + coverage 声明 | `不能承诺 100%` |
-| 4. 私聊问"今天哪些群里有人点名我/要我处理" | 基本做不到 | 多群主动扫描 + @ mention + 正文语义 | `主路径可行（@ 已验证 8/8 PASS）` |
-| 5. 群里回复某条消息后让 Her 处理它 | 不稳定 | `message.get(parent_id)` 主路径 | `可行，但受消息类型限制` |
-| 6. 其他 Her 要给用户"好看"的结果 | 易破坏可回拉性 | 群里短摘要 + 文档承载长内容 | `推荐，且最稳` |
+| 场景                                       | 旧方案         | 新方案                              | 当前结论                          |
+| ------------------------------------------ | -------------- | ----------------------------------- | --------------------------------- |
+| 1. 私聊问"test 群里该关注什么最新消息"     | 不可靠         | 查询时主动拉群历史 + @ mention      | `主路径可行（@ 已验证 8/8 PASS）` |
+| 2. 群里说"记住上面那句话"                  | 靠猜，不可靠   | 必须引用目标消息                    | `引用 text/post/thread 时可行`    |
+| 3. 群里说"总结今天内容，包括所有信息"      | 假完整         | 主动拉历史 + coverage 声明          | `不能承诺 100%`                   |
+| 4. 私聊问"今天哪些群里有人点名我/要我处理" | 基本做不到     | 多群主动扫描 + @ mention + 正文语义 | `主路径可行（@ 已验证 8/8 PASS）` |
+| 5. 群里回复某条消息后让 Her 处理它         | 不稳定         | `message.get(parent_id)` 主路径     | `可行，但受消息类型限制`          |
+| 6. 其他 Her 要给用户"好看"的结果           | 易破坏可回拉性 | 群里短摘要 + 文档承载长内容         | `推荐，且最稳`                    |
 
 ---
 

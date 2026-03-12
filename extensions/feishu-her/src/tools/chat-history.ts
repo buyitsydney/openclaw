@@ -60,7 +60,7 @@ function msToFeishuTs(ms: number): string {
 
 // ── Message normalization ──
 
-type NormalizedMessage = {
+export type NormalizedMessage = {
   message_id: string;
   msg_type: string;
   sender_id: string;
@@ -206,7 +206,9 @@ type HistoryApiError = Error & {
 };
 
 function isUnsupportedForCurrentToken(code: number | undefined, msg: string | undefined): boolean {
-  return code === APP_TYPE_UNSUPPORTED_CODE || (code === 230001 && /not supported/i.test(msg ?? ""));
+  return (
+    code === APP_TYPE_UNSUPPORTED_CODE || (code === 230001 && /not supported/i.test(msg ?? ""))
+  );
 }
 
 function isUnsupportedTokenError(error: unknown): boolean {
@@ -214,7 +216,9 @@ function isUnsupportedTokenError(error: unknown): boolean {
 }
 
 function buildHistoryApiError(code: number | undefined, msg: string | undefined): HistoryApiError {
-  const error = new Error(`Feishu API error: code=${code ?? "unknown"} msg=${msg ?? ""}`) as HistoryApiError;
+  const error = new Error(
+    `Feishu API error: code=${code ?? "unknown"} msg=${msg ?? ""}`,
+  ) as HistoryApiError;
   if (typeof code === "number") error.feishuCode = code;
   if (isUnsupportedForCurrentToken(code, msg)) error.unsupportedForCurrentToken = true;
   return error;
@@ -260,9 +264,7 @@ async function fetchMessageItemsWithToken(params: {
   throw buildHistoryApiError(res.code, res.msg);
 }
 
-async function hydrateMergeForwardMessage(params: {
-  message: NormalizedMessage;
-}) {
+async function hydrateMergeForwardMessage(params: { message: NormalizedMessage }) {
   if (params.message.msg_type !== "merge_forward" || !params.message.message_id) return;
   params.message.text = MERGE_FORWARD_DISABLED_TEXT;
   params.message.coverage = "none";
@@ -417,7 +419,7 @@ type TokenClient = {
   };
 };
 
-async function getTenantAccessToken(account: ResolvedFeishuAccount): Promise<string> {
+export async function getTenantAccessToken(account: ResolvedFeishuAccount): Promise<string> {
   const client = getFeishuClient(account) as unknown as TokenClient;
   const token = await client.tokenManager?.getTenantAccessToken({});
   if (!token) throw new Error("failed_to_get_tenant_access_token");
@@ -439,7 +441,7 @@ type ListHistoryResult = {
   time_range: { start: string; end: string };
 };
 
-async function fetchChatHistory(params: {
+export async function fetchChatHistory(params: {
   account: ResolvedFeishuAccount;
   token: string;
   chatId: string;
