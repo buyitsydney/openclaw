@@ -11,13 +11,8 @@ Use this skill for meeting records and post-meeting evidence. Do not route these
 
 ## OAuth First
 
-`feishu_minutes` needs the user's OAuth token.
-
-If the tool returns `user_auth_required` and an `auth_url`:
-
-1. Send the link to the user
-2. Ask them to complete authorization
-3. Retry after authorization succeeds
+`feishu_minutes` needs user OAuth. See the `feishu-oauth` skill for the full authorization flow.
+If the tool returns `user_auth_required`, follow that skill's instructions exactly.
 
 ## Action Boundaries
 
