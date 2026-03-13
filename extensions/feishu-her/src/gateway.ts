@@ -21,6 +21,7 @@ import type { ResolvedFeishuAccount } from "./accounts.js";
 import { resolveGroupOwnerIds } from "./accounts.js";
 import { buildDriveFileContextFromText } from "./drive-file-read.js";
 import { archiveGroupMessage, archiveSentFeishuBinaryMessage } from "./group-archive.js";
+import { formatFeishuAtText } from "./mention-text.js";
 import { expandFetchedMessageItem, type FeishuFetchedMessageItem } from "./merge-forward.js";
 import { cacheMessageText } from "./message-text-cache.js";
 import { rewriteModelShortcutCommand } from "./model-shortcuts.js";
@@ -57,6 +58,7 @@ import {
   buildFeishuStatusFooter,
   finalizeGroupedReplyText,
 } from "./status-footer.js";
+import { callChatApi } from "./tools/chat-api.js";
 import { fetchChatHistory, getTenantAccessToken } from "./tools/chat-history.js";
 
 const MERGE_FORWARD_DISABLED_TEXT = "[merged forward disabled]";
@@ -765,7 +767,8 @@ function flattenPostBody(
     let line = "";
     for (const el of paragraph) {
       if (el.tag === "text" || el.tag === "a") line += el.text ?? "";
-      else if (el.tag === "at") line += el.user_id ? `@_user_${el.user_id}` : "";
+      else if (el.tag === "at")
+        line += formatFeishuAtText({ userId: el.user_id, userName: el.user_name });
       else if (el.tag === "img") {
         // Collect image keys for download; replace with placeholder in text.
         if (el.image_key && imageKeys) imageKeys.push(el.image_key);
@@ -825,7 +828,7 @@ function flattenInteractiveBody(parsed: any, imageKeys?: string[]): string | nul
       if (el.tag === "text" || el.tag === "a") {
         line += el.text ?? "";
       } else if (el.tag === "at") {
-        line += el.user_name ?? "";
+        line += formatFeishuAtText({ userId: el.user_id, userName: el.user_name });
       } else if (el.tag === "img" && el.image_key) {
         if (imageKeys) {
           imageKeys.push(el.image_key);
@@ -978,6 +981,89 @@ function parseMentions(message: any): FeishuMention[] {
 // oxlint-disable-next-line typescript/no-explicit-any
 function extractSenderName(sender: any): string {
   return sender?.sender_id?.name ?? sender?.sender_id?.id ?? sender?.sender_id?.open_id ?? "";
+}
+
+type FeishuChatMemberListItem = {
+  member_id?: string;
+  name?: string;
+};
+
+type FeishuChatMemberListData = {
+  items?: FeishuChatMemberListItem[];
+  has_more?: boolean;
+  page_token?: string;
+};
+
+async function listFeishuChatMemberNamesByIdType(params: {
+  account: ResolvedFeishuAccount;
+  chatId: string;
+  memberIdType: "open_id";
+}): Promise<Map<string, string>> {
+  const nameMap = new Map<string, string>();
+  let pageToken: string | undefined;
+
+  do {
+    const result = await callChatApi<FeishuChatMemberListData>({
+      account: params.account,
+      method: "GET",
+      endpoint: `/im/v1/chats/${params.chatId}/members`,
+      query: {
+        member_id_type: params.memberIdType,
+        page_size: 100,
+        page_token: pageToken,
+      },
+    });
+
+    if (!result.ok) {
+      throw new Error(
+        `list_chat_members_failed:${params.memberIdType}:code=${result.code} msg=${result.msg}`,
+      );
+    }
+
+    for (const item of result.data?.items ?? []) {
+      const memberId = item.member_id?.trim();
+      const name = item.name?.trim();
+      if (memberId && name) {
+        nameMap.set(memberId, name);
+      }
+    }
+
+    pageToken = result.data?.has_more ? result.data.page_token?.trim() || undefined : undefined;
+  } while (pageToken);
+
+  return nameMap;
+}
+
+async function resolveInjectedGroupSenderNames(params: {
+  account: ResolvedFeishuAccount;
+  chatId: string;
+}): Promise<Map<string, string>> {
+  return listFeishuChatMemberNamesByIdType({
+    account: params.account,
+    chatId: params.chatId,
+    memberIdType: "open_id",
+  });
+}
+
+function stripInjectedStatusFooter(text: string): string {
+  // Drop the synthetic status footer that our own bot appends to group replies.
+  return text.replace(/\n{2}🧠 [^\n]+$/u, "");
+}
+
+function buildCurrentGroupReplyRuleText(params: {
+  senderId: string;
+  senderDisplayName?: string;
+}): string {
+  const senderName = params.senderDisplayName?.trim() || params.senderId;
+  return [
+    "[当前群聊回复规则]",
+    `你当前正在回复的人：${senderName}（open_id=${params.senderId}）。`,
+    `如果你需要真正艾特他，只能使用这个精确格式：<at user_id="${params.senderId}">${senderName}</at>`,
+    "绝对不要输出 @_user_N、ou_xxx、cli_xxx 作为艾特。",
+    "@_user_N 只属于入站消息里的占位符，不能复制到出站回复。",
+    "下面的聊天记录只是历史记录，不代表你本轮该如何构造 mention。",
+    "",
+  ].join("\n");
 }
 
 // ── Inbound message processing ──────────────────────────────────────────
@@ -1442,6 +1528,33 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   );
   setStatus({ lastInboundAt: Date.now() });
   let groupChatName: string | undefined;
+  let currentGroupMentions: FeishuMention[] = [];
+  let currentGroupBotOpenId: string | null = null;
+  const isCommand = cleanText.startsWith("/");
+  const ACK_EMOJI = "Get";
+  let ackReactionId: string | null = null;
+  const addAckReaction = async () => {
+    if (isCommand) return;
+    if (ackReactionId) return;
+    try {
+      ackReactionId = await addFeishuReaction({ account, messageId, emoji: ACK_EMOJI });
+      if (ackReactionId) {
+        log?.info(`[${account.accountId}] added ACK reaction (${ACK_EMOJI}) to ${messageId}`);
+      }
+    } catch (err) {
+      log?.info(`[${account.accountId}] ACK reaction failed: ${String(err)}`);
+    }
+  };
+  const removeAckReaction = async () => {
+    if (!ackReactionId) return;
+    try {
+      await removeFeishuReaction({ account, messageId, reactionId: ackReactionId });
+      log?.info(`[${account.accountId}] removed ACK reaction from ${messageId}`);
+    } catch (err) {
+      log?.info(`[${account.accountId}] ACK reaction removal failed: ${String(err)}`);
+    }
+    ackReactionId = null;
+  };
 
   // ── Group chat handling: archive + owner-only reply gating ──
   if (isGroup) {
@@ -1488,12 +1601,14 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
     // Parse @mentions to detect if bot was mentioned.
     const mentions = parseMentions(message);
+    currentGroupMentions = mentions;
     let botOpenId: string | null = null;
     try {
       botOpenId = await getBotOpenId(account);
     } catch (err) {
       log?.error(`[${account.accountId}] getBotOpenId failed: ${String(err)}`);
     }
+    currentGroupBotOpenId = botOpenId;
     const wasMentioned = botOpenId ? mentions.some((m) => m.id === botOpenId) : false;
 
     log?.info(
@@ -1688,6 +1803,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     return;
   }
 
+  // Give the user immediate feedback before any slower context enrichment.
+  await addAckReaction();
+
   // ── Resolve sender display name (best-effort, non-blocking) ──
   let senderDisplayName: string | undefined;
   try {
@@ -1830,15 +1948,38 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       });
       if (result.messages.length > 0) {
         const chronological = [...result.messages].reverse();
+        const senderNameMap = await resolveInjectedGroupSenderNames({ account, chatId });
+        const selfMention = currentGroupBotOpenId
+          ? currentGroupMentions.find(
+              (mention) => mention.id === currentGroupBotOpenId && mention.name?.trim(),
+            )
+          : undefined;
+        if (selfMention?.name?.trim()) {
+          senderNameMap.set(account.appId, selfMention.name.trim());
+        }
+        const currentReplyRule = buildCurrentGroupReplyRuleText({
+          senderId,
+          senderDisplayName,
+        });
+
         const lines = chronological.map((m) => {
           const ts = m.create_time_human || new Date(Number(m.create_time)).toISOString();
-          const who = m.sender_type === "app" ? `[bot:${m.sender_id}]` : m.sender_id;
-          return `Feishu message from ${who} at ${ts}: ${m.text}`;
+          const resolved = senderNameMap.get(m.sender_id)?.trim();
+          const who = resolved ? `${resolved} (${m.sender_id})` : m.sender_id;
+          // Resolve @_user_N placeholders to actual names using mentions array.
+          let text = stripInjectedStatusFooter(m.text);
+          if (m.mentions) {
+            for (const mention of m.mentions) {
+              text = text.replaceAll(mention.key, `@${mention.name}`);
+            }
+          }
+          return `Feishu message from ${who} at ${ts}: ${text}`;
         });
         groupContextPrefix =
           `[Chat messages since recent activity — ${lines.length} messages for context]\n` +
           `${lines.join("\n")}\n` +
-          `[End of recent messages]\n\n`;
+          `[End of recent messages]\n\n` +
+          `${currentReplyRule}\n`;
         log?.info(`[${account.accountId}] injected ${lines.length} recent group messages via API`);
       }
     } catch (err) {
@@ -1854,10 +1995,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   });
 
   // BodyForAgent is what the LLM actually sees (finalizeInboundContext prefers it
-  // over CommandBody/RawBody/Body). Inject group context here so the LLM gets it.
-  const bodyForAgent = groupContextPrefix
-    ? `${groupContextPrefix}${effectiveCleanText}`
-    : undefined;
+  // over CommandBody/RawBody/Body). Prepend group context to the full envelope
+  // (rawBody) so the LLM gets both injected messages AND the sender identity.
+  const bodyForAgent = groupContextPrefix ? `${groupContextPrefix}${rawBody}` : undefined;
 
   const ctxPayload = core.channel.reply.finalizeInboundContext({
     Body: rawBody,
@@ -1903,7 +2043,6 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
   // ── Card stream for typing / typewriter effect ──
   // Skip for commands (/new, /reset etc.) which have their own response flow.
-  const isCommand = cleanText.startsWith("/");
   let cardStream: FeishuCardStream | undefined;
 
   // onReplyStart: create the card stream when the AI actually starts processing
@@ -1967,35 +2106,6 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     }
     // 3. Close streaming mode so "[生成中...]" clears.
     await cardStream.finalize(cardStreamFinalText);
-  };
-
-  // ── ACK reaction: add a "typing" emoji when we start processing ──
-  // Shows users an immediate visual indicator that their message was received.
-  // The emoji is removed after the reply is delivered (like the test bot behavior).
-  const ACK_EMOJI = "Get";
-  let ackReactionId: string | null = null;
-  const addAckReaction = async () => {
-    if (isCommand) return;
-    if (ackReactionId) return; // typing heartbeat re-fires onReplyStart; ACK only needs adding once
-    try {
-      ackReactionId = await addFeishuReaction({ account, messageId, emoji: ACK_EMOJI });
-      if (ackReactionId) {
-        log?.info(`[${account.accountId}] added ACK reaction (${ACK_EMOJI}) to ${messageId}`);
-      }
-    } catch (err) {
-      // Non-fatal: ACK reaction is a UX nicety, not critical.
-      log?.info(`[${account.accountId}] ACK reaction failed: ${String(err)}`);
-    }
-  };
-  const removeAckReaction = async () => {
-    if (!ackReactionId) return;
-    try {
-      await removeFeishuReaction({ account, messageId, reactionId: ackReactionId });
-      log?.info(`[${account.accountId}] removed ACK reaction from ${messageId}`);
-    } catch (err) {
-      log?.info(`[${account.accountId}] ACK reaction removal failed: ${String(err)}`);
-    }
-    ackReactionId = null;
   };
 
   // Dispatch through the auto-reply pipeline and deliver response.

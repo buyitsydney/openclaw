@@ -307,7 +307,7 @@ function parseInlineElements(text: string, forceBold = false): PostElement[][] {
 /** Detect whether text contains Markdown formatting worth converting. */
 function hasMarkdown(text: string): boolean {
   // Check for common Markdown patterns.
-  return /(\*\*.+?\*\*|\*[^*]+?\*|`.+?`|```|\[.+?\]\(.+?\)|^#{1,6}\s|^[-*+]\s|^\d+\.\s|^---)/m.test(
+  return /(\*\*.+?\*\*|\*[^*]+?\*|`.+?`|```|\[.+?\]\(.+?\)|^#{1,6}\s|^[-*+]\s|^\d+\.\s|^---|<at\s+user_id="[^"]+">[^<]*<\/at>)/m.test(
     text,
   );
 }

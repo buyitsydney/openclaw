@@ -23,6 +23,7 @@ import {
   loadArchiveEntries,
   type GroupArchiveEntry,
 } from "../group-archive.js";
+import { formatFeishuAtText } from "../mention-text.js";
 import type { FeishuFetchedMessageItem } from "../merge-forward.js";
 import {
   callFeishuApiWithUserToken,
@@ -94,7 +95,8 @@ function extractPostText(parsed: Record<string, any>): string {
     for (const el of paragraph) {
       if (el.tag === "text") parts.push(String(el.text ?? ""));
       else if (el.tag === "a") parts.push(`[${el.text ?? ""}](${el.href ?? ""})`);
-      else if (el.tag === "at") parts.push(`@${el.user_name ?? el.user_id ?? ""}`);
+      else if (el.tag === "at")
+        parts.push(formatFeishuAtText({ userId: el.user_id, userName: el.user_name }));
       else if (el.tag === "img") parts.push(`[image:${el.image_key ?? ""}]`);
       else if (el.tag === "media") parts.push(`[media:${el.file_key ?? ""}]`);
     }

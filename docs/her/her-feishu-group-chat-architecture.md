@@ -81,6 +81,21 @@
 - `extensions/feishu-her/src/tools/chat-history.ts` — 导出 `fetchChatHistory`、`getTenantAccessToken`、`NormalizedMessage`
 - `extensions/feishu-her/skills/feishu-group-transcript/SKILL.md` — 更新两层信息来源描述
 
+### 状态补充（2026-03-13）
+
+**本轮已落地并准备继续线上压测的修复**：
+
+1. **ACK 动画前置**：在群聊自动注入、sender 解析、quoted message 拉取之前先打 `Get` reaction，恢复"用户一发消息就看到 bot 在处理"的体验
+2. **`@所有人` 文本显示统一**：`gateway.ts`、`chat-history.ts`、`merge-forward.ts` 共用 `formatFeishuAtText()`，`<at user_id="all">所有人</at>` 在历史/引用/展开内容里统一显示为 `@所有人`
+3. **群聊自动注入的人名修正**：自动注入的 recent messages 会优先用群成员名，而不是只暴露 `open_id`
+4. **群内真正 @ 回复规则补强**：注入上下文时额外提示"本轮正在回复谁、必须用哪个 `<at user_id=\"...\">名字</at>`"，避免把 `@_user_N` 占位符抄回出站消息
+
+**继续线上压测时要盯的已知 follow-up**：
+
+1. **P0 - `message` 工具 `replyTo` 对飞书仍未打通**：当前通用 delivery 层会传 `replyToId`，但 `extensions/feishu-her/src/channel.ts` 的 outbound 发送还没有消费它，所以 `message(action="send", replyTo="om_xxx")` 不能形成飞书 quote reply；而 gateway 内部命令回复走的是 `sendFeishuReply()`，所以 `/opus` 这类群内命令回复是正常的
+2. **P1 - `@all` 是否进入 `mentions[]` 仍需继续实测确认**：本轮修的是文本显示层；如果飞书历史 API 天生不把 `@all` 作为独立 mention 返回，那么程序侧不能只依赖 `mentions[]` 判断是否 `@所有人`
+3. **P2 - `sender.label` 仍可能退化成 `open_id`**：如果 inbound context 没显式注入 `SenderName`，OpenClaw 的默认 sender label 仍会回退到 `SenderId`，所以新 bot 在没有 `USER.md` 映射时仍可能只看到 `ou_xxx`
+
 本文不讨论抽象"群聊能力"，只回答一个更实际的问题：
 
 `用户在真实飞书群里，问自己的 Her"群里发生了什么、我该关注什么、帮我记住哪句话、帮我总结今天内容"时，新方案到底怎么做，哪些场景能成，哪些场景不能承诺 100%。`

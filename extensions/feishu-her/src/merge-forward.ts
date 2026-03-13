@@ -1,6 +1,7 @@
 import type { ChannelLogSink } from "openclaw/plugin-sdk";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { createArchiveTextForBuffer } from "./group-archive.js";
+import { formatFeishuAtText } from "./mention-text.js";
 import { getCachedMessageText } from "./message-text-cache.js";
 import { downloadFeishuFile, downloadFeishuImage, getFeishuClient } from "./outbound.js";
 
@@ -57,9 +58,9 @@ function parseJsonContent(content: string): Record<string, unknown> | null {
 function extractPostText(parsed: Record<string, unknown>): ExpandedFeishuContent {
   const zhCn = parsed.zh_cn as Record<string, unknown> | undefined;
   const enUs = parsed.en_us as Record<string, unknown> | undefined;
-  const body = (Array.isArray(parsed.content)
-    ? parsed
-    : (zhCn ?? enUs ?? Object.values(parsed)[0])) as Record<string, unknown> | undefined;
+  const body = (
+    Array.isArray(parsed.content) ? parsed : (zhCn ?? enUs ?? Object.values(parsed)[0])
+  ) as Record<string, unknown> | undefined;
   const content = body?.content as Array<Array<Record<string, unknown>>> | undefined;
   if (!Array.isArray(content)) {
     return {
@@ -75,7 +76,8 @@ function extractPostText(parsed: Record<string, unknown>): ExpandedFeishuContent
     for (const el of paragraph) {
       if (el.tag === "text") parts.push(String(el.text ?? ""));
       else if (el.tag === "a") parts.push(`[${el.text ?? ""}](${el.href ?? ""})`);
-      else if (el.tag === "at") parts.push(`@${el.user_name ?? el.user_id ?? ""}`);
+      else if (el.tag === "at")
+        parts.push(formatFeishuAtText({ userId: el.user_id, userName: el.user_name }));
       else if (el.tag === "img") {
         parts.push("[image]");
         coverage = "partial";
@@ -90,7 +92,8 @@ function extractPostText(parsed: Record<string, unknown>): ExpandedFeishuContent
     }
     lines.push(parts.join(""));
   }
-  const title = typeof body?.title === "string" && body.title.trim() ? `${body.title.trim()}\n` : "";
+  const title =
+    typeof body?.title === "string" && body.title.trim() ? `${body.title.trim()}\n` : "";
   return {
     text: `${title}${lines.join("\n")}`.trim() || null,
     coverage,
@@ -112,14 +115,17 @@ function extractInteractiveText(parsed: Record<string, unknown>): ExpandedFeishu
     const parts: string[] = [];
     for (const el of row) {
       if (el.tag === "text" || el.tag === "a") parts.push(String(el.text ?? ""));
-      else if (el.tag === "at") parts.push(`@${el.user_name ?? el.user_id ?? ""}`);
+      else if (el.tag === "at")
+        parts.push(formatFeishuAtText({ userId: el.user_id, userName: el.user_name }));
       else if (el.tag === "img") parts.push("[image]");
     }
     if (parts.length > 0) lines.push(parts.join(""));
   }
 
   return {
-    text: lines.join("\n").trim() || "[interactive card — content degraded by API, cannot recover full text]",
+    text:
+      lines.join("\n").trim() ||
+      "[interactive card — content degraded by API, cannot recover full text]",
     coverage,
   };
 }
@@ -130,7 +136,9 @@ function inferCoverageFromArchiveText(archiveText: string): ExpandedFeishuConten
 
 function isSourcePermissionDenied(error: unknown): boolean {
   const message = String(error);
-  return /230002|1062524|out of the chat|source parent no permission|permission denied/i.test(message);
+  return /230002|1062524|out of the chat|source parent no permission|permission denied/i.test(
+    message,
+  );
 }
 
 function getCachedExpandedMessage(messageId: string): ExpandedFeishuContent | null {
@@ -179,13 +187,21 @@ async function fetchMessageItemsViaBotClient(
     data?: { items?: FeishuFetchedMessageItem[] };
   };
   if (response.code !== 0) {
-    throw new Error(`merge_forward fetch failed: code=${response.code ?? "unknown"} msg=${response.msg ?? ""}`);
+    throw new Error(
+      `merge_forward fetch failed: code=${response.code ?? "unknown"} msg=${response.msg ?? ""}`,
+    );
   }
   return Array.isArray(response.data?.items) ? response.data.items : [];
 }
 
 function isAttachmentMessageType(msgType: string): boolean {
-  return msgType === "image" || msgType === "file" || msgType === "audio" || msgType === "media" || msgType === "video";
+  return (
+    msgType === "image" ||
+    msgType === "file" ||
+    msgType === "audio" ||
+    msgType === "media" ||
+    msgType === "video"
+  );
 }
 
 function buildMergedForwardAttachmentPlaceholder(params: {
@@ -235,7 +251,9 @@ async function resolveOriginalMessageItem(params: {
   const items = await params.fetchItems(messageId);
   const original = items.find((item) => item.message_id === messageId) ?? items[0] ?? null;
   if (!original) {
-    params.log?.info?.(`[${params.account.accountId}] merge_forward source lookup returned no items for ${messageId}`);
+    params.log?.info?.(
+      `[${params.account.accountId}] merge_forward source lookup returned no items for ${messageId}`,
+    );
     return null;
   }
   return original;
@@ -250,7 +268,9 @@ export async function expandFetchedMessageItem(params: {
   downloadImage?: DownloadImageResource;
   resourceDownloadMode?: ResourceDownloadMode;
 }): Promise<ExpandedFeishuContent> {
-  const fetchItems = params.fetchItems ?? ((messageId: string) => fetchMessageItemsViaBotClient(params.account, messageId));
+  const fetchItems =
+    params.fetchItems ??
+    ((messageId: string) => fetchMessageItemsViaBotClient(params.account, messageId));
   const downloadFile =
     params.downloadFile ??
     ((fileParams: { messageId: string; fileKey: string }) =>
@@ -371,7 +391,9 @@ export async function expandFetchedMessageItem(params: {
         coverage: "partial",
       };
     } catch (error) {
-      params.log?.info?.(`[${params.account.accountId}] image expansion failed (${messageId}): ${String(error)}`);
+      params.log?.info?.(
+        `[${params.account.accountId}] image expansion failed (${messageId}): ${String(error)}`,
+      );
       if (isSourcePermissionDenied(error)) {
         return buildMergedForwardAttachmentPlaceholder({
           msgType,
@@ -386,7 +408,9 @@ export async function expandFetchedMessageItem(params: {
   const fileKey = typeof parsed?.file_key === "string" ? parsed.file_key : "";
   if (msgType === "file" && fileKey && messageId) {
     const fileName =
-      typeof parsed?.file_name === "string" && parsed.file_name.trim() ? parsed.file_name.trim() : `file-${messageId}`;
+      typeof parsed?.file_name === "string" && parsed.file_name.trim()
+        ? parsed.file_name.trim()
+        : `file-${messageId}`;
     if (resourceDownloadMode === "resolve_origin") {
       const cached = getCachedExpandedMessage(messageId);
       if (cached) return cached;
@@ -435,7 +459,9 @@ export async function expandFetchedMessageItem(params: {
         defaultBaseName: `file-${messageId}`,
       });
     } catch (error) {
-      params.log?.info?.(`[${params.account.accountId}] file expansion failed (${messageId}): ${String(error)}`);
+      params.log?.info?.(
+        `[${params.account.accountId}] file expansion failed (${messageId}): ${String(error)}`,
+      );
       if (isSourcePermissionDenied(error)) {
         return buildMergedForwardAttachmentPlaceholder({
           msgType,
@@ -448,14 +474,18 @@ export async function expandFetchedMessageItem(params: {
   }
   if (msgType === "file") {
     const fileName =
-      typeof parsed?.file_name === "string" && parsed.file_name.trim() ? parsed.file_name.trim() : `file-${messageId}`;
+      typeof parsed?.file_name === "string" && parsed.file_name.trim()
+        ? parsed.file_name.trim()
+        : `file-${messageId}`;
     return { text: `[file: ${fileName}]`, coverage: "partial" };
   }
 
   if ((msgType === "audio" || msgType === "media" || msgType === "video") && fileKey && messageId) {
     const defaultName = msgType === "audio" ? `audio-${messageId}.ogg` : `video-${messageId}.mp4`;
     const fileName =
-      typeof parsed?.file_name === "string" && parsed.file_name.trim() ? parsed.file_name.trim() : defaultName;
+      typeof parsed?.file_name === "string" && parsed.file_name.trim()
+        ? parsed.file_name.trim()
+        : defaultName;
     if (resourceDownloadMode === "resolve_origin") {
       const cached = getCachedExpandedMessage(messageId);
       if (cached) return cached;
@@ -513,11 +543,15 @@ export async function expandFetchedMessageItem(params: {
         defaultBaseName: `${msgType}-${messageId}`,
       });
       return {
-        text: archive.text ? `${msgType === "audio" ? "[audio]" : "[video]"}\n${archive.text}` : fileName,
+        text: archive.text
+          ? `${msgType === "audio" ? "[audio]" : "[video]"}\n${archive.text}`
+          : fileName,
         coverage: "partial",
       };
     } catch (error) {
-      params.log?.info?.(`[${params.account.accountId}] media expansion failed (${messageId}): ${String(error)}`);
+      params.log?.info?.(
+        `[${params.account.accountId}] media expansion failed (${messageId}): ${String(error)}`,
+      );
       if (isSourcePermissionDenied(error)) {
         return buildMergedForwardAttachmentPlaceholder({
           msgType,
@@ -568,9 +602,14 @@ export async function expandMergeForwardItems(params: {
   downloadFile?: DownloadFileResource;
   downloadImage?: DownloadImageResource;
 }): Promise<ExpandedFeishuContent> {
-  const fetchItems = params.fetchItems ?? ((messageId: string) => fetchMessageItemsViaBotClient(params.account, messageId));
+  const fetchItems =
+    params.fetchItems ??
+    ((messageId: string) => fetchMessageItemsViaBotClient(params.account, messageId));
   const subMessages = params.items
-    .filter((item) => typeof item.upper_message_id === "string" && item.upper_message_id.trim().length > 0)
+    .filter(
+      (item) =>
+        typeof item.upper_message_id === "string" && item.upper_message_id.trim().length > 0,
+    )
     .toSorted((a, b) => {
       const timeA = Number.parseInt(a.create_time ?? "0", 10);
       const timeB = Number.parseInt(b.create_time ?? "0", 10);
@@ -591,7 +630,9 @@ export async function expandMergeForwardItems(params: {
       fetchItems,
       downloadFile: params.downloadFile,
       downloadImage: params.downloadImage,
-      resourceDownloadMode: isAttachmentMessageType(item.msg_type ?? "") ? "resolve_origin" : "allow",
+      resourceDownloadMode: isAttachmentMessageType(item.msg_type ?? "")
+        ? "resolve_origin"
+        : "allow",
     });
     coverage = mergeCoverage(coverage, expanded.coverage);
     if (expanded.text) blocks.push(prefixBulletBlock(expanded.text));
@@ -614,7 +655,8 @@ export async function expandMergeForwardMessage(params: {
 }): Promise<ExpandedFeishuContent> {
   try {
     const fetchItems =
-      params.fetchItems ?? ((messageId: string) => fetchMessageItemsViaBotClient(params.account, messageId));
+      params.fetchItems ??
+      ((messageId: string) => fetchMessageItemsViaBotClient(params.account, messageId));
     const items = await fetchItems(params.messageId);
     const expanded = await expandMergeForwardItems({
       account: params.account,
@@ -629,11 +671,15 @@ export async function expandMergeForwardMessage(params: {
         `[${params.account.accountId}] merge_forward expanded: ${items.length} api item(s), ${expanded.text.split("\n").length} readable line(s)`,
       );
     } else {
-      params.log?.info?.(`[${params.account.accountId}] merge_forward fetch returned no readable sub-messages`);
+      params.log?.info?.(
+        `[${params.account.accountId}] merge_forward fetch returned no readable sub-messages`,
+      );
     }
     return expanded;
   } catch (error) {
-    params.log?.info?.(`[${params.account.accountId}] merge_forward fetch failed: ${String(error)}`);
+    params.log?.info?.(
+      `[${params.account.accountId}] merge_forward fetch failed: ${String(error)}`,
+    );
     return { text: null, coverage: "none" };
   }
 }
