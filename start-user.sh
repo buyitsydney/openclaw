@@ -602,6 +602,7 @@ docker run -d \
   --restart unless-stopped \
   --memory=2g \
   -e HOME=/data \
+  -e NODE_OPTIONS=--max-old-space-size=1536 \
   "${ENV_ARGS[@]}" \
   -e GOOGLE_APPLICATION_CREDENTIALS=/gcloud/application_default_credentials.json \
   ${WEBCHAT_URL:+-e WEBCHAT_URL="$WEBCHAT_URL"} \

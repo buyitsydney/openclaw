@@ -48,7 +48,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # --- Source code (daily changes only invalidate from here) ---
 COPY . .
-RUN OPENCLAW_A2UI_SKIP_MISSING=1 pnpm build
+RUN NODE_OPTIONS=--max-old-space-size=1536 OPENCLAW_A2UI_SKIP_MISSING=1 pnpm build:docker
 ENV OPENCLAW_PREFER_PNPM=1
 RUN pnpm ui:build
 

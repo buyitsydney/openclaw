@@ -1,0 +1,45 @@
+diff --git a/dist/core/compaction/compaction.js b/dist/core/compaction/compaction.js
+index 0889a4f3ec1df3c94362851613edcb08850b6658..bc25aa6d25b5eed64f2422f21476f76cb054203a 100644
+--- a/dist/core/compaction/compaction.js
++++ b/dist/core/compaction/compaction.js
+@@ -465,6 +465,24 @@ export function prepareCompaction(pathEntries, settings) {
+             break;
+         }
+     }
++    // Previous round's keptMessages are between firstKeptEntryId and the
++    // compaction entry. They were kept for raw detail during recent turns
++    // but must now be summarized - otherwise they fall in a dead zone
++    // that no future compaction round will ever process.
++    const prevKeptMessages = [];
++    if (prevCompactionIndex >= 0) {
++        const prevCompaction = pathEntries[prevCompactionIndex];
++        if (prevCompaction.firstKeptEntryId) {
++            const keptIdx = pathEntries.findIndex((e) => e.id === prevCompaction.firstKeptEntryId);
++            if (keptIdx >= 0 && keptIdx < prevCompactionIndex) {
++                for (let i = keptIdx; i < prevCompactionIndex; i++) {
++                    const msg = getMessageFromEntry(pathEntries[i]);
++                    if (msg)
++                        prevKeptMessages.push(msg);
++                }
++            }
++        }
++    }
+     const boundaryStart = prevCompactionIndex + 1;
+     const boundaryEnd = pathEntries.length;
+     const usageStart = prevCompactionIndex >= 0 ? prevCompactionIndex : 0;
+@@ -484,12 +502,13 @@ export function prepareCompaction(pathEntries, settings) {
+     const firstKeptEntryId = firstKeptEntry.id;
+     const historyEnd = cutPoint.isSplitTurn ? cutPoint.turnStartIndex : cutPoint.firstKeptEntryIndex;
+     // Messages to summarize (will be discarded after summary)
+-    const messagesToSummarize = [];
++    const newMessagesToSummarize = [];
+     for (let i = boundaryStart; i < historyEnd; i++) {
+         const msg = getMessageFromEntry(pathEntries[i]);
+         if (msg)
+-            messagesToSummarize.push(msg);
++            newMessagesToSummarize.push(msg);
+     }
++    const messagesToSummarize = [...prevKeptMessages, ...newMessagesToSummarize];
+     // Messages for turn prefix summary (if splitting a turn)
+     const turnPrefixMessages = [];
+     if (cutPoint.isSplitTurn) {
