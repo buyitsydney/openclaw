@@ -12,6 +12,8 @@ import { initOAuthCallback, startOAuthServer } from "./src/oauth.js";
 import { setFeishuRuntime } from "./src/runtime.js";
 import { registerAllFeishuTools } from "./src/tools/index.js";
 
+let initialArchiveSyncScheduled = false;
+
 function extractConfigOpts(config: Record<string, unknown> | undefined): BuildReportOpts {
   if (!config) return {};
   const agents = config.agents as Record<string, unknown> | undefined;
@@ -56,16 +58,19 @@ const plugin = {
     }
 
     // Background sync: write group archives to memory dir for semantic indexing
-    setTimeout(() => {
-      try {
-        const result = syncGroupArchivesToMemory();
-        if (result.synced > 0) {
-          api.logger.info?.(`memory-bridge: synced ${result.synced} group archives to memory`);
+    if (!initialArchiveSyncScheduled) {
+      initialArchiveSyncScheduled = true;
+      setTimeout(() => {
+        try {
+          const result = syncGroupArchivesToMemory();
+          if (result.synced > 0) {
+            api.logger.info?.(`memory-bridge: synced ${result.synced} group archives to memory`);
+          }
+        } catch (e) {
+          api.logger.info?.(`memory-bridge: initial archive sync failed: ${String(e)}`);
         }
-      } catch (e) {
-        api.logger.info?.(`memory-bridge: initial archive sync failed: ${String(e)}`);
-      }
-    }, 5_000);
+      }, 5_000);
+    }
 
     api.on("after_compaction", (event, ctx) => {
       const sessionFile = event.sessionFile;

@@ -12,7 +12,7 @@
 
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import * as Lark from "@larksuiteoapi/node-sdk";
@@ -456,6 +456,9 @@ export function getAuthUrlForChat(
 // Cloudflare tunnel. This standalone server binds to 0.0.0.0 so the tunnel can reach it.
 
 const DEFAULT_OAUTH_PORT = 18891;
+let oauthServer: Server | null = null;
+let oauthServerPort: number | null = null;
+let oauthServerStartingPort: number | null = null;
 
 export function startOAuthServer(params: {
   port?: number;
@@ -463,6 +466,20 @@ export function startOAuthServer(params: {
   warn: (msg: string) => void;
 }): void {
   const port = params.port ?? DEFAULT_OAUTH_PORT;
+  const activePort = oauthServerPort ?? oauthServerStartingPort;
+  if (activePort != null) {
+    if (activePort === port) {
+      params.log(
+        `OAuth HTTP server already initialized on 0.0.0.0:${port}; skipping duplicate start`,
+      );
+      return;
+    }
+    params.warn(
+      `OAuth HTTP server already initialized on port ${activePort}; refusing duplicate start on ${port}`,
+    );
+    return;
+  }
+
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (url.pathname === "/feishu/oauth/callback") {
@@ -481,11 +498,29 @@ export function startOAuthServer(params: {
     res.end("Not Found");
   });
 
+  oauthServerStartingPort = port;
   server.listen(port, "0.0.0.0", () => {
+    oauthServer = server;
+    oauthServerPort = port;
+    oauthServerStartingPort = null;
     params.log(`OAuth HTTP server listening on 0.0.0.0:${port}`);
   });
   server.on("error", (err) => {
+    oauthServerStartingPort = null;
+    if (oauthServer === server) {
+      oauthServer = null;
+      oauthServerPort = null;
+    }
     params.warn(`OAuth HTTP server failed to start on port ${port}: ${String(err)}`);
+  });
+  server.on("close", () => {
+    if (oauthServer === server) {
+      oauthServer = null;
+      oauthServerPort = null;
+    }
+    if (oauthServerStartingPort === port) {
+      oauthServerStartingPort = null;
+    }
   });
 }
 
