@@ -12,7 +12,12 @@
   agents: {
     defaults: {
       contextTokens: 200000,
-      compaction: { mode: "safeguard" },
+      compaction: {
+        mode: "safeguard",
+        recentTurnsPreserve: 3,
+        qualityGuard: { enabled: true, maxRetries: 2 },
+        postIndexSync: "async",
+      },
       // 语义搜索记忆 — apiKey 通过环境变量注入
       memorySearch: {
         provider: "openai",

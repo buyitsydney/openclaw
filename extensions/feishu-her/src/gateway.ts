@@ -693,7 +693,7 @@ function resolveWebchatUrl(config: OpenClawConfig): string | undefined {
   const port = config.gateway?.port ?? 18789;
   const token = config.gateway?.auth?.token;
   const base = `http://localhost:${port}`;
-  return token ? `${base}?token=${token}` : base;
+  return token ? `${base}#token=${token}` : base;
 }
 
 // ---------------------------------------------------------------------------

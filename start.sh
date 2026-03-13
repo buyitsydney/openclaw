@@ -97,6 +97,11 @@ echo ""
 export VOICE_FE_HOST="carher.carher.net"
 export VOICE_PROXY_HOST="proxy.carher.net"
 
+# Anthropic direct on the macOS host can resolve IPv6 first and get a 403 from
+# the forbidden path, while the same token succeeds over IPv4. Force ipv4first
+# for the local Her gateway process so direct Anthropic calls match docker1.
+export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--dns-result-order=ipv4first"
+
 # 启动 Gateway（后台运行）
 pnpm openclaw gateway run --port 18789 --force &
 GATEWAY_PID=$!

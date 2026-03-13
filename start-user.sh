@@ -567,7 +567,7 @@ import json
 with open('${SCRIPT_DIR}/docker/carher-config.json') as f:
     print(json.load(f)['gateway']['auth']['token'])
 ")
-WEBCHAT_URL="http://${HOST_ARG}:${PORT_GW}?token=${AUTH_TOKEN}"
+WEBCHAT_URL="http://localhost:${PORT_GW}#token=${AUTH_TOKEN}"
 
 # --- Always clean start: stop old container if exists ---
 if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
