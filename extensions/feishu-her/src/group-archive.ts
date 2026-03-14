@@ -280,113 +280,6 @@ export async function saveArchiveBuffer(params: {
   return { path, fileName };
 }
 
-/**
- * Walk the officeparser AST to produce rich text with slide separators and chart data.
- * Falls back to ast.toText() if the AST structure is unexpected.
- */
-// oxlint-disable-next-line typescript/no-explicit-any
-function formatOfficeAst(ast: any, maxChars: number): string {
-  if (!ast) return "";
-  const content = ast.content as unknown[];
-  if (!Array.isArray(content) || content.length === 0) {
-    return (ast.toText?.() ?? "").slice(0, maxChars).trim();
-  }
-
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const chartDataByName = new Map<string, any>();
-  const attachments = ast.attachments as unknown[];
-  if (Array.isArray(attachments)) {
-    for (const att of attachments) {
-      // oxlint-disable-next-line typescript/no-explicit-any
-      const a = att as any;
-      if (a.chartData && a.name) {
-        chartDataByName.set(a.name, a.chartData);
-      }
-    }
-  }
-
-  const lines: string[] = [];
-  let slideNum = 0;
-  let charCount = 0;
-
-  // oxlint-disable-next-line typescript/no-explicit-any
-  function walkNode(node: any): void {
-    if (charCount >= maxChars || !node) return;
-    const type = node.type as string;
-
-    if (type === "slide" || type === "section") {
-      slideNum++;
-      const sep = `\n--- Slide ${slideNum} ---\n`;
-      lines.push(sep);
-      charCount += sep.length;
-    }
-
-    if (type === "chart") {
-      const attachmentName = node.metadata?.attachmentName as string | undefined;
-      const chartData = attachmentName ? chartDataByName.get(attachmentName) : undefined;
-      if (chartData) {
-        const parts: string[] = [];
-        parts.push(chartData.title ? `[Chart: ${chartData.title}]` : "[Chart]");
-        const labels = chartData.labels as string[] | undefined;
-        const dataSets = chartData.dataSets as unknown[] | undefined;
-        if (Array.isArray(labels) && labels.length > 0) {
-          parts.push(`  Categories: ${labels.join(", ")}`);
-        }
-        if (Array.isArray(dataSets)) {
-          for (const dataSet of dataSets) {
-            // oxlint-disable-next-line typescript/no-explicit-any
-            const d = dataSet as any;
-            const values = Array.isArray(d.values) ? d.values.join(", ") : String(d.values ?? "");
-            const name = d.name ? `${d.name}: ` : "";
-            parts.push(`  Data: ${name}${values}`);
-          }
-        }
-        const chartText = parts.join("\n") + "\n";
-        lines.push(chartText);
-        charCount += chartText.length;
-      }
-    }
-
-    if (type === "table" && Array.isArray(node.children)) {
-      const rows = node.children.filter((row: { type: string }) => row.type === "row");
-      for (const row of rows) {
-        if (charCount >= maxChars) break;
-        // oxlint-disable-next-line typescript/no-explicit-any
-        const cells = (row.children ?? []).filter((cell: any) => cell.type === "cell");
-        // oxlint-disable-next-line typescript/no-explicit-any
-        const rowText = cells
-          .map((cell: any) => (cell.text ?? "").replace(/[\t\n]/g, " "))
-          .join("\t");
-        lines.push(rowText);
-        charCount += rowText.length + 1;
-      }
-      lines.push("");
-      return;
-    }
-
-    const hasChildren = Array.isArray(node.children) && node.children.length > 0;
-    if (hasChildren && type !== "table") {
-      for (const child of node.children) {
-        if (charCount >= maxChars) break;
-        walkNode(child);
-      }
-    } else if (!hasChildren && node.text && type !== "table" && type !== "row" && type !== "cell") {
-      const text = String(node.text).trim();
-      if (text) {
-        lines.push(text);
-        charCount += text.length + 1;
-      }
-    }
-  }
-
-  for (const node of content) {
-    if (charCount >= maxChars) break;
-    walkNode(node);
-  }
-
-  return lines.join("\n").slice(0, maxChars).trim();
-}
-
 function buildArchivePathLine(fileName: string, savedPath: string): string {
   return `[file: ${fileName} saved at ${savedPath}]`;
 }
@@ -423,18 +316,11 @@ export async function buildArchiveTextFromSavedFile(params: {
       return includePathLine ? pathLine : "";
     }
   }
-  if (!OFFICE_EXTS.has(ext)) return includePathLine ? pathLine : "";
+  // Office files stay path-only. We still persist the local file so the agent
+  // can decide whether and how to read it, but we never pre-parse them here.
+  if (OFFICE_EXTS.has(ext)) return pathLine;
 
-  try {
-    const { parseOffice } = await import("officeparser");
-    const ast = await parseOffice(params.savedPath, { extractAttachments: true });
-    const text = formatOfficeAst(ast, MAX_OFFICE_CHARS);
-    if (!text) return includePathLine ? pathLine : "";
-    return appendPathLine(`<file name="${params.fileName}">\n${text}\n</file>`);
-  } catch (err) {
-    params.log?.error?.(`office extraction failed (${params.fileName}): ${String(err)}`);
-    return includePathLine ? pathLine : "";
-  }
+  return includePathLine ? pathLine : "";
 }
 
 export async function createArchiveTextForBuffer(params: {

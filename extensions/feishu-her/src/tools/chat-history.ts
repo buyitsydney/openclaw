@@ -371,8 +371,10 @@ async function ensureArchivedMessages(params: {
   account: ResolvedFeishuAccount;
   messages: NormalizedMessage[];
   chatId?: string;
+  hydrateMissingAttachments?: boolean;
 }) {
   const archives = new Map<string, Map<string, GroupArchiveEntry>>();
+  const hydrateMissingAttachments = params.hydrateMissingAttachments ?? true;
 
   const resolveArchive = (chatId: string): Map<string, GroupArchiveEntry> => {
     let archive = archives.get(chatId);
@@ -406,6 +408,8 @@ async function ensureArchivedMessages(params: {
       if (message.msg_type === "nonsupport") message.msg_type = "media_local";
       continue;
     }
+
+    if (!hydrateMissingAttachments) continue;
 
     let archiveText: string | null = null;
     const fileName = buildArchiveFileName(message);
@@ -856,10 +860,13 @@ async function handleListHistory(
     }
   }
 
+  // Keep timeline reads lightweight: reuse existing archive text, but never
+  // download or parse missing attachments while listing chat history.
   await ensureArchivedMessages({
     account,
     messages: result.messages,
     chatId: params.chat_id,
+    hydrateMissingAttachments: false,
   });
   result.coverage_summary = buildCoverageSummary(result.messages);
 
@@ -878,6 +885,7 @@ async function handleListHistory(
         await ensureArchivedMessages({
           account,
           messages: threadResult.messages,
+          hydrateMissingAttachments: false,
         });
         if (threadResult.messages.length > 0) {
           threadReplies[m.thread_id!] = threadResult.messages;

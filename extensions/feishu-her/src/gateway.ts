@@ -1138,8 +1138,8 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     }
   }
 
-  // ── File placeholders (upstream pattern: save path, let AI use exec to read) ──
-  const officeBlocks: string[] = [];
+  // Keep file handling deterministic and non-blocking: save every attachment
+  // locally, then hand the path to the agent instead of pre-parsing Office.
   const fallbackParts: string[] = [];
 
   if (fileInfo.length > 0) {
@@ -1155,16 +1155,8 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     }
   }
 
-  // Build the final file placeholder:
-  // - officeBlocks: extracted text wrapped in <file> tags (AI sees content directly)
-  // - fallbackParts: file paths + error info (AI can use exec or inform the user)
-  let filePlaceholder: string | null = null;
-  if (officeBlocks.length > 0 || fallbackParts.length > 0) {
-    const sections: string[] = [];
-    if (officeBlocks.length > 0) sections.push(officeBlocks.join("\n"));
-    if (fallbackParts.length > 0) sections.push(`[file: ${fallbackParts.join("; ")}]`);
-    filePlaceholder = sections.join("\n");
-  }
+  // Build the final file placeholder as deterministic local paths only.
+  const filePlaceholder = fallbackParts.length > 0 ? `[file: ${fallbackParts.join("; ")}]` : null;
 
   // For media-only messages, pick the right placeholder:
   // - Audio messages: "<media:audio>" triggers STT pipeline (same as Telegram pattern).

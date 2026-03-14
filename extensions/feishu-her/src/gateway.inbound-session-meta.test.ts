@@ -36,6 +36,8 @@ const getFeishuClientMock = vi.hoisted(() =>
 );
 const getFeishuChatNameMock = vi.hoisted(() => vi.fn(async () => "test"));
 const buildDriveFileContextFromTextMock = vi.hoisted(() => vi.fn(async () => ""));
+const downloadFeishuFileMock = vi.hoisted(() => vi.fn());
+const saveMediaBufferMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@larksuiteoapi/node-sdk", () => ({
   LoggerLevel: { info: "info" },
@@ -71,6 +73,7 @@ vi.mock("./outbound.js", async (importOriginal) => {
     getFeishuChatName: getFeishuChatNameMock,
     addFeishuReaction: vi.fn(async () => null),
     removeFeishuReaction: vi.fn(async () => {}),
+    downloadFeishuFile: downloadFeishuFileMock,
   };
 });
 
@@ -118,7 +121,7 @@ function createRuntime() {
         dispatchReplyWithBufferedBlockDispatcher: vi.fn(async () => {}),
       },
       media: {
-        saveMediaBuffer: vi.fn(),
+        saveMediaBuffer: saveMediaBufferMock,
         fetchRemoteMedia: vi.fn(),
       },
     },
@@ -138,6 +141,38 @@ function createInboundEvent(params: {
       chat_type: "group",
       message_type: "text",
       content: JSON.stringify({ text: params.text }),
+      mentions: [
+        {
+          key: "@_user_1",
+          id: { open_id: "ou_bot" },
+          name: "her",
+        },
+      ],
+    },
+    sender: {
+      sender_id: { open_id: params.senderId },
+      sender_type: "user",
+    },
+  };
+}
+
+function createInboundFileEvent(params: {
+  chatId: string;
+  senderId: string;
+  fileKey: string;
+  fileName: string;
+  messageId: string;
+}) {
+  return {
+    message: {
+      message_id: params.messageId,
+      chat_id: params.chatId,
+      chat_type: "group",
+      message_type: "file",
+      content: JSON.stringify({
+        file_key: params.fileKey,
+        file_name: params.fileName,
+      }),
       mentions: [
         {
           key: "@_user_1",
@@ -186,6 +221,14 @@ describe("feishu gateway inbound session metadata", () => {
     }));
     getFeishuChatNameMock.mockResolvedValue("test");
     buildDriveFileContextFromTextMock.mockResolvedValue("");
+    downloadFeishuFileMock.mockResolvedValue({
+      buffer: Buffer.from("xlsx"),
+      contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    saveMediaBufferMock.mockResolvedValue({
+      path: "/tmp/inbound/sheet.xlsx",
+      contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
     setFeishuRuntime(createRuntime() as never);
   });
 
@@ -308,6 +351,44 @@ describe("feishu gateway inbound session metadata", () => {
     expect(firstParams?.ctx?.GroupSubject).toBe("群名A");
     expect(secondParams?.ctx?.ConversationLabel).toBe("群名B");
     expect(secondParams?.ctx?.GroupSubject).toBe("群名B");
+
+    abortController.abort();
+    await gatewayPromise;
+  });
+
+  it("records office files as saved-path placeholders instead of inline extracted text", async () => {
+    const abortController = new AbortController();
+    const gatewayPromise = startFeishuGateway({
+      account,
+      config,
+      abortSignal: abortController.signal,
+      setStatus: vi.fn(),
+      log: { info: vi.fn(), error: vi.fn() },
+    });
+    const handler = larkState.handlers["im.message.receive_v1"];
+    expect(handler).toBeTypeOf("function");
+
+    handler?.(
+      createInboundFileEvent({
+        chatId: "oc_file_room",
+        senderId: "ou_owner",
+        fileKey: "file_sheet_1",
+        fileName: "sheet.xlsx",
+        messageId: "om_group_file_1",
+      }),
+    );
+    await waitForRecordCalls(1);
+
+    const [call] = recordSessionMetaFromInboundMock.mock.calls;
+    const params = call?.[0];
+    expect(params?.ctx?.RawBody).toContain("[file: sheet.xlsx saved at /tmp/inbound/sheet.xlsx]");
+    expect(params?.ctx?.RawBody).not.toContain('<file name="sheet.xlsx">');
+    expect(downloadFeishuFileMock).toHaveBeenCalledWith({
+      account,
+      messageId: "om_group_file_1",
+      fileKey: "file_sheet_1",
+    });
+    expect(saveMediaBufferMock).toHaveBeenCalled();
 
     abortController.abort();
     await gatewayPromise;
