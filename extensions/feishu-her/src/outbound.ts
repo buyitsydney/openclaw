@@ -420,6 +420,41 @@ function formatFeishuCardMention(userId: string): string {
   return `<at id=${normalizedUserId}></at>`;
 }
 
+function escapeAngleBracketsInsideMarkdownCode(markdown: string): string {
+  let result = "";
+  let inFence = false;
+  let inInlineCode = false;
+
+  for (let i = 0; i < markdown.length; i += 1) {
+    if (markdown.startsWith("```", i)) {
+      inFence = !inFence;
+      result += "```";
+      i += 2;
+      continue;
+    }
+
+    const char = markdown[i];
+    if (!inFence && char === "`" && markdown[i - 1] !== "\\") {
+      inInlineCode = !inInlineCode;
+      result += char;
+      continue;
+    }
+
+    if ((inFence || inInlineCode) && char === "<") {
+      result += "&lt;";
+      continue;
+    }
+    if ((inFence || inInlineCode) && char === ">") {
+      result += "&gt;";
+      continue;
+    }
+
+    result += char;
+  }
+
+  return result;
+}
+
 function escapeUnmatchedInlineBacktick(markdown: string): string {
   let inFence = false;
   let unmatchedInlineBacktickIndex = -1;
@@ -455,7 +490,8 @@ function stabilizeFeishuCardMarkdown(markdown: string): string {
 
 export function renderFeishuUserFacingCardText(text: string): string {
   const displayText = formatFeishuUserFacingText(text).trimEnd();
-  const replacedAtTags = displayText
+  const codeSafeText = escapeAngleBracketsInsideMarkdownCode(displayText);
+  const replacedAtTags = codeSafeText
     .replace(FEISHU_AT_TAG_RE, (_match, userId: string) => formatFeishuCardMention(userId))
     .replace(FEISHU_EMPTY_AT_TAG_RE, (_match, userId: string) => formatFeishuCardMention(userId));
   const escapedStructuredTags = replacedAtTags.replace(FEISHU_STRUCTURED_TAG_RE, (tag) =>
@@ -499,6 +535,7 @@ export async function sendFeishuRichTextDetailed(params: {
   account: ResolvedFeishuAccount;
   chatId: string;
   text: string;
+  replyToMessageId?: string;
 }): Promise<FeishuSentMessageRef | undefined> {
   return sendFeishuUserFacingCardDetailed(params);
 }
@@ -509,6 +546,7 @@ export async function sendFeishuRichText(params: {
   account: ResolvedFeishuAccount;
   chatId: string;
   text: string;
+  replyToMessageId?: string;
 }): Promise<string | undefined> {
   return (await sendFeishuRichTextDetailed(params))?.messageId;
 }
@@ -517,6 +555,7 @@ export async function sendFeishuTextDetailed(params: {
   account: ResolvedFeishuAccount;
   chatId: string;
   text: string;
+  replyToMessageId?: string;
 }): Promise<FeishuSentMessageRef | undefined> {
   return sendFeishuUserFacingCardDetailed(params);
 }
@@ -526,6 +565,7 @@ export async function sendFeishuText(params: {
   account: ResolvedFeishuAccount;
   chatId: string;
   text: string;
+  replyToMessageId?: string;
 }): Promise<string | undefined> {
   return (await sendFeishuTextDetailed(params))?.messageId;
 }

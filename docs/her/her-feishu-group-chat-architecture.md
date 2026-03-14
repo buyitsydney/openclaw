@@ -22,6 +22,27 @@
 - 下面文档里凡是写着“群聊正文必须是 `text/post`”或“interactive 只能做展示层”的段落，都属于**上一阶段结论**；现在已经被“统一 interactive v1 card + patch stream + canonical actor resolver”这个新 contract 覆盖。
 - 新 contract 的核心不是“卡片更好看”，而是：**同一条消息在 live inbound、quoted、history、archive、dynamic injection 里必须拥有同一个 sender / mentions / reply / text 解释结果。**
 
+### 状态补充（2026-03-14 夜间 checkpoint：direct outbound 守住 replyTo）
+
+**这轮确认的结果必须和前面几轮分开看**：
+
+- **发送链路 checkpoint 已成立**：`extensions/feishu-her/src/channel.ts` 的 outbound 不再走 upstream gateway `send`，而是改为 `direct`，由 `feishu-her` 自己消费 `replyToId`
+- **`message` 工具的飞书引用回复已打通**：最新 R4 验证里，`replyTo="om_x100b5462ddf7fca4c31353bd74ae95e"` 已经能在 History API 中读回正确的 `parent_id/root_id`
+- **`<at>` 导致卡片空白`/230099` 这条根因已被压住**：本地 Her 和 `docker1 tester` 的最新一轮日志都没有再出现 `Feishu card stream: stripping <at> tags and retrying` / `sendFinal failed: 230099`
+
+**但这不等于展示层已经全部正确**：
+
+- 当前卡片里用于举例的字面量 `<at user_id="...">name</at>`，仍会显示成 `&#60;at ...&#62;` / `&lt;at ...&gt;`
+- 当前卡片里的 Markdown 表格，仍可能以原始 `|---|` 管道文本暴露给用户，而不是人类期望的“表格视觉”
+- 这两个问题的性质都属于 **`extensions/feishu-her/src/outbound.ts` 的显示层问题**，不是发送失败，也不是 `replyTo` 再次丢失
+
+**因此当前状态必须严格分层表述**：
+
+- **已修住**：direct outbound、`replyTo -> parent_id/root_id`、`<at>` 不再触发 230099 空白卡片
+- **仍待修**：卡片里代码样例 `<at>` 的视觉显示、表格 Markdown 的视觉显示
+
+下面旧章节里凡是写“`message` 工具 `replyTo` 对飞书仍未打通”的地方，都已经过时；之后文档应以上面这个 checkpoint 为准。
+
 ### 实现状态（2026-03-12 早期）
 
 - **群名改名后 prompt 不更新 — 已修复**：`outbound.ts` 中的 `chatNameCache`（进程级 Map）在群改名后不会刷新，导致 prompt 中群名过期。已删除该缓存，每次 inbound 重新调用飞书 API 获取最新群名。本地 her + tester 多轮压力测试验证通过。

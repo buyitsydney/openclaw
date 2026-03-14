@@ -1839,6 +1839,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   let cardStreamLastPartial = "";
   let cardStreamFinalText = "";
   let groupAccumulatedText = "";
+  let groupAccumulatedReplyToId: string | undefined;
 
   const updateCardStream = (text?: string) => {
     if (!text || !cardStream?.started) return;
@@ -1901,6 +1902,11 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         // Group chats without card stream: accumulate text and send as a single
         // message after the full turn completes, avoiding fragmented bubbles.
         if (isGroup && !cardStream?.started && payload.text) {
+          const payloadReplyToId =
+            typeof payload.replyToId === "string" ? payload.replyToId.trim() : "";
+          if (payloadReplyToId && !groupAccumulatedReplyToId) {
+            groupAccumulatedReplyToId = payloadReplyToId;
+          }
           groupAccumulatedText = accumulateGroupedReplyText(groupAccumulatedText, payload.text);
           log?.info(
             `[${account.accountId}] deliver: group text accumulated (${groupAccumulatedText.length} chars total)`,
@@ -1908,7 +1914,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           setStatus({ lastOutboundAt: Date.now() });
           if (hasMedia) {
             await deliverFeishuReply({
-              payload: { mediaUrls },
+              payload: { mediaUrls, replyToId: payloadReplyToId || undefined },
               account,
               chatId,
               isGroup,
@@ -1942,7 +1948,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
             if (hasMedia) {
               await deliverFeishuReply({
-                payload: { mediaUrls },
+                payload: { mediaUrls, replyToId: payload.replyToId },
                 account,
                 chatId,
                 isGroup,
@@ -1994,7 +2000,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     const footer = buildFeishuStatusFooter({ storePath, sessionKey: route.sessionKey, config });
     const finalGroupText = finalizeGroupedReplyText(groupAccumulatedText, footer);
     await deliverFeishuReply({
-      payload: { text: finalGroupText },
+      payload: { text: finalGroupText, replyToId: groupAccumulatedReplyToId },
       account,
       chatId,
       isGroup,
@@ -2075,9 +2081,11 @@ async function deliverFeishuReply(params: {
   const { payload, account, chatId, isGroup, replyToMessageId, log, setStatus, config, core } =
     params;
   const botActor = buildFeishuBotActorFromAccount(account);
+  const payloadReplyToId = typeof payload.replyToId === "string" ? payload.replyToId.trim() : "";
+  const effectiveReplyToMessageId = payloadReplyToId || replyToMessageId;
   const resolveReplyRef = (message: Parameters<typeof buildFeishuReplyRefFromSentMessage>[0]) =>
     buildFeishuReplyRefFromSentMessage(message) ??
-    buildFeishuReplyRef({ parentId: replyToMessageId });
+    buildFeishuReplyRef({ parentId: effectiveReplyToMessageId });
 
   // Handle media (images/audio) if present.
   const mediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
@@ -2118,7 +2126,12 @@ async function deliverFeishuReply(params: {
       if (isAudio) {
         const fileName = url.split("/").pop()?.split("?")[0] ?? `audio-${Date.now()}.ogg`;
         const fileKey = await uploadFeishuAudio({ account, buffer: media.buffer });
-        const sentMessage = await sendFeishuAudioDetailed({ account, chatId, fileKey });
+        const sentMessage = await sendFeishuAudioDetailed({
+          account,
+          chatId,
+          fileKey,
+          replyToMessageId: effectiveReplyToMessageId,
+        });
         if (sentMessage) {
           recordSentMessage(chatId, sentMessage.messageId, "[audio]");
           try {
@@ -2143,7 +2156,12 @@ async function deliverFeishuReply(params: {
       } else if (isVideo) {
         const fileName = url.split("/").pop()?.split("?")[0] ?? `video-${Date.now()}.mp4`;
         const fileKey = await uploadFeishuFile({ account, buffer: media.buffer, fileName });
-        const sentMessage = await sendFeishuVideoDetailed({ account, chatId, fileKey });
+        const sentMessage = await sendFeishuVideoDetailed({
+          account,
+          chatId,
+          fileKey,
+          replyToMessageId: effectiveReplyToMessageId,
+        });
         if (sentMessage) {
           recordSentMessage(chatId, sentMessage.messageId, "[video]");
           try {
@@ -2168,7 +2186,12 @@ async function deliverFeishuReply(params: {
       } else if (isImage) {
         const fileName = url.split("/").pop()?.split("?")[0] ?? `image-${Date.now()}.png`;
         const imageKey = await uploadFeishuImage({ account, buffer: media.buffer });
-        const sentMessage = await sendFeishuImageDetailed({ account, chatId, imageKey });
+        const sentMessage = await sendFeishuImageDetailed({
+          account,
+          chatId,
+          imageKey,
+          replyToMessageId: effectiveReplyToMessageId,
+        });
         if (sentMessage) {
           recordSentMessage(chatId, sentMessage.messageId, "[image]");
           try {
@@ -2193,7 +2216,12 @@ async function deliverFeishuReply(params: {
       } else {
         const fileName = url.split("/").pop()?.split("?")[0] ?? `file-${Date.now()}`;
         const fileKey = await uploadFeishuFile({ account, buffer: media.buffer, fileName });
-        const sentMessage = await sendFeishuFileDetailed({ account, chatId, fileKey });
+        const sentMessage = await sendFeishuFileDetailed({
+          account,
+          chatId,
+          fileKey,
+          replyToMessageId: effectiveReplyToMessageId,
+        });
         if (sentMessage) {
           recordSentMessage(chatId, sentMessage.messageId, `[file: ${fileName}]`);
           try {
@@ -2234,10 +2262,10 @@ async function deliverFeishuReply(params: {
     for (let ci = 0; ci < chunks.length; ci++) {
       try {
         let sentMessage: Parameters<typeof buildFeishuReplyRefFromSentMessage>[0];
-        if (isGroup && replyToMessageId && ci === 0) {
+        if (effectiveReplyToMessageId && ci === 0) {
           sentMessage = await sendFeishuReplyDetailed({
             account,
-            messageId: replyToMessageId,
+            messageId: effectiveReplyToMessageId,
             text: chunks[ci],
           });
         } else {

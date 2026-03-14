@@ -127,4 +127,46 @@ describe("feishu user-facing card outbound", () => {
     expect(content.config.update_multi).toBe(true);
     expect(content.elements[0]?.content).toContain("<at id=ou_tester></at>");
   });
+
+  it("keeps literal at-tag examples in reports renderable without retry-stripping", async () => {
+    fetchMock.mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String((init as { body?: string }).body)) as { content: string };
+      const content = JSON.parse(body.content) as {
+        elements: Array<{ tag: string; content: string }>;
+      };
+      const markdown = content.elements[0]?.content ?? "";
+      const hasRealCardMention = markdown.includes("<at id=ou_tester></at>");
+      return {
+        json: async () => ({
+          code: hasRealCardMention ? 230099 : 0,
+          msg: hasRealCardMention ? "invalid at/person" : "ok",
+        }),
+      };
+    });
+
+    await sendFeishuText({
+      account,
+      chatId: "oc_group_1",
+      text: [
+        "## 📊 R19 大版本升级验证报告",
+        "",
+        "**T2 @mention** ✅",
+        '- 发送 `<at user_id="ou_tester">tester</at>` → History text 显示 `@tester` ✅',
+        "- local archive 保留原始 `<at>` 标签结构 ✅",
+      ].join("\n"),
+    });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const fetchArgs = fetchMock.mock.calls[0];
+    const init = fetchArgs?.[1] as { body?: string };
+    const body = JSON.parse(String(init.body)) as { content: string };
+    const content = JSON.parse(body.content) as {
+      elements: Array<{ tag: string; content: string }>;
+    };
+    expect(content.elements[0]?.content).toContain(
+      '`&lt;at user_id="ou_tester"&gt;tester&lt;/at&gt;`',
+    );
+    expect(content.elements[0]?.content).toContain("`&lt;at&gt;`");
+    expect(content.elements[0]?.content).not.toContain("<at id=ou_tester></at>");
+  });
 });
