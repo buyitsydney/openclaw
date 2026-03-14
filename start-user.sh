@@ -128,7 +128,7 @@ if [ "$ACTION" = "list" ]; then
   echo ""
   echo -e "${CYAN}ID  姓名          模型      Provider    飞书Bot           主人OpenID                              容器状态    备注${NC}"
   echo -e "${CYAN}──  ────          ────      ────────    ───────           ──────────                              ────────    ────${NC}"
-  while IFS=',' read -r uid uname umodel ufeishu_id ufeishu_secret ufeishu_owner uprovider unote uowner_allow_from; do
+  while IFS=',' read -r uid uname umodel ufeishu_id ufeishu_secret ufeishu_owner uprovider unote uowner_allow_from ufeishu_bot_open_id; do
     [[ "$uid" =~ ^[[:space:]]*# ]] && continue
     [[ -z "$uid" ]] && continue
     uid=$(echo "$uid" | xargs)
@@ -385,9 +385,10 @@ CSV_FEISHU_OWNER=""
 CSV_PROVIDER=""
 CSV_NOTE=""
 CSV_OWNER_ALLOW_FROM=""
+CSV_FEISHU_BOT_OPEN_ID=""
 
 if [ -f "$USERS_CSV" ]; then
-  while IFS=',' read -r uid uname umodel ufeishu_id ufeishu_secret ufeishu_owner uprovider unote uowner_allow_from; do
+  while IFS=',' read -r uid uname umodel ufeishu_id ufeishu_secret ufeishu_owner uprovider unote uowner_allow_from ufeishu_bot_open_id; do
     [[ "$uid" =~ ^[[:space:]]*# ]] && continue
     [[ -z "$uid" ]] && continue
     uid=$(echo "$uid" | xargs)
@@ -400,6 +401,7 @@ if [ -f "$USERS_CSV" ]; then
       CSV_PROVIDER=$(echo "$uprovider" | xargs)
       CSV_NOTE=$(echo "$unote" | xargs)
       CSV_OWNER_ALLOW_FROM=$(echo "$uowner_allow_from" | xargs)
+      CSV_FEISHU_BOT_OPEN_ID=$(echo "$ufeishu_bot_open_id" | xargs)
       break
     fi
   done < "$USERS_CSV"
@@ -411,6 +413,74 @@ if [ -f "$USERS_CSV" ]; then
 else
   echo -e "${YELLOW}  ⚠ docker/users.csv 不存在，使用默认配置${NC}"
 fi
+
+CSV_KNOWN_BOTS_B64="$(
+  python3 - "$USERS_CSV" <<'PY'
+import base64
+import csv
+import json
+import pathlib
+import sys
+
+users_csv = pathlib.Path(sys.argv[1])
+known = {}
+if users_csv.exists():
+    with users_csv.open(newline="", encoding="utf-8") as f:
+        for row in csv.reader(f):
+            if not row:
+                continue
+            uid = row[0].strip() if len(row) > 0 else ""
+            if not uid or uid.startswith("#"):
+                continue
+            label = row[1].strip() if len(row) > 1 else ""
+            app_id = row[3].strip() if len(row) > 3 else ""
+            if label and app_id:
+                known[app_id] = label
+
+host_cfg_path = pathlib.Path.home() / ".openclaw" / "openclaw.json"
+if host_cfg_path.exists():
+    try:
+        host_cfg = json.loads(host_cfg_path.read_text(encoding="utf-8"))
+    except Exception:
+        host_cfg = {}
+    feishu = ((host_cfg.get("channels") or {}).get("feishu") or {})
+    host_app_id = str(feishu.get("appId") or "").strip()
+    host_name = str(feishu.get("name") or "").strip()
+    if host_app_id and host_name:
+        known[host_app_id] = host_name
+
+payload = json.dumps(known, ensure_ascii=False).encode("utf-8")
+print(base64.b64encode(payload).decode("ascii"))
+PY
+)"
+
+CSV_KNOWN_BOT_OPEN_IDS_B64="$(
+  python3 - "$USERS_CSV" <<'PY'
+import base64
+import csv
+import json
+import pathlib
+import sys
+
+users_csv = pathlib.Path(sys.argv[1])
+known = {}
+if users_csv.exists():
+    with users_csv.open(newline="", encoding="utf-8") as f:
+        for row in csv.reader(f):
+            if not row:
+                continue
+            uid = row[0].strip() if len(row) > 0 else ""
+            if not uid or uid.startswith("#"):
+                continue
+            app_id = row[3].strip() if len(row) > 3 else ""
+            bot_open_id = row[9].strip() if len(row) > 9 else ""
+            if app_id and bot_open_id:
+                known[bot_open_id] = app_id
+
+payload = json.dumps(known, ensure_ascii=False).encode("utf-8")
+print(base64.b64encode(payload).decode("ascii"))
+PY
+)"
 
 # --- Resolve provider: CSV > default (openrouter) ---
 USER_PROVIDER="${CSV_PROVIDER:-openrouter}"
@@ -436,7 +506,7 @@ NAMED_AUTH_HOST="${TUNNEL_HOST_PREFIX:-}u${USER_ID}-auth.carher.net"
 
 # Always generate a per-user config (may inject feishu credentials)
 python3 -c "
-import json, sys, os, pathlib
+import base64, json, sys, os, pathlib
 
 cfg = {
     '\$include': './carher-config.json',
@@ -501,16 +571,34 @@ else:
     print('WARNING: GEMINI_PROJECT_ID not found (env / ~/.openclaw/openclaw.json)', file=sys.stderr)
 
 # Feishu credentials from users.csv
+feishu_name = '${CSV_NAME}'
 feishu_id = '${CSV_FEISHU_ID}'
 feishu_secret = '${CSV_FEISHU_SECRET}'
 feishu_owner = '${CSV_FEISHU_OWNER}'
+feishu_bot_open_id = '${CSV_FEISHU_BOT_OPEN_ID}'
 owner_allow_from_raw = '${CSV_OWNER_ALLOW_FROM}'
+known_bots_b64 = '${CSV_KNOWN_BOTS_B64}'
+known_bot_open_ids_b64 = '${CSV_KNOWN_BOT_OPEN_IDS_B64}'
+known_bots = json.loads(base64.b64decode(known_bots_b64).decode('utf-8')) if known_bots_b64 else {}
+known_bot_open_ids = (
+    json.loads(base64.b64decode(known_bot_open_ids_b64).decode('utf-8'))
+    if known_bot_open_ids_b64
+    else {}
+)
 if feishu_id and feishu_secret:
     feishu_cfg = {
         'enabled': True,
         'appId': feishu_id,
         'appSecret': feishu_secret,
     }
+    if feishu_name:
+        feishu_cfg['name'] = feishu_name
+    if known_bots:
+        feishu_cfg['knownBots'] = known_bots
+    if known_bot_open_ids:
+        feishu_cfg['knownBotOpenIds'] = known_bot_open_ids
+    if feishu_bot_open_id:
+        feishu_cfg['botOpenId'] = feishu_bot_open_id
     if feishu_owner:
         owner_list = [x.strip() for x in feishu_owner.split('|') if x.strip()]
         feishu_cfg['dm'] = {'allowFrom': owner_list}
@@ -596,12 +684,15 @@ if [ -n "$DEV_MODE" ]; then
   )
 fi
 
+INSTANCE_ID="carher-${USER_ID}-$(date +%Y%m%d%H%M%S)"
+
 docker run -d \
   --name "$CONTAINER_NAME" \
   --init \
   --restart unless-stopped \
   --memory=2g \
   -e HOME=/data \
+  -e OPENCLAW_INSTANCE_ID="${INSTANCE_ID}" \
   -e NODE_OPTIONS=--max-old-space-size=1536 \
   "${ENV_ARGS[@]}" \
   -e GOOGLE_APPLICATION_CREDENTIALS=/gcloud/application_default_credentials.json \

@@ -9,6 +9,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import {
+  getArchiveEntryDisplaySender,
+  getArchiveEntryDisplayText,
+  normalizeArchiveEntry,
+  type GroupArchiveEntry,
+} from "../group-archive.js";
 
 function json(data: unknown) {
   return {
@@ -44,14 +50,6 @@ type ConversationMatch = {
   sender?: string;
   chat_name?: string;
   chat_id?: string;
-};
-
-type ArchiveEntry = {
-  ts: number;
-  sender: string;
-  senderId: string;
-  text: string;
-  msgId: string;
 };
 
 // ── State dir helpers ──
@@ -135,15 +133,16 @@ function searchGroupArchives(keyword: string, maxResults: number): ConversationM
     const lines = content.split("\n").filter((l) => l.trim());
     for (let i = lines.length - 1; i >= 0 && results.length < maxResults; i--) {
       try {
-        const entry = JSON.parse(lines[i]) as ArchiveEntry;
-        if (!entry.text?.toLowerCase().includes(lowerKeyword)) continue;
+        const entry = normalizeArchiveEntry(JSON.parse(lines[i]) as GroupArchiveEntry);
+        const text = getArchiveEntryDisplayText(entry);
+        if (!text?.toLowerCase().includes(lowerKeyword)) continue;
 
         results.push({
           source: "group_archive",
           context: `群「${chatName}」`,
-          snippet: extractSnippet(entry.text, keyword),
+          snippet: extractSnippet(text, keyword),
           timestamp: new Date(entry.ts * 1000).toISOString(),
-          sender: entry.sender,
+          sender: getArchiveEntryDisplaySender(entry),
           chat_name: chatName,
           chat_id: chatId,
         });

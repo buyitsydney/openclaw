@@ -7,7 +7,33 @@ const larkState = vi.hoisted(() => ({
   handlers: {} as Record<string, (data: unknown) => unknown>,
 }));
 const recordSessionMetaFromInboundMock = vi.hoisted(() => vi.fn(async () => {}));
-const getBotOpenIdMock = vi.hoisted(() => vi.fn(async () => "ou_bot"));
+const contactUserGetMock = vi.hoisted(() =>
+  vi.fn(async () => ({ data: { user: { name: "owner" } } })),
+);
+const messageGetMock = vi.hoisted(() =>
+  vi.fn(async ({ path }: { path: { message_id: string } }) => ({
+    code: 0,
+    data: {
+      items: [
+        {
+          message_id: path.message_id,
+          chat_id: "oc_test_room",
+          msg_type: "text",
+          create_time: "1772930795127",
+          sender: { id: "ou_owner", sender_type: "user" },
+          body: { content: JSON.stringify({ text: "@_user_1 你在哪个群" }) },
+          mentions: [{ key: "@_user_1", id: "cli_x", name: "her" }],
+        },
+      ],
+    },
+  })),
+);
+const getFeishuClientMock = vi.hoisted(() =>
+  vi.fn(() => ({
+    contact: { user: { get: contactUserGetMock } },
+    im: { message: { get: messageGetMock } },
+  })),
+);
 const getFeishuChatNameMock = vi.hoisted(() => vi.fn(async () => "test"));
 const buildDriveFileContextFromTextMock = vi.hoisted(() => vi.fn(async () => ""));
 
@@ -41,7 +67,7 @@ vi.mock("./outbound.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./outbound.js")>();
   return {
     ...actual,
-    getBotOpenId: getBotOpenIdMock,
+    getFeishuClient: getFeishuClientMock,
     getFeishuChatName: getFeishuChatNameMock,
     addFeishuReaction: vi.fn(async () => null),
     removeFeishuReaction: vi.fn(async () => {}),
@@ -53,11 +79,14 @@ import { setFeishuRuntime } from "./runtime.js";
 
 const account: ResolvedFeishuAccount = {
   accountId: "default",
+  name: "her",
+  knownBots: {},
   enabled: true,
   appId: "cli_x",
   appSecret: "sec_x",
   credentialSource: "config",
   config: {
+    name: "her",
     dm: { allowFrom: ["ou_owner"] },
     groups: { enabled: true, archive: false, ownerIds: ["ou_owner"] },
   },
@@ -138,7 +167,23 @@ describe("feishu gateway inbound session metadata", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     larkState.handlers = {};
-    getBotOpenIdMock.mockResolvedValue("ou_bot");
+    contactUserGetMock.mockResolvedValue({ data: { user: { name: "owner" } } });
+    messageGetMock.mockImplementation(async ({ path }: { path: { message_id: string } }) => ({
+      code: 0,
+      data: {
+        items: [
+          {
+            message_id: path.message_id,
+            chat_id: "oc_test_room",
+            msg_type: "text",
+            create_time: "1772930795127",
+            sender: { id: "ou_owner", sender_type: "user" },
+            body: { content: JSON.stringify({ text: "@_user_1 你在哪个群" }) },
+            mentions: [{ key: "@_user_1", id: "cli_x", name: "her" }],
+          },
+        ],
+      },
+    }));
     getFeishuChatNameMock.mockResolvedValue("test");
     buildDriveFileContextFromTextMock.mockResolvedValue("");
     setFeishuRuntime(createRuntime() as never);

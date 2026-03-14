@@ -26,6 +26,7 @@ import { expandMergeForwardItems, expandMergeForwardMessage } from "./merge-forw
 
 const MOCK_ACCOUNT: ResolvedFeishuAccount = {
   accountId: "default",
+  knownBots: {},
   enabled: true,
   appId: "cli_x",
   appSecret: "sec_x",
@@ -55,7 +56,9 @@ describe("gateway merge_forward", () => {
           {
             message_id: "sub-2",
             msg_type: "file",
-            body: { content: JSON.stringify({ file_key: "file_source_1", file_name: "report.pdf" }) },
+            body: {
+              content: JSON.stringify({ file_key: "file_source_1", file_name: "report.pdf" }),
+            },
           },
         ];
       }
@@ -150,6 +153,7 @@ describe("gateway merge_forward", () => {
 
     expect(getMessageMock).toHaveBeenCalledWith({
       path: { message_id: "om_merge_1" },
+      params: { user_id_type: "open_id" },
     });
     expect(result.text).toBe("- 第一条\n- 第二条");
     expect(result.coverage).toBe("full");
@@ -157,7 +161,9 @@ describe("gateway merge_forward", () => {
 
   it("reuses cached source text for merged-forward media", async () => {
     getCachedMessageTextMock.mockImplementation((messageId: string) =>
-      messageId === "sub-2" ? "[video]\n[file: tiktok_video.mp4 saved at /tmp/tiktok_video.mp4]" : null,
+      messageId === "sub-2"
+        ? "[video]\n[file: tiktok_video.mp4 saved at /tmp/tiktok_video.mp4]"
+        : null,
     );
     const fetchItems = vi.fn(async (messageId: string) => {
       throw new Error(`unexpected message lookup ${messageId}`);
@@ -177,7 +183,9 @@ describe("gateway merge_forward", () => {
           upper_message_id: "container",
           create_time: "20",
           msg_type: "media",
-          body: { content: JSON.stringify({ file_key: "media_source_1", file_name: "tiktok_video.mp4" }) },
+          body: {
+            content: JSON.stringify({ file_key: "media_source_1", file_name: "tiktok_video.mp4" }),
+          },
         },
       ],
     });
@@ -201,7 +209,9 @@ describe("gateway merge_forward", () => {
             message_id: "sub-2",
             msg_type: "file",
             chat_id: "oc_source_chat",
-            body: { content: JSON.stringify({ file_key: "file_source_1", file_name: "report.pdf" }) },
+            body: {
+              content: JSON.stringify({ file_key: "file_source_1", file_name: "report.pdf" }),
+            },
           },
         ];
       }

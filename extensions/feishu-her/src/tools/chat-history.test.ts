@@ -15,9 +15,13 @@ const downloadFeishuFileMock = vi.hoisted(() => vi.fn());
 const downloadFeishuImageMock = vi.hoisted(() => vi.fn());
 const parseOfficeMock = vi.hoisted(() => vi.fn());
 
-vi.mock("../accounts.js", () => ({
-  listEnabledFeishuAccounts: listEnabledFeishuAccountsMock,
-}));
+vi.mock("../accounts.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../accounts.js")>();
+  return {
+    ...actual,
+    listEnabledFeishuAccounts: listEnabledFeishuAccountsMock,
+  };
+});
 
 vi.mock("../oauth.js", () => ({
   callFeishuApiWithUserToken: callFeishuApiWithUserTokenMock,
@@ -68,7 +72,9 @@ function getTool(
 ): ToolDef {
   const tools = registerTool.mock.calls
     .flatMap((call) => {
-      const entry = call[0] as ToolDef | ((ctx: ToolContext) => ToolDef | ToolDef[] | null | undefined);
+      const entry = call[0] as
+        | ToolDef
+        | ((ctx: ToolContext) => ToolDef | ToolDef[] | null | undefined);
       const resolved = typeof entry === "function" ? entry(context) : entry;
       if (!resolved) return [];
       return Array.isArray(resolved) ? resolved : [resolved];
@@ -133,6 +139,8 @@ describe("feishu group history archive hydration", () => {
         accountId: "default",
         appId: "cli_test_bot",
         appSecret: "secret_test",
+        knownBots: {},
+        knownBotOpenIds: {},
         enabled: true,
         config: {},
       },
@@ -329,6 +337,161 @@ describe("feishu group history archive hydration", () => {
     ).resolves.toContain('"msgId":"om_get_1"');
   });
 
+  it("list_history refetches mentioned messages so bot mentions use app_id", async () => {
+    listEnabledFeishuAccountsMock.mockReturnValue([
+      {
+        accountId: "default",
+        appId: "cli_test_bot",
+        appSecret: "secret_test",
+        enabled: true,
+        knownBots: { cli_tester: "tester" },
+        config: {},
+      },
+    ]);
+    callFeishuApiWithUserTokenMock.mockImplementation(
+      async (params: { endpoint: string; query?: Record<string, string> }) => {
+        if (params.endpoint === "/im/v1/messages") {
+          return {
+            code: 0,
+            msg: "ok",
+            data: {
+              items: [
+                {
+                  message_id: "om_hist_bot_1",
+                  msg_type: "text",
+                  chat_id: "oc_hist_bot_1",
+                  create_time: "1772930795127",
+                  sender: {
+                    id: "ou_user_1",
+                    sender_type: "user",
+                  },
+                  body: {
+                    content: JSON.stringify({ text: "@_user_1 hello" }),
+                  },
+                  mentions: [{ key: "@_user_1", id: "ou_tester_open_id", name: "tester" }],
+                },
+              ],
+              has_more: false,
+            },
+          };
+        }
+        if (params.endpoint === "/im/v1/messages/om_hist_bot_1") {
+          expect(params.query).toEqual({ user_id_type: "open_id" });
+          return {
+            code: 0,
+            msg: "ok",
+            data: {
+              items: [
+                {
+                  message_id: "om_hist_bot_1",
+                  msg_type: "text",
+                  chat_id: "oc_hist_bot_1",
+                  create_time: "1772930795127",
+                  sender: {
+                    id: "ou_user_1",
+                    sender_type: "user",
+                  },
+                  body: {
+                    content: JSON.stringify({ text: "@_user_1 hello" }),
+                  },
+                  mentions: [{ key: "@_user_1", id: "cli_tester", name: "tester" }],
+                },
+              ],
+            },
+          };
+        }
+        throw new Error(`unexpected endpoint ${params.endpoint}`);
+      },
+    );
+
+    const { api, registerTool } = createApi();
+    registerFeishuChatHistoryTool(api);
+    const tool = getTool(registerTool, "feishu_group_history");
+
+    const result = await tool.execute("tc_hist_bot_openid", {
+      action: "list_history",
+      chat_id: "oc_hist_bot_1",
+    });
+    const details = result.details as {
+      messages: Array<{
+        mentions_resolved?: Array<{
+          actor: { canonicalId: string; actorKind: string; displayName?: string };
+        }>;
+      }>;
+    };
+
+    expect(details.messages[0].mentions_resolved?.[0]?.actor.canonicalId).toBe("cli_tester");
+    expect(details.messages[0].mentions_resolved?.[0]?.actor.actorKind).toBe("bot");
+    expect(details.messages[0].mentions_resolved?.[0]?.actor.displayName).toBe("tester");
+    expect(callFeishuApiWithUserTokenMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        endpoint: "/im/v1/messages/om_hist_bot_1",
+        query: { user_id_type: "open_id" },
+      }),
+    );
+  });
+
+  it("get_message requests open_id mode so bot mentions come back as app_id", async () => {
+    listEnabledFeishuAccountsMock.mockReturnValue([
+      {
+        accountId: "default",
+        appId: "cli_test_bot",
+        appSecret: "secret_test",
+        enabled: true,
+        knownBots: { cli_tester: "tester" },
+        config: {},
+      },
+    ]);
+    callFeishuApiWithUserTokenMock.mockResolvedValue({
+      code: 0,
+      msg: "ok",
+      data: {
+        items: [
+          {
+            message_id: "om_get_bot_1",
+            msg_type: "text",
+            chat_id: "oc_get_bot_1",
+            create_time: "1772930795127",
+            sender: {
+              id: "ou_user_1",
+              sender_type: "user",
+            },
+            body: {
+              content: JSON.stringify({ text: "@_user_1 hello" }),
+            },
+            mentions: [{ key: "@_user_1", id: "cli_tester", name: "tester" }],
+          },
+        ],
+      },
+    });
+
+    const { api, registerTool } = createApi();
+    registerFeishuChatHistoryTool(api);
+    const tool = getTool(registerTool, "feishu_group_history");
+
+    const result = await tool.execute("tc_get_bot_1", {
+      action: "get_message",
+      message_id: "om_get_bot_1",
+    });
+    const details = result.details as {
+      message: {
+        mentions_resolved?: Array<{
+          actor: { canonicalId: string; actorKind: string; displayName?: string };
+        }>;
+      };
+    };
+
+    expect(callFeishuApiWithUserTokenMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        endpoint: "/im/v1/messages/om_get_bot_1",
+        query: { user_id_type: "open_id" },
+      }),
+    );
+    expect(details.message.mentions_resolved?.[0]?.actor.canonicalId).toBe("cli_tester");
+    expect(details.message.mentions_resolved?.[0]?.actor.actorKind).toBe("bot");
+    expect(details.message.mentions_resolved?.[0]?.actor.displayName).toBe("tester");
+  });
+
   it("list_history keeps merge_forward disabled", async () => {
     parseOfficeMock.mockResolvedValue({
       content: [{ type: "text", text: "Deck slide body" }],
@@ -344,7 +507,12 @@ describe("feishu group history archive hydration", () => {
           code: 0,
           msg: "ok",
           data: {
-            items: [createMergeForwardMessage({ messageId: "om_merge_hist_1", chatId: "oc_merge_hist_1" })],
+            items: [
+              createMergeForwardMessage({
+                messageId: "om_merge_hist_1",
+                chatId: "oc_merge_hist_1",
+              }),
+            ],
             has_more: false,
           },
         };
@@ -632,58 +800,60 @@ describe("feishu group history archive hydration", () => {
       buffer: Buffer.from("pptx"),
       contentType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     });
-    const tenantGetMock = vi.fn().mockImplementation(async (params: { path: { message_id: string } }) => {
-      if (params.path.message_id === "om_merge_fallback_hist_1") {
-        return {
-          code: 0,
-          data: {
-            items: [
-              {
-                message_id: "om_merge_fallback_hist_1",
-                msg_type: "merge_forward",
-                chat_id: "oc_merge_fallback_hist_1",
-                body: { content: "Merged and Forwarded Message" },
-              },
-              {
-                message_id: "om_merge_fallback_hist_sub_1",
-                upper_message_id: "om_merge_fallback_hist_1",
-                msg_type: "text",
-                create_time: "1000",
-                body: { content: JSON.stringify({ text: "alpha" }) },
-              },
-              {
-                message_id: "om_merge_fallback_hist_sub_2",
-                upper_message_id: "om_merge_fallback_hist_1",
-                msg_type: "file",
-                create_time: "2000",
-                body: {
-                  content: JSON.stringify({
-                    file_key: "file_merge_fallback_hist_nested_1",
-                    file_name: "deck.pptx",
-                  }),
+    const tenantGetMock = vi
+      .fn()
+      .mockImplementation(async (params: { path: { message_id: string } }) => {
+        if (params.path.message_id === "om_merge_fallback_hist_1") {
+          return {
+            code: 0,
+            data: {
+              items: [
+                {
+                  message_id: "om_merge_fallback_hist_1",
+                  msg_type: "merge_forward",
+                  chat_id: "oc_merge_fallback_hist_1",
+                  body: { content: "Merged and Forwarded Message" },
                 },
-              },
-            ],
-          },
-        };
-      }
-      if (params.path.message_id === "om_merge_fallback_hist_sub_2") {
-        return {
-          code: 0,
-          data: {
-            items: [
-              createFileMessage({
-                messageId: "om_merge_fallback_hist_sub_2",
-                chatId: "oc_source_fallback_hist_1",
-                fileKey: "file_merge_fallback_hist_source_1",
-                fileName: "deck.pptx",
-              }),
-            ],
-          },
-        };
-      }
-      throw new Error(`unexpected tenant message ${params.path.message_id}`);
-    });
+                {
+                  message_id: "om_merge_fallback_hist_sub_1",
+                  upper_message_id: "om_merge_fallback_hist_1",
+                  msg_type: "text",
+                  create_time: "1000",
+                  body: { content: JSON.stringify({ text: "alpha" }) },
+                },
+                {
+                  message_id: "om_merge_fallback_hist_sub_2",
+                  upper_message_id: "om_merge_fallback_hist_1",
+                  msg_type: "file",
+                  create_time: "2000",
+                  body: {
+                    content: JSON.stringify({
+                      file_key: "file_merge_fallback_hist_nested_1",
+                      file_name: "deck.pptx",
+                    }),
+                  },
+                },
+              ],
+            },
+          };
+        }
+        if (params.path.message_id === "om_merge_fallback_hist_sub_2") {
+          return {
+            code: 0,
+            data: {
+              items: [
+                createFileMessage({
+                  messageId: "om_merge_fallback_hist_sub_2",
+                  chatId: "oc_source_fallback_hist_1",
+                  fileKey: "file_merge_fallback_hist_source_1",
+                  fileName: "deck.pptx",
+                }),
+              ],
+            },
+          };
+        }
+        throw new Error(`unexpected tenant message ${params.path.message_id}`);
+      });
     getFeishuClientMock.mockReturnValue({
       tokenManager: {
         getTenantAccessToken: vi.fn().mockResolvedValue("tenant_token"),
@@ -746,58 +916,60 @@ describe("feishu group history archive hydration", () => {
       buffer: Buffer.from("xlsx"),
       contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     });
-    const tenantGetMock = vi.fn().mockImplementation(async (params: { path: { message_id: string } }) => {
-      if (params.path.message_id === "om_merge_get_fallback_1") {
-        return {
-          code: 0,
-          data: {
-            items: [
-              {
-                message_id: "om_merge_get_fallback_1",
-                msg_type: "merge_forward",
-                chat_id: "oc_merge_get_fallback_1",
-                body: { content: "Merged and Forwarded Message" },
-              },
-              {
-                message_id: "om_merge_get_fallback_sub_1",
-                upper_message_id: "om_merge_get_fallback_1",
-                msg_type: "text",
-                create_time: "1000",
-                body: { content: JSON.stringify({ text: "beta" }) },
-              },
-              {
-                message_id: "om_merge_get_fallback_sub_2",
-                upper_message_id: "om_merge_get_fallback_1",
-                msg_type: "file",
-                create_time: "2000",
-                body: {
-                  content: JSON.stringify({
-                    file_key: "file_merge_get_fallback_nested_1",
-                    file_name: "board.xlsx",
-                  }),
+    const tenantGetMock = vi
+      .fn()
+      .mockImplementation(async (params: { path: { message_id: string } }) => {
+        if (params.path.message_id === "om_merge_get_fallback_1") {
+          return {
+            code: 0,
+            data: {
+              items: [
+                {
+                  message_id: "om_merge_get_fallback_1",
+                  msg_type: "merge_forward",
+                  chat_id: "oc_merge_get_fallback_1",
+                  body: { content: "Merged and Forwarded Message" },
                 },
-              },
-            ],
-          },
-        };
-      }
-      if (params.path.message_id === "om_merge_get_fallback_sub_2") {
-        return {
-          code: 0,
-          data: {
-            items: [
-              createFileMessage({
-                messageId: "om_merge_get_fallback_sub_2",
-                chatId: "oc_source_get_fallback_1",
-                fileKey: "file_merge_get_fallback_source_1",
-                fileName: "board.xlsx",
-              }),
-            ],
-          },
-        };
-      }
-      throw new Error(`unexpected tenant message ${params.path.message_id}`);
-    });
+                {
+                  message_id: "om_merge_get_fallback_sub_1",
+                  upper_message_id: "om_merge_get_fallback_1",
+                  msg_type: "text",
+                  create_time: "1000",
+                  body: { content: JSON.stringify({ text: "beta" }) },
+                },
+                {
+                  message_id: "om_merge_get_fallback_sub_2",
+                  upper_message_id: "om_merge_get_fallback_1",
+                  msg_type: "file",
+                  create_time: "2000",
+                  body: {
+                    content: JSON.stringify({
+                      file_key: "file_merge_get_fallback_nested_1",
+                      file_name: "board.xlsx",
+                    }),
+                  },
+                },
+              ],
+            },
+          };
+        }
+        if (params.path.message_id === "om_merge_get_fallback_sub_2") {
+          return {
+            code: 0,
+            data: {
+              items: [
+                createFileMessage({
+                  messageId: "om_merge_get_fallback_sub_2",
+                  chatId: "oc_source_get_fallback_1",
+                  fileKey: "file_merge_get_fallback_source_1",
+                  fileName: "board.xlsx",
+                }),
+              ],
+            },
+          };
+        }
+        throw new Error(`unexpected tenant message ${params.path.message_id}`);
+      });
     getFeishuClientMock.mockReturnValue({
       tokenManager: {
         getTenantAccessToken: vi.fn().mockResolvedValue("tenant_token"),
@@ -834,9 +1006,11 @@ describe("feishu group history archive hydration", () => {
     expect(details.message.coverage).toBe("none");
     expect(tenantGetMock).toHaveBeenCalledWith({
       path: { message_id: "om_merge_get_fallback_1" },
+      params: { user_id_type: "open_id" },
     });
     expect(tenantGetMock).not.toHaveBeenCalledWith({
       path: { message_id: "om_merge_get_fallback_sub_2" },
+      params: { user_id_type: "open_id" },
     });
     expect(downloadFeishuMessageResourceWithUserTokenMock).not.toHaveBeenCalled();
   });

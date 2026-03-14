@@ -10,6 +10,7 @@ import {
 
 const fakeAccount: ResolvedFeishuAccount = {
   accountId: "test-acct",
+  knownBots: {},
   appId: "cli_test",
   appSecret: "secret",
   encryptKey: undefined,
@@ -57,8 +58,8 @@ describe("requireUserToken", () => {
       expect(details.error).toBe("user_auth_required");
       expect(typeof details.auth_url).toBe("string");
       expect((details.auth_url as string).startsWith("https://accounts.feishu.cn")).toBe(true);
-      expect((details.auth_url as string)).toContain("test.example.com");
-      expect((details.message as string)).toContain("群聊历史");
+      expect(details.auth_url as string).toContain("test.example.com");
+      expect(details.message as string).toContain("群聊历史");
 
       const content = result.authResponse.content;
       expect(Array.isArray(content)).toBe(true);

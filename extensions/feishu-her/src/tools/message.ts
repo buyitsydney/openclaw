@@ -7,8 +7,8 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { stringEnum } from "openclaw/plugin-sdk";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
-import { getRecentSentMessages, removeSentMessage } from "../gateway.js";
 import { deleteFeishuMessage } from "../outbound.js";
+import { getRecentSentMessages, removeSentMessage } from "../sent-message-log.js";
 
 function json(data: unknown) {
   return {

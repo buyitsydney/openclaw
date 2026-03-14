@@ -19,23 +19,27 @@ import {
   resolveFeishuAccount,
   type ResolvedFeishuAccount,
 } from "./accounts.js";
-import { startFeishuGateway, recordSentMessage } from "./gateway.js";
-import { archiveSentFeishuBinaryMessage } from "./group-archive.js";
+import { buildFeishuBotActorFromAccount } from "./feishu-message.js";
+import { buildFeishuTextPayload } from "./feishu-message.js";
+import { startFeishuGateway } from "./gateway.js";
+import { archiveSentFeishuBinaryMessage, archiveSentFeishuTextMessage } from "./group-archive.js";
+import { cacheMessageText } from "./message-text-cache.js";
 import {
   sendFeishuText,
-  sendFeishuRichText,
+  sendFeishuRichTextDetailed,
   uploadFeishuImage,
-  sendFeishuImage,
+  sendFeishuImageDetailed,
   uploadFeishuAudio,
-  sendFeishuAudio,
+  sendFeishuAudioDetailed,
   uploadFeishuFile,
-  sendFeishuFile,
-  sendFeishuVideo,
+  sendFeishuFileDetailed,
+  sendFeishuVideoDetailed,
   addFeishuReaction,
   removeFeishuReaction,
   deleteFeishuMessage,
 } from "./outbound.js";
 import { getFeishuRuntime } from "./runtime.js";
+import { recordSentMessage } from "./sent-message-log.js";
 
 const meta = {
   id: "feishu" as const,
@@ -259,12 +263,26 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
     },
     sendText: async ({ to, text, accountId, cfg }) => {
       const account = resolveFeishuAccount({ cfg, accountId });
-      const mid = await sendFeishuRichText({ account, chatId: to, text });
-      if (mid) recordSentMessage(to, mid, text);
-      return { channel: "feishu", messageId: mid ?? "" };
+      const botActor = buildFeishuBotActorFromAccount(account);
+      const sentMessage = await sendFeishuRichTextDetailed({ account, chatId: to, text });
+      if (sentMessage) {
+        recordSentMessage(to, sentMessage.messageId, text);
+        cacheMessageText(sentMessage.messageId, text);
+        archiveSentFeishuTextMessage({
+          chatId: to,
+          message: sentMessage,
+          senderId: account.appId,
+          senderName: account.accountId,
+          actor: botActor,
+          text,
+          textParts: buildFeishuTextPayload(text),
+        });
+      }
+      return { channel: "feishu", messageId: sentMessage?.messageId ?? "" };
     },
     sendMedia: async ({ to, text, mediaUrl, accountId, cfg }) => {
       const account = resolveFeishuAccount({ cfg, accountId });
+      const botActor = buildFeishuBotActorFromAccount(account);
       const log = getFeishuRuntime().logging.getChildLogger({
         subsystem: "gateway/channels/feishu",
       });
@@ -285,14 +303,17 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
               const fileName =
                 mediaUrl.split("/").pop()?.split("?")[0] ?? `audio-${Date.now()}.ogg`;
               const fileKey = await uploadFeishuAudio({ account, buffer: media.buffer });
-              lastMid = await sendFeishuAudio({ account, chatId: to, fileKey });
-              if (lastMid) {
-                recordSentMessage(to, lastMid, "[audio]");
+              const sentMessage = await sendFeishuAudioDetailed({ account, chatId: to, fileKey });
+              if (sentMessage) {
+                lastMid = sentMessage.messageId;
+                recordSentMessage(to, sentMessage.messageId, "[audio]");
                 try {
                   await archiveSentFeishuBinaryMessage({
                     chatId: to,
-                    messageId: lastMid,
+                    message: sentMessage,
                     senderId: account.appId,
+                    senderName: account.accountId,
+                    actor: botActor,
                     buffer: media.buffer,
                     contentType: media.contentType,
                     fileName,
@@ -306,14 +327,17 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
               const fileName =
                 mediaUrl.split("/").pop()?.split("?")[0] ?? `video-${Date.now()}.mp4`;
               const fileKey = await uploadFeishuFile({ account, buffer: media.buffer, fileName });
-              lastMid = await sendFeishuVideo({ account, chatId: to, fileKey });
-              if (lastMid) {
-                recordSentMessage(to, lastMid, "[video]");
+              const sentMessage = await sendFeishuVideoDetailed({ account, chatId: to, fileKey });
+              if (sentMessage) {
+                lastMid = sentMessage.messageId;
+                recordSentMessage(to, sentMessage.messageId, "[video]");
                 try {
                   await archiveSentFeishuBinaryMessage({
                     chatId: to,
-                    messageId: lastMid,
+                    message: sentMessage,
                     senderId: account.appId,
+                    senderName: account.accountId,
+                    actor: botActor,
                     buffer: media.buffer,
                     contentType: media.contentType,
                     fileName,
@@ -327,14 +351,17 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
               const fileName =
                 mediaUrl.split("/").pop()?.split("?")[0] ?? `image-${Date.now()}.png`;
               const imageKey = await uploadFeishuImage({ account, buffer: media.buffer });
-              lastMid = await sendFeishuImage({ account, chatId: to, imageKey });
-              if (lastMid) {
-                recordSentMessage(to, lastMid, "[image]");
+              const sentMessage = await sendFeishuImageDetailed({ account, chatId: to, imageKey });
+              if (sentMessage) {
+                lastMid = sentMessage.messageId;
+                recordSentMessage(to, sentMessage.messageId, "[image]");
                 try {
                   await archiveSentFeishuBinaryMessage({
                     chatId: to,
-                    messageId: lastMid,
+                    message: sentMessage,
                     senderId: account.appId,
+                    senderName: account.accountId,
+                    actor: botActor,
                     buffer: media.buffer,
                     contentType: media.contentType,
                     fileName,
@@ -351,14 +378,17 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
                 buffer: media.buffer,
                 fileName,
               });
-              lastMid = await sendFeishuFile({ account, chatId: to, fileKey });
-              if (lastMid) {
-                recordSentMessage(to, lastMid, `[file] ${fileName}`);
+              const sentMessage = await sendFeishuFileDetailed({ account, chatId: to, fileKey });
+              if (sentMessage) {
+                lastMid = sentMessage.messageId;
+                recordSentMessage(to, sentMessage.messageId, `[file] ${fileName}`);
                 try {
                   await archiveSentFeishuBinaryMessage({
                     chatId: to,
-                    messageId: lastMid,
+                    message: sentMessage,
                     senderId: account.appId,
+                    senderName: account.accountId,
+                    actor: botActor,
                     buffer: media.buffer,
                     contentType: media.contentType,
                     fileName,
@@ -390,10 +420,20 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
         }
       }
       if (text) {
-        const mid = await sendFeishuRichText({ account, chatId: to, text });
-        if (mid) {
-          lastMid = mid;
-          recordSentMessage(to, mid, text);
+        const sentMessage = await sendFeishuRichTextDetailed({ account, chatId: to, text });
+        if (sentMessage) {
+          lastMid = sentMessage.messageId;
+          recordSentMessage(to, sentMessage.messageId, text);
+          cacheMessageText(sentMessage.messageId, text);
+          archiveSentFeishuTextMessage({
+            chatId: to,
+            message: sentMessage,
+            senderId: account.appId,
+            senderName: account.accountId,
+            actor: botActor,
+            text,
+            textParts: buildFeishuTextPayload(text),
+          });
         }
       }
       return { channel: "feishu", messageId: lastMid ?? "" };

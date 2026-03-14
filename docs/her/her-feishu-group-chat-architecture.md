@@ -1,17 +1,26 @@
 # Her 飞书群聊架构设计
 
-状态：**已实现并验证**。基于 2026-03-07 `test` 群双 Bot 实测，`feishu_group_history` 工具已上线，群聊正文已切换为 `text/post`。
+状态：**已进入统一 contract 阶段**。截至 2026-03-14，本地 Her + `docker1 tester` 的飞书链路不再允许各处各自猜 sender，也不再允许用户可见文本在 `text` / `post` / `interactive` 三种出站里漂移。
 
-### 实现状态（2026-03-07）
+### 当前冻结约束（2026-03-14）
 
-- `feishu_group_history` 工具：已实现并部署，支持 `list_history` / `list_thread` / `get_message` 三种 action
-- 群聊输出格式：Her 在群聊中已切换为 `text/post`（非 interactive 卡片），私聊保持卡片流式输出
-- 群聊消息合并：Her 的群聊回复已合并为单条 `post` 消息（不再碎片化）
-- page_size 语义：`page_size` 参数表示总消息数上限（默认 20，最大 200），不再是 per-page
-- 时间戳：已修复为 human-readable ISO 8601 格式
-- 本地归档交叉引用：支持 `file`/`image`/`audio`/`video`/`interactive` 等类型的本地路径补全
-- `feishu_wiki` URL 解析：支持传入完整飞书 URL（自动提取 token 和文档类型）
-- **tenant_access_token fallback**：当 `user_access_token` 遇到 231204 错误（"b2c/b2b app not support"）时，自动 fallback 到 `tenant_access_token`，已在 carher-13 验证通过
+- **唯一 canonical message 层**：`extensions/feishu-her/src/feishu-message.ts`
+- **唯一 human 身份信源**：飞书返回的 `open_id` + 群成员/联系人查名结果
+- **唯一 current bot 身份信源**：`channels.feishu.name`
+- **唯一 peer bot 身份信源**：`channels.feishu.knownBots[app_id]`
+- **本地多 bot registry 根信源**：`docker/users.csv`
+- **容器运行时生成器**：`start-user.sh` 把 `docker/users.csv` 显式编译进容器 `openclaw.json`
+- **本机 Her 运行时同步器**：`start.sh` 把 host `name` 与 `knownBots` 显式同步进 `~/.openclaw/openclaw.json`
+- **唯一用户可见文本出站**：`extensions/feishu-her/src/outbound.ts` 的 `sendFeishuUserFacingCard()`
+- **禁止事项**：
+  - 禁止根据正文风格、Markdown 形态、bot 语气猜 sender
+  - 禁止继续依赖 `/im/v1/chats/{chat_id}/members?member_id_type=app_id` 给 bot 补名字；官方接口不返回机器人成员
+  - 禁止再让用户可见文本直接走 `text` / `post` 分支
+
+### 说明
+
+- 下面文档里凡是写着“群聊正文必须是 `text/post`”或“interactive 只能做展示层”的段落，都属于**上一阶段结论**；现在已经被“统一 interactive v1 card + patch stream + canonical actor resolver”这个新 contract 覆盖。
+- 新 contract 的核心不是“卡片更好看”，而是：**同一条消息在 live inbound、quoted、history、archive、dynamic injection 里必须拥有同一个 sender / mentions / reply / text 解释结果。**
 
 ### 实现状态（2026-03-12 早期）
 
@@ -59,7 +68,7 @@
 
 **已知遗留**：`feishu_group_history` 返回的图片消息包含本地归档路径（`[local archive: ...]`），但模型在私聊跨群查询时不会主动 `read` 该路径查看图片内容。需在 `feishu-group-transcript` skill 中补充图片处理指导。
 
-### 实现状态（2026-03-12 群聊上下文自动注入 — Push+Pull 混合架构）
+### 实现状态（2026-03-12 群聊上下文自动注入：Push+Pull 混合架构）
 
 **背景**：upstream 官方飞书插件使用内存缓冲（`pendingHistory`）在 @mention 时注入群聊上下文，实现"零延迟"感知。本地 `feishu-her` 此前仅依赖 `feishu_group_history` 工具（LLM 主动调用，慢），群聊中 bot 对"刚才发生了什么"几乎无感知。
 
@@ -81,6 +90,51 @@
 - `extensions/feishu-her/src/tools/chat-history.ts` — 导出 `fetchChatHistory`、`getTenantAccessToken`、`NormalizedMessage`
 - `extensions/feishu-her/skills/feishu-group-transcript/SKILL.md` — 更新两层信息来源描述
 
+### 状态补充（2026-03-14：interactive 卡片可读性修复 + im.message.patch 流式方案验证）
+
+**背景**：群聊 streaming 一直被禁用（`gateway.ts` line 2053 `if (isGroup) return`），因为 CardKit streaming 卡片 (v2 schema) 通过 `im.message.get` 返回 "请升级至最新版本客户端"，完全不可读。`chat-history.ts` 对所有 interactive 消息硬编码返回 `[interactive card — content degraded]`，不尝试解析。
+
+**关键发现**：
+
+1. **飞书平台对 v1 和 v2 interactive 消息的降级程度完全不同**：
+   - v1 内联卡片（`elements` 顶层）：降级为 2D 数组 `[[{tag:"text",text:"..."}, ...]]`，文本内容 ~90% 可恢复（丢失 markdown 格式，保留链接和代码块）
+   - v2 CardKit 卡片（`schema:"2.0"`, `body.elements`）：返回 "请升级至最新版本客户端"，0% 可读
+2. **`im.message.patch` (PATCH API) 是一个被长期忽视的更新接口**：
+   - 频控 5 QPS，**无总次数限制**（区别于 `im.message.update` 的 20-30 次硬限）
+   - 对 v1 内联卡片执行就地更新，不显示"已编辑"标签
+   - 群聊中使用 `update_multi: true` 实现共享卡片更新
+3. **`flattenInteractiveBody`（已存在于 gateway.ts）能解析 v1 降级格式**，但 `chat-history.ts` 的 `normalizeMessage` 从未调用它
+
+**修复内容**：
+
+- `chat-history.ts` 新增 `flattenInteractiveElements()` 函数，在 `normalizeMessage` 的 `case "interactive"` 中尝试解析降级 2D 数组格式
+- v1 内联卡片 → 提取标题 + 正文，`coverage: "partial"`
+- v2 CardKit 卡片（含 "请升级至最新版本客户端" 占位符）→ 仍回退到 `coverage: "none"`
+
+**实验验证**（docker1 tester，test 群）：
+
+- 通过 `im.message.patch` 发送 v1 内联卡片到 test 群
+- 用户 @mention bot，bot 注入 3 条群消息
+- bot 回复明确引用了卡片的关键信息（API 名称、5 QPS、无次数限制），确认 `normalizeMessage` 正确解析了 interactive 消息
+- 修复前：bot 只能看到 `[interactive card — content degraded by API, cannot recover full text]`
+
+**im.message.patch 流式方案实测数据**：
+
+- 56 patches / 881 chars / 28.6s / 0 failures（有效速率 2.0 patches/s）
+- 视觉效果：无打字机动画，但内容在卡片内逐步填充，200ms 刷新间隔可接受
+- `im.message.get` 回读：348/364 chars 可提取（~96% 恢复率）
+
+**对文档结论的影响**：
+
+- 原结论 "interactive 只能做展示，不能做唯一信息载体" 需要修正：**v1 内联卡片现在可以被回读**（partial coverage）
+- 群聊 streaming 从"不可行"变为"可行"（通过 v1 内联卡片 + im.message.patch）
+- 私聊 CardKit streaming (v2) 的引用回读问题仍待解决（见下方 pending）
+
+**Pending**：
+
+- 私聊 CardKit (v2) 卡片在被引用时同样不可读 — 需要统一私聊/群聊为 v1 内联卡片 + im.message.patch 方案
+- bot 自己发送的群消息不写入 group-archive（只写 sentMessageLog）— 需要补归档
+
 ### 状态补充（2026-03-13）
 
 **本轮已落地并准备继续线上压测的修复**：
@@ -96,7 +150,175 @@
 2. **P1 - `@all` 是否进入 `mentions[]` 仍需继续实测确认**：本轮修的是文本显示层；如果飞书历史 API 天生不把 `@all` 作为独立 mention 返回，那么程序侧不能只依赖 `mentions[]` 判断是否 `@所有人`
 3. **P2 - `sender.label` 仍可能退化成 `open_id`**：如果 inbound context 没显式注入 `SenderName`，OpenClaw 的默认 sender label 仍会回退到 `SenderId`，所以新 bot 在没有 `USER.md` 映射时仍可能只看到 `ou_xxx`
 
-本文不讨论抽象"群聊能力"，只回答一个更实际的问题：
+### 状态补充（2026-03-14：统一消息模型 / before vs after 推演）
+
+**注意**：本节是接下来重构的**冻结约束**，不是"已经全部上线"的状态描述。目的只有一个：把 `私聊当前消息 / 私聊引用 / 群聊动态注入 / history / quoted / archive / search / memory` 统一成一套消息模型，彻底禁止 sender、reply、附件、footer、归档来源在不同链路里漂移。
+
+#### 为什么必须新增这一层
+
+本轮压测已经证明，当前问题不是一个孤立 bug，而是**消息表示在 4 条链路里长期分叉**：
+
+1. `gateway.ts` 负责 live event、quoted 注入、群聊 recent messages 注入
+2. `chat-history.ts` 负责 `/im/v1/messages` 标准化与 archive 补全
+3. `merge-forward.ts` 负责另一套 `post` / `interactive` / 附件展开
+4. `group-archive.ts` 负责把消息落盘给 `conversation-search` / `deep-search` / `memory-bridge` 消费
+
+当前这几条链路共享的不是一个统一 schema，而是各自先把消息压成不同的 `text`，再零散补一些字段。结果就是：
+
+- 同一条消息，在 live event、history、quoted、archive 里可能拥有不同的 sender 表示
+- 同一条消息，在 dynamic injection 和 history tool 里可能看到不同的人名、不同的 mention 展示、不同的 footer 处理
+- 同一条消息，一旦写入 archive，就会永久丢失 actor / reply / attachment 结构，下游搜索和记忆会继续放大这个错误
+
+#### 系统里所有"会消费消息"的场景
+
+必须逐个覆盖，不能只看群聊动态注入：
+
+1. 私聊当前入站消息（live event）
+2. 私聊引用 / reply
+3. 私聊历史读取（session + 飞书消息回读）
+4. 群聊当前入站消息（live event）
+5. 群聊自动注入 recent messages（dynamic injection）
+6. 群聊 history API / `feishu_group_history`
+7. 群聊 quoted / thread / parent lookup
+8. 群聊本地 archive
+9. `conversation-search` / `deep-search` / `memory-bridge`
+10. bot 自己发出的 `card` / `text` / `media`，之后再次被 quote、history、archive、search 消费
+
+#### before：哪些能力本来就是对的，after 绝不能回退
+
+- live event 对"当前消息"的原始信息通常最完整。私聊/群聊普通 `text`、`post`、当前消息自己的媒体，大多数时候已经是对的
+- history tool 的时间线、`message_id`、`parent_id` / `root_id` / `thread_id` 基础能力大多是对的
+- 当前多媒体下载、本地保存、Office/PDF 提取链路是有价值的，after 不能弱化
+- `merge_forward` 当前保守禁用虽然能力不强，但口径稳定，after 不应偷偷从旧 archive 复活脏内容
+- 群聊 dynamic injection 对普通人类文本聊天已经具备基本可读性，after 只能统一，不允许退化
+
+#### before：为什么明明"大部分是对的"，最后仍然会错
+
+- dynamic injection、history、quoted、archive 四条链路没有共享同一个 message schema
+- sender 解析分成 event sender、群成员列表、directory、archive sender 四套口径
+- quoted path 只给正文，不给"这是谁的话"
+- archive schema 太薄，落盘时就把结构化信息压扁成 `sender + text`
+- dynamic injection 与 history tool 的 token、hydration、footer 处理不一致
+- bot 自己发出的消息又分散在 `cardTextCache`、`messageTextCache`、group archive、sent log 多套状态里
+
+#### after：必须满足的 3 层严格一致
+
+1. **集合一致**
+   - 同一时间窗里，private/group 的 live、dynamic injection、history、quoted lookup、archive hydration 必须看到同一组可见消息
+   - 不能一个走 `tenant_access_token`，一个走 `user_access_token`，一个又绕过 archive 补全
+
+2. **表示一致**
+   - 同一条消息，无论从 live event、history API、quoted lookup、local archive、cache 进入系统，都必须先归一化成同一个 `FeishuCanonicalMessage`
+   - dynamic injection、history tool、quoted context、archive search snippet 只能从这同一个对象渲染，不能自己临时拼字符串
+
+3. **持久化一致**
+   - archive / cache 不能只存一坨 `text`
+   - 必须把 actor、reply、attachments、footer、provenance 结构化保存，否则 search / memory 仍会看到脏数据
+
+#### 冻结的数据结构（草案）
+
+下面不是实现细节，而是**必须保留的语义集合**。字段名可以微调，但语义不能少：
+
+```ts
+type FeishuActorRef = {
+  canonicalId: string;
+  canonicalIdType: "open_id" | "app_id" | "user_id" | "unknown";
+  senderType: string;
+  actorKind: "human" | "bot" | "system" | "unknown";
+  displayName?: string;
+  rawIds: Partial<Record<"open_id" | "user_id" | "union_id" | "app_id", string>>;
+  resolutionSource: "event" | "history_api" | "chat_member" | "directory" | "archive" | "cache";
+  resolved: boolean;
+};
+
+type FeishuMentionRef = {
+  key: string;
+  actor: FeishuActorRef;
+  renderedText: string;
+};
+
+type FeishuAttachmentRef = {
+  kind: "image" | "file" | "audio" | "video" | "post_image" | "post_media";
+  fileKey?: string;
+  imageKey?: string;
+  fileName?: string;
+  localPath?: string;
+  extractedText?: string;
+  coverage: "full" | "partial" | "none";
+};
+
+type FeishuCanonicalMessage = {
+  messageId: string;
+  chatId: string;
+  chatName?: string;
+  messageType: string;
+  createTimeMs: number;
+  sender: FeishuActorRef;
+  mentions: FeishuMentionRef[];
+  attachments: FeishuAttachmentRef[];
+  reply?: {
+    parentId?: string;
+    rootId?: string;
+    threadId?: string;
+    quoted?: {
+      messageId: string;
+      messageType: string;
+      sender: FeishuActorRef;
+      text: string;
+      attachments: FeishuAttachmentRef[];
+    };
+  };
+  text: {
+    raw: string;
+    normalized: string;
+    withoutFooter: string;
+    footer?: string;
+  };
+  coverage: "full" | "partial" | "none";
+  provenance: {
+    sourcePath: "live_event" | "history_api" | "quoted_lookup" | "local_archive" | "cache";
+    tokenMode?: "tenant" | "user";
+    archiveHit?: boolean;
+    cacheHit?: boolean;
+  };
+};
+```
+
+#### before vs after：关键场景对比
+
+| 场景                                             | before                                                                               | after（必须做到）                                                                                           | 0 回退要求                                                      |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| 私聊当前消息                                     | 大多数 `text` / `post` / 当前媒体已基本正确                                          | 仍以 live event 为主，但先归一化成 canonical message                                                        | 不能丢失当前 live path 已有的正文和媒体能力                     |
+| 私聊 quoted / reply                              | 常只有 quoted 正文，没有 quoted sender / type / attachments                          | 必须结构化注入 `reply.quoted.sender` / `messageType` / `attachments` / `text.withoutFooter`                 | 不能再靠正文风格猜"这是谁的话"                                  |
+| 私聊 history / transcript                        | 时间线基本可用，但 sender / attachment / footer 口径和 live path 不一致              | 与私聊 live / quoted 共享同一 renderer                                                                      | 私聊里看到的 sender、附件摘要、footer 处理必须和 live path 一致 |
+| 群聊当前消息                                     | 普通 `text` / `post` 多数可读，但 actor 解析仍可能退化                               | 当前 live event 仍保留为最优原始源，再进入同一 canonical layer                                              | 不能把当前已经可读的人类文本搞坏                                |
+| 群聊 dynamic injection                           | 人名、mentions、footer、archive hydration 都是局部修补；与 history 不严格一致        | dynamic injection 与 history 必须共用同一个 repository + renderer                                           | 同一条群消息在 dynamic 和 history 里必须长得一模一样            |
+| 群聊 history                                     | 时间线/线程基础能力对，但 sender name 缺失、token/hydration 口径与 dynamic 不同      | 与 dynamic injection 读取同一 canonical message 集合                                                        | 不允许再出现"history 能看到 / dynamic 看不到"的结构性分叉       |
+| 私聊消息手工转发到群，再被引用或 @ 两个 bot 分析 | 模型容易把正文像 bot 的内容错判成另一个 bot 说的话                                   | 必须明确区分 `event sender`、`quoted sender`、`original sender`；如果飞书没给原作者字段，就标记为 `unknown` | **绝不允许猜作者**；不做任何"看起来像 tester/Her"的推断         |
+| archive / search / memory                        | 只消费 `sender + text`，错误一旦落盘就会持续放大                                     | archive 升级为结构化 schema，search / memory 从 canonical renderer 读取                                     | 不允许 search/memory 比 live/history 拿到更脏的 sender 结果     |
+| bot 自己发的 card / media / footer               | `cardTextCache`、`messageTextCache`、archive、sent log 分叉，footer 有时剥离有时保留 | bot 自己的出站消息也必须先归一化，再写 cache / archive                                                      | bot 自己的话在 quote、history、dynamic、search 里必须完全一致   |
+| `merge_forward`                                  | 当前统一禁用，虽然保守但稳定                                                         | 继续统一禁用，直到有单独设计                                                                                | 不允许从旧 archive 偷偷恢复旧内容                               |
+
+#### 0 回退 gate（必须写成测试和验收标准）
+
+1. 私聊 live、私聊 quoted、私聊 transcript 共享同一个 parser / actor resolver / renderer
+2. 群聊 live、群聊 dynamic injection、群聊 history 共享同一个 parser / actor resolver / renderer
+3. 同一条消息从 `live_event`、`history_api`、`quoted_lookup`、`local_archive` 四个入口归一化后，`sender`、`mentions`、`reply`、`attachments`、`text.withoutFooter` 必须一致
+4. 不允许根据正文风格、markdown 形态、bot 语气去猜 sender；飞书没有结构化字段时，只能输出 `unknown`
+5. 不允许长期保留双口径 archive/cache；必须有版本化 schema，并在切换后只读写新格式
+
+#### 结论：这套方案能否实现
+
+**能实现，但只有在满足下面 4 个条件时才成立**：
+
+1. `gateway.ts`、`chat-history.ts`、`merge-forward.ts` 不再各自定义"什么叫消息"
+2. dynamic injection 和 history tool 必须共用同一个 message repository，而不是各自拿 token、各自补 hydration
+3. quoted / archive / search / memory 不再直接消费裸 `text`，而是消费 canonical message
+4. archive / cache 升级为结构化 v2 schema，并用 parity test 把"严格一致"卡成失败即阻塞
+
+如果只是继续在 `gateway.ts`、`chat-history.ts`、`group-archive.ts` 上逐点补丁，这个目标**实现不了**，以后一定还会出现 sender / quoted / archive / footer 同类错位。
+
+在继续讨论用户场景前，先冻结这一层底层消息约束。下面仍然只回答一个更实际的问题：
 
 `用户在真实飞书群里，问自己的 Her"群里发生了什么、我该关注什么、帮我记住哪句话、帮我总结今天内容"时，新方案到底怎么做，哪些场景能成，哪些场景不能承诺 100%。`
 
@@ -151,22 +373,22 @@
 
 ### 已确认的实测事实
 
-| 能力                                                      | 结果 | 说明                                                                                                                                                                              |
-| --------------------------------------------------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 两边 `user_access_token` 可见 `test` 群                   | 通过 | 两边都能主动拉 `test` 群历史                                                                                                                                                      |
-| 一个 Her 发到群里的 bot/app 消息，另一个 Her 是否实时收到 | 失败 | 双边日志和本地群归档都没有这次 probe                                                                                                                                              |
-| `text` / `post` 历史回读                                  | 通过 | 双边都能读回正文                                                                                                                                                                  |
-| `text` / `post` 里的 @ 用户历史回读                       | 通过 | `mentions` 数组稳定返回，`mentions.id` 会自动翻译为观察者 app 的 `open_id`（飞书标准行为），Her 用 `mentions[i].id == 自己用户 open_id` 即可判断"我的用户被 @"，8/8 测试全部 PASS |
-| `quote reply` 历史回读                                    | 通过 | `parent_id` / `root_id` 可回读                                                                                                                                                    |
-| `thread reply` 在 `message.list(chat)` 中直接发现         | 失败 | `chat` 维度不会直接列出 thread 内回复本身                                                                                                                                         |
-| `thread` 枚举                                             | 通过 | 先从 root 消息拿 `thread_id`，再调用 `message.list(container_id_type=thread)` 可拉到 thread 内消息                                                                                |
-| `thread reply` 用 `message.get(message_id)` 回读          | 通过 | 能拿到正文、`parent_id`、`root_id`、`thread_id`                                                                                                                                   |
-| `image` 历史回读 + 下载                                   | 通过 | 双边都能下资源                                                                                                                                                                    |
-| `file` / `audio` 历史回读                                 | 通过 | 但历史里返回的 `file_key` 与发送时 key 不同                                                                                                                                       |
-| `file` / `audio` 下载                                     | 通过 | 必须使用历史回读出来的实际 `file_key`                                                                                                                                             |
-| `video` 历史回读                                          | 失败 | `message.list` 中表现为 `nonsupport`                                                                                                                                              |
-| `video` 用 `message.get` 回读                             | 失败 | 本轮两边都返回 500                                                                                                                                                                |
-| `interactive` 历史回读正文                                | 失败 | 只返回"请升级至最新版本客户端，以查看内容"等降级结构                                                                                                                              |
+| 能力                                                      | 结果         | 说明                                                                                                                                                                              |
+| --------------------------------------------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 两边 `user_access_token` 可见 `test` 群                   | 通过         | 两边都能主动拉 `test` 群历史                                                                                                                                                      |
+| 一个 Her 发到群里的 bot/app 消息，另一个 Her 是否实时收到 | 失败         | 双边日志和本地群归档都没有这次 probe                                                                                                                                              |
+| `text` / `post` 历史回读                                  | 通过         | 双边都能读回正文                                                                                                                                                                  |
+| `text` / `post` 里的 @ 用户历史回读                       | 通过         | `mentions` 数组稳定返回，`mentions.id` 会自动翻译为观察者 app 的 `open_id`（飞书标准行为），Her 用 `mentions[i].id == 自己用户 open_id` 即可判断"我的用户被 @"，8/8 测试全部 PASS |
+| `quote reply` 历史回读                                    | 通过         | `parent_id` / `root_id` 可回读                                                                                                                                                    |
+| `thread reply` 在 `message.list(chat)` 中直接发现         | 失败         | `chat` 维度不会直接列出 thread 内回复本身                                                                                                                                         |
+| `thread` 枚举                                             | 通过         | 先从 root 消息拿 `thread_id`，再调用 `message.list(container_id_type=thread)` 可拉到 thread 内消息                                                                                |
+| `thread reply` 用 `message.get(message_id)` 回读          | 通过         | 能拿到正文、`parent_id`、`root_id`、`thread_id`                                                                                                                                   |
+| `image` 历史回读 + 下载                                   | 通过         | 双边都能下资源                                                                                                                                                                    |
+| `file` / `audio` 历史回读                                 | 通过         | 但历史里返回的 `file_key` 与发送时 key 不同                                                                                                                                       |
+| `file` / `audio` 下载                                     | 通过         | 必须使用历史回读出来的实际 `file_key`                                                                                                                                             |
+| `video` 历史回读                                          | 失败         | `message.list` 中表现为 `nonsupport`                                                                                                                                              |
+| `video` 用 `message.get` 回读                             | 失败         | 本轮两边都返回 500                                                                                                                                                                |
+| `interactive` 历史回读正文                                | **部分通过** | v1 内联卡片：降级为 2D 数组但文本 ~90% 可提取（2026-03-14 修复）；v2 CardKit 卡片：仍返回"请升级至最新版本客户端"不可读                                                           |
 
 ### 关于 @ mention "漂移"的澄清
 

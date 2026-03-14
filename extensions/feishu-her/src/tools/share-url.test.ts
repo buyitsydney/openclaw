@@ -16,6 +16,7 @@ import { resolveDriveShareUrl } from "./share-url.js";
 describe("resolveDriveShareUrl", () => {
   const account: ResolvedFeishuAccount = {
     accountId: "default",
+    knownBots: {},
     appId: "cli_test",
     appSecret: "secret_test",
     enabled: true,

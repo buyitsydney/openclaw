@@ -9,6 +9,12 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {
+  getArchiveEntryDisplaySender,
+  getArchiveEntryDisplayText,
+  normalizeArchiveEntry,
+  type GroupArchiveEntry,
+} from "./group-archive.js";
 
 function resolveStateDir(): string {
   const override = process.env.OPENCLAW_STATE_DIR?.trim() || process.env.CLAWDBOT_STATE_DIR?.trim();
@@ -85,14 +91,6 @@ export function cacheMinutesToMemory(params: {
 
 // ── Group archive sync ──
 
-type ArchiveEntry = {
-  ts: number;
-  sender: string;
-  senderId: string;
-  text: string;
-  msgId: string;
-};
-
 /**
  * Sync group archive JSONL files to the memory directory as .md files.
  * Each group gets one .md file with the latest messages (capped to avoid
@@ -151,9 +149,11 @@ export function syncGroupArchivesToMemory(): { synced: number; skipped: number }
     const messages: string[] = [];
     for (const line of recentLines) {
       try {
-        const entry = JSON.parse(line) as ArchiveEntry;
+        const entry = normalizeArchiveEntry(JSON.parse(line) as GroupArchiveEntry);
         const date = new Date(entry.ts * 1000).toISOString().slice(0, 16);
-        messages.push(`[${date}] ${entry.sender}: ${entry.text}`);
+        messages.push(
+          `[${date}] ${getArchiveEntryDisplaySender(entry)}: ${getArchiveEntryDisplayText(entry)}`,
+        );
       } catch {}
     }
 

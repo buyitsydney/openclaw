@@ -15,6 +15,7 @@ import { callChatApi } from "./chat-api.js";
 
 const MOCK_ACCOUNT: ResolvedFeishuAccount = {
   accountId: "default",
+  knownBots: {},
   enabled: true,
   appId: "cli_x",
   appSecret: "sec_x",

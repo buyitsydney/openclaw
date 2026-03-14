@@ -3,6 +3,7 @@ import type { ResolvedFeishuAccount } from "./accounts.js";
 
 const account: ResolvedFeishuAccount = {
   accountId: "default",
+  knownBots: {},
   enabled: true,
   appId: "cli_test",
   appSecret: "sec_test",

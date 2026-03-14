@@ -16,14 +16,26 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { stringEnum } from "openclaw/plugin-sdk";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
+  buildFeishuActorFromApiSender,
+  buildFeishuTextPayload,
+  parseFeishuMentions,
+  parseFeishuMessageContent,
+  resolveFeishuChatMemberNameMaps,
+  resolveFeishuMessageActors,
+  type FeishuActorRef,
+  type FeishuAttachmentRef,
+  type FeishuMentionRef,
+  type FeishuTextPayload,
+} from "../feishu-message.js";
+import {
   applyArchiveTextToMessage,
   archiveGroupMessage,
   buildArchiveFailureText,
   createArchiveTextForBuffer,
+  getArchiveEntryDisplaySender,
   loadArchiveEntries,
   type GroupArchiveEntry,
 } from "../group-archive.js";
-import { formatFeishuAtText } from "../mention-text.js";
 import type { FeishuFetchedMessageItem } from "../merge-forward.js";
 import {
   callFeishuApiWithUserToken,
@@ -66,15 +78,20 @@ export type NormalizedMessage = {
   msg_type: string;
   sender_id: string;
   sender_type: string;
+  sender_name?: string;
+  sender_actor?: FeishuActorRef;
   chat_id?: string;
   create_time: string;
   create_time_human: string;
   text: string;
+  text_parts?: FeishuTextPayload;
   has_thread: boolean;
   thread_id?: string;
   parent_id?: string;
   root_id?: string;
   mentions?: Array<{ id: string; name: string; key: string }>;
+  mentions_resolved?: FeishuMentionRef[];
+  attachments?: FeishuAttachmentRef[];
   file_key?: string;
   file_name?: string;
   image_key?: string;
@@ -82,124 +99,138 @@ export type NormalizedMessage = {
 };
 
 // oxlint-disable-next-line typescript/no-explicit-any
-function extractPostText(parsed: Record<string, any>): string {
-  const zhCn = parsed.zh_cn as Record<string, unknown> | undefined;
-  const enUs = parsed.en_us as Record<string, unknown> | undefined;
-  const content = (parsed.content ?? zhCn?.content ?? enUs?.content) as
-    | Array<Array<Record<string, unknown>>>
-    | undefined;
-  if (!Array.isArray(content)) return JSON.stringify(parsed);
-  const lines: string[] = [];
-  for (const paragraph of content) {
-    const parts: string[] = [];
-    for (const el of paragraph) {
-      if (el.tag === "text") parts.push(String(el.text ?? ""));
-      else if (el.tag === "a") parts.push(`[${el.text ?? ""}](${el.href ?? ""})`);
-      else if (el.tag === "at")
-        parts.push(formatFeishuAtText({ userId: el.user_id, userName: el.user_name }));
-      else if (el.tag === "img") parts.push(`[image:${el.image_key ?? ""}]`);
-      else if (el.tag === "media") parts.push(`[media:${el.file_key ?? ""}]`);
-    }
-    lines.push(parts.join(""));
-  }
-  return lines.join("\n");
-}
-
-// oxlint-disable-next-line typescript/no-explicit-any
 function normalizeMessage(raw: any): NormalizedMessage {
   const msgType: string = raw.msg_type ?? "unknown";
   const body = raw.body?.content ?? "{}";
-  let text = "";
-  let fileKey: string | undefined;
-  let fileName: string | undefined;
-  let imageKey: string | undefined;
-  let coverage: "full" | "partial" | "none" = "full";
-
-  try {
-    const parsed = JSON.parse(body);
-    switch (msgType) {
-      case "text":
-        text = parsed.text ?? body;
-        break;
-      case "post":
-        text = extractPostText(parsed);
-        break;
-      case "image":
-        imageKey = parsed.image_key;
-        text = `[image: ${imageKey ?? "unknown"}]`;
-        coverage = "partial";
-        break;
-      case "file":
-        fileKey = parsed.file_key;
-        fileName = parsed.file_name ?? fileKey ?? "unknown";
-        text = `[file: ${fileName}]`;
-        coverage = "partial";
-        break;
-      case "audio":
-        fileKey = parsed.file_key;
-        fileName = parsed.file_name ?? "voice.ogg";
-        text = `[audio: ${fileKey ?? "unknown"}]`;
-        coverage = "partial";
-        break;
-      case "media":
-        imageKey = parsed.image_key;
-        fileKey = parsed.file_key;
-        fileName = parsed.file_name ?? "unknown";
-        text = `[video: ${fileName}, duration=${parsed.duration ?? "?"}s, cover=${imageKey ?? "none"}]`;
-        coverage = "partial";
-        break;
-      case "interactive":
-        text = "[interactive card — content degraded by API, cannot recover full text]";
-        coverage = "none";
-        break;
-      case "video":
-        text = "[video — not fully supported by history API]";
-        coverage = "none";
-        break;
-      case "system":
-        text = parsed.content ?? body;
-        break;
-      case "merge_forward":
-        text = MERGE_FORWARD_DISABLED_TEXT;
-        coverage = "none";
-        break;
-      default:
-        // Feishu returns "nonsupport" for video messages in history API
-        if (msgType === "nonsupport") {
-          text = "[unsupported message type — likely video, will check local archive]";
-          coverage = "none";
-        } else {
-          text = body;
-        }
-        break;
-    }
-  } catch {
-    text = body;
-  }
-
-  const mentions = raw.mentions as Array<{ id: string; name: string; key: string }> | undefined;
+  const parsedContent = parseFeishuMessageContent({
+    content: body,
+    msgType,
+  });
+  const mentionsResolved = parseFeishuMentions(raw.mentions);
+  const mentions =
+    mentionsResolved.length > 0
+      ? mentionsResolved.map((mention) => ({
+          id: mention.id,
+          name: mention.name ?? mention.actor.displayName ?? mention.id,
+          key: mention.key,
+        }))
+      : undefined;
 
   const createTimeMs = raw.create_time ? Number(raw.create_time) : 0;
+  const senderActor = buildFeishuActorFromApiSender(raw.sender);
+  const firstFileAttachment = parsedContent.attachments.find((attachment) => attachment.fileKey);
+  const firstImageAttachment = parsedContent.attachments.find((attachment) => attachment.imageKey);
 
   return {
     message_id: raw.message_id ?? "",
     msg_type: msgType,
-    sender_id: raw.sender?.id ?? "",
-    sender_type: raw.sender?.sender_type ?? "",
+    sender_id: senderActor.canonicalId,
+    sender_type: senderActor.senderType,
+    sender_actor: senderActor,
     ...(raw.chat_id && { chat_id: raw.chat_id }),
     create_time: raw.create_time ?? "",
     create_time_human: createTimeMs ? new Date(createTimeMs).toISOString() : "",
-    text,
+    text: parsedContent.text.normalized,
+    text_parts: parsedContent.text,
     has_thread: Boolean(raw.thread_id),
     ...(raw.thread_id && { thread_id: raw.thread_id }),
     ...(raw.parent_id && { parent_id: raw.parent_id }),
     ...(raw.root_id && { root_id: raw.root_id }),
     ...(mentions && mentions.length > 0 && { mentions }),
-    ...(fileKey && { file_key: fileKey }),
-    ...(fileName && { file_name: fileName }),
-    ...(imageKey && { image_key: imageKey }),
-    coverage,
+    ...(mentionsResolved.length > 0 && { mentions_resolved: mentionsResolved }),
+    ...(parsedContent.attachments.length > 0 && { attachments: parsedContent.attachments }),
+    ...(firstFileAttachment?.fileKey && { file_key: firstFileAttachment.fileKey }),
+    ...(firstFileAttachment?.fileName && { file_name: firstFileAttachment.fileName }),
+    ...(firstImageAttachment?.imageKey && { image_key: firstImageAttachment.imageKey }),
+    coverage: parsedContent.coverage,
   };
+}
+
+async function enrichNormalizedMessages(params: {
+  account: ResolvedFeishuAccount;
+  messages: NormalizedMessage[];
+  chatId?: string;
+}) {
+  const groupBuckets = new Map<string, NormalizedMessage[]>();
+
+  for (const message of params.messages) {
+    const effectiveChatId = params.chatId ?? message.chat_id;
+    if (effectiveChatId?.startsWith("oc_")) {
+      let bucket = groupBuckets.get(effectiveChatId);
+      if (!bucket) {
+        bucket = [];
+        groupBuckets.set(effectiveChatId, bucket);
+      }
+      bucket.push(message);
+      continue;
+    }
+
+    if (!message.sender_actor) continue;
+    const resolved = await resolveFeishuMessageActors({
+      account: params.account,
+      sender: message.sender_actor,
+      mentions: message.mentions_resolved,
+    });
+    message.sender_actor = resolved.sender;
+    if (message.sender_actor.displayName) {
+      message.sender_name = message.sender_actor.displayName;
+    }
+    if (resolved.mentions.length > 0) {
+      message.mentions_resolved = resolved.mentions;
+      message.mentions = resolved.mentions.map((mention) => ({
+        id: mention.actor.canonicalId,
+        name: mention.name ?? mention.actor.displayName ?? mention.actor.canonicalId,
+        key: mention.key,
+      }));
+    }
+  }
+
+  for (const [chatId, bucket] of groupBuckets) {
+    let nameMaps = {
+      openIdToName: new Map<string, string>(),
+      appIdToName: new Map<string, string>(),
+    };
+    try {
+      nameMaps = await resolveFeishuChatMemberNameMaps({
+        account: params.account,
+        chatId,
+      });
+    } catch {}
+    for (const message of bucket) {
+      if (!message.sender_actor) continue;
+      const resolved = await resolveFeishuMessageActors({
+        account: params.account,
+        sender: message.sender_actor,
+        mentions: message.mentions_resolved,
+        chatId,
+        nameMaps,
+      });
+      message.sender_actor = resolved.sender;
+      if (message.sender_actor.displayName) {
+        message.sender_name = message.sender_actor.displayName;
+      }
+      if (resolved.mentions.length > 0) {
+        message.mentions_resolved = resolved.mentions;
+        message.mentions = resolved.mentions.map((mention) => ({
+          id: mention.actor.canonicalId,
+          name: mention.name ?? mention.actor.displayName ?? mention.actor.canonicalId,
+          key: mention.key,
+        }));
+      }
+    }
+  }
+
+  for (const message of params.messages) {
+    const senderName = message.sender_name?.trim();
+    if (senderName) {
+      message.sender_id = message.sender_actor?.canonicalId || message.sender_id;
+      continue;
+    }
+    if (message.sender_actor?.displayName) {
+      message.sender_name = message.sender_actor.displayName;
+      message.sender_id = message.sender_actor.canonicalId || message.sender_id;
+    }
+  }
 }
 
 type HistoryApiError = Error & {
@@ -233,6 +264,7 @@ async function fetchMessageItemsViaTenantToken(params: {
   const client = getFeishuClient(params.account);
   const res = (await client.im.message.get({
     path: { message_id: params.messageId },
+    params: { user_id_type: "open_id" },
   })) as {
     code?: number;
     msg?: string;
@@ -253,6 +285,7 @@ async function fetchMessageItemsWithToken(params: {
     method: "GET",
     endpoint: `/im/v1/messages/${params.messageId}`,
     userToken: params.token,
+    query: { user_id_type: "open_id" },
   });
   if (res.code === 0) {
     return (res.data?.items ?? []) as FeishuFetchedMessageItem[];
@@ -264,6 +297,32 @@ async function fetchMessageItemsWithToken(params: {
     });
   }
   throw buildHistoryApiError(res.code, res.msg);
+}
+
+function shouldRefetchMessageForStableMentions(raw: unknown): raw is {
+  message_id?: string;
+  mentions?: unknown[];
+} {
+  if (!raw || typeof raw !== "object") return false;
+  const message = raw as { message_id?: unknown; mentions?: unknown };
+  if (typeof message.message_id !== "string" || !message.message_id.trim()) return false;
+  return Array.isArray(message.mentions) && message.mentions.length > 0;
+}
+
+async function canonicalizeMentionedMessage(params: {
+  account: ResolvedFeishuAccount;
+  token: string;
+  rawItem: unknown;
+}) {
+  if (!shouldRefetchMessageForStableMentions(params.rawItem)) {
+    return params.rawItem;
+  }
+  const items = await fetchMessageItemsWithToken({
+    account: params.account,
+    token: params.token,
+    messageId: params.rawItem.message_id!,
+  });
+  return items[0] ?? params.rawItem;
 }
 
 async function hydrateMergeForwardMessage(params: { message: NormalizedMessage }) {
@@ -338,6 +397,12 @@ async function ensureArchivedMessages(params: {
     const existing = archive?.get(message.message_id);
     if (existing) {
       applyArchiveTextToMessage(message, existing.text);
+      message.sender_name = getArchiveEntryDisplaySender(existing);
+      if (existing.actor) {
+        message.sender_actor = existing.actor;
+        message.sender_id = existing.actor.canonicalId || message.sender_id;
+        message.sender_type = existing.actor.senderType || message.sender_type;
+      }
       if (message.msg_type === "nonsupport") message.msg_type = "media_local";
       continue;
     }
@@ -389,18 +454,33 @@ async function ensureArchivedMessages(params: {
       archiveGroupMessage({
         chatId,
         chatName: null,
-        senderId: message.sender_id,
-        senderName: message.sender_id,
+        senderId: message.sender_actor?.canonicalId || message.sender_id,
+        senderName:
+          message.sender_name ||
+          message.sender_actor?.displayName ||
+          message.sender_actor?.canonicalId ||
+          message.sender_id,
         text: archiveText,
         msgId: message.message_id,
         ts,
+        actor: message.sender_actor,
+        messageType: message.msg_type,
+        textParts: buildFeishuTextPayload(archiveText),
       });
       archive?.set(message.message_id, {
+        schemaVersion: 2,
         ts: ts ?? Math.floor(Date.now() / 1000),
-        sender: message.sender_id,
-        senderId: message.sender_id,
+        sender:
+          message.sender_name ||
+          message.sender_actor?.displayName ||
+          message.sender_actor?.canonicalId ||
+          message.sender_id,
+        senderId: message.sender_actor?.canonicalId || message.sender_id,
         text: archiveText,
         msgId: message.message_id,
+        actor: message.sender_actor,
+        messageType: message.msg_type,
+        textParts: buildFeishuTextPayload(archiveText),
       });
     }
 
@@ -486,7 +566,12 @@ export async function fetchChatHistory(params: {
 
     const items = res.data?.items ?? [];
     for (const item of items) {
-      const normalized = normalizeMessage(item);
+      const canonicalItem = await canonicalizeMentionedMessage({
+        account: params.account,
+        token: params.token,
+        rawItem: item,
+      });
+      const normalized = normalizeMessage(canonicalItem);
       await hydrateMergeForwardMessage({
         message: normalized,
       });
@@ -499,6 +584,12 @@ export async function fetchChatHistory(params: {
     pageToken = res.data?.page_token;
     if (!hasMore || !pageToken || remaining <= 0) break;
   }
+
+  await enrichNormalizedMessages({
+    account: params.account,
+    messages,
+    chatId: params.chatId,
+  });
 
   const coverage = buildCoverageSummary(messages);
 
@@ -552,12 +643,21 @@ async function fetchThreadMessages(params: {
   const items = res.data?.items ?? [];
   const messages: NormalizedMessage[] = [];
   for (const item of items) {
-    const normalized = normalizeMessage(item);
+    const canonicalItem = await canonicalizeMentionedMessage({
+      account: params.account,
+      token: params.token,
+      rawItem: item,
+    });
+    const normalized = normalizeMessage(canonicalItem);
     await hydrateMergeForwardMessage({
       message: normalized,
     });
     messages.push(normalized);
   }
+  await enrichNormalizedMessages({
+    account: params.account,
+    messages,
+  });
   return {
     messages,
     has_more: res.data?.has_more ?? false,
@@ -579,6 +679,11 @@ async function fetchSingleMessage(params: {
   const message = normalizeMessage(items[0]);
   await hydrateMergeForwardMessage({
     message,
+  });
+  await enrichNormalizedMessages({
+    account: params.account,
+    messages: [message],
+    chatId: items[0]?.chat_id,
   });
   return message;
 }
