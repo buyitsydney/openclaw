@@ -31,12 +31,7 @@ describe("feishu group archive", () => {
     }
   });
 
-  it("archives sent office files with extracted text and saved path", async () => {
-    parseOfficeMock.mockResolvedValue({
-      content: [{ type: "text", text: "A1\tRevenue" }],
-      attachments: [],
-    });
-
+  it("archives sent office files with deterministic saved path text", async () => {
     await archiveSentFeishuBinaryMessage({
       chatId: "oc_group_1",
       messageId: "om_sent_1",
@@ -54,9 +49,8 @@ describe("feishu group archive", () => {
       .split("\n")
       .map((line) => JSON.parse(line) as { msgId: string; text: string });
     expect(entry.msgId).toBe("om_sent_1");
-    expect(entry.text).toContain('<file name="sheet.xlsx">');
-    expect(entry.text).toContain("A1\tRevenue");
     expect(entry.text).toContain("[file: sheet.xlsx saved at ");
+    expect(entry.text).not.toContain("<file name=");
 
     const mediaDir = path.join(stateDir, "media", "inbound");
     const files = await fs.readdir(mediaDir);

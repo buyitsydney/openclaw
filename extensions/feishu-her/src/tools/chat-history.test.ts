@@ -175,15 +175,7 @@ describe("feishu group history archive hydration", () => {
     }
   });
 
-  it("list_history downloads missing bot-sent xlsx once and reuses archive afterwards", async () => {
-    parseOfficeMock.mockResolvedValue({
-      content: [{ type: "text", text: "Sheet A1" }],
-      attachments: [],
-    });
-    downloadFeishuFileMock.mockResolvedValue({
-      buffer: Buffer.from("xlsx"),
-      contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    });
+  it("list_history leaves missing bot-sent xlsx as a placeholder", async () => {
     callFeishuApiWithUserTokenMock.mockResolvedValue({
       code: 0,
       msg: "ok",
@@ -209,19 +201,36 @@ describe("feishu group history archive hydration", () => {
       chat_id: "oc_hist_1",
     });
     const firstDetails = first.details as {
-      messages: Array<{ text: string }>;
+      messages: Array<{ text: string; coverage: string }>;
     };
 
-    expect(firstDetails.messages[0].text).toContain("Sheet A1");
-    expect(firstDetails.messages[0].text).toContain("[local archive:");
-    expect(firstDetails.messages[0].text).toContain("saved at");
-    expect(downloadFeishuFileMock).toHaveBeenCalledOnce();
+    expect(firstDetails.messages[0].text).toBe("[file: sheet.xlsx]");
+    expect(firstDetails.messages[0].coverage).toBe("partial");
+    expect(downloadFeishuFileMock).not.toHaveBeenCalled();
 
     const archivePath = path.join(stateDir, "feishu-groups", "oc_hist_1", "messages.jsonl");
-    await expect(fs.readFile(archivePath, "utf-8")).resolves.toContain('"msgId":"om_hist_1"');
+    await expect(fs.readFile(archivePath, "utf-8")).rejects.toThrow();
+  });
 
-    callFeishuApiWithUserTokenMock.mockClear();
-    downloadFeishuFileMock.mockClear();
+  it("list_history reuses existing xlsx archive without downloading", async () => {
+    const archiveDir = path.join(stateDir, "feishu-groups", "oc_hist_1");
+    await fs.mkdir(archiveDir, { recursive: true });
+    await fs.writeFile(
+      path.join(archiveDir, "messages.jsonl"),
+      `${JSON.stringify({
+        ts: 1772930795,
+        sender: "cli_test_bot",
+        senderId: "cli_test_bot",
+        text: '<file name="sheet.xlsx">\nSheet A1\n</file>\n[file: sheet.xlsx saved at /tmp/sheet.xlsx]',
+        msgId: "om_hist_1",
+        messageType: "file",
+      })}\n`,
+      "utf-8",
+    );
+    const { api, registerTool } = createApi();
+    registerFeishuChatHistoryTool(api);
+    const tool = getTool(registerTool, "feishu_group_history");
+
     callFeishuApiWithUserTokenMock.mockResolvedValue({
       code: 0,
       msg: "ok",

@@ -1113,121 +1113,6 @@ export function buildFeishuInboundIdentity(params: {
   };
 }
 
-/**
- * Walk the officeparser AST to produce rich text with slide separators and chart data.
- * Falls back to ast.toText() if the AST structure is unexpected.
- */
-// oxlint-disable-next-line typescript/no-explicit-any
-function formatOfficeAst(ast: any, maxChars: number): string {
-  if (!ast) return "";
-  const content = ast.content as unknown[];
-  if (!Array.isArray(content) || content.length === 0) {
-    // Fallback: no structured content, use plain text.
-    return (ast.toText?.() ?? "").slice(0, maxChars).trim();
-  }
-
-  // Build a lookup of chart attachment data by name.
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const chartDataByName = new Map<string, any>();
-  const attachments = ast.attachments as unknown[];
-  if (Array.isArray(attachments)) {
-    for (const att of attachments) {
-      // oxlint-disable-next-line typescript/no-explicit-any
-      const a = att as any;
-      if (a.chartData && a.name) {
-        chartDataByName.set(a.name, a.chartData);
-      }
-    }
-  }
-
-  const lines: string[] = [];
-  let slideNum = 0;
-  let charCount = 0;
-
-  // oxlint-disable-next-line typescript/no-explicit-any
-  function walkNode(node: any): void {
-    if (charCount >= maxChars) return;
-    if (!node) return;
-    const type = node.type as string;
-
-    // Slide / section separator (PPTX slides appear as top-level "slide" nodes).
-    if (type === "slide" || type === "section") {
-      slideNum++;
-      const sep = `\n--- Slide ${slideNum} ---\n`;
-      lines.push(sep);
-      charCount += sep.length;
-    }
-
-    // Chart node — format chart data from attachments.
-    if (type === "chart") {
-      const attachmentName = node.metadata?.attachmentName as string | undefined;
-      const cd = attachmentName ? chartDataByName.get(attachmentName) : undefined;
-      if (cd) {
-        const parts: string[] = [];
-        if (cd.title) parts.push(`[Chart: ${cd.title}]`);
-        else parts.push("[Chart]");
-        const labels = cd.labels as string[] | undefined;
-        const dataSets = cd.dataSets as unknown[] | undefined;
-        if (Array.isArray(labels) && labels.length > 0) {
-          parts.push(`  Categories: ${labels.join(", ")}`);
-        }
-        if (Array.isArray(dataSets)) {
-          for (const ds of dataSets) {
-            // oxlint-disable-next-line typescript/no-explicit-any
-            const d = ds as any;
-            const vals = Array.isArray(d.values) ? d.values.join(", ") : String(d.values ?? "");
-            const name = d.name ? `${d.name}: ` : "";
-            parts.push(`  Data: ${name}${vals}`);
-          }
-        }
-        const chartText = parts.join("\n") + "\n";
-        lines.push(chartText);
-        charCount += chartText.length;
-      }
-    }
-
-    // Table node — format as tab-separated rows.
-    if (type === "table" && Array.isArray(node.children)) {
-      const rows = node.children.filter((r: { type: string }) => r.type === "row");
-      for (const row of rows) {
-        if (charCount >= maxChars) break;
-        // oxlint-disable-next-line typescript/no-explicit-any
-        const cells = (row.children ?? []).filter((c: any) => c.type === "cell");
-        // oxlint-disable-next-line typescript/no-explicit-any
-        const rowText = cells.map((c: any) => (c.text ?? "").replace(/[\t\n]/g, " ")).join("\t");
-        lines.push(rowText);
-        charCount += rowText.length + 1;
-      }
-      lines.push(""); // blank line after table
-      return; // children already processed
-    }
-
-    // Recurse into children if present; otherwise emit leaf text.
-    // This avoids duplication: parent.text is the concatenation of children's text,
-    // so we only emit text for leaf nodes (no children).
-    const hasChildren = Array.isArray(node.children) && node.children.length > 0;
-    if (hasChildren && type !== "table") {
-      for (const child of node.children) {
-        if (charCount >= maxChars) break;
-        walkNode(child);
-      }
-    } else if (!hasChildren && node.text && type !== "table" && type !== "row" && type !== "cell") {
-      const txt = String(node.text).trim();
-      if (txt) {
-        lines.push(txt);
-        charCount += txt.length + 1;
-      }
-    }
-  }
-
-  for (const node of content) {
-    if (charCount >= maxChars) break;
-    walkNode(node);
-  }
-
-  return lines.join("\n").slice(0, maxChars).trim();
-}
-
 // oxlint-disable-next-line typescript/no-explicit-any
 async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void> {
   const { account, config, log, setStatus, core } = deps;
@@ -1408,10 +1293,6 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     }
   }
 
-  // ── Extract text from Office files (PPTX, DOCX, XLSX, etc.) via officeparser ──
-  const OFFICE_EXTS = new Set([".pptx", ".docx", ".xlsx", ".odt", ".odp", ".ods", ".rtf"]);
-  const MAX_OFFICE_CHARS = 100_000;
-  const officeBlocks: string[] = [];
   const fallbackParts: string[] = [];
 
   if (fileInfo.length > 0) {
@@ -1421,39 +1302,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       if (!savedPath) continue;
       savedIdx++;
 
-      const ext = fi.fileName.includes(".")
-        ? `.${fi.fileName.split(".").pop()!.toLowerCase()}`
-        : "";
-
-      if (OFFICE_EXTS.has(ext)) {
-        // Try structured extraction with officeparser (AST mode for charts + slides).
-        try {
-          const { parseOffice } = await import("officeparser");
-          const ast = await parseOffice(savedPath, { extractAttachments: true });
-          const text = formatOfficeAst(ast, MAX_OFFICE_CHARS);
-          if (text) {
-            officeBlocks.push(`<file name="${fi.fileName}">\n${text}\n</file>`);
-            log?.info(
-              `[${account.accountId}] office text extracted: ${fi.fileName} (${text.length} chars)`,
-            );
-          } else {
-            // Extraction returned empty — fall back to path for exec.
-            fallbackParts.push(`${fi.fileName} saved at ${savedPath} (text extraction empty)`);
-            log?.info(
-              `[${account.accountId}] office text empty, falling back to path: ${fi.fileName}`,
-            );
-          }
-        } catch (err) {
-          // Extraction failed — fall back to path for exec.
-          fallbackParts.push(`${fi.fileName} saved at ${savedPath}`);
-          log?.error(
-            `[${account.accountId}] office extraction failed (${fi.fileName}): ${String(err)}`,
-          );
-        }
-      } else {
-        // Non-Office file (binary, zip, etc.) — report path so AI can use exec.
-        fallbackParts.push(`${fi.fileName} saved at ${savedPath}`);
-      }
+      // Keep file handling deterministic and non-blocking: save every attachment
+      // locally, then hand the path to the agent instead of pre-parsing Office.
+      fallbackParts.push(`${fi.fileName} saved at ${savedPath}`);
     }
     // Append download failures.
     for (const e of fileErrors) {
@@ -1461,16 +1312,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     }
   }
 
-  // Build the final file placeholder:
-  // - officeBlocks: extracted text wrapped in <file> tags (AI sees content directly)
-  // - fallbackParts: file paths + error info (AI can use exec or inform the user)
-  let filePlaceholder: string | null = null;
-  if (officeBlocks.length > 0 || fallbackParts.length > 0) {
-    const sections: string[] = [];
-    if (officeBlocks.length > 0) sections.push(officeBlocks.join("\n"));
-    if (fallbackParts.length > 0) sections.push(`[file: ${fallbackParts.join("; ")}]`);
-    filePlaceholder = sections.join("\n");
-  }
+  // Build the final file placeholder as deterministic local paths only.
+  const filePlaceholder =
+    fallbackParts.length > 0 ? `[file: ${fallbackParts.join("; ")}]` : null;
 
   // For media-only messages, pick the right placeholder:
   // - Audio messages: "<media:audio>" triggers STT pipeline (same as Telegram pattern).
