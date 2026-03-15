@@ -658,6 +658,17 @@ export function renderFeishuUserFacingCardText(
   );
 }
 
+/** V2 CardKit cards support full markdown natively (headings, tables, code blocks).
+ *  Skip the V1 normalizeFeishuCardMarkdown degradation but keep mention rewriting. */
+export function renderFeishuUserFacingCardTextV2(
+  text: string,
+  account: FeishuCardMentionAccount,
+): string {
+  const displayText = formatFeishuUserFacingText(text).trimEnd();
+  const stabilizedSource = stabilizeFeishuCardMarkdown(displayText);
+  return renderFeishuCardMarkdownTextSegment(stabilizedSource, account);
+}
+
 export async function sendFeishuUserFacingCardDetailed(params: {
   account: ResolvedFeishuAccount;
   chatId?: string;
@@ -1208,17 +1219,25 @@ export async function downloadWhiteboardImage(params: {
   }
 }
 
-// ── Interactive Card Streaming (tag:"markdown" + im.message.patch) ───────
-// Uses v1 top-level `elements: [{tag:"markdown"}]` cards. Tested to produce:
-//   ✓ native markdown rendering in UI (headings, tables, code fences, etc.)
-//   ✓ PATCH support for streaming
-//   ✓ `message.get` readback with `coverage: partial` (preserves markdown syntax)
-// Schema 2.0 cards break readback entirely (`coverage: none`), so avoided.
-// `div+lark_md` strips markdown formatting in readback, so also avoided.
-// Updates via PATCH /im/v1/messages/{id} — 5 QPS rate limit, no total count limit.
+// ── Interactive Card Streaming ───────────────────────────────────────────
+// Two implementations behind the same FeishuCardStream interface:
+//
+// v1 (default): top-level `elements: [{tag:"markdown"}]` + im.message.patch
+//   ✓ im.message.get readback (degraded 2D array, ~90% text recovery)
+//   ✗ no typewriter animation, 5 QPS patch limit
+//   ✗ markdown degraded (headings→bold, tables→lists)
+//
+// v2: CardKit entity + streaming_mode + element content PUT
+//   ✓ native typewriter animation, 10 QPS, full markdown (headings/tables/code)
+//   ✗ im.message.get readback returns "请升级至最新版本客户端" (0% recovery)
+//   → relies on local cardTextCache for readback (bot always caches its own output)
+//
+// Switch via config: channels.feishu.cardStreamVersion = "v1" | "v2"
 
 const DEFAULT_STREAM_THROTTLE_MS = 300;
 const FEISHU_API_BASE = "https://open.feishu.cn/open-apis";
+
+export type FeishuCardStreamVersion = "v1" | "v2";
 
 export type FeishuCardStream = {
   /** Push new accumulated text; throttled internally. */
@@ -1230,7 +1249,7 @@ export type FeishuCardStream = {
   /** Send final complete text directly, bypassing throttle/inFlight guards.
    *  Call after stop() to ensure the card displays the full content. */
   sendFinal: (text: string) => Promise<void>;
-  /** Close streaming mode (no-op for v1 patch cards — kept for interface compat). */
+  /** Close streaming mode (v1: no-op, v2: PATCH streaming_mode=false). */
   finalize: (finalText: string) => Promise<void>;
   /** Whether the stream was successfully started (card created + message sent). */
   started: boolean;
@@ -1238,6 +1257,18 @@ export type FeishuCardStream = {
   messageId?: string;
   /** Full message metadata returned by Feishu at create/reply time. */
   message?: FeishuSentMessageRef;
+};
+
+export type FeishuCardStreamParams = {
+  account: ResolvedFeishuAccount;
+  chatId?: string;
+  /** When set, the card message is sent as a reply to this message (quote-reply style). */
+  replyToMessageId?: string;
+  throttleMs?: number;
+  /** "v1" = inline card + im.message.patch (default), "v2" = CardKit streaming */
+  version?: FeishuCardStreamVersion;
+  log?: (msg: string) => void;
+  warn?: (msg: string) => void;
 };
 
 function buildInlineCardJson(markdown: string): string {
@@ -1259,29 +1290,33 @@ const NOOP_STREAM: FeishuCardStream = {
   started: false,
 };
 
-/**
- * Send a v1 inline card and return a stream object that updates it via im.message.patch.
- *
- * Flow:
- *  1. im.message.create(msg_type="interactive", content=v1_inline_card_json) → message_id
- *  2. Caller calls stream.update(text) repeatedly
- *  3. Internally throttled PATCH /im/v1/messages/{id} replaces card content
- *  4. Readback still works through the interactive-card parser/archive path
- */
-export async function createFeishuCardStream(params: {
-  account: ResolvedFeishuAccount;
-  chatId?: string;
-  /** When set, the card message is sent as a reply to this message (quote-reply style). */
-  replyToMessageId?: string;
-  throttleMs?: number;
-  log?: (msg: string) => void;
-  warn?: (msg: string) => void;
-}): Promise<FeishuCardStream> {
-  const throttleMs = Math.max(50, params.throttleMs ?? DEFAULT_STREAM_THROTTLE_MS);
-  const client = getFeishuClient(params.account);
+/** Dispatch to V1 or V2 card stream implementation based on params.version. */
+export async function createFeishuCardStream(
+  params: FeishuCardStreamParams,
+): Promise<FeishuCardStream> {
+  const version = params.version ?? "v1";
+  if (version === "v2") {
+    return createFeishuCardStreamV2(params);
+  }
+  return createFeishuCardStreamV1(params);
+}
 
-  let message: FeishuSentMessageRef | undefined;
-  let messageId: string | undefined;
+// ── Shared throttle/schedule/flush engine ────────────────────────────────
+// Both V1 and V2 use identical throttle logic; only the transport differs.
+
+type CardStreamTransport = {
+  sendUpdate: (rendered: string) => Promise<void>;
+  sendFinal: (rendered: string) => Promise<void>;
+  finalize: (finalText: string) => Promise<void>;
+  renderText: (text: string) => string;
+};
+
+function buildCardStreamFromTransport(
+  transport: CardStreamTransport,
+  throttleMs: number,
+  messageId: string,
+  message: FeishuSentMessageRef | undefined,
+): FeishuCardStream {
   let lastSentText = "";
   let lastSentAt = 0;
   let pendingText = "";
@@ -1289,98 +1324,13 @@ export async function createFeishuCardStream(params: {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let stopped = false;
 
-  // ── Step 1: Send initial v1 inline card ──
-  const initialContent = buildInlineCardJson("⏳ ...");
-  try {
-    // oxlint-disable-next-line typescript/no-explicit-any
-    let sendResp: any;
-    if (params.replyToMessageId) {
-      sendResp = await client.im.message.reply({
-        path: { message_id: params.replyToMessageId },
-        data: { content: initialContent, msg_type: "interactive" },
-      });
-    } else {
-      if (!params.chatId) {
-        params.warn?.("Feishu card stream: chatId is required when replyToMessageId is absent");
-        return NOOP_STREAM;
-      }
-      const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
-      sendResp = await client.im.message.create({
-        params: { receive_id_type: receiveIdType },
-        data: { receive_id: receiveId, content: initialContent, msg_type: "interactive" },
-      });
-    }
-    message = extractFeishuSentMessageRef(sendResp as FeishuSendResponse, {
-      chatId: params.chatId,
-      messageType: "interactive",
-    });
-    messageId = message?.messageId;
-    if (!messageId) {
-      params.warn?.("Feishu card stream: message send returned no message_id");
-      return NOOP_STREAM;
-    }
-  } catch (err) {
-    params.warn?.(`Feishu card stream: message send failed: ${String(err)}`);
-    return NOOP_STREAM;
-  }
-
-  // Re-fetch token on each PATCH call so long-running streams survive token rotation.
-  // The SDK's tokenManager caches internally and only refreshes when expired.
-  const getToken = async (): Promise<string | null> => {
-    // oxlint-disable-next-line typescript/no-explicit-any
-    return (client as any).tokenManager.getTenantAccessToken({});
-  };
-
-  const initialToken = await getToken();
-  if (!initialToken) {
-    params.warn?.("Feishu card stream: cannot obtain tenant_access_token for patch");
-    return { ...NOOP_STREAM, started: true, messageId, message };
-  }
-
-  params.log?.(
-    `Feishu card stream ready (v1-patch, messageId=${messageId}, throttleMs=${throttleMs})`,
-  );
-
-  // ── Step 2: Stream updates via PATCH /im/v1/messages/{id} ──
-  const patchCard = async (
-    content: string,
-    token: string,
-    _label: string,
-  ): Promise<{ code: number; msg: string }> => {
-    const res = await fetch(`${FEISHU_API_BASE}/im/v1/messages/${messageId}`, {
-      method: "PATCH",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ content: buildInlineCardJson(content) }),
-    });
-    return (await res.json()) as { code: number; msg: string };
-  };
-
-  const sendUpdate = async (text: string) => {
-    if (stopped || !messageId) return;
-    const rendered = renderFeishuUserFacingCardText(text, params.account);
+  const doSendUpdate = async (text: string) => {
+    if (stopped) return;
+    const rendered = transport.renderText(text);
     if (!rendered || rendered === lastSentText) return;
     lastSentText = rendered;
     lastSentAt = Date.now();
-    const token = await getToken();
-    if (!token) {
-      stopped = true;
-      params.warn?.("Feishu card stream: token refresh failed, stopping stream");
-      return;
-    }
-    try {
-      const data = await patchCard(rendered, token, "patch");
-      if (data.code !== 0) {
-        if (data.code === 230020) {
-          params.warn?.("Feishu card stream: rate limited (230020), will retry");
-        } else {
-          stopped = true;
-          params.warn?.(`Feishu card stream patch failed: ${data.code} ${data.msg}`);
-        }
-      }
-    } catch (err) {
-      stopped = true;
-      params.warn?.(`Feishu card stream patch error: ${String(err)}`);
-    }
+    await transport.sendUpdate(rendered);
   };
 
   const flush = async () => {
@@ -1400,7 +1350,7 @@ export async function createFeishuCardStream(params: {
     pendingText = "";
     inFlight = true;
     try {
-      await sendUpdate(text);
+      await doSendUpdate(text);
     } finally {
       inFlight = false;
     }
@@ -1440,30 +1390,320 @@ export async function createFeishuCardStream(params: {
   };
 
   const sendFinal = async (text: string) => {
-    if (!messageId) return;
-    const rendered = renderFeishuUserFacingCardText(text, params.account);
+    const rendered = transport.renderText(text);
     if (!rendered) return;
-    const token = await getToken();
-    if (!token) {
-      params.warn?.("Feishu card stream sendFinal: token refresh failed");
-      return;
-    }
-    try {
-      const data = await patchCard(rendered, token, "sendFinal");
-      if (data.code !== 0) {
-        params.warn?.(`Feishu card stream sendFinal failed: ${data.code} ${data.msg}`);
+    await transport.sendFinal(rendered);
+  };
+
+  return {
+    update,
+    flush,
+    stop,
+    sendFinal,
+    finalize: transport.finalize,
+    started: true,
+    messageId,
+    message,
+  };
+}
+
+// ── V1: inline card + im.message.patch ──────────────────────────────────
+
+async function createFeishuCardStreamV1(params: FeishuCardStreamParams): Promise<FeishuCardStream> {
+  const throttleMs = Math.max(50, params.throttleMs ?? DEFAULT_STREAM_THROTTLE_MS);
+  const client = getFeishuClient(params.account);
+
+  let message: FeishuSentMessageRef | undefined;
+  let messageId: string | undefined;
+
+  const initialContent = buildInlineCardJson("⏳ ...");
+  try {
+    // oxlint-disable-next-line typescript/no-explicit-any
+    let sendResp: any;
+    if (params.replyToMessageId) {
+      sendResp = await client.im.message.reply({
+        path: { message_id: params.replyToMessageId },
+        data: { content: initialContent, msg_type: "interactive" },
+      });
+    } else {
+      if (!params.chatId) {
+        params.warn?.("Feishu card stream v1: chatId required when replyToMessageId is absent");
+        return NOOP_STREAM;
       }
-    } catch (err) {
-      params.warn?.(`Feishu card stream sendFinal error: ${String(err)}`);
+      const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
+      sendResp = await client.im.message.create({
+        params: { receive_id_type: receiveIdType },
+        data: { receive_id: receiveId, content: initialContent, msg_type: "interactive" },
+      });
     }
+    message = extractFeishuSentMessageRef(sendResp as FeishuSendResponse, {
+      chatId: params.chatId,
+      messageType: "interactive",
+    });
+    messageId = message?.messageId;
+    if (!messageId) {
+      params.warn?.("Feishu card stream v1: message send returned no message_id");
+      return NOOP_STREAM;
+    }
+  } catch (err) {
+    params.warn?.(`Feishu card stream v1: message send failed: ${String(err)}`);
+    return NOOP_STREAM;
+  }
+
+  const getToken = async (): Promise<string | null> => {
+    // oxlint-disable-next-line typescript/no-explicit-any
+    return (client as any).tokenManager.getTenantAccessToken({});
   };
 
-  // v1 inline cards have no streaming_mode to close — finalize is a no-op.
-  const finalize = async (_finalText: string) => {
-    params.log?.("card stream finalize: v1-patch complete (no streaming_mode to close)");
+  const initialToken = await getToken();
+  if (!initialToken) {
+    params.warn?.("Feishu card stream v1: cannot obtain tenant_access_token");
+    return { ...NOOP_STREAM, started: true, messageId, message };
+  }
+
+  params.log?.(
+    `Feishu card stream ready (v1-patch, messageId=${messageId}, throttleMs=${throttleMs})`,
+  );
+
+  let stopped = false;
+
+  const transport: CardStreamTransport = {
+    renderText: (text) => renderFeishuUserFacingCardText(text, params.account),
+    sendUpdate: async (rendered) => {
+      if (stopped) return;
+      const token = await getToken();
+      if (!token) {
+        stopped = true;
+        params.warn?.("Feishu card stream v1: token refresh failed, stopping");
+        return;
+      }
+      const res = await fetch(`${FEISHU_API_BASE}/im/v1/messages/${messageId}`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ content: buildInlineCardJson(rendered) }),
+      });
+      const data = (await res.json()) as { code: number; msg: string };
+      if (data.code !== 0) {
+        if (data.code === 230020) {
+          params.warn?.("Feishu card stream v1: rate limited (230020), will retry");
+        } else {
+          stopped = true;
+          params.warn?.(`Feishu card stream v1 patch failed: ${data.code} ${data.msg}`);
+        }
+      }
+    },
+    sendFinal: async (rendered) => {
+      const token = await getToken();
+      if (!token) {
+        params.warn?.("Feishu card stream v1 sendFinal: token refresh failed");
+        return;
+      }
+      const res = await fetch(`${FEISHU_API_BASE}/im/v1/messages/${messageId}`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ content: buildInlineCardJson(rendered) }),
+      });
+      const data = (await res.json()) as { code: number; msg: string };
+      if (data.code !== 0) {
+        params.warn?.(`Feishu card stream v1 sendFinal failed: ${data.code} ${data.msg}`);
+      }
+    },
+    finalize: async (_finalText) => {
+      params.log?.("card stream finalize: v1-patch complete (no streaming_mode to close)");
+    },
   };
 
-  return { update, flush, stop, sendFinal, finalize, started: true, messageId, message };
+  return buildCardStreamFromTransport(transport, throttleMs, messageId, message);
+}
+
+// ── V2: CardKit entity + streaming_mode + element content PUT ───────────
+
+const V2_ELEMENT_ID = "md_stream";
+
+function buildV2CardJson(initialMarkdown: string): object {
+  return {
+    schema: "2.0",
+    config: {
+      streaming_mode: true,
+      streaming_config: {
+        print_frequency_ms: { default: 50 },
+        print_step: { default: 2 },
+        print_strategy: "fast",
+      },
+    },
+    body: {
+      elements: [{ tag: "markdown", content: initialMarkdown, element_id: V2_ELEMENT_ID }],
+    },
+  };
+}
+
+async function createFeishuCardStreamV2(params: FeishuCardStreamParams): Promise<FeishuCardStream> {
+  const throttleMs = Math.max(50, params.throttleMs ?? DEFAULT_STREAM_THROTTLE_MS);
+  const client = getFeishuClient(params.account);
+
+  const getToken = async (): Promise<string | null> => {
+    // oxlint-disable-next-line typescript/no-explicit-any
+    return (client as any).tokenManager.getTenantAccessToken({});
+  };
+
+  const token = await getToken();
+  if (!token) {
+    params.warn?.("Feishu card stream v2: cannot obtain tenant_access_token");
+    return NOOP_STREAM;
+  }
+
+  // Step 1: Create card entity via CardKit API
+  let cardId: string;
+  try {
+    const cardJson = buildV2CardJson("⏳ ...");
+    const createRes = await fetch(`${FEISHU_API_BASE}/cardkit/v1/cards`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "card_json", data: JSON.stringify(cardJson) }),
+    });
+    const createData = (await createRes.json()) as {
+      code: number;
+      msg: string;
+      data?: { card_id?: string };
+    };
+    if (createData.code !== 0 || !createData.data?.card_id) {
+      params.warn?.(
+        `Feishu card stream v2: card entity create failed: ${createData.code} ${createData.msg}`,
+      );
+      return NOOP_STREAM;
+    }
+    cardId = createData.data.card_id;
+  } catch (err) {
+    params.warn?.(`Feishu card stream v2: card entity create error: ${String(err)}`);
+    return NOOP_STREAM;
+  }
+
+  // Step 2: Send card message via im.message.create/reply
+  let message: FeishuSentMessageRef | undefined;
+  let messageId: string | undefined;
+  const cardContent = JSON.stringify({ type: "card", data: { card_id: cardId } });
+  try {
+    // oxlint-disable-next-line typescript/no-explicit-any
+    let sendResp: any;
+    if (params.replyToMessageId) {
+      sendResp = await client.im.message.reply({
+        path: { message_id: params.replyToMessageId },
+        data: { content: cardContent, msg_type: "interactive" },
+      });
+    } else {
+      if (!params.chatId) {
+        params.warn?.("Feishu card stream v2: chatId required when replyToMessageId is absent");
+        return NOOP_STREAM;
+      }
+      const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
+      sendResp = await client.im.message.create({
+        params: { receive_id_type: receiveIdType },
+        data: { receive_id: receiveId, content: cardContent, msg_type: "interactive" },
+      });
+    }
+    message = extractFeishuSentMessageRef(sendResp as FeishuSendResponse, {
+      chatId: params.chatId,
+      messageType: "interactive",
+    });
+    messageId = message?.messageId;
+    if (!messageId) {
+      params.warn?.("Feishu card stream v2: message send returned no message_id");
+      return NOOP_STREAM;
+    }
+  } catch (err) {
+    params.warn?.(`Feishu card stream v2: message send failed: ${String(err)}`);
+    return NOOP_STREAM;
+  }
+
+  params.log?.(
+    `Feishu card stream ready (v2-cardkit, cardId=${cardId}, messageId=${messageId}, throttleMs=${throttleMs})`,
+  );
+
+  let stopped = false;
+  let sequence = 1;
+
+  // Step 3: Stream text updates via PUT element content
+  const updateElementContent = async (
+    rendered: string,
+    tok: string,
+  ): Promise<{ code: number; msg: string }> => {
+    const res = await fetch(
+      `${FEISHU_API_BASE}/cardkit/v1/cards/${cardId}/elements/${V2_ELEMENT_ID}/content`,
+      {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${tok}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ content: rendered, sequence: sequence++ }),
+      },
+    );
+    return (await res.json()) as { code: number; msg: string };
+  };
+
+  const transport: CardStreamTransport = {
+    renderText: (text) => renderFeishuUserFacingCardTextV2(text, params.account),
+    sendUpdate: async (rendered) => {
+      if (stopped) return;
+      const tok = await getToken();
+      if (!tok) {
+        stopped = true;
+        params.warn?.("Feishu card stream v2: token refresh failed, stopping");
+        return;
+      }
+      try {
+        const data = await updateElementContent(rendered, tok);
+        if (data.code !== 0) {
+          if (data.code === 230020) {
+            params.warn?.("Feishu card stream v2: rate limited (230020), will retry");
+          } else {
+            stopped = true;
+            params.warn?.(`Feishu card stream v2 update failed: ${data.code} ${data.msg}`);
+          }
+        }
+      } catch (err) {
+        stopped = true;
+        params.warn?.(`Feishu card stream v2 update error: ${String(err)}`);
+      }
+    },
+    sendFinal: async (rendered) => {
+      const tok = await getToken();
+      if (!tok) {
+        params.warn?.("Feishu card stream v2 sendFinal: token refresh failed");
+        return;
+      }
+      try {
+        const data = await updateElementContent(rendered, tok);
+        if (data.code !== 0) {
+          params.warn?.(`Feishu card stream v2 sendFinal failed: ${data.code} ${data.msg}`);
+        }
+      } catch (err) {
+        params.warn?.(`Feishu card stream v2 sendFinal error: ${String(err)}`);
+      }
+    },
+    finalize: async (_finalText) => {
+      const tok = await getToken();
+      if (!tok) {
+        params.warn?.("Feishu card stream v2 finalize: token refresh failed");
+        return;
+      }
+      try {
+        const settings = JSON.stringify({ config: { streaming_mode: false } });
+        const res = await fetch(`${FEISHU_API_BASE}/cardkit/v1/cards/${cardId}/settings`, {
+          method: "PATCH",
+          headers: { Authorization: `Bearer ${tok}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ settings, sequence: sequence++ }),
+        });
+        const data = (await res.json()) as { code: number; msg: string };
+        if (data.code !== 0) {
+          params.warn?.(`Feishu card stream v2 finalize failed: ${data.code} ${data.msg}`);
+        } else {
+          params.log?.("card stream finalize: v2-cardkit streaming_mode closed");
+        }
+      } catch (err) {
+        params.warn?.(`Feishu card stream v2 finalize error: ${String(err)}`);
+      }
+    },
+  };
+
+  return buildCardStreamFromTransport(transport, throttleMs, messageId, message);
 }
 
 // ── Emoji Reactions ─────────────────────────────────────────────────────
