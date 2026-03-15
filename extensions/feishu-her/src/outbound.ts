@@ -3,6 +3,9 @@ import { writeFileSync, readFileSync, unlinkSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import * as Lark from "@larksuiteoapi/node-sdk";
 import { fetchWithSsrFGuard, resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk";
+import type { MarkdownLinkSpan } from "../../../src/markdown/ir.js";
+import { markdownToIR } from "../../../src/markdown/ir.js";
+import { renderMarkdownWithMarkers } from "../../../src/markdown/render.js";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { buildFeishuSentMessageRef, type FeishuSentMessageRef } from "./message-metadata.js";
 
@@ -410,49 +413,164 @@ export function assertNoForbiddenOpenPlatformUrls(text: string): void {
 const FEISHU_AT_TAG_RE = /<at\s+user_id="([^"]+)">([^<]*)<\/at>/gi;
 const FEISHU_EMPTY_AT_TAG_RE = /<at\s+user_id="([^"]+)"\s*\/?>/gi;
 const FEISHU_STRUCTURED_TAG_RE = /<\/?(?:file|media)\b[^>\n]*>/gi;
-const CARD_AT_TAG_RE = /<at\s+id=[^>]*>(?:[^<]*)<\/at>/gi;
+const FEISHU_CARD_CODE_INLINE_OPEN = "\u0001";
+const FEISHU_CARD_CODE_INLINE_CLOSE = "\u0002";
+const FEISHU_CARD_CODE_BLOCK_OPEN = "\u0003";
+const FEISHU_CARD_CODE_BLOCK_CLOSE = "\u0004";
 
-function formatFeishuCardMention(userId: string): string {
+type FeishuCardMentionAccount = Pick<
+  ResolvedFeishuAccount,
+  "appId" | "botOpenId" | "knownBots" | "knownBotOpenIds"
+>;
+
+function resolveFeishuCardMentionTargetId(
+  account: FeishuCardMentionAccount,
+  userId: string,
+): string | null {
+  const normalizedUserId = userId.trim();
+  if (!normalizedUserId) {
+    return null;
+  }
+  if (!normalizedUserId.startsWith("cli_")) {
+    return normalizedUserId;
+  }
+  if (normalizedUserId === account.appId) {
+    const selfBotOpenId = account.botOpenId?.trim();
+    return selfBotOpenId || null;
+  }
+  for (const [openId, appId] of Object.entries(account.knownBotOpenIds ?? {})) {
+    if (appId.trim() === normalizedUserId) {
+      const normalizedOpenId = openId.trim();
+      return normalizedOpenId || null;
+    }
+  }
+  return null;
+}
+
+function formatFeishuCardMention(
+  account: FeishuCardMentionAccount,
+  userId: string,
+  visibleText?: string,
+): string {
   const normalizedUserId = userId.trim();
   if (!normalizedUserId) {
     return "";
   }
+  const targetId = resolveFeishuCardMentionTargetId(account, normalizedUserId);
+  if (targetId) {
+    return `<at id=${targetId}></at>`;
+  }
+  if (normalizedUserId.startsWith("cli_")) {
+    const displayName =
+      visibleText?.trim() || account.knownBots[normalizedUserId]?.trim() || normalizedUserId;
+    return `@${displayName.replace(/^@+/, "")}`;
+  }
   return `<at id=${normalizedUserId}></at>`;
 }
 
-function escapeAngleBracketsInsideMarkdownCode(markdown: string): string {
-  let result = "";
+function renderFeishuCardMarkdownCodeSegment(markdown: string): string {
+  return markdown.replaceAll("<", "＜").replaceAll(">", "＞");
+}
+
+function convertMarkdownHeadingsToCardSections(markdown: string): string {
+  const lines = markdown.split("\n");
   let inFence = false;
-  let inInlineCode = false;
+  return lines
+    .map((line) => {
+      const trimmed = line.trimStart();
+      if (trimmed.startsWith("```")) {
+        inFence = !inFence;
+        return line;
+      }
+      if (inFence) {
+        return line;
+      }
+      const headingMatch = line.match(/^(\s*)#{1,6}\s+(.*)$/);
+      if (!headingMatch) {
+        return line;
+      }
+      const indent = headingMatch[1] ?? "";
+      const title = headingMatch[2]?.trim();
+      if (!title) {
+        return "";
+      }
+      return `${indent}【${title}】`;
+    })
+    .join("\n");
+}
 
-  for (let i = 0; i < markdown.length; i += 1) {
-    if (markdown.startsWith("```", i)) {
-      inFence = !inFence;
-      result += "```";
-      i += 2;
-      continue;
-    }
-
-    const char = markdown[i];
-    if (!inFence && char === "`" && markdown[i - 1] !== "\\") {
-      inInlineCode = !inInlineCode;
-      result += char;
-      continue;
-    }
-
-    if ((inFence || inInlineCode) && char === "<") {
-      result += "&lt;";
-      continue;
-    }
-    if ((inFence || inInlineCode) && char === ">") {
-      result += "&gt;";
-      continue;
-    }
-
-    result += char;
+function buildFeishuCardLink(link: MarkdownLinkSpan, text: string) {
+  const href = link.href.trim();
+  if (!href) {
+    return null;
   }
+  const label = text.slice(link.start, link.end);
+  if (!label.trim() || label === href) {
+    return { start: link.start, end: link.end, open: "", close: "" };
+  }
+  return { start: link.start, end: link.end, open: "", close: ` (${href})` };
+}
 
+function finalizeFeishuCardCodeMarkers(markdown: string): string {
+  let result = "";
+  let inCode = false;
+  for (const char of markdown) {
+    if (char === FEISHU_CARD_CODE_INLINE_OPEN || char === FEISHU_CARD_CODE_BLOCK_OPEN) {
+      inCode = true;
+      continue;
+    }
+    if (char === FEISHU_CARD_CODE_INLINE_CLOSE || char === FEISHU_CARD_CODE_BLOCK_CLOSE) {
+      inCode = false;
+      continue;
+    }
+    if (inCode) {
+      result += renderFeishuCardMarkdownCodeSegment(char);
+    } else {
+      result += char;
+    }
+  }
   return result;
+}
+
+function renderFeishuCardMarkdownTextSegment(
+  markdown: string,
+  account: FeishuCardMentionAccount,
+): string {
+  const replacedAtTags = markdown
+    .replace(FEISHU_AT_TAG_RE, (_match, userId: string, mentionText: string) =>
+      formatFeishuCardMention(account, userId, mentionText),
+    )
+    .replace(FEISHU_EMPTY_AT_TAG_RE, (_match, userId: string) =>
+      formatFeishuCardMention(account, userId),
+    );
+  return replacedAtTags.replace(FEISHU_STRUCTURED_TAG_RE, (tag) =>
+    tag.replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
+  );
+}
+
+function normalizeFeishuCardMarkdown(markdown: string): string {
+  const headingSafeMarkdown = convertMarkdownHeadingsToCardSections(markdown);
+  const ir = markdownToIR(headingSafeMarkdown, {
+    linkify: true,
+    headingStyle: "none",
+    blockquotePrefix: "> ",
+    tableMode: "bullets",
+  });
+  const rendered = renderMarkdownWithMarkers(ir, {
+    styleMarkers: {
+      code: {
+        open: FEISHU_CARD_CODE_INLINE_OPEN,
+        close: FEISHU_CARD_CODE_INLINE_CLOSE,
+      },
+      code_block: {
+        open: FEISHU_CARD_CODE_BLOCK_OPEN,
+        close: FEISHU_CARD_CODE_BLOCK_CLOSE,
+      },
+    },
+    escapeText: (text) => text,
+    buildLink: buildFeishuCardLink,
+  });
+  return finalizeFeishuCardCodeMarkers(rendered).trimEnd();
 }
 
 function escapeUnmatchedInlineBacktick(markdown: string): string {
@@ -488,18 +606,18 @@ function stabilizeFeishuCardMarkdown(markdown: string): string {
   return stabilized;
 }
 
-export function renderFeishuUserFacingCardText(text: string): string {
+export function renderFeishuUserFacingCardText(
+  text: string,
+  account: FeishuCardMentionAccount,
+): string {
   const displayText = formatFeishuUserFacingText(text).trimEnd();
-  const codeSafeText = escapeAngleBracketsInsideMarkdownCode(displayText);
-  const replacedAtTags = codeSafeText
-    .replace(FEISHU_AT_TAG_RE, (_match, userId: string) => formatFeishuCardMention(userId))
-    .replace(FEISHU_EMPTY_AT_TAG_RE, (_match, userId: string) => formatFeishuCardMention(userId));
-  const escapedStructuredTags = replacedAtTags.replace(FEISHU_STRUCTURED_TAG_RE, (tag) =>
-    tag.replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
+  const stabilizedSource = stabilizeFeishuCardMarkdown(displayText);
+  // Feishu v1 card markdown supports only a small subset. Normalize general
+  // markdown into a deterministic, card-safe text form before rewriting live mentions.
+  return renderFeishuCardMarkdownTextSegment(
+    normalizeFeishuCardMarkdown(stabilizedSource),
+    account,
   );
-  // Stream updates often land mid-markdown token; keep cards renderable until
-  // the next patch arrives instead of letting Feishu blank the unfinished tail.
-  return stabilizeFeishuCardMarkdown(escapedStructuredTags);
 }
 
 export async function sendFeishuUserFacingCardDetailed(params: {
@@ -508,7 +626,7 @@ export async function sendFeishuUserFacingCardDetailed(params: {
   text: string;
   replyToMessageId?: string;
 }): Promise<FeishuSentMessageRef | undefined> {
-  const displayText = renderFeishuUserFacingCardText(params.text);
+  const displayText = renderFeishuUserFacingCardText(params.text, params.account);
   assertNoForbiddenOpenPlatformUrls(displayText);
   const stream = await createFeishuCardStream({
     account: params.account,
@@ -1197,7 +1315,7 @@ export async function createFeishuCardStream(params: {
 
   const sendUpdate = async (text: string) => {
     if (stopped || !messageId) return;
-    const rendered = renderFeishuUserFacingCardText(text);
+    const rendered = renderFeishuUserFacingCardText(text, params.account);
     if (!rendered || rendered === lastSentText) return;
     lastSentText = rendered;
     lastSentAt = Date.now();
@@ -1208,13 +1326,7 @@ export async function createFeishuCardStream(params: {
       return;
     }
     try {
-      let data = await patchCard(rendered, token, "patch");
-      if (data.code === 230099 && CARD_AT_TAG_RE.test(rendered)) {
-        const stripped = rendered.replace(CARD_AT_TAG_RE, "");
-        params.warn?.("Feishu card stream: stripping <at> tags and retrying (230099)");
-        data = await patchCard(stripped, token, "patch-retry");
-        lastSentText = stripped;
-      }
+      const data = await patchCard(rendered, token, "patch");
       if (data.code !== 0) {
         if (data.code === 230020) {
           params.warn?.("Feishu card stream: rate limited (230020), will retry");
@@ -1287,7 +1399,7 @@ export async function createFeishuCardStream(params: {
 
   const sendFinal = async (text: string) => {
     if (!messageId) return;
-    const rendered = renderFeishuUserFacingCardText(text);
+    const rendered = renderFeishuUserFacingCardText(text, params.account);
     if (!rendered) return;
     const token = await getToken();
     if (!token) {
@@ -1295,12 +1407,7 @@ export async function createFeishuCardStream(params: {
       return;
     }
     try {
-      let data = await patchCard(rendered, token, "sendFinal");
-      if (data.code === 230099 && CARD_AT_TAG_RE.test(rendered)) {
-        const stripped = rendered.replace(CARD_AT_TAG_RE, "");
-        params.warn?.("Feishu card stream sendFinal: stripping <at> tags and retrying (230099)");
-        data = await patchCard(stripped, token, "sendFinal-retry");
-      }
+      const data = await patchCard(rendered, token, "sendFinal");
       if (data.code !== 0) {
         params.warn?.(`Feishu card stream sendFinal failed: ${data.code} ${data.msg}`);
       }

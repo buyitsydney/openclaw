@@ -43,6 +43,38 @@
 
 下面旧章节里凡是写“`message` 工具 `replyTo` 对飞书仍未打通”的地方，都已经过时；之后文档应以上面这个 checkpoint 为准。
 
+### 状态补充（2026-03-15 上午 checkpoint：bot mention patch 已修住，markdown 仍是安全文本）
+
+**这轮新增确认了一个此前没被分层说清楚的事实**：
+
+- 飞书 `interactive` 卡片在 `PATCH /im/v1/messages/{message_id}` 链路里，对 **human mention** 和 **bot mention** 的要求不一样
+- human mention 用 `open_id` 可以稳定成功
+- peer bot mention 如果把 `app_id` 直接写进 `<at id=...></at>`，飞书会返回 `230099 invalid user resource`
+- peer bot mention 必须先从本地 registry（`docker/users.csv` -> `start.sh` / `start-user.sh` -> `knownBotOpenIds`）恢复出 **bot_open_id**，再写入卡片
+
+**因此当前发送层 contract 已更新为**：
+
+- 群里真正 `@人`：使用人的 `open_id`
+- 群里真正 `@bot`：使用 bot 的 `open_id`（不是 `app_id`）
+- `app_id` 仍然是 bot 的稳定 canonical identity，用于识别“这是谁”；但不能直接拿来作为飞书卡片 `<at>` 的目标 ID
+
+**当前已修住**：
+
+- `extensions/feishu-her/src/outbound.ts` 发送卡片前，会把已知 peer bot 的 `app_id` 确定性映射为 `knownBotOpenIds[open_id] -> app_id` 的反查结果，再写 `<at id=bot_open_id></at>`
+- 对未登记 `bot_open_id` 的 peer bot，不再冒险发非法 `<at>`，而是降级成可见纯文本 `@botName`
+- 之前那条“`230099` 后直接把整条 `<at>` 删掉再重试”的兜底逻辑已移除，避免再次把真实 mention 静默吞掉
+
+**但当前仍未完全闭环的点也必须写清楚**：
+
+- dynamic injection 的 `[Bot Identity]` 说明块当前主要暴露的是 `app_id`
+- `feishu_group_history` / recent messages 虽然内部 actor 结构支持 `rawIds`，但对 bot 的 `open_id` 还没有做到“始终显式暴露给模型”
+- 当前用户看到的 Markdown 展示，依然是“飞书卡片安全文本”而不是真正保真 markdown；这属于显示层保守降级，不属于发送失败
+
+**所以 2026-03-15 上午这个 checkpoint 的正确分层是**：
+
+- **已修住**：群里真实 `@bot` 不再因为 `app_id` 走错而被飞书 `PATCH` 拒绝
+- **仍待修**：bot `open_id` 在 history / dynamic injection / skill 里的显式暴露，以及 markdown 视觉保真度
+
 ### 实现状态（2026-03-12 早期）
 
 - **群名改名后 prompt 不更新 — 已修复**：`outbound.ts` 中的 `chatNameCache`（进程级 Map）在群改名后不会刷新，导致 prompt 中群名过期。已删除该缓存，每次 inbound 重新调用飞书 API 获取最新群名。本地 her + tester 多轮压力测试验证通过。

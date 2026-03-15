@@ -43,7 +43,15 @@ import { renderFeishuUserFacingCardText, sendFeishuReply, sendFeishuText } from 
 const account: ResolvedFeishuAccount = {
   accountId: "her",
   name: "her",
-  knownBots: {},
+  knownBots: {
+    cli_her: "her",
+    cli_tester: "tester",
+  },
+  knownBotOpenIds: {
+    ou_her_open: "cli_her",
+    ou_tester_open: "cli_tester",
+  },
+  botOpenId: "ou_her_open",
   enabled: true,
   appId: "cli_her",
   appSecret: "sec_her",
@@ -65,18 +73,86 @@ describe("feishu user-facing card outbound", () => {
     expect(
       renderFeishuUserFacingCardText(
         '你好 <at user_id="ou_tester">tester</at>\n<file name="sheet.xlsx">内容</file>',
+        account,
       ),
     ).toBe('你好 <at id=ou_tester></at>\n&lt;file name="sheet.xlsx"&gt;内容&lt;/file&gt;');
   });
 
+  it("maps configured bot app_id mentions to bot open_id for cards", () => {
+    expect(
+      renderFeishuUserFacingCardText('你好 <at user_id="cli_tester">tester</at>', account),
+    ).toBe("你好 <at id=ou_tester_open></at>");
+  });
+
+  it("renders unmapped bot app_id mentions as visible plain text", () => {
+    expect(
+      renderFeishuUserFacingCardText('你好 <at user_id="cli_unknown">peer bot</at>', account),
+    ).toBe("你好 @peer bot");
+  });
+
   it("escapes unfinished inline code markers so streamed cards stay readable", () => {
-    expect(renderFeishuUserFacingCardText("关键发现：原始 `")).toBe("关键发现：原始 \\`");
+    expect(renderFeishuUserFacingCardText("关键发现：原始 `", account)).toBe("关键发现：原始 `");
   });
 
   it("closes unfinished fenced code blocks for card markdown", () => {
-    expect(renderFeishuUserFacingCardText("```ts\nconst value = 1;")).toBe(
-      "```ts\nconst value = 1;\n```",
+    expect(renderFeishuUserFacingCardText("```ts\nconst value = 1;", account)).toBe(
+      "const value = 1;",
     );
+  });
+
+  it("normalizes markdown headings into readable section titles", () => {
+    const rendered = renderFeishuUserFacingCardText(
+      "## 飞书 Mention 格式\n### XML 标签语法",
+      account,
+    );
+
+    expect(rendered).toContain("【飞书 Mention 格式】");
+    expect(rendered).toContain("【XML 标签语法】");
+    expect(rendered).not.toContain("## 飞书 Mention 格式");
+    expect(rendered).not.toContain("### XML 标签语法");
+  });
+
+  it("removes inline code markers while preserving readable example content", () => {
+    const rendered = renderFeishuUserFacingCardText(
+      '字段：`user_id`\n示例：`<at user_id="ou_xxx">天哥</at>`',
+      account,
+    );
+
+    expect(rendered).toContain("字段：user_id");
+    expect(rendered).toContain('示例：＜at user_id="ou_xxx"＞天哥＜/at＞');
+    expect(rendered).not.toContain("`");
+  });
+
+  it("keeps literal at-tag examples readable inside fenced code blocks", () => {
+    const rendered = renderFeishuUserFacingCardText(
+      ["```xml", '<at user_id="ou_tester">tester</at>', "<at>", "```"].join("\n"),
+      account,
+    );
+
+    expect(rendered).toContain('＜at user_id="ou_tester"＞tester＜/at＞');
+    expect(rendered).toContain("＜at＞");
+    expect(rendered).not.toContain("&lt;at");
+    expect(rendered).not.toContain('<at user_id="ou_tester">tester</at>');
+    expect(rendered).not.toContain("```");
+  });
+
+  it("converts markdown tables into stable bullet sections for card readability", () => {
+    const rendered = renderFeishuUserFacingCardText(
+      [
+        "### 字段说明",
+        "",
+        "| 字段 | 说明 | 示例 |",
+        "| --- | --- | --- |",
+        '| `user_id` | 飞书的目标 ID | `<at user_id="ou_xxx">名字</at>` |',
+      ].join("\n"),
+      account,
+    );
+
+    expect(rendered).toContain("user_id");
+    expect(rendered).toContain("• 说明: 飞书的目标 ID");
+    expect(rendered).toContain('• 示例: ＜at user_id="ou_xxx"＞名字＜/at＞');
+    expect(rendered).not.toContain("| --- | --- | --- |");
+    expect(rendered).not.toContain("### 字段说明");
   });
 
   it("routes plain text sends through interactive create plus patch", async () => {
@@ -109,7 +185,7 @@ describe("feishu user-facing card outbound", () => {
     await sendFeishuReply({
       account,
       messageId: "om_parent_1",
-      text: 'reply from her <at user_id="ou_tester">tester</at>',
+      text: 'reply from her <at user_id="cli_tester">tester</at>',
     });
 
     expect(messageReplyMock).toHaveBeenCalledOnce();
@@ -125,7 +201,8 @@ describe("feishu user-facing card outbound", () => {
       elements: Array<{ tag: string; content: string }>;
     };
     expect(content.config.update_multi).toBe(true);
-    expect(content.elements[0]?.content).toContain("<at id=ou_tester></at>");
+    expect(content.elements[0]?.content).toContain("<at id=ou_tester_open></at>");
+    expect(content.elements[0]?.content).not.toContain("<at id=cli_tester></at>");
   });
 
   it("keeps literal at-tag examples in reports renderable without retry-stripping", async () => {
@@ -163,10 +240,10 @@ describe("feishu user-facing card outbound", () => {
     const content = JSON.parse(body.content) as {
       elements: Array<{ tag: string; content: string }>;
     };
-    expect(content.elements[0]?.content).toContain(
-      '`&lt;at user_id="ou_tester"&gt;tester&lt;/at&gt;`',
-    );
-    expect(content.elements[0]?.content).toContain("`&lt;at&gt;`");
+    expect(content.elements[0]?.content).toContain("【📊 R19 大版本升级验证报告】");
+    expect(content.elements[0]?.content).toContain('发送 ＜at user_id="ou_tester"＞tester＜/at＞');
+    expect(content.elements[0]?.content).toContain("History text 显示 @tester");
     expect(content.elements[0]?.content).not.toContain("<at id=ou_tester></at>");
+    expect(content.elements[0]?.content).not.toContain("`");
   });
 });
