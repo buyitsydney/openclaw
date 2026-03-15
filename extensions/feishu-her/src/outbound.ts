@@ -675,16 +675,19 @@ export async function sendFeishuUserFacingCardDetailed(params: {
   text: string;
   replyToMessageId?: string;
 }): Promise<FeishuSentMessageRef | undefined> {
-  const displayText = renderFeishuUserFacingCardText(params.text, params.account);
-  assertNoForbiddenOpenPlatformUrls(displayText);
+  const version = params.account.config.cardStreamVersion ?? "v1";
+  // URL check on raw text (pre-render not needed for the check).
+  assertNoForbiddenOpenPlatformUrls(params.text);
   const stream = await createFeishuCardStream({
     account: params.account,
     chatId: params.chatId,
     replyToMessageId: params.replyToMessageId,
+    version,
   });
   if (!stream.started || !stream.messageId) return undefined;
-  await stream.sendFinal(displayText);
-  await stream.finalize(displayText);
+  // Pass raw text — stream.sendFinal renders it through the correct V1/V2 renderer.
+  await stream.sendFinal(params.text);
+  await stream.finalize(params.text);
   stream.stop();
   return stream.message;
 }

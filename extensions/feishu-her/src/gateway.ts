@@ -128,6 +128,8 @@ function inferContentType(filePath: string): string | undefined {
   return map[ext] ?? "application/octet-stream";
 }
 
+const HER_DEFAULT_REASONING: ReasoningLevel = "stream";
+
 function resolveEffectiveReasoningMode(params: {
   cleanText: string;
   storePath: string;
@@ -142,7 +144,19 @@ function resolveEffectiveReasoningMode(params: {
   const persistedRaw = store[params.sessionKey]?.reasoningLevel;
   const persistedReasoning =
     typeof persistedRaw === "string" ? normalizeReasoningLevel(persistedRaw) : undefined;
-  return persistedReasoning ?? "stream";
+
+  // Pre-seed default so upstream directive handling also sees it
+  // (upstream defaults to "off" when reasoningLevel is absent).
+  if (!persistedReasoning && store[params.sessionKey]) {
+    store[params.sessionKey].reasoningLevel = HER_DEFAULT_REASONING;
+    try {
+      writeFileSync(params.storePath, JSON.stringify(store, null, 2));
+    } catch {
+      // best-effort; upstream will still get the correct value next time
+    }
+  }
+
+  return persistedReasoning ?? HER_DEFAULT_REASONING;
 }
 
 // ── Anthropic Max quota probe ────────────────────────────────────────────
@@ -1972,7 +1986,10 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     storePath,
     sessionKey: route.sessionKey,
   });
-  const sharedCardStreamingEnabled = !isGroup && !isCommand && effectiveReasoningMode !== "on";
+  // Card streaming is enabled for both private and group chats (V2 readback relies on local cache).
+  // Disabled for commands (/new, /reset etc.) which have their own response flow,
+  // and for reasoning=on mode which needs separate bubble delivery.
+  const sharedCardStreamingEnabled = !isCommand && effectiveReasoningMode !== "on";
 
   // ── Card stream for typing / typewriter effect ──
   // Skip for commands (/new, /reset etc.) which have their own response flow.
