@@ -2053,14 +2053,35 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       cardStream.update(full);
     });
 
-  const updateReasoningCardStream = (text?: string) =>
-    queueCardStreamUpdate(async () => {
-      if (!text || !cardStream?.started) return;
-      // Flush reasoning immediately so the first visible card frame is the
-      // reasoning preview, even if answer partials arrive in the same throttle window.
-      cardStream.update(text);
-      await cardStream.flush();
-    });
+  // Reasoning stream: send as a separate standalone message above the answer card.
+  // This avoids the visual jumping when reasoning and answer share the same card.
+  // The reasoning message stays visible above; the answer card streams independently below.
+  let reasoningMessageSent = false;
+  let lastReasoningText = "";
+  const sendReasoningAsStandaloneMessage = async (text?: string) => {
+    if (!text) return;
+    lastReasoningText = text;
+    // Only send the reasoning message once (first chunk). Subsequent chunks
+    // are accumulated but not re-sent — the full reasoning appears in the
+    // final deliver callback (isReasoningPayload path) as a separate bubble.
+    if (reasoningMessageSent) return;
+    reasoningMessageSent = true;
+    try {
+      await deliverFeishuReply({
+        payload: { text: `Reasoning:\n${text}` },
+        account,
+        chatId,
+        isGroup,
+        replyToMessageId: isGroup ? messageId : undefined,
+        log,
+        setStatus,
+        config,
+        core,
+      });
+    } catch (err) {
+      log?.error(`[${account.accountId}] reasoning standalone send failed: ${String(err)}`);
+    }
+  };
 
   const stopCardStream = async () => {
     if (!cardStream?.started) return;
@@ -2233,14 +2254,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         : undefined,
       onReasoningStream:
         sharedCardStreamingEnabled && effectiveReasoningMode === "stream"
-          ? (payload) => updateReasoningCardStream(payload.text)
-          : undefined,
-      onReasoningEnd:
-        sharedCardStreamingEnabled && effectiveReasoningMode === "stream"
-          ? () => {
-              // Shared-card reasoning preview is transient only; the next answer
-              // partial or final payload naturally replaces it.
-            }
+          ? (payload) => sendReasoningAsStandaloneMessage(payload.text)
           : undefined,
     },
   });
