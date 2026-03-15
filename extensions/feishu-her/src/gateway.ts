@@ -17,6 +17,12 @@ import type {
   OpenClawConfig,
   RuntimeEnv,
 } from "openclaw/plugin-sdk";
+import {
+  extractReasoningDirective,
+  type ReasoningLevel,
+} from "../../../src/auto-reply/reply/directives.js";
+import { normalizeReasoningLevel } from "../../../src/auto-reply/thinking.js";
+import { readSessionStoreJson5 } from "../../../src/infra/state-migrations.fs.js";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { resolveGroupOwnerIds } from "./accounts.js";
 import { buildDriveFileContextFromText } from "./drive-file-read.js";
@@ -120,6 +126,23 @@ function inferContentType(filePath: string): string | undefined {
     ".zip": "application/zip",
   };
   return map[ext] ?? "application/octet-stream";
+}
+
+function resolveEffectiveReasoningMode(params: {
+  cleanText: string;
+  storePath: string;
+  sessionKey: string;
+}): ReasoningLevel {
+  const inlineReasoning = extractReasoningDirective(params.cleanText).reasoningLevel;
+  if (inlineReasoning) {
+    return inlineReasoning;
+  }
+
+  const { store } = readSessionStoreJson5(params.storePath);
+  const persistedRaw = store[params.sessionKey]?.reasoningLevel;
+  const persistedReasoning =
+    typeof persistedRaw === "string" ? normalizeReasoningLevel(persistedRaw) : undefined;
+  return persistedReasoning ?? "off";
 }
 
 // ── Anthropic Max quota probe ────────────────────────────────────────────
@@ -1806,6 +1829,13 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       log?.error(`feishu: failed updating session meta: ${String(err)}`);
     });
 
+  const effectiveReasoningMode = resolveEffectiveReasoningMode({
+    cleanText,
+    storePath,
+    sessionKey: route.sessionKey,
+  });
+  const sharedCardStreamingEnabled = !isGroup && !isCommand && effectiveReasoningMode !== "on";
+
   // ── Card stream for typing / typewriter effect ──
   // Skip for commands (/new, /reset etc.) which have their own response flow.
   let cardStream: FeishuCardStream | undefined;
@@ -1813,7 +1843,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // onReplyStart: create the card stream when the AI actually starts processing
   // (after session lane queuing — never fires for queued messages).
   const startCardStream = async () => {
-    if (isCommand || cardStream) return;
+    if (!sharedCardStreamingEnabled || cardStream) return;
     try {
       cardStream = await createFeishuCardStream({
         account,
@@ -1840,25 +1870,45 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   let cardStreamFinalText = "";
   let groupAccumulatedText = "";
   let groupAccumulatedReplyToId: string | undefined;
+  let cardStreamUpdateChain: Promise<void> = Promise.resolve();
 
-  const updateCardStream = (text?: string) => {
-    if (!text || !cardStream?.started) return;
-    // Detect paragraph boundary: if text doesn't start with the previous partial,
-    // it means deltaBuffer was reset (new assistant message). Freeze the previous
-    // paragraph into the prefix.
-    if (cardStreamLastPartial && !text.startsWith(cardStreamLastPartial)) {
-      cardStreamPrefix = cardStreamPrefix
-        ? cardStreamPrefix + "\n\n" + cardStreamLastPartial
-        : cardStreamLastPartial;
-    }
-    cardStreamLastPartial = text;
-    // Combine finished paragraphs with the current in-progress paragraph.
-    const full = cardStreamPrefix ? cardStreamPrefix + "\n\n" + text : text;
-    cardStream.update(full);
+  const queueCardStreamUpdate = (op: () => Promise<void> | void) => {
+    const next = cardStreamUpdateChain.then(async () => {
+      await op();
+    });
+    cardStreamUpdateChain = next.catch(() => {});
+    return next;
   };
+
+  const updateCardStream = (text?: string) =>
+    queueCardStreamUpdate(() => {
+      if (!text || !cardStream?.started) return;
+      // Detect paragraph boundary: if text doesn't start with the previous partial,
+      // it means deltaBuffer was reset (new assistant message). Freeze the previous
+      // paragraph into the prefix.
+      if (cardStreamLastPartial && !text.startsWith(cardStreamLastPartial)) {
+        cardStreamPrefix = cardStreamPrefix
+          ? cardStreamPrefix + "\n\n" + cardStreamLastPartial
+          : cardStreamLastPartial;
+      }
+      cardStreamLastPartial = text;
+      // Combine finished paragraphs with the current in-progress paragraph.
+      const full = cardStreamPrefix ? cardStreamPrefix + "\n\n" + text : text;
+      cardStream.update(full);
+    });
+
+  const updateReasoningCardStream = (text?: string) =>
+    queueCardStreamUpdate(async () => {
+      if (!text || !cardStream?.started) return;
+      // Flush reasoning immediately so the first visible card frame is the
+      // reasoning preview, even if answer partials arrive in the same throttle window.
+      cardStream.update(text);
+      await cardStream.flush();
+    });
 
   const stopCardStream = async () => {
     if (!cardStream?.started) return;
+    await cardStreamUpdateChain;
     // 1. Stop accepting new updates and cancel any scheduled timer.
     //    This prevents stray delayed flushes from firing after finalize.
     cardStream.stop();
@@ -1873,9 +1923,13 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   };
 
   // Dispatch through the auto-reply pipeline and deliver response.
-  // Strategy: onPartialReply drives the card typewriter (streaming display).
-  // deliver only accumulates text for finalize — it does NOT update the card,
-  // because onPartialReply already streamed the same content.
+  // Strategy:
+  // - reasoning=stream: onReasoningStream previews reasoning on the shared DM card.
+  // - reasoning=off: onPartialReply drives the answer typewriter effect.
+  // - reasoning=on: shared-card typewriter is disabled so final reasoning and answer
+  //   keep their deterministic final-message order.
+  // - deliver only accumulates final answer text for finalize; it does NOT update
+  //   the card because live callbacks already streamed the visible content.
   //
   // Media dedup: when AI manually calls TTS, the tool result contains a MEDIA: path.
   // AI often echoes the same MEDIA: path in its final text reply. Without dedup,
@@ -1883,11 +1937,28 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // `filterMessagingToolDuplicates` (text dedup) in core reply-payloads.ts.
   // Preferred mode: tts.auto = "inbound" — system handles TTS, no AI echo, no dedup needed.
   const sentMediaUrls = new Set<string>();
+
+  // Track whether deliver has fired so cleanup waits for lane-queued messages
+  // whose deliver callback fires AFTER dispatchReplyWithBufferedBlockDispatcher
+  // returns (fire-and-forget for queued messages).
+  let deliverFired = false;
+  let resolveDeliverGate: (() => void) | undefined;
+  const deliverGate = new Promise<void>((r) => {
+    resolveDeliverGate = r;
+  });
+
   await core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
     ctx: ctxPayload,
     cfg: config,
     dispatcherOptions: {
       deliver: async (payload, info) => {
+        if (!deliverFired) {
+          deliverFired = true;
+          // Lazily ensure card stream + ACK exist for lane-queued messages
+          // whose onReplyStart may have fired before the lane wait (and whose
+          // handler cleanup already ran the first time dispatch returned).
+          await Promise.all([addAckReaction(), startCardStream()]);
+        }
         // Filter already-delivered media (same pattern as filterMessagingToolDuplicates for text).
         const rawMediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
         const mediaUrls = rawMediaUrls.filter((u) => !sentMediaUrls.has(u));
@@ -1899,9 +1970,15 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           `[${account.accountId}] deliver: kind=${info.kind} hasText=${!!payload.text} textLen=${payload.text?.length ?? 0} hasMedia=${hasMedia}${skippedMedia > 0 ? ` (skipped ${skippedMedia} duplicate media)` : ""}`,
         );
 
+        const isReasoningPayload =
+          payload.isReasoning === true ||
+          (typeof payload.text === "string" &&
+            info.kind === "block" &&
+            payload.text.trimStart().startsWith("Reasoning:"));
+
         // Group chats without card stream: accumulate text and send as a single
         // message after the full turn completes, avoiding fragmented bubbles.
-        if (isGroup && !cardStream?.started && payload.text) {
+        if (isGroup && !cardStream?.started && payload.text && !isReasoningPayload) {
           const payloadReplyToId =
             typeof payload.replyToId === "string" ? payload.replyToId.trim() : "";
           if (payloadReplyToId && !groupAccumulatedReplyToId) {
@@ -1925,19 +2002,18 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
               core,
             });
           }
+          if (info.kind === "final") resolveDeliverGate?.();
           return;
         }
 
         if (cardStream?.started && payload.text) {
-          const isReasoningBlock =
-            info.kind === "block" && payload.text.trimStart().startsWith("Reasoning:");
           const isVerboseTool = info.kind === "tool";
 
           log?.info(
-            `[${account.accountId}] deliver: card-stream check: kind=${info.kind} isReasoning=${isReasoningBlock} isVerbose=${isVerboseTool} textPrefix="${payload.text.slice(0, 60).replace(/\n/g, "\\n")}"`,
+            `[${account.accountId}] deliver: card-stream check: kind=${info.kind} isReasoning=${isReasoningPayload} isVerbose=${isVerboseTool} textPrefix="${payload.text.slice(0, 60).replace(/\n/g, "\\n")}"`,
           );
 
-          if (!isReasoningBlock && !isVerboseTool) {
+          if (!isReasoningPayload && !isVerboseTool) {
             cardStreamFinalText = cardStreamFinalText
               ? cardStreamFinalText + "\n\n" + payload.text
               : payload.text;
@@ -1959,11 +2035,12 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
                 core,
               });
             }
+            if (info.kind === "final") resolveDeliverGate?.();
             return;
           }
 
           log?.info(
-            `[${account.accountId}] deliver: bypassing card accumulation for ${isReasoningBlock ? "reasoning" : "verbose tool"} (kind=${info.kind})`,
+            `[${account.accountId}] deliver: bypassing card accumulation for ${isReasoningPayload ? "reasoning" : "verbose tool"} (kind=${info.kind})`,
           );
         }
 
@@ -1979,6 +2056,8 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           config,
           core,
         });
+
+        if (info.kind === "final") resolveDeliverGate?.();
       },
       onError: (err, info) => {
         log?.error(`[${account.accountId}] Feishu ${info.kind} reply failed: ${String(err)}`);
@@ -1990,11 +2069,37 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     },
     replyOptions: {
       // Disable block streaming when card stream is active (non-command messages).
-      // onPartialReply exclusively drives the card typewriter effect.
+      // For reasoning=on we intentionally skip shared-card typewriter updates so
+      // the final reasoning payload can stay ahead of the final answer.
       disableBlockStreaming: !isCommand,
-      onPartialReply: !isCommand ? (payload) => updateCardStream(payload.text) : undefined,
+      onPartialReply: sharedCardStreamingEnabled
+        ? (payload) => updateCardStream(payload.text)
+        : undefined,
+      onReasoningStream:
+        sharedCardStreamingEnabled && effectiveReasoningMode === "stream"
+          ? (payload) => updateReasoningCardStream(payload.text)
+          : undefined,
+      onReasoningEnd:
+        sharedCardStreamingEnabled && effectiveReasoningMode === "stream"
+          ? () => {
+              // Shared-card reasoning preview is transient only; the next answer
+              // partial or final payload naturally replaces it.
+            }
+          : undefined,
     },
   });
+
+  // For lane-queued messages the dispatch may return before deliver fires.
+  // Wait (with safety timeout) so cleanup doesn't race ahead of delivery.
+  // Also bail out immediately when the gateway is shutting down (abort).
+  if (!deliverFired) {
+    const abortP = new Promise<void>((resolve) => {
+      if (abortSignal.aborted) return resolve();
+      abortSignal.addEventListener("abort", () => resolve(), { once: true });
+    });
+    await Promise.race([deliverGate, abortP, new Promise<void>((r) => setTimeout(r, 180_000))]);
+  }
+
   // Group chats: flush accumulated text as a single post message.
   if (isGroup && groupAccumulatedText) {
     const footer = buildFeishuStatusFooter({ storePath, sessionKey: route.sessionKey, config });
