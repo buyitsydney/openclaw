@@ -31,6 +31,8 @@ Config 开关：`channels.feishu.cardStreamVersion`（`"v1"` 默认，`"v2"` 可
 
 **V2 唯一优于 V1 的能力是 markdown 渲染（标题/表格/引用块/打字机动画）。** V1 的 `tag:"markdown"` 不支持标题渲染（显示 `#` 原文）、不支持表格渲染（显示管道符原文）、不支持引用块（显示 `>` 原文）。当前代码通过 `normalizeFeishuCardMarkdown` 将这些语法降级为 V1 可渲染的格式（标题→粗体、表格→列表、引用→全角竖线）。
 
+**V1 表格优化方案（待实现）：** 飞书 V1 卡片（JSON 1.0）支持独立的 `table` 组件（`tag: "table"`），要求飞书客户端 7.4+（https://open.feishu.cn/document/feishu-cards/card-components/content-components/table ）。该组件是与 `tag: "markdown"` 并列的顶层元素，渲染效果与 V2 表格一致（真实表格 UI，支持表头样式、列宽、数据类型）。优化方案：在 `normalizeFeishuCardMarkdown` 中检测 markdown 表格语法，将其从 markdown 文本中提取出来，转换为独立的 `{tag: "table", columns: [...], rows: [...]}` 元素，与 markdown 文本元素并列放入卡片的 `elements` 数组。这样 V1 卡片就能拥有接近 V2 的表格渲染效果，同时保持 API 可读性和转发兼容性。
+
 ### 当前冻结约束（2026-03-14）
 
 - **唯一 canonical message 层**：`extensions/feishu-her/src/feishu-message.ts`
