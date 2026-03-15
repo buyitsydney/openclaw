@@ -2053,35 +2053,11 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       cardStream.update(full);
     });
 
-  // Reasoning stream: send as a separate standalone message above the answer card.
-  // This avoids the visual jumping when reasoning and answer share the same card.
-  // The reasoning message stays visible above; the answer card streams independently below.
-  let reasoningMessageSent = false;
-  let lastReasoningText = "";
-  const sendReasoningAsStandaloneMessage = async (text?: string) => {
-    if (!text) return;
-    lastReasoningText = text;
-    // Only send the reasoning message once (first chunk). Subsequent chunks
-    // are accumulated but not re-sent — the full reasoning appears in the
-    // final deliver callback (isReasoningPayload path) as a separate bubble.
-    if (reasoningMessageSent) return;
-    reasoningMessageSent = true;
-    try {
-      await deliverFeishuReply({
-        payload: { text: `Reasoning:\n${text}` },
-        account,
-        chatId,
-        isGroup,
-        replyToMessageId: isGroup ? messageId : undefined,
-        log,
-        setStatus,
-        config,
-        core,
-      });
-    } catch (err) {
-      log?.error(`[${account.accountId}] reasoning standalone send failed: ${String(err)}`);
-    }
-  };
+  // Reasoning stream mode: do NOT use onReasoningStream callback.
+  // The deliver callback already handles reasoning payloads correctly:
+  // isReasoningPayload=true → bypasses card accumulation → sent as standalone message.
+  // This gives the same visual result as /reasoning on (separate bubble above answer card)
+  // without the shared-card visual jumping that onReasoningStream caused.
 
   const stopCardStream = async () => {
     if (!cardStream?.started) return;
@@ -2252,10 +2228,10 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       onPartialReply: sharedCardStreamingEnabled
         ? (payload) => updateCardStream(payload.text)
         : undefined,
-      onReasoningStream:
-        sharedCardStreamingEnabled && effectiveReasoningMode === "stream"
-          ? (payload) => sendReasoningAsStandaloneMessage(payload.text)
-          : undefined,
+      // reasoning=stream: reasoning payloads go through deliver callback as standalone
+      // messages (same as reasoning=on). No onReasoningStream needed — avoids the
+      // shared-card visual jumping where reasoning and answer overwrite each other.
+      onReasoningStream: undefined,
     },
   });
 
