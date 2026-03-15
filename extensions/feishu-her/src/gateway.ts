@@ -857,9 +857,11 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
       // Return immediately so the SDK sends the ACK frame within milliseconds.
       // Without this, Feishu's ~3-5s ACK timeout expires before the AI finishes
       // processing (6-27s observed), causing Feishu to retry at +15s/+5m/+1h/+6h.
-      void handleInboundMessage(data, { account, config, log, setStatus, core }).catch((err) => {
-        log?.error(`[${account.accountId}] error handling message: ${String(err)}`);
-      });
+      void handleInboundMessage(data, { account, config, abortSignal, log, setStatus, core }).catch(
+        (err) => {
+          log?.error(`[${account.accountId}] error handling message: ${String(err)}`);
+        },
+      );
     },
   });
 
@@ -1074,6 +1076,7 @@ export function buildCurrentGroupReplyRuleText(params: {
 type InboundDeps = {
   account: ResolvedFeishuAccount;
   config: OpenClawConfig;
+  abortSignal: AbortSignal;
   log?: ChannelLogSink;
   setStatus: (patch: Partial<ChannelAccountSnapshot>) => void;
   core: ReturnType<typeof getFeishuRuntime>;
@@ -1118,7 +1121,7 @@ export function buildFeishuInboundIdentity(params: {
 
 // oxlint-disable-next-line typescript/no-explicit-any
 async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void> {
-  const { account, config, log, setStatus, core } = deps;
+  const { account, config, abortSignal, log, setStatus, core } = deps;
   const message = data.message;
   const sender = data.sender;
 
