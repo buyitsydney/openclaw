@@ -2053,11 +2053,14 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       cardStream.update(full);
     });
 
-  // Reasoning stream mode: do NOT use onReasoningStream callback.
-  // The deliver callback already handles reasoning payloads correctly:
-  // isReasoningPayload=true → bypasses card accumulation → sent as standalone message.
-  // This gives the same visual result as /reasoning on (separate bubble above answer card)
-  // without the shared-card visual jumping that onReasoningStream caused.
+  const updateReasoningCardStream = (text?: string) =>
+    queueCardStreamUpdate(async () => {
+      if (!text || !cardStream?.started) return;
+      // Flush reasoning immediately so the first visible card frame is the
+      // reasoning preview, even if answer partials arrive in the same throttle window.
+      cardStream.update(text);
+      await cardStream.flush();
+    });
 
   const stopCardStream = async () => {
     if (!cardStream?.started) return;
@@ -2221,17 +2224,24 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       },
     },
     replyOptions: {
-      // Disable block streaming when card stream is active, EXCEPT when reasoning=stream.
-      // reasoning=stream needs block delivery so reasoning payloads arrive as separate
-      // blocks (kind=block, isReasoning=true) and get sent as standalone messages.
-      disableBlockStreaming: !isCommand && effectiveReasoningMode !== "stream",
+      // Disable block streaming when card stream is active (non-command messages).
+      // For reasoning=on we intentionally skip shared-card typewriter updates so
+      // the final reasoning payload can stay ahead of the final answer.
+      disableBlockStreaming: !isCommand,
       onPartialReply: sharedCardStreamingEnabled
         ? (payload) => updateCardStream(payload.text)
         : undefined,
-      // reasoning=stream: reasoning payloads go through deliver callback as standalone
-      // messages (same as reasoning=on). No onReasoningStream needed — avoids the
-      // shared-card visual jumping where reasoning and answer overwrite each other.
-      onReasoningStream: undefined,
+      onReasoningStream:
+        sharedCardStreamingEnabled && effectiveReasoningMode === "stream"
+          ? (payload) => updateReasoningCardStream(payload.text)
+          : undefined,
+      onReasoningEnd:
+        sharedCardStreamingEnabled && effectiveReasoningMode === "stream"
+          ? () => {
+              // Shared-card reasoning preview is transient only; the next answer
+              // partial or final payload naturally replaces it.
+            }
+          : undefined,
     },
   });
 
