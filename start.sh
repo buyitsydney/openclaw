@@ -165,19 +165,29 @@ fi
 echo -e "${GREEN}  ✓ Live Frontend Python 依赖${NC}"
 echo ""
 
-# 使用官方 gateway stop 路径，确保 unmanaged 本地进程会正确释放锁文件。
+# 停止旧进程：直接 kill（不用 gateway stop，它会卡死）+ 清 lock 文件。
 echo -e "${YELLOW}[2/5] 停止旧进程...${NC}"
 export OPENCLAW_GATEWAY_PORT="$GATEWAY_PORT"
-if [ -n "$(listener_pids "$GATEWAY_PORT")" ]; then
-  node dist/index.js gateway stop >/dev/null
-  if ! wait_for_port_free "$GATEWAY_PORT" "$GATEWAY_STOP_TIMEOUT_SEC"; then
+GW_LOCK_DIR="$(node -e "const os=require('os'),p=require('path');console.log(p.join(os.tmpdir(),'openclaw-'+(process.getuid?.()??'')))" 2>/dev/null)"
+OLD_PIDS="$(listener_pids "$GATEWAY_PORT")"
+if [ -n "$OLD_PIDS" ]; then
+  echo "$OLD_PIDS" | xargs kill 2>/dev/null || true
+  if ! wait_for_port_free "$GATEWAY_PORT" 5; then
+    echo "$OLD_PIDS" | xargs kill -9 2>/dev/null || true
+    sleep 1
+  fi
+  if [ -n "$(listener_pids "$GATEWAY_PORT")" ]; then
     LISTENERS=$(listener_pids "$GATEWAY_PORT" | tr '\n' ' ')
-    echo -e "${RED}  ✗ Gateway 端口 ${GATEWAY_PORT} 未在 ${GATEWAY_STOP_TIMEOUT_SEC}s 内释放: ${LISTENERS}${NC}"
+    echo -e "${RED}  ✗ Gateway 端口 ${GATEWAY_PORT} 未在超时内释放: ${LISTENERS}${NC}"
     exit 1
   fi
   echo -e "${GREEN}  ✓ 已停止旧 Gateway${NC}"
 else
   echo -e "  ℹ 没有旧进程"
+fi
+if [ -n "$GW_LOCK_DIR" ] && [ -d "$GW_LOCK_DIR" ]; then
+  rm -f "$GW_LOCK_DIR"/gateway.*.lock 2>/dev/null
+  echo -e "${GREEN}  ✓ Gateway lock 已清理${NC}"
 fi
 
 # 等待进程完全退出

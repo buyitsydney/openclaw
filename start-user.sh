@@ -720,7 +720,7 @@ echo -e "${GREEN}  ✓ 容器已启动${NC}"
 #   2. Gateway port responds (not just the frontend proxy)
 #   3. Feishu WebSocket connected
 echo -e "${YELLOW}等待容器就绪...${NC}"
-MAX_WAIT=60
+MAX_WAIT=90
 WAITED=0
 GW_READY=false
 FEISHU_READY=false
