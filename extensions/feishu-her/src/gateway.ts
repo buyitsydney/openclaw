@@ -2221,10 +2221,10 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       },
     },
     replyOptions: {
-      // Disable block streaming when card stream is active (non-command messages).
-      // For reasoning=on we intentionally skip shared-card typewriter updates so
-      // the final reasoning payload can stay ahead of the final answer.
-      disableBlockStreaming: !isCommand,
+      // Disable block streaming when card stream is active, EXCEPT when reasoning=stream.
+      // reasoning=stream needs block delivery so reasoning payloads arrive as separate
+      // blocks (kind=block, isReasoning=true) and get sent as standalone messages.
+      disableBlockStreaming: !isCommand && effectiveReasoningMode !== "stream",
       onPartialReply: sharedCardStreamingEnabled
         ? (payload) => updateCardStream(payload.text)
         : undefined,
