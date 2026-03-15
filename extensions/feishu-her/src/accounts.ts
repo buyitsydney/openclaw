@@ -24,6 +24,8 @@ export type FeishuAccountConfig = {
     /** Explicit owner open_ids for group chats. Falls back to dm.allowFrom if not set. */
     ownerIds?: string[];
   };
+  /** Card stream version: "v1" (inline card + patch, default) or "v2" (CardKit streaming). */
+  cardStreamVersion?: "v1" | "v2";
   [key: string]: unknown;
 };
 

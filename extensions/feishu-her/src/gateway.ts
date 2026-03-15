@@ -142,7 +142,7 @@ function resolveEffectiveReasoningMode(params: {
   const persistedRaw = store[params.sessionKey]?.reasoningLevel;
   const persistedReasoning =
     typeof persistedRaw === "string" ? normalizeReasoningLevel(persistedRaw) : undefined;
-  return persistedReasoning ?? "off";
+  return persistedReasoning ?? "stream";
 }
 
 // ── Anthropic Max quota probe ────────────────────────────────────────────
@@ -1987,6 +1987,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         account,
         chatId,
         replyToMessageId: messageId,
+        version: account.config.cardStreamVersion ?? "v1",
         log: (msg) => log?.info(`[${account.accountId}] ${msg}`),
         warn: (msg) => log?.error(`[${account.accountId}] ${msg}`),
       });
