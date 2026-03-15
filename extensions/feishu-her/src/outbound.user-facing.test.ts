@@ -187,7 +187,7 @@ describe("feishu user-facing card outbound", () => {
     expect(rendered).not.toMatch(/^>/m);
   });
 
-  it("converts markdown tables to code block with box-drawing characters", () => {
+  it("converts markdown tables to bold-header + bullet-list", () => {
     const rendered = renderFeishuUserFacingCardText(
       [
         "### 字段说明",
@@ -201,15 +201,11 @@ describe("feishu user-facing card outbound", () => {
     );
 
     expect(rendered).toContain("**字段说明**");
-    // Table converted to fenced code block with box-drawing chars
-    expect(rendered).toContain("```");
-    expect(rendered).toContain("┌");
-    expect(rendered).toContain("│");
-    expect(rendered).toContain("├");
-    expect(rendered).toContain("name");
-    expect(rendered).toContain("张三");
-    // No raw pipe table syntax
-    expect(rendered).not.toMatch(/^\| 字段 \| 说明/m);
+    expect(rendered).not.toContain("| 字段 | 说明 | 示例 |");
+    expect(rendered).toContain("**字段**");
+    expect(rendered).toContain("**说明**");
+    expect(rendered).toMatch(/- .*name.*用户名.*张三/);
+    expect(rendered).toMatch(/- .*age.*年龄.*25/);
   });
 
   it("strips backticks from table cells to prevent rendering collapse", () => {

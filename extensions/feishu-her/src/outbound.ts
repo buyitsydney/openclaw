@@ -512,71 +512,25 @@ function stripTableCellBackticks(cell: string): string {
     .replaceAll("`", "");
 }
 
-/** Convert a markdown table into a fenced code block with box-drawing characters.
- *  Renders as a visually aligned table in monospace font (V1 supports code blocks).
- *  100% readable via im.message.get, 100% forwardable. */
-function convertMarkdownTableToCodeBlock(tableLines: string[]): string {
+/** Convert a markdown table into bold-header + bullet-list format.
+ *  Feishu card `tag:"markdown"` can't render `| ... |` pipe tables.
+ *  Native `{tag:"table"}` component renders beautifully but degrades in API readback
+ *  and forwarding (same as V2). Box-drawing code blocks can't guarantee alignment
+ *  due to inconsistent emoji widths across clients.
+ *  Bold + bullets: always looks consistent, 100% API readable, 100% forwardable. */
+function convertMarkdownTableToFeishuList(tableLines: string[]): string {
   if (tableLines.length < 2) return tableLines.join("\n");
-  const headerCells = parseMarkdownTableRow(tableLines[0]).map(stripTableCellBackticks);
+  const headerCells = parseMarkdownTableRow(tableLines[0]);
   const dataStartIndex = MD_TABLE_SEPARATOR_RE.test(tableLines[1].trim()) ? 2 : 1;
+  const sep = " | ";
 
-  const dataRows: string[][] = [];
+  const headerLine = headerCells.map((h) => `**${stripTableCellBackticks(h)}**`).join(sep);
+  const rows: string[] = [headerLine];
   for (let i = dataStartIndex; i < tableLines.length; i++) {
-    dataRows.push(parseMarkdownTableRow(tableLines[i]).map(stripTableCellBackticks));
+    const cells = parseMarkdownTableRow(tableLines[i]).map(stripTableCellBackticks);
+    rows.push("- " + cells.join(sep));
   }
-
-  // Calculate column widths (account for CJK double-width chars)
-  const colWidths = headerCells.map((h, colIdx) => {
-    let max = displayWidth(h);
-    for (const row of dataRows) {
-      max = Math.max(max, displayWidth(row[colIdx] ?? ""));
-    }
-    return max;
-  });
-
-  const padCell = (text: string, width: number) => {
-    const w = displayWidth(text);
-    return text + " ".repeat(Math.max(0, width - w));
-  };
-
-  const top = "┌" + colWidths.map((w) => "─".repeat(w + 2)).join("┬") + "┐";
-  const mid = "├" + colWidths.map((w) => "─".repeat(w + 2)).join("┼") + "┤";
-  const bot = "└" + colWidths.map((w) => "─".repeat(w + 2)).join("┴") + "┘";
-
-  const formatRow = (cells: string[]) =>
-    "│" + cells.map((c, i) => ` ${padCell(c, colWidths[i])} `).join("│") + "│";
-
-  const lines = [top, formatRow(headerCells), mid];
-  for (const row of dataRows) {
-    const padded = colWidths.map((_, i) => row[i] ?? "");
-    lines.push(formatRow(padded));
-  }
-  lines.push(bot);
-  return "```\n" + lines.join("\n") + "\n```";
-}
-
-/** Calculate display width of a string (CJK chars = 2, others = 1). */
-function displayWidth(str: string): number {
-  let w = 0;
-  for (const ch of str) {
-    const code = ch.codePointAt(0) ?? 0;
-    // CJK Unified Ideographs, CJK Compatibility, Fullwidth, Hangul, Kana, etc.
-    if (
-      (code >= 0x2e80 && code <= 0x9fff) ||
-      (code >= 0xf900 && code <= 0xfaff) ||
-      (code >= 0xfe30 && code <= 0xfe6f) ||
-      (code >= 0xff01 && code <= 0xff60) ||
-      (code >= 0xffe0 && code <= 0xffe6) ||
-      (code >= 0xac00 && code <= 0xd7af) ||
-      (code >= 0x3040 && code <= 0x30ff) ||
-      (code >= 0x20000 && code <= 0x2fa1f)
-    ) {
-      w += 2;
-    } else {
-      w += 1;
-    }
-  }
-  return w;
+  return rows.join("\n");
 }
 
 /** Convert markdown table lines into a Feishu card `{tag: "table"}` element.
@@ -659,7 +613,7 @@ function normalizeFeishuCardMarkdown(markdown: string): string {
 
   const flushTable = () => {
     if (tableBuffer.length > 0) {
-      result.push(convertMarkdownTableToCodeBlock(tableBuffer));
+      result.push(convertMarkdownTableToFeishuList(tableBuffer));
       tableBuffer = [];
     }
   };
