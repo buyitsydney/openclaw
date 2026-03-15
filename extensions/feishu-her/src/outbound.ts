@@ -512,24 +512,110 @@ function stripTableCellBackticks(cell: string): string {
     .replaceAll("`", "");
 }
 
-/** Convert a markdown table into bold-header + bullet-list format.
- *  Feishu card `tag:"markdown"` can't render `| ... |` pipe tables (shown as
- *  raw text) or `<table>` tags (rendered as blank in bot cards).
- *  Using bold + bullets which are confirmed to render correctly.
- *  Also strips backticks from cells (unsupported → breaks rendering). */
-function convertMarkdownTableToFeishuList(tableLines: string[]): string {
+/** Convert a markdown table into a fenced code block with box-drawing characters.
+ *  Renders as a visually aligned table in monospace font (V1 supports code blocks).
+ *  100% readable via im.message.get, 100% forwardable. */
+function convertMarkdownTableToCodeBlock(tableLines: string[]): string {
   if (tableLines.length < 2) return tableLines.join("\n");
-  const headerCells = parseMarkdownTableRow(tableLines[0]);
+  const headerCells = parseMarkdownTableRow(tableLines[0]).map(stripTableCellBackticks);
   const dataStartIndex = MD_TABLE_SEPARATOR_RE.test(tableLines[1].trim()) ? 2 : 1;
-  const sep = " | ";
 
-  const headerLine = headerCells.map((h) => `**${stripTableCellBackticks(h)}**`).join(sep);
-  const rows: string[] = [headerLine];
+  const dataRows: string[][] = [];
   for (let i = dataStartIndex; i < tableLines.length; i++) {
-    const cells = parseMarkdownTableRow(tableLines[i]).map(stripTableCellBackticks);
-    rows.push("- " + cells.join(sep));
+    dataRows.push(parseMarkdownTableRow(tableLines[i]).map(stripTableCellBackticks));
   }
-  return rows.join("\n");
+
+  // Calculate column widths (account for CJK double-width chars)
+  const colWidths = headerCells.map((h, colIdx) => {
+    let max = displayWidth(h);
+    for (const row of dataRows) {
+      max = Math.max(max, displayWidth(row[colIdx] ?? ""));
+    }
+    return max;
+  });
+
+  const padCell = (text: string, width: number) => {
+    const w = displayWidth(text);
+    return text + " ".repeat(Math.max(0, width - w));
+  };
+
+  const top = "┌" + colWidths.map((w) => "─".repeat(w + 2)).join("┬") + "┐";
+  const mid = "├" + colWidths.map((w) => "─".repeat(w + 2)).join("┼") + "┤";
+  const bot = "└" + colWidths.map((w) => "─".repeat(w + 2)).join("┴") + "┘";
+
+  const formatRow = (cells: string[]) =>
+    "│" + cells.map((c, i) => ` ${padCell(c, colWidths[i])} `).join("│") + "│";
+
+  const lines = [top, formatRow(headerCells), mid];
+  for (const row of dataRows) {
+    const padded = colWidths.map((_, i) => row[i] ?? "");
+    lines.push(formatRow(padded));
+  }
+  lines.push(bot);
+  return "```\n" + lines.join("\n") + "\n```";
+}
+
+/** Calculate display width of a string (CJK chars = 2, others = 1). */
+function displayWidth(str: string): number {
+  let w = 0;
+  for (const ch of str) {
+    const code = ch.codePointAt(0) ?? 0;
+    // CJK Unified Ideographs, CJK Compatibility, Fullwidth, Hangul, Kana, etc.
+    if (
+      (code >= 0x2e80 && code <= 0x9fff) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe30 && code <= 0xfe6f) ||
+      (code >= 0xff01 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6) ||
+      (code >= 0xac00 && code <= 0xd7af) ||
+      (code >= 0x3040 && code <= 0x30ff) ||
+      (code >= 0x20000 && code <= 0x2fa1f)
+    ) {
+      w += 2;
+    } else {
+      w += 1;
+    }
+  }
+  return w;
+}
+
+/** Convert markdown table lines into a Feishu card `{tag: "table"}` element.
+ *  Feishu V1 cards (JSON 1.0) support a native table component (client 7.4+)
+ *  that renders as a real table UI, identical to V2 table rendering.
+ *  See: https://open.feishu.cn/document/feishu-cards/card-components/content-components/table */
+function convertMarkdownTableToFeishuTableElement(
+  tableLines: string[],
+): { tag: string; page_size: number; columns: object[]; rows: object[] } | null {
+  if (tableLines.length < 2) return null;
+  const headerCells = parseMarkdownTableRow(tableLines[0]);
+  if (headerCells.length === 0) return null;
+  const dataStartIndex = MD_TABLE_SEPARATOR_RE.test(tableLines[1].trim()) ? 2 : 1;
+
+  const columns = headerCells.map((header, i) => ({
+    name: `c${i}`,
+    display_name: stripTableCellBackticks(header),
+    data_type: "text" as const,
+    width: "auto" as const,
+  }));
+
+  const rows: Record<string, string>[] = [];
+  for (let i = dataStartIndex; i < tableLines.length; i++) {
+    const cells = parseMarkdownTableRow(tableLines[i]);
+    const row: Record<string, string> = {};
+    for (let j = 0; j < columns.length; j++) {
+      row[columns[j].name] = stripTableCellBackticks(cells[j] ?? "");
+    }
+    rows.push(row);
+  }
+
+  if (rows.length === 0) return null;
+
+  return {
+    tag: "table",
+    page_size: Math.min(rows.length, 10),
+    columns,
+    rows,
+  };
 }
 
 /** Convert markdown heading (`# ...`) to bold text with level distinction.
@@ -562,7 +648,7 @@ function convertBlockquote(line: string): string {
  *  NOT supported (must convert):
  *  - `# heading` → `**bold**`
  *  - `> blockquote` → `｜text` (fullwidth bar prefix)
- *  - `| table |` → bold-header + bullet-list
+ *  - `| table |` → fenced code block with box-drawing characters (monospace aligned)
  *
  *  Also: escape `<>` inside code regions to prevent tag interpretation. */
 function normalizeFeishuCardMarkdown(markdown: string): string {
@@ -573,7 +659,7 @@ function normalizeFeishuCardMarkdown(markdown: string): string {
 
   const flushTable = () => {
     if (tableBuffer.length > 0) {
-      result.push(convertMarkdownTableToFeishuList(tableBuffer));
+      result.push(convertMarkdownTableToCodeBlock(tableBuffer));
       tableBuffer = [];
     }
   };
@@ -1282,6 +1368,89 @@ function buildInlineCardJson(markdown: string): string {
     },
     elements: [{ tag: "markdown", content: markdown }],
   });
+}
+
+/** Build V1 inline card JSON with native table components.
+ *  Parses the normalized markdown for table blocks and replaces them with
+ *  `{tag: "table"}` elements, splitting surrounding text into separate
+ *  `{tag: "markdown"}` elements. Falls back to single markdown element
+ *  if no tables are found. */
+function buildInlineCardJsonWithTables(markdown: string): string {
+  const elements = buildMixedCardElements(markdown);
+  return JSON.stringify({
+    config: {
+      update_multi: true,
+      wide_screen_mode: true,
+    },
+    elements,
+  });
+}
+
+/** Split normalized markdown into mixed elements: {tag:"markdown"} + {tag:"table"}.
+ *  Table blocks (consecutive `| ... |` lines) are converted to native table components.
+ *  Text before/after/between tables becomes separate markdown elements. */
+function buildMixedCardElements(markdown: string): object[] {
+  const lines = markdown.split("\n");
+  const elements: object[] = [];
+  let textBuffer: string[] = [];
+  let tableBuffer: string[] = [];
+  let inFence = false;
+
+  const flushText = () => {
+    const text = textBuffer.join("\n").trim();
+    if (text) {
+      elements.push({ tag: "markdown", content: text });
+    }
+    textBuffer = [];
+  };
+
+  const flushTable = () => {
+    if (tableBuffer.length < 2) {
+      // Not a valid table, treat as text
+      textBuffer.push(...tableBuffer);
+      tableBuffer = [];
+      return;
+    }
+    const tableElement = convertMarkdownTableToFeishuTableElement(tableBuffer);
+    if (tableElement) {
+      flushText();
+      elements.push(tableElement);
+    } else {
+      // Conversion failed, keep as text
+      textBuffer.push(...tableBuffer);
+    }
+    tableBuffer = [];
+  };
+
+  for (const line of lines) {
+    if (line.trimStart().startsWith("```")) {
+      flushTable();
+      inFence = !inFence;
+      textBuffer.push(line);
+      continue;
+    }
+    if (inFence) {
+      textBuffer.push(line);
+      continue;
+    }
+    if (
+      isMarkdownTableRow(line) ||
+      (tableBuffer.length > 0 && MD_TABLE_SEPARATOR_RE.test(line.trim()))
+    ) {
+      tableBuffer.push(line);
+      continue;
+    }
+    flushTable();
+    textBuffer.push(line);
+  }
+  flushTable();
+  flushText();
+
+  // Always return at least one element
+  if (elements.length === 0) {
+    elements.push({ tag: "markdown", content: markdown });
+  }
+  return elements;
 }
 
 const NOOP_STREAM: FeishuCardStream = {
