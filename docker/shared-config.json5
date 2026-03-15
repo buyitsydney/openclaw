@@ -89,6 +89,9 @@
     feishu: {
       enabled: true,
       groups: { enabled: true, archive: true },
+      // "v1" = inline card + im.message.patch (safe, readable via API)
+      // "v2" = CardKit streaming (typewriter animation, full markdown, requires local cache for readback)
+      cardStreamVersion: "v1",
     },
   },
 }
