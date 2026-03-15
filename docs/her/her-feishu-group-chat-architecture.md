@@ -2,6 +2,35 @@
 
 状态：**已进入统一 contract 阶段**。截至 2026-03-14，本地 Her + `docker1 tester` 的飞书链路不再允许各处各自猜 sender，也不再允许用户可见文本在 `text` / `post` / `interactive` 三种出站里漂移。
 
+### 卡片版本决策（2026-03-15 最终结论：V1 inline card）
+
+**结论：私聊和群聊统一使用 V1 inline card + `im.message.patch` 流式方案。不使用 V2 CardKit。**
+
+Config 开关：`channels.feishu.cardStreamVersion`（`"v1"` 默认，`"v2"` 可选但不推荐）。代码同时保留 V1 和 V2 两套实现，修改 config 即可一键切换。
+
+**为什么选 V1、放弃 V2：**
+
+经过完整的实验验证（V2 CardKit entity 创建/发送/流式/readback/PATCH 可行性），确认以下飞书平台硬限制：
+
+1. **V2 CardKit 卡片 `im.message.get` 回读返回 "请升级至最新版本客户端"**，0% 内容可恢复。CardKit API 没有任何 GET 端点可以读取卡片内容。
+2. **V2 卡片的 `summary.content` 字段在 `im.message.get` 回读中也不可见**（2026-03-15 实测确认）。
+3. **`im.message.patch` 无法将 V2 card-entity 消息替换为 V1 inline card**（飞书返回 `230099: schemaV2 card can not change schemaV1`）。
+4. **V2 JSON 直接作为 inline 内容发送（不通过 card entity）也同样降级**（只要 JSON 含 `schema: "2.0"`）。
+
+这些限制导致 V2 卡片在以下场景不可用：
+
+| 场景                            | V1      | V2                      |
+| ------------------------------- | ------- | ----------------------- |
+| 用户把私聊消息转发到群聊        | ✅ 可读 | ❌ "请升级"             |
+| 用户把群聊消息转发到私聊        | ✅ 可读 | ❌ "请升级"             |
+| Bot A 读取 Bot B 在群里发的卡片 | ✅ 可读 | ❌ "请升级"             |
+| 群聊 history API / 动态注入     | ✅ 可读 | ❌ 仅发送方本地缓存可读 |
+| 被引用的卡片内容回读            | ✅ 可读 | ❌ 仅发送方本地缓存可读 |
+
+**飞书是用来聊天的，信息的流通性（转发、跨 bot、history）远比视觉美观重要。** 如果用户需要精美排版（表格、标题层级），应该让 Her 生成飞书文档并分享链接。
+
+**V2 唯一优于 V1 的能力是 markdown 渲染（标题/表格/引用块/打字机动画）。** V1 的 `tag:"markdown"` 不支持标题渲染（显示 `#` 原文）、不支持表格渲染（显示管道符原文）、不支持引用块（显示 `>` 原文）。当前代码通过 `normalizeFeishuCardMarkdown` 将这些语法降级为 V1 可渲染的格式（标题→粗体、表格→列表、引用→全角竖线）。
+
 ### 当前冻结约束（2026-03-14）
 
 - **唯一 canonical message 层**：`extensions/feishu-her/src/feishu-message.ts`
