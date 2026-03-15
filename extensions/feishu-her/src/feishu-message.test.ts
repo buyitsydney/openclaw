@@ -15,6 +15,11 @@ const account: ResolvedFeishuAccount = {
   knownBots: {
     cli_tester: "tester",
   },
+  knownBotOpenIds: {
+    ou_her_open: "cli_her",
+    ou_tester_open: "cli_tester",
+  },
+  botOpenId: "ou_her_open",
   enabled: true,
   appId: "cli_her",
   appSecret: "sec_her",
@@ -24,6 +29,11 @@ const account: ResolvedFeishuAccount = {
     knownBots: {
       cli_tester: "tester",
     },
+    knownBotOpenIds: {
+      ou_her_open: "cli_her",
+      ou_tester_open: "cli_tester",
+    },
+    botOpenId: "ou_her_open",
   },
 };
 
@@ -42,7 +52,7 @@ describe("feishu actor identity", () => {
       senderType: "app",
       actorKind: "bot",
       displayName: "her",
-      rawIds: { app_id: "cli_her" },
+      rawIds: { app_id: "cli_her", open_id: "ou_her_open" },
       resolutionSource: "config",
       resolved: true,
     });
@@ -63,6 +73,7 @@ describe("feishu actor identity", () => {
     expect(resolved.sender.displayName).toBe("her");
     expect(resolved.sender.canonicalId).toBe("cli_her");
     expect(resolved.sender.actorKind).toBe("bot");
+    expect(resolved.sender.rawIds.open_id).toBe("ou_her_open");
   });
 
   it("keeps human sender canonical ids while applying group display names", async () => {
@@ -130,6 +141,7 @@ describe("feishu actor identity", () => {
     expect(resolved.sender.displayName).toBe("tester");
     expect(resolved.sender.canonicalId).toBe("cli_tester");
     expect(resolved.sender.actorKind).toBe("bot");
+    expect(resolved.sender.rawIds.open_id).toBe("ou_tester_open");
   });
 
   it("keeps unknown bot app_ids stable instead of inventing a display name", async () => {
@@ -188,6 +200,7 @@ describe("feishu actor identity", () => {
     expect(resolved.mentions[0].actor.actorKind).toBe("bot");
     expect(resolved.mentions[0].actor.canonicalId).toBe("cli_tester");
     expect(resolved.mentions[0].actor.displayName).toBe("tester");
+    expect(resolved.mentions[0].actor.rawIds.open_id).toBe("ou_tester_open");
   });
 });
 

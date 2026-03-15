@@ -889,15 +889,156 @@ function stripInjectedStatusFooter(text: string): string {
   return stripFeishuStatusFooter(text);
 }
 
-function buildCurrentGroupReplyRuleText(params: {
+type FeishuBotIdentityPromptAccount = Pick<
+  ResolvedFeishuAccount,
+  "appId" | "accountId" | "name" | "knownBots" | "knownBotOpenIds" | "botOpenId"
+>;
+
+function resolveBotOpenIdForPrompt(
+  account: FeishuBotIdentityPromptAccount,
+  appId: string,
+): string | undefined {
+  const normalizedAppId = appId.trim();
+  if (!normalizedAppId) {
+    return undefined;
+  }
+  if (normalizedAppId === account.appId) {
+    const selfBotOpenId = account.botOpenId?.trim();
+    return selfBotOpenId || undefined;
+  }
+  for (const [openId, mappedAppId] of Object.entries(account.knownBotOpenIds ?? {})) {
+    if (mappedAppId.trim() !== normalizedAppId) {
+      continue;
+    }
+    const normalizedOpenId = openId.trim();
+    if (normalizedOpenId) {
+      return normalizedOpenId;
+    }
+  }
+  return undefined;
+}
+
+type FeishuKnownBotPromptTarget = {
+  name: string;
+  appId: string;
+  openId?: string;
+};
+
+function listKnownBotPromptTargets(
+  account: FeishuBotIdentityPromptAccount,
+): FeishuKnownBotPromptTarget[] {
+  const selfLabel = account.name || account.accountId;
+  const targets: FeishuKnownBotPromptTarget[] = [
+    {
+      name: selfLabel,
+      appId: account.appId,
+      openId: account.botOpenId?.trim() || undefined,
+    },
+  ];
+  for (const [appId, name] of Object.entries(account.knownBots)) {
+    if (appId === account.appId) {
+      continue;
+    }
+    targets.push({
+      name,
+      appId,
+      openId: resolveBotOpenIdForPrompt(account, appId),
+    });
+  }
+  return targets;
+}
+
+type FeishuBotIdentityPromptOptions = {
+  focusText?: string;
+  maxOtherBots?: number;
+};
+
+function normalizeFeishuBotPromptFocus(text?: string): string {
+  return text?.trim().toLowerCase() || "";
+}
+
+function matchesFeishuBotPromptFocus(
+  bot: FeishuKnownBotPromptTarget,
+  normalizedFocus: string,
+): boolean {
+  if (!normalizedFocus) {
+    return false;
+  }
+  for (const candidate of [bot.name, bot.appId, bot.openId]) {
+    const normalizedCandidate = candidate?.trim().toLowerCase();
+    if (normalizedCandidate && normalizedFocus.includes(normalizedCandidate)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function selectFeishuBotPromptTargets(
+  account: FeishuBotIdentityPromptAccount,
+  options?: FeishuBotIdentityPromptOptions,
+): FeishuKnownBotPromptTarget[] {
+  const [selfBot, ...otherBots] = listKnownBotPromptTargets(account);
+  const normalizedFocus = normalizeFeishuBotPromptFocus(options?.focusText);
+  const maxOtherBots = Math.max(0, options?.maxOtherBots ?? 8);
+  const focusedBots = normalizedFocus
+    ? otherBots.filter((bot) => matchesFeishuBotPromptFocus(bot, normalizedFocus))
+    : [];
+  return selfBot
+    ? [selfBot, ...focusedBots.slice(0, maxOtherBots)]
+    : focusedBots.slice(0, maxOtherBots);
+}
+
+export function buildFeishuBotIdentityBlock(
+  account: FeishuBotIdentityPromptAccount,
+  options?: FeishuBotIdentityPromptOptions,
+): string {
+  const lines: string[] = ["[Bot Identity]"];
+  const [selfBot, ...otherBots] = selectFeishuBotPromptTargets(account, options);
+  if (selfBot) {
+    lines.push(
+      `你是: ${selfBot.name} (app_id=${selfBot.appId}${selfBot.openId ? `, bot_open_id=${selfBot.openId}` : ""})`,
+    );
+  }
+  if (otherBots.length > 0) {
+    lines.push("系统中的其他 bot:");
+    for (const bot of otherBots) {
+      lines.push(
+        `- ${bot.name} (app_id=${bot.appId}${bot.openId ? `, bot_open_id=${bot.openId}` : ""})`,
+      );
+    }
+  }
+  lines.push('规则: app_id 只用于稳定识别 bot 身份，不可直接填进 <at user_id="...">。');
+  lines.push(
+    "如果你要在群里真正艾特某个 bot，必须使用它的 bot_open_id（也是 open_id，形如 ou_xxx）。",
+  );
+  lines.push(
+    "消息里的 sender/mentions 可能出现 app_id 或 open_id；识别 bot 看 app_id，真正构造 @ 看 open_id。",
+  );
+  lines.push("[End Bot Identity]", "");
+  return lines.join("\n");
+}
+
+export function buildCurrentGroupReplyRuleText(params: {
   senderId: string;
   senderDisplayName?: string;
+  account: FeishuBotIdentityPromptAccount;
+  focusText?: string;
 }): string {
   const senderName = params.senderDisplayName?.trim() || params.senderId;
+  const peerBotLines = selectFeishuBotPromptTargets(params.account, {
+    focusText: params.focusText,
+  })
+    .filter((bot) => bot.appId !== params.account.appId && bot.openId)
+    .map(
+      (bot) =>
+        `- ${bot.name}: <at user_id="${bot.openId}">${bot.name}</at> (bot_open_id=${bot.openId}, app_id=${bot.appId})`,
+    );
   return [
     "[当前群聊回复规则]",
     `你当前正在回复的人：${senderName}（open_id=${params.senderId}）。`,
     `如果你需要真正艾特他，只能使用这个精确格式：<at user_id="${params.senderId}">${senderName}</at>`,
+    '如果你需要真正艾特某个 bot，只能使用它的 bot_open_id；绝对不要把 app_id 填进 <at user_id="...">。',
+    ...(peerBotLines.length > 0 ? ["已知 peer bot 的正确艾特格式：", ...peerBotLines] : []),
     "绝对不要输出 @_user_N、ou_xxx、cli_xxx 作为艾特。",
     "@_user_N 只属于入站消息里的占位符，不能复制到出站回复。",
     "下面的聊天记录只是历史记录，不代表你本轮该如何构造 mention。",
@@ -1681,7 +1822,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // Uses tenant_access_token (no user OAuth needed) for the /im/v1/messages API.
   // Aligns with upstream's 20-message default (DEFAULT_MESSAGE_LIMIT).
   const GROUP_INJECT_LIMIT = 20;
-  let groupContextPrefix = "";
+  let promptContextPrefix = buildFeishuBotIdentityBlock(account, {
+    focusText: enrichedBody,
+  });
   if (isGroup) {
     try {
       const token = await getTenantAccessToken(account);
@@ -1696,11 +1839,6 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       });
       if (result.messages.length > 0) {
         const chronological = [...result.messages].reverse();
-        const currentReplyRule = buildCurrentGroupReplyRuleText({
-          senderId,
-          senderDisplayName,
-        });
-
         const lines = chronological.map((m) => {
           return renderFeishuRecentContextLine({
             messageId: m.message_id,
@@ -1724,22 +1862,18 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
             provenance: { sourcePath: "history_api", tokenMode: "tenant" },
           });
         });
-        // Build bot identity declaration so the AI knows who it is and who other bots are.
-        const botIdentityLines: string[] = [];
-        const selfLabel = account.name || account.accountId;
-        botIdentityLines.push(`你是: ${selfLabel} (app_id=${account.appId})`);
-        const otherBots = Object.entries(account.knownBots)
-          .filter(([appId]) => appId !== account.appId)
-          .map(([appId, name]) => `- ${name} (app_id=${appId})`);
-        if (otherBots.length > 0) {
-          botIdentityLines.push(`系统中的其他 bot:\n${otherBots.join("\n")}`);
-        }
-        botIdentityLines.push(
-          `消息中的 sender 会标注 app_id 或 open_id，请据此区分不同 bot 的发言。`,
-        );
-        const botIdentityBlock = `[Bot Identity]\n${botIdentityLines.join("\n")}\n[End Bot Identity]\n\n`;
+        const promptFocusText = `${enrichedBody}\n${lines.join("\n")}`;
+        const currentReplyRule = buildCurrentGroupReplyRuleText({
+          account,
+          senderId,
+          senderDisplayName,
+          focusText: promptFocusText,
+        });
+        const botIdentityBlock = buildFeishuBotIdentityBlock(account, {
+          focusText: promptFocusText,
+        });
 
-        groupContextPrefix =
+        promptContextPrefix =
           botIdentityBlock +
           `[Chat messages since recent activity — ${lines.length} messages for context]\n` +
           `${lines.join("\n")}\n` +
@@ -1761,8 +1895,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
   // BodyForAgent is what the LLM actually sees (finalizeInboundContext prefers it
   // over CommandBody/RawBody/Body). Prepend group context to the full envelope
-  // (rawBody) so the LLM gets both injected messages AND the sender identity.
-  const bodyForAgent = groupContextPrefix ? `${groupContextPrefix}${rawBody}` : undefined;
+  // (rawBody) so the LLM gets bot identity in all Feishu contexts, and recent
+  // group context when available.
+  const bodyForAgent = promptContextPrefix ? `${promptContextPrefix}${rawBody}` : undefined;
 
   const ctxPayload = core.channel.reply.finalizeInboundContext({
     Body: rawBody,

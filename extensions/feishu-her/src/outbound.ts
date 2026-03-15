@@ -3,9 +3,6 @@ import { writeFileSync, readFileSync, unlinkSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import * as Lark from "@larksuiteoapi/node-sdk";
 import { fetchWithSsrFGuard, resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk";
-import type { MarkdownLinkSpan } from "../../../src/markdown/ir.js";
-import { markdownToIR } from "../../../src/markdown/ir.js";
-import { renderMarkdownWithMarkers } from "../../../src/markdown/render.js";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { buildFeishuSentMessageRef, type FeishuSentMessageRef } from "./message-metadata.js";
 
@@ -413,16 +410,15 @@ export function assertNoForbiddenOpenPlatformUrls(text: string): void {
 const FEISHU_AT_TAG_RE = /<at\s+user_id="([^"]+)">([^<]*)<\/at>/gi;
 const FEISHU_EMPTY_AT_TAG_RE = /<at\s+user_id="([^"]+)"\s*\/?>/gi;
 const FEISHU_STRUCTURED_TAG_RE = /<\/?(?:file|media)\b[^>\n]*>/gi;
-const FEISHU_CARD_CODE_INLINE_OPEN = "\u0001";
-const FEISHU_CARD_CODE_INLINE_CLOSE = "\u0002";
-const FEISHU_CARD_CODE_BLOCK_OPEN = "\u0003";
-const FEISHU_CARD_CODE_BLOCK_CLOSE = "\u0004";
 
 type FeishuCardMentionAccount = Pick<
   ResolvedFeishuAccount,
   "appId" | "botOpenId" | "knownBots" | "knownBotOpenIds"
 >;
 
+/** Resolve an <at user_id="..."> target into a Feishu card-compatible ID.
+ *  Feishu cards reject cross-app bot open_ids (230099) and app_ids (230099).
+ *  Only self-mention (own botOpenId) and human open_ids are safe. */
 function resolveFeishuCardMentionTargetId(
   account: FeishuCardMentionAccount,
   userId: string,
@@ -437,12 +433,6 @@ function resolveFeishuCardMentionTargetId(
   if (normalizedUserId === account.appId) {
     const selfBotOpenId = account.botOpenId?.trim();
     return selfBotOpenId || null;
-  }
-  for (const [openId, appId] of Object.entries(account.knownBotOpenIds ?? {})) {
-    if (appId.trim() === normalizedUserId) {
-      const normalizedOpenId = openId.trim();
-      return normalizedOpenId || null;
-    }
   }
   return null;
 }
@@ -468,70 +458,6 @@ function formatFeishuCardMention(
   return `<at id=${normalizedUserId}></at>`;
 }
 
-function renderFeishuCardMarkdownCodeSegment(markdown: string): string {
-  return markdown.replaceAll("<", "＜").replaceAll(">", "＞");
-}
-
-function convertMarkdownHeadingsToCardSections(markdown: string): string {
-  const lines = markdown.split("\n");
-  let inFence = false;
-  return lines
-    .map((line) => {
-      const trimmed = line.trimStart();
-      if (trimmed.startsWith("```")) {
-        inFence = !inFence;
-        return line;
-      }
-      if (inFence) {
-        return line;
-      }
-      const headingMatch = line.match(/^(\s*)#{1,6}\s+(.*)$/);
-      if (!headingMatch) {
-        return line;
-      }
-      const indent = headingMatch[1] ?? "";
-      const title = headingMatch[2]?.trim();
-      if (!title) {
-        return "";
-      }
-      return `${indent}【${title}】`;
-    })
-    .join("\n");
-}
-
-function buildFeishuCardLink(link: MarkdownLinkSpan, text: string) {
-  const href = link.href.trim();
-  if (!href) {
-    return null;
-  }
-  const label = text.slice(link.start, link.end);
-  if (!label.trim() || label === href) {
-    return { start: link.start, end: link.end, open: "", close: "" };
-  }
-  return { start: link.start, end: link.end, open: "", close: ` (${href})` };
-}
-
-function finalizeFeishuCardCodeMarkers(markdown: string): string {
-  let result = "";
-  let inCode = false;
-  for (const char of markdown) {
-    if (char === FEISHU_CARD_CODE_INLINE_OPEN || char === FEISHU_CARD_CODE_BLOCK_OPEN) {
-      inCode = true;
-      continue;
-    }
-    if (char === FEISHU_CARD_CODE_INLINE_CLOSE || char === FEISHU_CARD_CODE_BLOCK_CLOSE) {
-      inCode = false;
-      continue;
-    }
-    if (inCode) {
-      result += renderFeishuCardMarkdownCodeSegment(char);
-    } else {
-      result += char;
-    }
-  }
-  return result;
-}
-
 function renderFeishuCardMarkdownTextSegment(
   markdown: string,
   account: FeishuCardMentionAccount,
@@ -548,29 +474,141 @@ function renderFeishuCardMarkdownTextSegment(
   );
 }
 
+/** Escape `<>` inside inline code spans so Feishu doesn't interpret
+ *  literal `<at>` / `<file>` examples as real tags. */
+function escapeAngleBracketsInInlineCode(line: string): string {
+  return line.replace(/(`+)(.*?)\1/g, (_m, ticks: string, content: string) => {
+    return ticks + content.replaceAll("<", "＜").replaceAll(">", "＞") + ticks;
+  });
+}
+
+const MD_TABLE_SEPARATOR_RE = /^\|\s*[-:]+[-|\s:]*$/;
+
+/** Detect whether a line is a markdown table row (`| ... | ... |`). */
+function isMarkdownTableRow(line: string): boolean {
+  const trimmed = line.trim();
+  return trimmed.startsWith("|") && trimmed.endsWith("|") && trimmed.includes("|");
+}
+
+/** Parse a markdown table row into cell values (strips leading/trailing pipes). */
+function parseMarkdownTableRow(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+/** Strip inline code backticks from table cell content.
+ *  Feishu JSON 1.0 doesn't support inline code — backticks in card markdown
+ *  cause the renderer to break and swallow all subsequent content.
+ *  Content inside backticks often contains XML/HTML-like tags (e.g. `<at>`,
+ *  `<file>`) as code examples — strip tags to plain text to avoid both
+ *  230099 mention errors and ugly fullwidth bracket display. */
+function stripTableCellBackticks(cell: string): string {
+  return cell
+    .replace(/`([^`]*)`/g, (_m, content: string) => content.replace(/<[^>]*>/g, ""))
+    .replaceAll("`", "");
+}
+
+/** Convert a markdown table into bold-header + bullet-list format.
+ *  Feishu card `tag:"markdown"` can't render `| ... |` pipe tables (shown as
+ *  raw text) or `<table>` tags (rendered as blank in bot cards).
+ *  Using bold + bullets which are confirmed to render correctly.
+ *  Also strips backticks from cells (unsupported → breaks rendering). */
+function convertMarkdownTableToFeishuList(tableLines: string[]): string {
+  if (tableLines.length < 2) return tableLines.join("\n");
+  const headerCells = parseMarkdownTableRow(tableLines[0]);
+  const dataStartIndex = MD_TABLE_SEPARATOR_RE.test(tableLines[1].trim()) ? 2 : 1;
+  const sep = " | ";
+
+  const headerLine = headerCells.map((h) => `**${stripTableCellBackticks(h)}**`).join(sep);
+  const rows: string[] = [headerLine];
+  for (let i = dataStartIndex; i < tableLines.length; i++) {
+    const cells = parseMarkdownTableRow(tableLines[i]).map(stripTableCellBackticks);
+    rows.push("- " + cells.join(sep));
+  }
+  return rows.join("\n");
+}
+
+/** Convert markdown heading (`# ...`) to bold text with level distinction.
+ *  Feishu JSON 1.0 card `tag:"markdown"` does NOT support heading syntax.
+ *  H1 → bold + divider (visually prominent), H2+ → bold only.
+ *  See docs/her/feishu-card-markdown-official-spec.md */
+function convertHeadingToBold(line: string): string {
+  const m = line.match(/^(#{1,6})\s+(.*)/);
+  if (!m) return line;
+  const level = m[1].length;
+  if (level === 1) return `**${m[2]}**\n---`;
+  return `**${m[2]}**`;
+}
+
+/** Convert blockquote (`> ...`) to plain text (strip the `>` prefix).
+ *  Feishu JSON 1.0 card `tag:"markdown"` does NOT support blockquote syntax.
+ *  `>` alone would be swallowed or render as raw `>`. */
+function convertBlockquote(line: string): string {
+  const m = line.match(/^>\s?(.*)/);
+  if (!m) return line;
+  return `｜${m[1]}`;
+}
+
+/** Normalize markdown for the Feishu card `tag:"markdown"` component (JSON 1.0).
+ *  Based on 100% confirmed official docs (feishu-card-markdown-official-spec.md):
+ *
+ *  Supported (passthrough): bold, italic, strikethrough, links, ordered/unordered
+ *  lists, fenced code blocks (7.6+), images, dividers, @mentions, font color, tags.
+ *
+ *  NOT supported (must convert):
+ *  - `# heading` → `**bold**`
+ *  - `> blockquote` → `｜text` (fullwidth bar prefix)
+ *  - `| table |` → bold-header + bullet-list
+ *
+ *  Also: escape `<>` inside code regions to prevent tag interpretation. */
 function normalizeFeishuCardMarkdown(markdown: string): string {
-  const headingSafeMarkdown = convertMarkdownHeadingsToCardSections(markdown);
-  const ir = markdownToIR(headingSafeMarkdown, {
-    linkify: true,
-    headingStyle: "none",
-    blockquotePrefix: "> ",
-    tableMode: "bullets",
-  });
-  const rendered = renderMarkdownWithMarkers(ir, {
-    styleMarkers: {
-      code: {
-        open: FEISHU_CARD_CODE_INLINE_OPEN,
-        close: FEISHU_CARD_CODE_INLINE_CLOSE,
-      },
-      code_block: {
-        open: FEISHU_CARD_CODE_BLOCK_OPEN,
-        close: FEISHU_CARD_CODE_BLOCK_CLOSE,
-      },
-    },
-    escapeText: (text) => text,
-    buildLink: buildFeishuCardLink,
-  });
-  return finalizeFeishuCardCodeMarkers(rendered).trimEnd();
+  const lines = markdown.split("\n");
+  const result: string[] = [];
+  let inFence = false;
+  let tableBuffer: string[] = [];
+
+  const flushTable = () => {
+    if (tableBuffer.length > 0) {
+      result.push(convertMarkdownTableToFeishuList(tableBuffer));
+      tableBuffer = [];
+    }
+  };
+
+  for (const line of lines) {
+    if (line.trimStart().startsWith("```")) {
+      flushTable();
+      inFence = !inFence;
+      result.push(line);
+      continue;
+    }
+    if (inFence) {
+      result.push(line.replaceAll("<", "＜").replaceAll(">", "＞"));
+      continue;
+    }
+    if (
+      isMarkdownTableRow(line) ||
+      (tableBuffer.length > 0 && MD_TABLE_SEPARATOR_RE.test(line.trim()))
+    ) {
+      tableBuffer.push(line);
+      continue;
+    }
+    flushTable();
+
+    const trimmed = line.trimStart();
+    if (/^#{1,6}\s+/.test(trimmed)) {
+      result.push(convertHeadingToBold(line));
+    } else if (/^>\s?/.test(trimmed)) {
+      result.push(convertBlockquote(line));
+    } else {
+      result.push(escapeAngleBracketsInInlineCode(line));
+    }
+  }
+  flushTable();
+  return result.join("\n").trimEnd();
 }
 
 function escapeUnmatchedInlineBacktick(markdown: string): string {
@@ -1170,9 +1208,13 @@ export async function downloadWhiteboardImage(params: {
   }
 }
 
-// ── Interactive Card Streaming (schema 2.0 + im.message.patch) ──────────
-// Uses schema 2.0 cards so Feishu renders headings/code blocks/lists correctly.
-// Readback may degrade, so quote/history resolution relies on local cache/archive.
+// ── Interactive Card Streaming (tag:"markdown" + im.message.patch) ───────
+// Uses v1 top-level `elements: [{tag:"markdown"}]` cards. Tested to produce:
+//   ✓ native markdown rendering in UI (headings, tables, code fences, etc.)
+//   ✓ PATCH support for streaming
+//   ✓ `message.get` readback with `coverage: partial` (preserves markdown syntax)
+// Schema 2.0 cards break readback entirely (`coverage: none`), so avoided.
+// `div+lark_md` strips markdown formatting in readback, so also avoided.
 // Updates via PATCH /im/v1/messages/{id} — 5 QPS rate limit, no total count limit.
 
 const DEFAULT_STREAM_THROTTLE_MS = 300;
@@ -1218,13 +1260,13 @@ const NOOP_STREAM: FeishuCardStream = {
 };
 
 /**
- * Send a schema 2.0 interactive card and return a stream object that updates it via im.message.patch.
+ * Send a v1 inline card and return a stream object that updates it via im.message.patch.
  *
  * Flow:
- *  1. im.message.create(msg_type="interactive", content=schema2_card_json) → message_id
+ *  1. im.message.create(msg_type="interactive", content=v1_inline_card_json) → message_id
  *  2. Caller calls stream.update(text) repeatedly
  *  3. Internally throttled PATCH /im/v1/messages/{id} replaces card content
- *  4. Readback falls back to local cache/archive because Feishu may degrade schema2 cards
+ *  4. Readback still works through the interactive-card parser/archive path
  */
 export async function createFeishuCardStream(params: {
   account: ResolvedFeishuAccount;

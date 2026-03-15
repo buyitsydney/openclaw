@@ -354,6 +354,7 @@ describe("feishu group history archive hydration", () => {
         appSecret: "secret_test",
         enabled: true,
         knownBots: { cli_tester: "tester" },
+        knownBotOpenIds: { ou_tester_open_id: "cli_tester" },
         config: {},
       },
     ]);
@@ -423,15 +424,29 @@ describe("feishu group history archive hydration", () => {
     });
     const details = result.details as {
       messages: Array<{
+        sender_open_id?: string;
         mentions_resolved?: Array<{
-          actor: { canonicalId: string; actorKind: string; displayName?: string };
+          actor: {
+            canonicalId: string;
+            actorKind: string;
+            displayName?: string;
+            rawIds?: { open_id?: string; app_id?: string };
+          };
         }>;
+        mentions?: Array<{ open_id?: string; app_id?: string; actor_kind?: string }>;
       }>;
     };
 
+    expect(details.messages[0].sender_open_id).toBe("ou_user_1");
     expect(details.messages[0].mentions_resolved?.[0]?.actor.canonicalId).toBe("cli_tester");
     expect(details.messages[0].mentions_resolved?.[0]?.actor.actorKind).toBe("bot");
     expect(details.messages[0].mentions_resolved?.[0]?.actor.displayName).toBe("tester");
+    expect(details.messages[0].mentions_resolved?.[0]?.actor.rawIds?.open_id).toBe(
+      "ou_tester_open_id",
+    );
+    expect(details.messages[0].mentions?.[0]?.open_id).toBe("ou_tester_open_id");
+    expect(details.messages[0].mentions?.[0]?.app_id).toBe("cli_tester");
+    expect(details.messages[0].mentions?.[0]?.actor_kind).toBe("bot");
     expect(callFeishuApiWithUserTokenMock).toHaveBeenCalledWith(
       expect.objectContaining({
         endpoint: "/im/v1/messages/om_hist_bot_1",
@@ -448,6 +463,7 @@ describe("feishu group history archive hydration", () => {
         appSecret: "secret_test",
         enabled: true,
         knownBots: { cli_tester: "tester" },
+        knownBotOpenIds: { ou_tester_open_id: "cli_tester" },
         config: {},
       },
     ]);
@@ -484,9 +500,16 @@ describe("feishu group history archive hydration", () => {
     });
     const details = result.details as {
       message: {
+        sender_open_id?: string;
         mentions_resolved?: Array<{
-          actor: { canonicalId: string; actorKind: string; displayName?: string };
+          actor: {
+            canonicalId: string;
+            actorKind: string;
+            displayName?: string;
+            rawIds?: { open_id?: string; app_id?: string };
+          };
         }>;
+        mentions?: Array<{ open_id?: string; app_id?: string; actor_kind?: string }>;
       };
     };
 
@@ -496,9 +519,14 @@ describe("feishu group history archive hydration", () => {
         query: { user_id_type: "open_id" },
       }),
     );
+    expect(details.message.sender_open_id).toBe("ou_user_1");
     expect(details.message.mentions_resolved?.[0]?.actor.canonicalId).toBe("cli_tester");
     expect(details.message.mentions_resolved?.[0]?.actor.actorKind).toBe("bot");
     expect(details.message.mentions_resolved?.[0]?.actor.displayName).toBe("tester");
+    expect(details.message.mentions_resolved?.[0]?.actor.rawIds?.open_id).toBe("ou_tester_open_id");
+    expect(details.message.mentions?.[0]?.open_id).toBe("ou_tester_open_id");
+    expect(details.message.mentions?.[0]?.app_id).toBe("cli_tester");
+    expect(details.message.mentions?.[0]?.actor_kind).toBe("bot");
   });
 
   it("list_history keeps merge_forward disabled", async () => {

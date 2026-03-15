@@ -23,6 +23,9 @@ metadata: { "openclaw": { "emoji": "🧾" } }
 - 覆盖范围：最近约 2 小时内的最后 20 条消息
 - 包含所有人（人类和机器人）的消息
 - 图片/文件仅为占位符（如 `[image: xxx]`、`[file: xxx]`）
+- 当前轮 prompt 还会额外给出 `[Bot Identity]` 和 `[当前群聊回复规则]`
+- 识别 bot 身份看 `app_id`；如果要在群里真正 `@bot`，看同轮 prompt 里的 `bot_open_id`（也是 `ou_xxx`）
+- 私聊里如果被要求“去某个群里提醒某个 bot”，也要先用本轮的 `[Bot Identity]` 判断 bot 身份；不要拿 `feishu_chat_members` 去硬找 bot
 
 ### 第二层：feishu_group_history 工具（深度历史）
 

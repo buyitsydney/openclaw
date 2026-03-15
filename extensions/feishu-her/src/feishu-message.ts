@@ -188,16 +188,20 @@ function buildActor(params: {
 }
 
 export function buildFeishuBotActorFromAccount(
-  account: Pick<ResolvedFeishuAccount, "appId" | "accountId" | "name">,
+  account: Pick<ResolvedFeishuAccount, "appId" | "accountId" | "name" | "botOpenId">,
 ): FeishuActorRef {
   const displayName = resolveFeishuAccountLabel(account);
+  const botOpenId = trimIfString(account.botOpenId);
   return {
     canonicalId: account.appId,
     canonicalIdType: "app_id",
     senderType: "app",
     actorKind: "bot",
     ...(displayName && { displayName }),
-    rawIds: { app_id: account.appId },
+    rawIds: {
+      app_id: account.appId,
+      ...(botOpenId && { open_id: botOpenId }),
+    },
     resolutionSource: "config",
     resolved: true,
   };
@@ -275,9 +279,33 @@ function resolveKnownFeishuBotDisplayName(
   return trimIfString(account.knownBots?.[normalizedAppId]) || undefined;
 }
 
+function resolveKnownFeishuBotOpenId(
+  account: Pick<ResolvedFeishuAccount, "appId" | "botOpenId" | "knownBotOpenIds">,
+  appId: string,
+): string | undefined {
+  const normalizedAppId = trimIfString(appId);
+  if (!normalizedAppId) return undefined;
+  if (normalizedAppId === account.appId) {
+    return trimIfString(account.botOpenId) || undefined;
+  }
+  for (const [openId, mappedAppId] of Object.entries(account.knownBotOpenIds ?? {})) {
+    if (trimIfString(mappedAppId) !== normalizedAppId) {
+      continue;
+    }
+    const normalizedOpenId = trimIfString(openId);
+    if (normalizedOpenId) {
+      return normalizedOpenId;
+    }
+  }
+  return undefined;
+}
+
 export function applyFeishuKnownBotDisplayName(
   actor: FeishuActorRef,
-  account: Pick<ResolvedFeishuAccount, "appId" | "accountId" | "name" | "knownBots">,
+  account: Pick<
+    ResolvedFeishuAccount,
+    "appId" | "accountId" | "name" | "knownBots" | "knownBotOpenIds" | "botOpenId"
+  >,
 ): FeishuActorRef {
   let knownAppId =
     actor.rawIds.app_id ?? (actor.canonicalIdType === "app_id" ? actor.canonicalId : "");
@@ -285,8 +313,14 @@ export function applyFeishuKnownBotDisplayName(
   const displayName = knownAppId
     ? resolveKnownFeishuBotDisplayName(account, knownAppId)
     : undefined;
+  const knownOpenId = knownAppId ? resolveKnownFeishuBotOpenId(account, knownAppId) : undefined;
+  const rawIds = {
+    ...actor.rawIds,
+    ...(knownAppId && { app_id: knownAppId }),
+    ...(knownOpenId && { open_id: knownOpenId }),
+  };
 
-  if (!knownAppId && !displayName) return actor;
+  if (!knownAppId && !displayName && !knownOpenId) return actor;
   if (knownAppId && !displayName) {
     return {
       ...actor,
@@ -294,7 +328,7 @@ export function applyFeishuKnownBotDisplayName(
       canonicalIdType: "app_id",
       senderType: "app",
       actorKind: "bot",
-      rawIds: { ...actor.rawIds, app_id: knownAppId },
+      rawIds,
       resolutionSource: "config",
       resolved: true,
     };
@@ -307,7 +341,7 @@ export function applyFeishuKnownBotDisplayName(
     senderType: "app",
     actorKind: "bot",
     displayName,
-    rawIds: { ...actor.rawIds, app_id: knownAppId },
+    rawIds,
     resolutionSource: "config",
     resolved: true,
   };
@@ -315,7 +349,10 @@ export function applyFeishuKnownBotDisplayName(
 
 function applyFeishuKnownBotMentionDisplayNames(
   mentions: FeishuMentionRef[],
-  account: Pick<ResolvedFeishuAccount, "appId" | "accountId" | "name" | "knownBots">,
+  account: Pick<
+    ResolvedFeishuAccount,
+    "appId" | "accountId" | "name" | "knownBots" | "knownBotOpenIds" | "botOpenId"
+  >,
 ): FeishuMentionRef[] {
   return mentions.map((mention) => {
     const actor = applyFeishuKnownBotDisplayName(mention.actor, account);

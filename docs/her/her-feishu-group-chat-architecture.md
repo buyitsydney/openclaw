@@ -75,6 +75,204 @@
 - **已修住**：群里真实 `@bot` 不再因为 `app_id` 走错而被飞书 `PATCH` 拒绝
 - **仍待修**：bot `open_id` 在 history / dynamic injection / skill 里的显式暴露，以及 markdown 视觉保真度
 
+### 状态补充（2026-03-15 中午 checkpoint：history/prompt open_id 已补齐，markdown 恢复基础层级）
+
+**这一轮已经把上一个 checkpoint 留下的两个核心缺口补上**：
+
+1. **history / dynamic injection / prompt 不再只暴露 bot `app_id`**
+2. **用户可见卡片不再把整篇 markdown 压成“安全纯文本”**
+
+**已落地的数据结构补强**：
+
+- `feishu_group_history` 的 `NormalizedMessage` 现在显式暴露：
+  - `sender_id_type`
+  - `sender_actor_kind`
+  - `sender_open_id`
+  - `sender_app_id`
+  - `mentions[].id_type`
+  - `mentions[].actor_kind`
+  - `mentions[].open_id`
+  - `mentions[].app_id`
+- `FeishuActorRef.rawIds` 对已知 bot 会回填 `open_id`，不再只有 `app_id`
+- live 验证里，test 群最近消息已能直接读到：
+  - `tester`：`sender_id=cli_a92c99d102b8dbca` + `sender_open_id=ou_1a9c02079fef1f5f0f4daaaaffd2326c`
+  - `her`：`sender_id=cli_a92c9ee95538dbdf` + `sender_open_id=ou_1fb7eb3ce04e145de925452da2d4cc2f`
+  - `mentions[]` 同时包含 `open_id/app_id/actor_kind`
+
+**已落地的 prompt / skill 补强**：
+
+- `gateway.ts` 的 `[Bot Identity]` 现在同时注入 `app_id` 和 `bot_open_id`
+- `gateway.ts` 的 `[当前群聊回复规则]` 现在会直接给出 peer bot 的正确 `<at user_id="ou_xxx">botName</at>` 格式
+- `extensions/feishu-her/skills/feishu-chat/SKILL.md` 明确规定：
+  - `@人` 用 `open_id`
+  - `@bot` 用 `bot_open_id`
+  - `app_id` / `cli_xxx` 只用于识别，不可直接放进 `<at user_id>`
+
+**已落地的 markdown V1 适配策略（normalizeFeishuCardMarkdown）**：
+
+- 标题 `# heading`：V1 不支持 → `**bold**`（H1 加 `---` 分割线区分）
+- 引用 `> quote`：V1 不支持 → `｜引用内容`（全角竖线前缀）
+- 表格 `| ... |`：V1 不支持 → `**粗体表头**` + `- 列表` fallback（视觉效果差，非真实表格）
+- 行内代码 `` `code` ``：V1 不支持 → 保留原样反引号；表格单元格内需 strip（否则渲染崩溃）
+- 代码块：V1 支持（飞书 7.6+）→ 直接透传，`<>` 转义为全角防止标签误解析
+- 粗体 / 斜体 / 删除线 / 链接 / 列表：V1 支持 → 直接透传
+- `<at>` 保护：表格单元格内的代码示例 strip 为纯文本，防止 230099
+- 跨应用 bot @mention：仅自身 `botOpenId` 可用 `<at id=...>`，peer bot 退化为 `@botName`
+
+**V1 方案的已知缺陷**（→ 推动 V2 CardKit 方案）：
+
+| 问题                    | 说明                                    |
+| ----------------------- | --------------------------------------- |
+| 表格视觉差              | 粗体表头+列表不是真表格，管道符原样暴露 |
+| 标题层级丢失            | H2/H3 无法区分，全部变粗体              |
+| V1 已被官方标记"不推荐" | 新能力只在 V2 迭代                      |
+| im.message.patch 5 QPS  | 低于 CardKit 流式 10 QPS                |
+| 无打字机效果            | V1 + patch 只能逐步填充                 |
+
+**live 验证结果（2026-03-15）**：
+
+- tester bot 在 test 群发送含 H1/H2/H3/引用/表格/代码块/列表的测试卡片
+- 标题、引用、列表、代码块渲染正常，无 230099，无空气炮
+- 表格渲染为粗体表头+列表，能传达信息但**视觉效果不佳** → 触发 V2 方案探讨
+
+**一个必须记录的外部限制**：
+
+- 由于当前 owner 的 user token 缺少 `im:message:send` / `im:message` / `im:message:send_as_bot`，本轮无法用“真人身份”脚本向 test 群注入新消息
+- 因此“owner 实时入站 -> her 动态注入 -> her 回答”这条 live 流程，本轮只能依赖代码路径、单测和现有日志验证；不能靠新的 owner 注入脚本复现
+
+### 架构决策（2026-03-15：V2 CardKit 流式 + 本地缓存回读方案）
+
+#### 问题本质
+
+飞书 CardKit v2 卡片（`schema: "2.0"`）在 `im.message.get` 回读时返回 "请升级至最新版本客户端"，0% 内容可恢复。这个问题**不是代码 bug，而是飞书平台的架构设计决定**。
+
+经过对飞书官方文档（https://open.feishu.cn/document/cardkit-v1/feishu-card-resource-overview ）和流式更新文档（https://open.feishu.cn/document/cardkit-v1/streaming-updates-openapi-overview ）的完整调研，确认以下事实：
+
+1. **CardKit API 全部是写操作，没有任何 GET/读取端点**
+   - `POST /cardkit/v1/cards` — 创建卡片实体
+   - `PUT /cardkit/v1/cards/:card_id` — 全量更新卡片实体
+   - `PATCH /cardkit/v1/cards/:card_id/settings` — 更新卡片配置
+   - `POST /cardkit/v1/cards/:card_id/batch_update` — 批量更新
+   - `POST /cardkit/v1/cards/:card_id/elements` — 新增组件
+   - `PUT /cardkit/v1/cards/:card_id/elements/:element_id` — 更新组件
+   - `PUT /cardkit/v1/cards/:card_id/elements/:element_id/content` — 流式更新文本
+   - `DELETE /cardkit/v1/cards/:card_id/elements/:element_id` — 删除组件
+   - **没有 `GET /cardkit/v1/cards/:card_id`**，无法通过 card_id 回读卡片内容
+
+2. **v2 卡片发送时只传 card_id 引用**：`content: {type: "card", data: {card_id: "xxx"}}`。消息体里不存实际内容，飞书客户端通过内部渲染管线根据 card_id 实时渲染。`im.message.get` 只能拿到 card_id 引用，而无法解析出可读文本。
+
+3. **官方文档明确说明降级行为**："卡片 JSON 2.0 结构支持飞书客户端 7.20 及之后版本。当使用 JSON 2.0 结构的卡片发送至低于 7.20 的客户端时，卡片标题可正常显示，但内容将展示兜底的升级提示文案。" — `im.message.get` 的行为等同于低版本客户端视角。
+
+4. **CardKit 流式更新仅支持 JSON 2.0 结构**（官方文档原文："下列接口仅支持卡片 JSON 2.0 结构"），v1 内联卡片无法使用 CardKit 流式 API。
+
+#### 为什么不能回退到"全 v1"
+
+当前代码（`outbound.ts`）已经切到 v1 内联卡片 + `im.message.patch` 流式方案。这个方案能工作，但存在以下痛点：
+
+- **v1 markdown 渲染受限**：飞书对 v1 卡片的 `tag:"markdown"` 组件渲染存在已知问题（表格可能以管道文本暴露、代码块样式不稳定、某些 markdown 语法不被支持）
+- **v1 是"历史版本（不推荐）"**：飞书官方文档已将 v1 标记为不推荐，新能力只在 v2 上迭代（打字机动画、`streaming_config` 精细控制、组件级局部更新等）
+- **`im.message.patch` 频控 5 QPS**：低于 CardKit 流式的 10 QPS，长文本更新更慢
+- **无打字机效果**：v1 + patch 只能做到"内容逐步填充"，没有逐字渲染的视觉效果
+
+#### 新方案：V2 CardKit 流式 + 本地缓存回读
+
+**核心洞察**：v2 卡片的内容是 bot 自己生成的，bot 天然拥有全部信息。**不需要通过 `im.message.get` 回读自己发的卡片** — 只需要在发送时把内容缓存下来，回读时查缓存即可。
+
+```
+┌──────────────────────────────────────────────────────┐
+│                  发送路径                             │
+│                                                      │
+│  AI 生成文本                                         │
+│    ↓                                                 │
+│  CardKit v2 streaming（打字机效果，10 QPS）          │
+│    ↓ 同时                                            │
+│  本地持久化：message_id → final_text + metadata      │
+│    写入 cardTextCache / sentMessageLog / archive     │
+│                                                      │
+├──────────────────────────────────────────────────────┤
+│                  回读路径                             │
+│                                                      │
+│  触发场景：引用回复 / 群聊历史 / 搜索 / 记忆        │
+│    ↓                                                 │
+│  1. 查本地缓存（cardTextCache / sentMessageLog）     │
+│     → 命中：直接返回完整文本，coverage: "full"       │
+│    ↓ 未命中                                          │
+│  2. 查 group-archive（持久化归档）                   │
+│     → 命中：返回归档文本，coverage: "full"           │
+│    ↓ 未命中                                          │
+│  3. fallback 到 im.message.get                       │
+│     → v1 卡片：解析降级 2D 数组，coverage: "partial" │
+│     → v2 卡片：返回"请升级"占位符，coverage: "none"  │
+│     → text/post：正常读取，coverage: "full"          │
+└──────────────────────────────────────────────────────┘
+```
+
+#### 实现要点
+
+1. **发送时缓存**（已有基础设施，需补强）
+   - `cardTextCache`（进程级 Map）：已存在于 `outbound.ts`，存储 card message_id → markdown 文本
+   - `sentMessageLog`（持久化）：已存在，存储每条发送消息的 metadata
+   - **需补强**：群聊场景下 bot 自己发的消息也必须写入 `group-archive`，当前只写 `sentMessageLog`
+
+2. **回读时缓存优先**（需修改）
+   - `gateway.ts` 的 `fetchCanonicalMessageItem()`：在调用 `im.message.get` **之前**，先查本地缓存
+   - `chat-history.ts` 的 `normalizeMessage()`：对 bot 自己发的 interactive 消息，先查 `sentMessageLog` / `group-archive`
+   - 缓存命中时设置 `coverage: "full"` + `provenance.cacheHit: true`
+
+3. **持久化保证**
+   - 进程重启后 `cardTextCache`（内存 Map）会丢失，必须有持久化兜底
+   - 持久化层 = `sentMessageLog`（per-message JSONL）+ `group-archive`（per-chat JSONL）
+   - 两者都已存在，只需确保写入时机和字段完整性
+
+4. **对非 bot 消息的影响**
+   - 其他人发的 text/post：不受影响，`im.message.get` 正常工作
+   - 其他 bot 发的 v2 卡片：仍然不可读（缓存只覆盖自己发的消息）
+   - 这是可接受的：Her 只需要能回读自己发的内容
+
+#### 待验证的补充方案：`summary.content` 回读
+
+v2 卡片的 `config.summary.content` 字段用于自定义"聊天栏消息预览文本"。如果 `im.message.get` 返回的降级格式中包含 `summary.content`，则可以：
+
+- 流式结束时，调用 `PATCH /cardkit/v1/cards/:card_id/settings` 把 `summary.content` 设为完整回复文本
+- 回读时从 `im.message.get` 返回的 content 中解析 `summary.content`
+- 如果可行，这比本地缓存更优雅（不依赖本地状态）
+
+**需实测验证**：`im.message.get` 对 v2 卡片是否返回 `summary` 字段。如果返回的是纯兜底占位符文本而不是 JSON 结构，则此方案不可行。
+
+#### 与现有架构的关系
+
+此方案**不改变**统一消息模型（`FeishuCanonicalMessage`）的设计：
+
+- canonical message 的 `provenance.sourcePath` 新增值：`"cache"` / `"sent_log"`
+- `coverage` 字段语义不变：缓存命中 = `"full"`，API 降级 = `"partial"` / `"none"`
+- 对下游消费者（dynamic injection、history tool、archive、search、memory）透明
+
+此方案**不改变**群聊出站策略：
+
+- 群聊仍然使用 v1 inline card + `im.message.patch`（已验证可回读，coverage: partial）
+- v2 CardKit 仅用于**私聊**流式回复（UI 体验更好，且私聊场景下 bot 自己的缓存足以覆盖回读需求）
+- 群聊后续可选择性切换到 v2（当本地缓存 + archive 补强后）
+
+#### 对旧结论的修正
+
+本架构决策对文档中以下旧结论进行修正：
+
+| 旧结论                                               | 修正                                                                                                                        |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| "interactive 只能做展示，不能做唯一信息载体"         | **v2 CardKit 可以做信息载体，前提是 bot 自己缓存发送内容**。对第三方 bot 的 v2 卡片仍然不可读                               |
+| "群聊正文只允许 text/post 承载核心语义"              | 群聊中 **bot 自己发的** interactive 卡片，通过本地缓存可以 100% 回读；但仍建议对需要被其他 bot 消费的关键信息保持 text/post |
+| "私聊 CardKit streaming (v2) 的引用回读问题仍待解决" | **通过本地缓存解决**。bot 发送时缓存 message_id → text，引用回读时查缓存                                                    |
+
+#### 风险与降级
+
+| 风险                     | 影响                                   | 降级策略                                           |
+| ------------------------ | -------------------------------------- | -------------------------------------------------- |
+| 进程重启导致内存缓存丢失 | 近期发送的消息无法从内存缓存回读       | 持久化层（sentMessageLog + group-archive）兜底     |
+| 持久化文件损坏           | 无法从本地回读                         | fallback 到 im.message.get（v1 partial / v2 none） |
+| 多实例部署缓存不共享     | 实例 A 发的消息在实例 B 无法从缓存回读 | 当前 Her 是单实例部署，不适用                      |
+| 飞书废弃 v1 卡片格式     | 群聊 v1 回读路径失效                   | 届时群聊也切换到 v2 + 本地缓存方案                 |
+| summary.content 不可读   | 补充方案不可行                         | 主方案（本地缓存）不受影响                         |
+
 ### 实现状态（2026-03-12 早期）
 
 - **群名改名后 prompt 不更新 — 已修复**：`outbound.ts` 中的 `chatNameCache`（进程级 Map）在群改名后不会刷新，导致 prompt 中群名过期。已删除该缓存，每次 inbound 重新调用飞书 API 获取最新群名。本地 her + tester 多轮压力测试验证通过。

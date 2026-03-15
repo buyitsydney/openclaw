@@ -77,8 +77,14 @@ export type NormalizedMessage = {
   message_id: string;
   msg_type: string;
   sender_id: string;
+  sender_id_type?: "open_id" | "app_id" | "user_id" | "unknown";
   sender_type: string;
+  sender_actor_kind?: "human" | "bot" | "system" | "unknown";
   sender_name?: string;
+  sender_open_id?: string;
+  sender_app_id?: string;
+  sender_user_id?: string;
+  sender_union_id?: string;
   sender_actor?: FeishuActorRef;
   chat_id?: string;
   create_time: string;
@@ -89,7 +95,17 @@ export type NormalizedMessage = {
   thread_id?: string;
   parent_id?: string;
   root_id?: string;
-  mentions?: Array<{ id: string; name: string; key: string }>;
+  mentions?: Array<{
+    id: string;
+    name: string;
+    key: string;
+    id_type?: "open_id" | "app_id" | "user_id" | "unknown";
+    actor_kind?: "human" | "bot" | "system" | "unknown";
+    open_id?: string;
+    app_id?: string;
+    user_id?: string;
+    union_id?: string;
+  }>;
   mentions_resolved?: FeishuMentionRef[];
   attachments?: FeishuAttachmentRef[];
   file_key?: string;
@@ -97,6 +113,47 @@ export type NormalizedMessage = {
   image_key?: string;
   coverage: "full" | "partial" | "none";
 };
+
+function buildNormalizedMention(mention: FeishuMentionRef) {
+  const actor = mention.actor;
+  return {
+    id: actor.canonicalId || mention.id,
+    name: mention.name ?? actor.displayName ?? mention.id,
+    key: mention.key,
+    ...(actor.canonicalIdType && { id_type: actor.canonicalIdType }),
+    ...(actor.actorKind && { actor_kind: actor.actorKind }),
+    ...(actor.rawIds.open_id && { open_id: actor.rawIds.open_id }),
+    ...(actor.rawIds.app_id && { app_id: actor.rawIds.app_id }),
+    ...(actor.rawIds.user_id && { user_id: actor.rawIds.user_id }),
+    ...(actor.rawIds.union_id && { union_id: actor.rawIds.union_id }),
+  };
+}
+
+function applySenderIdentityFields(message: NormalizedMessage): void {
+  const actor = message.sender_actor;
+  if (!actor) {
+    return;
+  }
+  message.sender_id = actor.canonicalId || message.sender_id;
+  message.sender_type = actor.senderType || message.sender_type;
+  message.sender_id_type = actor.canonicalIdType;
+  message.sender_actor_kind = actor.actorKind;
+  if (actor.displayName) {
+    message.sender_name = actor.displayName;
+  }
+  if (actor.rawIds.open_id) {
+    message.sender_open_id = actor.rawIds.open_id;
+  }
+  if (actor.rawIds.app_id) {
+    message.sender_app_id = actor.rawIds.app_id;
+  }
+  if (actor.rawIds.user_id) {
+    message.sender_user_id = actor.rawIds.user_id;
+  }
+  if (actor.rawIds.union_id) {
+    message.sender_union_id = actor.rawIds.union_id;
+  }
+}
 
 // oxlint-disable-next-line typescript/no-explicit-any
 function normalizeMessage(raw: any): NormalizedMessage {
@@ -108,24 +165,24 @@ function normalizeMessage(raw: any): NormalizedMessage {
   });
   const mentionsResolved = parseFeishuMentions(raw.mentions);
   const mentions =
-    mentionsResolved.length > 0
-      ? mentionsResolved.map((mention) => ({
-          id: mention.id,
-          name: mention.name ?? mention.actor.displayName ?? mention.id,
-          key: mention.key,
-        }))
-      : undefined;
+    mentionsResolved.length > 0 ? mentionsResolved.map(buildNormalizedMention) : undefined;
 
   const createTimeMs = raw.create_time ? Number(raw.create_time) : 0;
   const senderActor = buildFeishuActorFromApiSender(raw.sender);
   const firstFileAttachment = parsedContent.attachments.find((attachment) => attachment.fileKey);
   const firstImageAttachment = parsedContent.attachments.find((attachment) => attachment.imageKey);
 
-  return {
+  const normalized: NormalizedMessage = {
     message_id: raw.message_id ?? "",
     msg_type: msgType,
     sender_id: senderActor.canonicalId,
+    sender_id_type: senderActor.canonicalIdType,
     sender_type: senderActor.senderType,
+    sender_actor_kind: senderActor.actorKind,
+    ...(senderActor.rawIds.open_id && { sender_open_id: senderActor.rawIds.open_id }),
+    ...(senderActor.rawIds.app_id && { sender_app_id: senderActor.rawIds.app_id }),
+    ...(senderActor.rawIds.user_id && { sender_user_id: senderActor.rawIds.user_id }),
+    ...(senderActor.rawIds.union_id && { sender_union_id: senderActor.rawIds.union_id }),
     sender_actor: senderActor,
     ...(raw.chat_id && { chat_id: raw.chat_id }),
     create_time: raw.create_time ?? "",
@@ -144,6 +201,8 @@ function normalizeMessage(raw: any): NormalizedMessage {
     ...(firstImageAttachment?.imageKey && { image_key: firstImageAttachment.imageKey }),
     coverage: parsedContent.coverage,
   };
+  applySenderIdentityFields(normalized);
+  return normalized;
 }
 
 async function enrichNormalizedMessages(params: {
@@ -172,16 +231,10 @@ async function enrichNormalizedMessages(params: {
       mentions: message.mentions_resolved,
     });
     message.sender_actor = resolved.sender;
-    if (message.sender_actor.displayName) {
-      message.sender_name = message.sender_actor.displayName;
-    }
+    applySenderIdentityFields(message);
     if (resolved.mentions.length > 0) {
       message.mentions_resolved = resolved.mentions;
-      message.mentions = resolved.mentions.map((mention) => ({
-        id: mention.actor.canonicalId,
-        name: mention.name ?? mention.actor.displayName ?? mention.actor.canonicalId,
-        key: mention.key,
-      }));
+      message.mentions = resolved.mentions.map(buildNormalizedMention);
     }
   }
 
@@ -206,16 +259,10 @@ async function enrichNormalizedMessages(params: {
         nameMaps,
       });
       message.sender_actor = resolved.sender;
-      if (message.sender_actor.displayName) {
-        message.sender_name = message.sender_actor.displayName;
-      }
+      applySenderIdentityFields(message);
       if (resolved.mentions.length > 0) {
         message.mentions_resolved = resolved.mentions;
-        message.mentions = resolved.mentions.map((mention) => ({
-          id: mention.actor.canonicalId,
-          name: mention.name ?? mention.actor.displayName ?? mention.actor.canonicalId,
-          key: mention.key,
-        }));
+        message.mentions = resolved.mentions.map(buildNormalizedMention);
       }
     }
   }
@@ -223,12 +270,11 @@ async function enrichNormalizedMessages(params: {
   for (const message of params.messages) {
     const senderName = message.sender_name?.trim();
     if (senderName) {
-      message.sender_id = message.sender_actor?.canonicalId || message.sender_id;
+      applySenderIdentityFields(message);
       continue;
     }
     if (message.sender_actor?.displayName) {
-      message.sender_name = message.sender_actor.displayName;
-      message.sender_id = message.sender_actor.canonicalId || message.sender_id;
+      applySenderIdentityFields(message);
     }
   }
 }
@@ -402,8 +448,7 @@ async function ensureArchivedMessages(params: {
       message.sender_name = getArchiveEntryDisplaySender(existing);
       if (existing.actor) {
         message.sender_actor = existing.actor;
-        message.sender_id = existing.actor.canonicalId || message.sender_id;
-        message.sender_type = existing.actor.senderType || message.sender_type;
+        applySenderIdentityFields(message);
       }
       if (message.msg_type === "nonsupport") message.msg_type = "media_local";
       continue;
