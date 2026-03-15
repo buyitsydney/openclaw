@@ -16,12 +16,14 @@ metadata: { "openclaw": { "emoji": "💬" } }
 - 群 `chat_id`: `oc_xxx`
 - 消息 `message_id`: `om_xxx`
 - 用户 `open_id`: `ou_xxx`
+- 机器人真正用于 `@` 的 `bot_open_id`: 也是 `ou_xxx`
 - `member_id_type`: 默认 `open_id`
 
 硬规则：
 
 - 不得编造 `chat_id` 或 `open_id`
 - 缺少必需 ID 时先查找或询问
+- 绝对不要把 `app_id` / `cli_xxx` 直接填进 `<at user_id="...">`
 - 不得假装不支持的操作已成功
 
 ## 工具表
@@ -59,9 +61,18 @@ message(action="send", channel="feishu", target="oc_xxx|ou_xxx", message="...")
 
 流程：
 
-1. 从 `feishu_chat_members` 或 `feishu_directory` 获取真实 `open_id`
-2. 用 `<at ...>` 组装最终消息
-3. @所有人用 `<at user_id="all">所有人</at>`
+1. **@人**：从 `feishu_chat_members` 或 `feishu_directory` 获取真实 `open_id`
+2. **@bot**：优先使用当前上下文里 `[Bot Identity]` / `[当前群聊回复规则]` 给出的 `bot_open_id`
+3. `bot_open_id` 也是 `ou_xxx`；`app_id` / `cli_xxx` 只用于识别 bot 身份，不可直接拿来 `@`
+4. 用 `<at ...>` 组装最终消息
+5. @所有人用 `<at user_id="all">所有人</at>`
+
+绝对规则：
+
+- `@人` / `@bot` 最终都必须写成 `<at user_id="ou_xxx">名字</at>`
+- 如果你只知道某个 bot 的 `app_id`，但不知道它的 `bot_open_id`，不要瞎填 `<at>`；先使用上下文里已给出的映射，或退化成普通文本 `@名字`
+- 从私聊被要求“去另一个群里 @bot”时，也先看本轮上下文里的 `[Bot Identity]`；不要因为当前会话是私聊就假设拿不到 bot 的 `open_id`
+- `feishu_chat_members` 默认只适合找人类成员，不要把它当成 bot 名录
 
 ## 群管理规则
 

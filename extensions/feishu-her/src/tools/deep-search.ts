@@ -14,6 +14,12 @@ import { join } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
+import {
+  getArchiveEntryDisplaySender,
+  getArchiveEntryDisplayText,
+  normalizeArchiveEntry,
+  type GroupArchiveEntry,
+} from "../group-archive.js";
 import { syncGroupArchivesToMemory } from "../memory-bridge.js";
 import {
   callFeishuApiWithUserToken,
@@ -179,7 +185,9 @@ async function searchDriveKeyword(
     limit: PER_KEYWORD_LIMIT,
     types: ["folder"],
   });
-  const seenTokens = new Set(results.map((item) => item.token).filter((item): item is string => !!item));
+  const seenTokens = new Set(
+    results.map((item) => item.token).filter((item): item is string => !!item),
+  );
   for (const folder of rootFolders) {
     if (seenTokens.has(folder.token)) continue;
     results.push({
@@ -258,14 +266,6 @@ async function searchMinutesKeyword(
 
 // ── Local group archive search ──
 
-type ArchiveEntry = {
-  ts: number;
-  sender: string;
-  senderId: string;
-  text: string;
-  msgId: string;
-};
-
 function resolveGroupArchiveDir(): string {
   const override = process.env.OPENCLAW_STATE_DIR?.trim() || process.env.CLAWDBOT_STATE_DIR?.trim();
   const base = override || join(homedir(), ".openclaw");
@@ -314,26 +314,25 @@ function searchGroupArchives(keyword: string): DeepSearchResult[] {
       if (!line.trim()) continue;
       if (matchCount >= ARCHIVE_MAX_MATCHES_PER_GROUP) break;
       try {
-        const entry = JSON.parse(line) as ArchiveEntry;
-        if (!entry.text?.toLowerCase().includes(lowerKeyword)) continue;
+        const entry = normalizeArchiveEntry(JSON.parse(line) as GroupArchiveEntry);
+        const text = getArchiveEntryDisplayText(entry);
+        if (!text?.toLowerCase().includes(lowerKeyword)) continue;
 
         matchCount++;
-        const idx = entry.text.toLowerCase().indexOf(lowerKeyword);
+        const idx = text.toLowerCase().indexOf(lowerKeyword);
         const start = Math.max(0, idx - ARCHIVE_SNIPPET_RADIUS);
-        const end = Math.min(entry.text.length, idx + keyword.length + ARCHIVE_SNIPPET_RADIUS);
+        const end = Math.min(text.length, idx + keyword.length + ARCHIVE_SNIPPET_RADIUS);
         const snippet =
-          (start > 0 ? "…" : "") +
-          entry.text.slice(start, end) +
-          (end < entry.text.length ? "…" : "");
+          (start > 0 ? "…" : "") + text.slice(start, end) + (end < text.length ? "…" : "");
 
         results.push({
           source: "group_archive",
-          title: `[${chatName}] ${entry.sender}`,
+          title: `[${chatName}] ${getArchiveEntryDisplaySender(entry)}`,
           snippet,
           extra: {
             chat_id: chatId,
             chat_name: chatName,
-            sender: entry.sender,
+            sender: getArchiveEntryDisplaySender(entry),
             sender_id: entry.senderId,
             ts: entry.ts,
             msg_id: entry.msgId,

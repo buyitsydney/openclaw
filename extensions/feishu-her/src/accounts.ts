@@ -6,6 +6,9 @@ export type FeishuCredentialSource = "config" | "env" | "none";
 /** Per-account config stored under channels.feishu.accounts.<id> or channels.feishu.* */
 export type FeishuAccountConfig = {
   name?: string;
+  knownBots?: Record<string, string>;
+  knownBotOpenIds?: Record<string, string>;
+  botOpenId?: string;
   enabled?: boolean;
   appId?: string;
   appSecret?: string;
@@ -35,6 +38,9 @@ export function resolveGroupOwnerIds(accountConfig: FeishuAccountConfig): string
 export type ResolvedFeishuAccount = {
   accountId: string;
   name?: string;
+  knownBots: Record<string, string>;
+  knownBotOpenIds?: Record<string, string>;
+  botOpenId?: string;
   enabled: boolean;
   appId: string;
   appSecret: string;
@@ -44,6 +50,52 @@ export type ResolvedFeishuAccount = {
 
 const ENV_APP_ID = "FEISHU_APP_ID";
 const ENV_APP_SECRET = "FEISHU_APP_SECRET";
+
+function trimIfString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeKnownBots(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+  const normalized: Record<string, string> = {};
+  for (const [appId, label] of Object.entries(value as Record<string, unknown>)) {
+    const normalizedAppId = trimIfString(appId);
+    const normalizedLabel = trimIfString(label);
+    if (!normalizedAppId || !normalizedLabel) continue;
+    normalized[normalizedAppId] = normalizedLabel;
+  }
+  return normalized;
+}
+
+function normalizeKnownBotOpenIds(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+  const normalized: Record<string, string> = {};
+  for (const [openId, appId] of Object.entries(value as Record<string, unknown>)) {
+    const normalizedOpenId = trimIfString(openId);
+    const normalizedAppId = trimIfString(appId);
+    if (!normalizedOpenId || !normalizedAppId) continue;
+    normalized[normalizedOpenId] = normalizedAppId;
+  }
+  return normalized;
+}
+
+export function resolveFeishuAccountLabel(
+  account: Pick<ResolvedFeishuAccount, "accountId" | "name">,
+): string | undefined {
+  const configuredName = trimIfString(account.name);
+  if (configuredName) {
+    return configuredName;
+  }
+  const accountId = trimIfString(account.accountId);
+  if (!accountId || accountId === DEFAULT_ACCOUNT_ID) {
+    return undefined;
+  }
+  return accountId;
+}
 
 function getChannelSection(cfg: OpenClawConfig): Record<string, unknown> | undefined {
   return cfg.channels?.["feishu"] as Record<string, unknown> | undefined;
@@ -115,9 +167,24 @@ export function resolveFeishuAccount(params: {
     }
   }
 
+  const name = trimIfString(merged.name) || undefined;
+  const knownBots = normalizeKnownBots(merged.knownBots);
+  const knownBotOpenIds = normalizeKnownBotOpenIds(merged.knownBotOpenIds);
+  const botOpenId = trimIfString(merged.botOpenId) || undefined;
+  const label = resolveFeishuAccountLabel({ accountId, name });
+  if (appId && label) {
+    knownBots[appId] = label;
+  }
+  if (appId && botOpenId) {
+    knownBotOpenIds[botOpenId] = appId;
+  }
+
   return {
     accountId,
-    name: merged.name?.trim() || undefined,
+    name,
+    knownBots,
+    knownBotOpenIds,
+    botOpenId,
     enabled,
     appId,
     appSecret,

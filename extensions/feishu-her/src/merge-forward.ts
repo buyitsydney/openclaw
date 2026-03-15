@@ -1,5 +1,6 @@
 import type { ChannelLogSink } from "openclaw/plugin-sdk";
 import type { ResolvedFeishuAccount } from "./accounts.js";
+import { parseFeishuInteractiveText, parseFeishuPostText } from "./feishu-message.js";
 import { createArchiveTextForBuffer } from "./group-archive.js";
 import { formatFeishuAtText } from "./mention-text.js";
 import { getCachedMessageText } from "./message-text-cache.js";
@@ -56,77 +57,25 @@ function parseJsonContent(content: string): Record<string, unknown> | null {
 }
 
 function extractPostText(parsed: Record<string, unknown>): ExpandedFeishuContent {
-  const zhCn = parsed.zh_cn as Record<string, unknown> | undefined;
-  const enUs = parsed.en_us as Record<string, unknown> | undefined;
-  const body = (
-    Array.isArray(parsed.content) ? parsed : (zhCn ?? enUs ?? Object.values(parsed)[0])
-  ) as Record<string, unknown> | undefined;
-  const content = body?.content as Array<Array<Record<string, unknown>>> | undefined;
-  if (!Array.isArray(content)) {
-    return {
-      text: JSON.stringify(parsed),
-      coverage: "partial",
-    };
-  }
-
-  const lines: string[] = [];
-  let coverage: ExpandedFeishuContent["coverage"] = "full";
-  for (const paragraph of content) {
-    const parts: string[] = [];
-    for (const el of paragraph) {
-      if (el.tag === "text") parts.push(String(el.text ?? ""));
-      else if (el.tag === "a") parts.push(`[${el.text ?? ""}](${el.href ?? ""})`);
-      else if (el.tag === "at")
-        parts.push(formatFeishuAtText({ userId: el.user_id, userName: el.user_name }));
-      else if (el.tag === "img") {
-        parts.push("[image]");
-        coverage = "partial";
-      } else if (el.tag === "media") {
-        parts.push(`[video:${el.file_name ?? el.file_key ?? ""}]`);
-        coverage = "partial";
-      } else if (el.tag === "emotion") {
-        parts.push(el.emoji_type ? `[${String(el.emoji_type)}]` : "[emotion]");
-      } else if (el.tag) {
-        coverage = "partial";
-      }
-    }
-    lines.push(parts.join(""));
-  }
-  const title =
-    typeof body?.title === "string" && body.title.trim() ? `${body.title.trim()}\n` : "";
+  const parsedContent = parseFeishuPostText(parsed, {
+    imagePlaceholder: "[image]",
+    mediaPlaceholder: "[video]",
+    collectEmbeddedFiles: false,
+  });
   return {
-    text: `${title}${lines.join("\n")}`.trim() || null,
-    coverage,
+    text: parsedContent.text.withoutFooter || null,
+    coverage: parsedContent.coverage,
   };
 }
 
 function extractInteractiveText(parsed: Record<string, unknown>): ExpandedFeishuContent {
-  const rows = parsed.elements as Array<Array<Record<string, unknown>>> | undefined;
-  if (!Array.isArray(rows)) {
-    return {
-      text: "[interactive card — content degraded by API, cannot recover full text]",
-      coverage: "none",
-    };
-  }
-
-  const lines: string[] = [];
-  let coverage: ExpandedFeishuContent["coverage"] = "partial";
-  for (const row of rows) {
-    const parts: string[] = [];
-    for (const el of row) {
-      if (el.tag === "text" || el.tag === "a") parts.push(String(el.text ?? ""));
-      else if (el.tag === "at")
-        parts.push(formatFeishuAtText({ userId: el.user_id, userName: el.user_name }));
-      else if (el.tag === "img") parts.push("[image]");
-    }
-    if (parts.length > 0) lines.push(parts.join(""));
-  }
-
+  const parsedContent = parseFeishuInteractiveText(parsed, {
+    imagePlaceholder: "[image]",
+    placeholderText: "[interactive card — content degraded by API, cannot recover full text]",
+  });
   return {
-    text:
-      lines.join("\n").trim() ||
-      "[interactive card — content degraded by API, cannot recover full text]",
-    coverage,
+    text: parsedContent.text.withoutFooter || null,
+    coverage: parsedContent.coverage,
   };
 }
 
@@ -181,6 +130,7 @@ async function fetchMessageItemsViaBotClient(
   const client = getFeishuClient(account);
   const response = (await client.im.message.get({
     path: { message_id: messageId },
+    params: { user_id_type: "open_id" },
   })) as {
     code?: number;
     msg?: string;

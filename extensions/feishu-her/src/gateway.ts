@@ -6,7 +6,7 @@
  */
 
 import crypto from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { homedir } from "node:os";
 import { join, dirname, extname } from "node:path";
@@ -20,10 +20,38 @@ import type {
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { resolveGroupOwnerIds } from "./accounts.js";
 import { buildDriveFileContextFromText } from "./drive-file-read.js";
-import { archiveGroupMessage, archiveSentFeishuBinaryMessage } from "./group-archive.js";
+import {
+  applyFeishuKnownBotDisplayName,
+  buildFeishuActorFromApiSender,
+  buildFeishuBotActorFromAccount,
+  buildFeishuActorFromEventSender,
+  buildFeishuTextPayload,
+  formatFeishuActorLabel,
+  parseFeishuMentions,
+  parseFeishuInteractiveText,
+  parseFeishuMessageContent,
+  parseFeishuPostText,
+  renderFeishuQuotedContext,
+  renderFeishuQuotedReplyBody,
+  renderFeishuRecentContextLine,
+  renderFeishuTextWithMentions,
+  resolveFeishuMessageActors,
+  stripFeishuStatusFooter,
+  type FeishuActorRef,
+  type FeishuMentionRef,
+  type FeishuTextPayload,
+} from "./feishu-message.js";
+import {
+  archiveGroupMessage,
+  archiveSentFeishuBinaryMessage,
+  archiveSentFeishuTextMessage,
+  loadArchiveEntries,
+  normalizeArchiveEntry,
+} from "./group-archive.js";
 import { formatFeishuAtText } from "./mention-text.js";
 import { expandFetchedMessageItem, type FeishuFetchedMessageItem } from "./merge-forward.js";
-import { cacheMessageText } from "./message-text-cache.js";
+import { buildFeishuReplyRef, buildFeishuReplyRefFromSentMessage } from "./message-metadata.js";
+import { cacheMessageText, getCachedMessageText } from "./message-text-cache.js";
 import { rewriteModelShortcutCommand } from "./model-shortcuts.js";
 import {
   callFeishuApiWithUserToken,
@@ -34,25 +62,26 @@ import {
   getFeishuClient,
   sendFeishuText,
   sendFeishuRichText,
-  sendFeishuReply,
+  sendFeishuRichTextDetailed,
+  sendFeishuReplyDetailed,
   createFeishuCardStream,
   formatFeishuUserFacingText,
   uploadFeishuImage,
-  sendFeishuImage,
+  sendFeishuImageDetailed,
   uploadFeishuAudio,
-  sendFeishuAudio,
+  sendFeishuAudioDetailed,
   uploadFeishuFile,
-  sendFeishuFile,
-  sendFeishuVideo,
+  sendFeishuFileDetailed,
+  sendFeishuVideoDetailed,
   downloadFeishuImage,
   downloadFeishuFile,
-  getBotOpenId,
   getFeishuChatName,
   addFeishuReaction,
   removeFeishuReaction,
   type FeishuCardStream,
 } from "./outbound.js";
 import { getFeishuRuntime } from "./runtime.js";
+import { recordSentMessage } from "./sent-message-log.js";
 import {
   accumulateGroupedReplyText,
   buildFeishuStatusFooter,
@@ -353,132 +382,6 @@ function cacheCardText(messageId: string, text: string): void {
   scheduleCardCacheFlush();
 }
 
-// ── Sent message log (persistent) ────────────────────────────────────────
-// Track message IDs of bot-sent messages per chat so AI tools can recall them.
-// Same persistence pattern as cardTextCache: Map + debounce flush + load on start.
-
-type SentMessageEntry = { messageId: string; sentAt: number; preview?: string };
-const sentMessageLog = new Map<string, SentMessageEntry[]>();
-const SENT_MSG_MAX = 200;
-const SENT_MSG_TTL_MS = 24 * 60 * 60 * 1000; // 24h — matches Feishu's bot recall limit
-const SENT_MSG_FILE = join(homedir(), ".openclaw", "feishu-sent-messages.json");
-
-let sentMsgDiskLoaded = false;
-
-function loadSentMessageLog(): void {
-  if (sentMsgDiskLoaded) return;
-  sentMsgDiskLoaded = true;
-  try {
-    if (!existsSync(SENT_MSG_FILE)) return;
-    const raw = readFileSync(SENT_MSG_FILE, "utf-8");
-    const entries: Array<[string, SentMessageEntry[]]> = JSON.parse(raw);
-    const now = Date.now();
-    for (const [chatId, msgs] of entries) {
-      const valid = msgs.filter((m) => now - m.sentAt < SENT_MSG_TTL_MS);
-      if (valid.length > 0) sentMessageLog.set(chatId, valid);
-    }
-  } catch {
-    // Corrupt or missing file — start fresh.
-  }
-}
-
-let sentMsgFlushTimer: ReturnType<typeof setTimeout> | undefined;
-
-function flushSentMessageLog(): void {
-  try {
-    const now = Date.now();
-    for (const [chatId, msgs] of sentMessageLog) {
-      const valid = msgs.filter((m) => now - m.sentAt < SENT_MSG_TTL_MS);
-      if (valid.length === 0) sentMessageLog.delete(chatId);
-      else sentMessageLog.set(chatId, valid);
-    }
-    const dir = dirname(SENT_MSG_FILE);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(SENT_MSG_FILE, JSON.stringify([...sentMessageLog.entries()]), "utf-8");
-  } catch {
-    // Best-effort persistence.
-  }
-}
-
-function scheduleSentMsgFlush(): void {
-  if (sentMsgFlushTimer) return;
-  sentMsgFlushTimer = setTimeout(() => {
-    sentMsgFlushTimer = undefined;
-    flushSentMessageLog();
-  }, 2000);
-}
-
-export function recordSentMessage(chatId: string, messageId: string, preview?: string): void {
-  loadSentMessageLog();
-  const renderedPreview = preview ? formatFeishuUserFacingText(preview) : undefined;
-  let list = sentMessageLog.get(chatId);
-  if (!list) {
-    list = [];
-    sentMessageLog.set(chatId, list);
-  }
-  const trimmedPreview = renderedPreview?.slice(0, 60).replace(/\n/g, " ");
-  list.push({
-    messageId,
-    sentAt: Date.now(),
-    ...(trimmedPreview ? { preview: trimmedPreview } : {}),
-  });
-  // Enforce global max: count all entries across chats, drop oldest.
-  let total = 0;
-  for (const msgs of sentMessageLog.values()) total += msgs.length;
-  if (total > SENT_MSG_MAX) {
-    const all: Array<{ chatId: string; idx: number; sentAt: number }> = [];
-    for (const [cid, msgs] of sentMessageLog) {
-      for (let i = 0; i < msgs.length; i++)
-        all.push({ chatId: cid, idx: i, sentAt: msgs[i].sentAt });
-    }
-    all.sort((a, b) => a.sentAt - b.sentAt);
-    const toDrop = all.slice(0, total - SENT_MSG_MAX);
-    // Group drops by chatId for efficient removal.
-    const dropIndices = new Map<string, Set<number>>();
-    for (const d of toDrop) {
-      let s = dropIndices.get(d.chatId);
-      if (!s) {
-        s = new Set();
-        dropIndices.set(d.chatId, s);
-      }
-      s.add(d.idx);
-    }
-    for (const [cid, indices] of dropIndices) {
-      const msgs = sentMessageLog.get(cid);
-      if (!msgs) continue;
-      const kept = msgs.filter((_, i) => !indices.has(i));
-      if (kept.length === 0) sentMessageLog.delete(cid);
-      else sentMessageLog.set(cid, kept);
-    }
-  }
-  scheduleSentMsgFlush();
-}
-
-/** Get recent bot-sent message IDs for a chat (newest first). */
-export function getRecentSentMessages(chatId: string, count = 10): SentMessageEntry[] {
-  loadSentMessageLog();
-  const now = Date.now();
-  const list = (sentMessageLog.get(chatId) ?? []).filter((m) => now - m.sentAt < SENT_MSG_TTL_MS);
-  return list.slice(-Math.min(count, 50)).reverse();
-}
-
-/** Remove a message from the sent-message log (after successful recall).
- *  If chatId is provided, searches only that chat; otherwise scans all chats. */
-export function removeSentMessage(chatId: string | undefined, messageId: string): void {
-  loadSentMessageLog();
-  const chatsToSearch = chatId ? [chatId] : Array.from(sentMessageLog.keys());
-  for (const cid of chatsToSearch) {
-    const list = sentMessageLog.get(cid);
-    if (!list) continue;
-    const idx = list.findIndex((m) => m.messageId === messageId);
-    if (idx === -1) continue;
-    list.splice(idx, 1);
-    if (list.length === 0) sentMessageLog.delete(cid);
-    scheduleSentMsgFlush();
-    return;
-  }
-}
-
 // ── Quoted message content retrieval (im.message.get) ───────────────────
 // When a user replies to a message, Feishu sends parent_id (the quoted msg).
 // We fetch its content so the AI has the full context of what was quoted.
@@ -486,9 +389,11 @@ export function removeSentMessage(chatId: string | undefined, messageId: string)
 export type FeishuMessageInfo = {
   messageId: string;
   chatId: string;
-  senderId?: string;
+  sender: FeishuActorRef;
   content: string;
+  textParts: FeishuTextPayload;
   contentType: string;
+  attachments: Array<{ kind: string; imageKey?: string }>;
   /** Image keys found in the quoted message (for downstream download). */
   imageKeys?: string[];
 };
@@ -519,6 +424,7 @@ async function fetchMessageItemsViaBotClient(
   const client = getFeishuClient(account);
   const response = (await client.im.message.get({
     path: { message_id: messageId },
+    params: { user_id_type: "open_id" },
   })) as {
     code?: number;
     msg?: string;
@@ -530,6 +436,22 @@ async function fetchMessageItemsViaBotClient(
     );
   }
   return Array.isArray(response.data?.items) ? response.data.items : [];
+}
+
+async function fetchCanonicalMessageItem(params: {
+  account: ResolvedFeishuAccount;
+  messageId: string;
+  log?: ChannelLogSink;
+}): Promise<FeishuFetchedMessageItem | null> {
+  try {
+    const items = await fetchMessageItemsViaBotClient(params.account, params.messageId);
+    return items[0] ?? null;
+  } catch (err) {
+    params.log?.error(
+      `[${params.account.accountId}] message.get canonicalization failed for ${params.messageId}: ${String(err)}`,
+    );
+    return null;
+  }
 }
 
 async function buildMergeForwardSourceAccess(params: {
@@ -551,6 +473,7 @@ async function buildMergeForwardSourceAccess(params: {
         method: "GET",
         endpoint: `/im/v1/messages/${messageId}`,
         userToken: token.access_token,
+        query: { user_id_type: "open_id" },
       });
       if (response.code === 0) {
         return (response.data?.items ?? []) as FeishuFetchedMessageItem[];
@@ -582,14 +505,21 @@ async function buildMergeForwardSourceAccess(params: {
 async function getQuotedMessageContent(params: {
   account: ResolvedFeishuAccount;
   parentMessageId: string;
+  currentChatId?: string;
   log?: ChannelLogSink;
   mergeForwardSourceAccess?: MergeForwardSourceAccess;
 }): Promise<FeishuMessageInfo | null> {
   const { account, parentMessageId, log } = params;
+  const archivedQuotedEntry =
+    params.currentChatId?.startsWith("oc_") && params.currentChatId
+      ? loadArchiveEntries(params.currentChatId).get(parentMessageId)
+      : undefined;
+  const archivedQuoted = archivedQuotedEntry ? normalizeArchiveEntry(archivedQuotedEntry) : null;
   try {
     const client = getFeishuClient(account);
     const response = (await client.im.message.get({
       path: { message_id: parentMessageId },
+      params: { user_id_type: "open_id" },
     })) as {
       code?: number;
       data?: { items?: FeishuFetchedMessageItem[] };
@@ -598,59 +528,135 @@ async function getQuotedMessageContent(params: {
     const items = Array.isArray(response?.data?.items) ? response.data.items : [];
     const item = items[0];
     if (!item) return null;
-    let content: string = item.body?.content ?? "";
-    const quotedImageKeys: string[] = [];
-    if (item.msg_type === "merge_forward") {
-      content = MERGE_FORWARD_DISABLED_TEXT;
-    } else {
-      try {
-        const parsed = JSON.parse(content);
-        if (item.msg_type === "text" && parsed.text) {
-          content = parsed.text;
-        } else if (item.msg_type === "post") {
-          // Handle both flat format and locale-wrapped format.
-          content = extractPostText(parsed, quotedImageKeys) ?? content;
-        } else if (item.msg_type === "interactive") {
-          // CardKit streaming cards return degraded body via im.message.get.
-          // Primary: look up cached final text (we cached it when the stream finished).
-          loadCardCacheFromDisk();
-          const cached = cardTextCache.get(parentMessageId);
-          if (cached) {
-            content = cached.text;
-            log?.info(`[${account.accountId}] quoted interactive msg resolved from cache`);
-          } else {
-            // Fallback: extract text from the degraded legacy element structure.
-            content = flattenInteractiveBody(parsed, quotedImageKeys) ?? content;
-            log?.info(`[${account.accountId}] quoted interactive msg fallback parse (cache miss)`);
-          }
-        } else if (item.msg_type === "image") {
-          // Standalone image message: collect key for downstream download.
-          if (parsed.image_key) {
-            quotedImageKeys.push(parsed.image_key);
-          }
-          content = "[image]";
-        } else if (
-          item.msg_type === "file" ||
-          item.msg_type === "audio" ||
-          item.msg_type === "media" ||
-          item.msg_type === "video"
-        ) {
-          const expanded = await expandFetchedMessageItem({ account, item, log });
-          if (expanded.text) content = expanded.text;
-        }
-      } catch {
-        // Keep raw content if parsing fails.
+    let msgType = item.msg_type ?? "text";
+    let parsedContent = parseFeishuMessageContent({
+      content: item.body?.content ?? "",
+      msgType,
+    });
+    if (msgType === "interactive") {
+      loadCardCacheFromDisk();
+      const cachedText =
+        cardTextCache.get(parentMessageId)?.text ??
+        getCachedMessageText(parentMessageId) ??
+        (archivedQuoted?.textParts?.withoutFooter || archivedQuoted?.text || undefined);
+      if (cachedText) {
+        parsedContent = {
+          ...parsedContent,
+          rawText: cachedText,
+          text: buildFeishuTextPayload(cachedText),
+          attachments: [],
+          imageKeys: [],
+        };
+        log?.info(`[${account.accountId}] quoted interactive msg resolved from cache/archive`);
+      } else {
+        parsedContent = {
+          ...parsedContent,
+          attachments: [],
+          imageKeys: [],
+        };
+        log?.info(`[${account.accountId}] quoted interactive msg fallback parse (cache miss)`);
+      }
+    } else if (
+      msgType === "file" ||
+      msgType === "audio" ||
+      msgType === "media" ||
+      msgType === "video"
+    ) {
+      const expanded = await expandFetchedMessageItem({ account, item, log });
+      if (expanded.text) {
+        parsedContent = {
+          ...parsedContent,
+          rawText: expanded.text,
+          text: buildFeishuTextPayload(expanded.text),
+          coverage: expanded.coverage,
+        };
       }
     }
+    let sender = buildFeishuActorFromApiSender(item.sender);
+    let mentionsResolved = parseFeishuMentions((item as { mentions?: unknown }).mentions);
+    const chatId = item.chat_id ?? "";
+    const resolvedActors = await resolveFeishuMessageActors({
+      account,
+      sender,
+      mentions: mentionsResolved,
+      chatId,
+      log,
+    });
+    sender = resolvedActors.sender;
+    mentionsResolved = resolvedActors.mentions;
+    if (archivedQuoted) {
+      if (archivedQuoted.actor) {
+        sender = applyFeishuKnownBotDisplayName(archivedQuoted.actor, account);
+      }
+      if (archivedQuoted.mentions?.length) {
+        mentionsResolved = parseFeishuMentions(
+          archivedQuoted.mentions.map((mention) => ({
+            key: mention.key,
+            id: mention.id,
+            name: mention.name,
+          })),
+        );
+      }
+      if (archivedQuoted.attachments) {
+        parsedContent = {
+          ...parsedContent,
+          attachments: archivedQuoted.attachments.map((attachment) => ({ ...attachment })),
+          imageKeys: archivedQuoted.attachments
+            .map((attachment) => attachment.imageKey)
+            .filter((imageKey): imageKey is string => Boolean(imageKey)),
+        };
+      }
+      if (archivedQuoted.textParts) {
+        parsedContent = {
+          ...parsedContent,
+          rawText: archivedQuoted.textParts.raw || archivedQuoted.text,
+          text: archivedQuoted.textParts,
+        };
+      }
+      if (archivedQuoted.messageType) {
+        msgType = archivedQuoted.messageType;
+      }
+    }
+    const content = renderFeishuTextWithMentions({
+      text: parsedContent.text.withoutFooter,
+      mentions: mentionsResolved,
+    });
+    const quotedImageKeys = parsedContent.attachments
+      .filter((attachment) => attachment.kind === "image" || attachment.kind === "post_image")
+      .map((attachment) => attachment.imageKey)
+      .filter((imageKey): imageKey is string => Boolean(imageKey));
     return {
       messageId: item.message_id ?? parentMessageId,
-      chatId: item.chat_id ?? "",
-      senderId: item.sender?.id,
+      chatId,
+      sender,
       content,
-      contentType: item.msg_type ?? "text",
+      textParts: {
+        ...parsedContent.text,
+        normalized: content,
+        withoutFooter: content,
+      },
+      contentType: msgType,
+      attachments: parsedContent.attachments.map((attachment) => ({
+        kind: attachment.kind,
+        ...(attachment.imageKey && { imageKey: attachment.imageKey }),
+      })),
       imageKeys: quotedImageKeys.length > 0 ? quotedImageKeys : undefined,
     };
   } catch (err) {
+    if (archivedQuoted) {
+      return {
+        messageId: archivedQuoted.msgId || parentMessageId,
+        chatId: params.currentChatId ?? "",
+        sender: applyFeishuKnownBotDisplayName(
+          archivedQuoted.actor ?? buildFeishuActorFromApiSender({ id: archivedQuoted.senderId }),
+          account,
+        ),
+        content: archivedQuoted.textParts?.withoutFooter || archivedQuoted.text,
+        textParts: archivedQuoted.textParts ?? buildFeishuTextPayload(archivedQuoted.text),
+        contentType: archivedQuoted.messageType ?? "text",
+        attachments: archivedQuoted.attachments ?? [],
+      };
+    }
     const permErr = extractPermissionError(err);
     if (permErr) {
       log?.info(
@@ -752,41 +758,6 @@ function trackMessageId(messageId: string): boolean {
   return true;
 }
 
-/** Flatten a post body ({ title?, content: [[{tag,text}, ...]] }) into plain text.
- *  Also collects any embedded image_key values for downstream download. */
-// oxlint-disable-next-line typescript/no-explicit-any
-function flattenPostBody(
-  body: any,
-  imageKeys?: string[],
-  fileInfo?: FeishuFileInfo[],
-): string | null {
-  if (!body || !Array.isArray(body.content)) return null;
-  const lines: string[] = [];
-  for (const paragraph of body.content) {
-    if (!Array.isArray(paragraph)) continue;
-    let line = "";
-    for (const el of paragraph) {
-      if (el.tag === "text" || el.tag === "a") line += el.text ?? "";
-      else if (el.tag === "at")
-        line += formatFeishuAtText({ userId: el.user_id, userName: el.user_name });
-      else if (el.tag === "img") {
-        // Collect image keys for download; replace with placeholder in text.
-        if (el.image_key && imageKeys) imageKeys.push(el.image_key);
-        line += "<media:image>";
-      } else if (el.tag === "media") {
-        // Embedded video in rich-text: collect cover + file for download.
-        if (el.image_key && imageKeys) imageKeys.push(el.image_key);
-        if (el.file_key && fileInfo)
-          fileInfo.push({ fileKey: el.file_key, fileName: el.file_name ?? "video" });
-        line += "[video]";
-      } else if (el.tag === "emotion") line += el.emoji_type ? `[${el.emoji_type}]` : "";
-    }
-    lines.push(line);
-  }
-  const title = typeof body.title === "string" && body.title ? `${body.title}\n` : "";
-  return `${title}${lines.join("\n")}`.trim() || null;
-}
-
 /** Extract plain text from a Feishu "post" (rich-text) message.
  *  Received format: { title?, content: [[...]] }  (flat, no locale wrapper)
  *  Send format:     { zh_cn: { title?, content: [[...]] } }  (locale-wrapped)
@@ -797,15 +768,13 @@ function extractPostText(
   imageKeys?: string[],
   fileInfo?: FeishuFileInfo[],
 ): string | null {
-  // Received messages use the flat format (title + content at top level).
-  if (Array.isArray(parsed.content)) {
-    return flattenPostBody(parsed, imageKeys, fileInfo);
-  }
-  // Fallback: locale-wrapped format (zh_cn / en_us / first key).
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const locales = parsed as Record<string, any>;
-  const locale = locales.zh_cn ?? locales.en_us ?? Object.values(locales)[0];
-  return flattenPostBody(locale, imageKeys, fileInfo);
+  const parsedContent = parseFeishuPostText(parsed, {
+    imagePlaceholder: "<media:image>",
+    mediaPlaceholder: "[video]",
+  });
+  if (imageKeys) imageKeys.push(...parsedContent.imageKeys);
+  if (fileInfo) fileInfo.push(...parsedContent.fileInfo);
+  return parsedContent.text.withoutFooter || null;
 }
 
 /** Extract text from an interactive (card) message's degraded body.
@@ -815,34 +784,14 @@ function extractPostText(
  *  Returns null if the structure is unrecognisable (caller falls back to raw content). */
 // oxlint-disable-next-line typescript/no-explicit-any
 function flattenInteractiveBody(parsed: any, imageKeys?: string[]): string | null {
-  if (!parsed?.elements || !Array.isArray(parsed.elements)) {
+  const parsedContent = parseFeishuInteractiveText(parsed, {
+    imagePlaceholder: "<media:image>",
+  });
+  if (imageKeys) imageKeys.push(...parsedContent.imageKeys);
+  if (parsedContent.coverage === "none") {
     return null;
   }
-  const lines: string[] = [];
-  for (const row of parsed.elements) {
-    if (!Array.isArray(row)) {
-      continue;
-    }
-    let line = "";
-    for (const el of row) {
-      if (el.tag === "text" || el.tag === "a") {
-        line += el.text ?? "";
-      } else if (el.tag === "at") {
-        line += formatFeishuAtText({ userId: el.user_id, userName: el.user_name });
-      } else if (el.tag === "img" && el.image_key) {
-        if (imageKeys) {
-          imageKeys.push(el.image_key);
-        }
-        line += "<media:image>";
-      }
-      // Skip buttons, hr, select, date_picker, overflow, note — UI-only elements.
-    }
-    if (line.trim()) {
-      lines.push(line);
-    }
-  }
-  const title = typeof parsed.title === "string" && parsed.title ? `${parsed.title}\n` : "";
-  return `${title}${lines.join("\n")}`.trim() || null;
+  return parsedContent.text.withoutFooter || null;
 }
 
 /** File attachment info extracted from a Feishu file message. */
@@ -860,48 +809,18 @@ function extractTextContent(
   imageKeys?: string[],
   fileInfo?: FeishuFileInfo[],
 ): string | null {
-  try {
-    const parsed = JSON.parse(content);
-    if (msgType === "text") {
-      return (parsed.text as string) ?? null;
-    }
-    // Rich-text (post) messages: flatten nested paragraphs into plain text.
-    // Embedded img/media tags have their keys collected for download.
-    if (msgType === "post") {
-      return extractPostText(parsed, imageKeys, fileInfo);
-    }
-    // Standalone image messages: collect image_key for download.
-    if (msgType === "image") {
-      if (parsed.image_key && imageKeys) imageKeys.push(parsed.image_key);
-      return null; // Handled in handleInboundMessage.
-    }
-    // File attachments (PPT, PDF, images-as-files, etc.): collect for download.
-    if (msgType === "file") {
-      if (parsed.file_key && fileInfo) {
-        fileInfo.push({ fileKey: parsed.file_key, fileName: parsed.file_name ?? "unknown" });
-      }
-      return null; // Handled in handleInboundMessage.
-    }
-    // Video messages: cover image for vision + video file for download.
-    if (msgType === "media") {
-      if (parsed.image_key && imageKeys) imageKeys.push(parsed.image_key);
-      if (parsed.file_key && fileInfo) {
-        fileInfo.push({ fileKey: parsed.file_key, fileName: parsed.file_name ?? "video" });
-      }
-      return null; // Handled in handleInboundMessage.
-    }
-    // Audio/voice messages: collect file_key for download (triggers STT pipeline).
-    if (msgType === "audio") {
-      if (parsed.file_key && fileInfo) {
-        fileInfo.push({ fileKey: parsed.file_key, fileName: parsed.file_name ?? "voice.ogg" });
-      }
-      return null; // Handled in handleInboundMessage via file download.
-    }
-    if (msgType === "sticker") return "[sticker]";
-    return null;
-  } catch {
+  const parsedContent = parseFeishuMessageContent({
+    content,
+    msgType,
+    imagePlaceholder: "<media:image>",
+    mediaPlaceholder: "[video]",
+  });
+  if (imageKeys) imageKeys.push(...parsedContent.imageKeys);
+  if (fileInfo) fileInfo.push(...parsedContent.fileInfo);
+  if (msgType === "image" || msgType === "file" || msgType === "media" || msgType === "audio") {
     return null;
   }
+  return parsedContent.text.withoutFooter || null;
 }
 
 export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<void> {
@@ -959,106 +878,167 @@ type FeishuMention = { key: string; id: string; name?: string };
  *  not a plain string. We extract the open_id for comparison. */
 // oxlint-disable-next-line typescript/no-explicit-any
 function parseMentions(message: any): FeishuMention[] {
-  const raw = message?.mentions;
-  if (!Array.isArray(raw)) return [];
-  return (
-    raw
-      // oxlint-disable-next-line typescript/no-explicit-any
-      .filter((m: any) => m.key && m.id)
-      // oxlint-disable-next-line typescript/no-explicit-any
-      .map((m: any) => ({
-        key: m.key as string,
-        // SDK gives id as { open_id, union_id, user_id } object — extract open_id.
-        id:
-          typeof m.id === "object" && m.id?.open_id ? (m.id.open_id as string) : String(m.id ?? ""),
-        name: m.name as string | undefined,
-      }))
-  );
-}
-
-/** Extract sender name from Feishu event.
- *  Tries various SDK fields; falls back to senderId. */
-// oxlint-disable-next-line typescript/no-explicit-any
-function extractSenderName(sender: any): string {
-  return sender?.sender_id?.name ?? sender?.sender_id?.id ?? sender?.sender_id?.open_id ?? "";
-}
-
-type FeishuChatMemberListItem = {
-  member_id?: string;
-  name?: string;
-};
-
-type FeishuChatMemberListData = {
-  items?: FeishuChatMemberListItem[];
-  has_more?: boolean;
-  page_token?: string;
-};
-
-async function listFeishuChatMemberNamesByIdType(params: {
-  account: ResolvedFeishuAccount;
-  chatId: string;
-  memberIdType: "open_id";
-}): Promise<Map<string, string>> {
-  const nameMap = new Map<string, string>();
-  let pageToken: string | undefined;
-
-  do {
-    const result = await callChatApi<FeishuChatMemberListData>({
-      account: params.account,
-      method: "GET",
-      endpoint: `/im/v1/chats/${params.chatId}/members`,
-      query: {
-        member_id_type: params.memberIdType,
-        page_size: 100,
-        page_token: pageToken,
-      },
-    });
-
-    if (!result.ok) {
-      throw new Error(
-        `list_chat_members_failed:${params.memberIdType}:code=${result.code} msg=${result.msg}`,
-      );
-    }
-
-    for (const item of result.data?.items ?? []) {
-      const memberId = item.member_id?.trim();
-      const name = item.name?.trim();
-      if (memberId && name) {
-        nameMap.set(memberId, name);
-      }
-    }
-
-    pageToken = result.data?.has_more ? result.data.page_token?.trim() || undefined : undefined;
-  } while (pageToken);
-
-  return nameMap;
-}
-
-async function resolveInjectedGroupSenderNames(params: {
-  account: ResolvedFeishuAccount;
-  chatId: string;
-}): Promise<Map<string, string>> {
-  return listFeishuChatMemberNamesByIdType({
-    account: params.account,
-    chatId: params.chatId,
-    memberIdType: "open_id",
-  });
+  return parseFeishuMentions(message?.mentions).map((mention) => ({
+    key: mention.key,
+    id: mention.actor.canonicalId,
+    name: mention.name,
+  }));
 }
 
 function stripInjectedStatusFooter(text: string): string {
-  // Drop the synthetic status footer that our own bot appends to group replies.
-  return text.replace(/\n{2}🧠 [^\n]+$/u, "");
+  return stripFeishuStatusFooter(text);
 }
 
-function buildCurrentGroupReplyRuleText(params: {
+type FeishuBotIdentityPromptAccount = Pick<
+  ResolvedFeishuAccount,
+  "appId" | "accountId" | "name" | "knownBots" | "knownBotOpenIds" | "botOpenId"
+>;
+
+function resolveBotOpenIdForPrompt(
+  account: FeishuBotIdentityPromptAccount,
+  appId: string,
+): string | undefined {
+  const normalizedAppId = appId.trim();
+  if (!normalizedAppId) {
+    return undefined;
+  }
+  if (normalizedAppId === account.appId) {
+    const selfBotOpenId = account.botOpenId?.trim();
+    return selfBotOpenId || undefined;
+  }
+  for (const [openId, mappedAppId] of Object.entries(account.knownBotOpenIds ?? {})) {
+    if (mappedAppId.trim() !== normalizedAppId) {
+      continue;
+    }
+    const normalizedOpenId = openId.trim();
+    if (normalizedOpenId) {
+      return normalizedOpenId;
+    }
+  }
+  return undefined;
+}
+
+type FeishuKnownBotPromptTarget = {
+  name: string;
+  appId: string;
+  openId?: string;
+};
+
+function listKnownBotPromptTargets(
+  account: FeishuBotIdentityPromptAccount,
+): FeishuKnownBotPromptTarget[] {
+  const selfLabel = account.name || account.accountId;
+  const targets: FeishuKnownBotPromptTarget[] = [
+    {
+      name: selfLabel,
+      appId: account.appId,
+      openId: account.botOpenId?.trim() || undefined,
+    },
+  ];
+  for (const [appId, name] of Object.entries(account.knownBots)) {
+    if (appId === account.appId) {
+      continue;
+    }
+    targets.push({
+      name,
+      appId,
+      openId: resolveBotOpenIdForPrompt(account, appId),
+    });
+  }
+  return targets;
+}
+
+type FeishuBotIdentityPromptOptions = {
+  focusText?: string;
+  maxOtherBots?: number;
+};
+
+function normalizeFeishuBotPromptFocus(text?: string): string {
+  return text?.trim().toLowerCase() || "";
+}
+
+function matchesFeishuBotPromptFocus(
+  bot: FeishuKnownBotPromptTarget,
+  normalizedFocus: string,
+): boolean {
+  if (!normalizedFocus) {
+    return false;
+  }
+  for (const candidate of [bot.name, bot.appId, bot.openId]) {
+    const normalizedCandidate = candidate?.trim().toLowerCase();
+    if (normalizedCandidate && normalizedFocus.includes(normalizedCandidate)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function selectFeishuBotPromptTargets(
+  account: FeishuBotIdentityPromptAccount,
+  options?: FeishuBotIdentityPromptOptions,
+): FeishuKnownBotPromptTarget[] {
+  const [selfBot, ...otherBots] = listKnownBotPromptTargets(account);
+  const normalizedFocus = normalizeFeishuBotPromptFocus(options?.focusText);
+  const maxOtherBots = Math.max(0, options?.maxOtherBots ?? 8);
+  const focusedBots = normalizedFocus
+    ? otherBots.filter((bot) => matchesFeishuBotPromptFocus(bot, normalizedFocus))
+    : [];
+  return selfBot
+    ? [selfBot, ...focusedBots.slice(0, maxOtherBots)]
+    : focusedBots.slice(0, maxOtherBots);
+}
+
+export function buildFeishuBotIdentityBlock(
+  account: FeishuBotIdentityPromptAccount,
+  options?: FeishuBotIdentityPromptOptions,
+): string {
+  const lines: string[] = ["[Bot Identity]"];
+  const [selfBot, ...otherBots] = selectFeishuBotPromptTargets(account, options);
+  if (selfBot) {
+    lines.push(
+      `你是: ${selfBot.name} (app_id=${selfBot.appId}${selfBot.openId ? `, bot_open_id=${selfBot.openId}` : ""})`,
+    );
+  }
+  if (otherBots.length > 0) {
+    lines.push("系统中的其他 bot:");
+    for (const bot of otherBots) {
+      lines.push(
+        `- ${bot.name} (app_id=${bot.appId}${bot.openId ? `, bot_open_id=${bot.openId}` : ""})`,
+      );
+    }
+  }
+  lines.push('规则: app_id 只用于稳定识别 bot 身份，不可直接填进 <at user_id="...">。');
+  lines.push(
+    "如果你要在群里真正艾特某个 bot，必须使用它的 bot_open_id（也是 open_id，形如 ou_xxx）。",
+  );
+  lines.push(
+    "消息里的 sender/mentions 可能出现 app_id 或 open_id；识别 bot 看 app_id，真正构造 @ 看 open_id。",
+  );
+  lines.push("[End Bot Identity]", "");
+  return lines.join("\n");
+}
+
+export function buildCurrentGroupReplyRuleText(params: {
   senderId: string;
   senderDisplayName?: string;
+  account: FeishuBotIdentityPromptAccount;
+  focusText?: string;
 }): string {
   const senderName = params.senderDisplayName?.trim() || params.senderId;
+  const peerBotLines = selectFeishuBotPromptTargets(params.account, {
+    focusText: params.focusText,
+  })
+    .filter((bot) => bot.appId !== params.account.appId && bot.openId)
+    .map(
+      (bot) =>
+        `- ${bot.name}: <at user_id="${bot.openId}">${bot.name}</at> (bot_open_id=${bot.openId}, app_id=${bot.appId})`,
+    );
   return [
     "[当前群聊回复规则]",
     `你当前正在回复的人：${senderName}（open_id=${params.senderId}）。`,
     `如果你需要真正艾特他，只能使用这个精确格式：<at user_id="${params.senderId}">${senderName}</at>`,
+    '如果你需要真正艾特某个 bot，只能使用它的 bot_open_id；绝对不要把 app_id 填进 <at user_id="...">。',
+    ...(peerBotLines.length > 0 ? ["已知 peer bot 的正确艾特格式：", ...peerBotLines] : []),
     "绝对不要输出 @_user_N、ou_xxx、cli_xxx 作为艾特。",
     "@_user_N 只属于入站消息里的占位符，不能复制到出站回复。",
     "下面的聊天记录只是历史记录，不代表你本轮该如何构造 mention。",
@@ -1160,6 +1140,12 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         })
       : undefined;
   let rawText = extractTextContent(content, msgType, imageKeys, fileInfo);
+  const currentMessageAttachments = parseFeishuMessageContent({
+    content,
+    msgType,
+    imagePlaceholder: "<media:image>",
+    mediaPlaceholder: "[video]",
+  }).attachments;
   if (!rawText && msgType === "merge_forward" && messageId) {
     rawText = MERGE_FORWARD_DISABLED_TEXT;
   }
@@ -1293,28 +1279,25 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     }
   }
 
+  // Keep file handling deterministic and non-blocking: save every attachment
+  // locally, then hand the path to the agent instead of pre-parsing Office.
   const fallbackParts: string[] = [];
 
   if (fileInfo.length > 0) {
-    let savedIdx = imageKeys.length; // file paths come after image paths in mediaPaths
+    let savedIdx = imageKeys.length;
     for (const fi of fileInfo) {
       const savedPath = mediaPaths[savedIdx];
       if (!savedPath) continue;
       savedIdx++;
-
-      // Keep file handling deterministic and non-blocking: save every attachment
-      // locally, then hand the path to the agent instead of pre-parsing Office.
       fallbackParts.push(`${fi.fileName} saved at ${savedPath}`);
     }
-    // Append download failures.
     for (const e of fileErrors) {
       fallbackParts.push(`${e.name} (${e.reason})`);
     }
   }
 
   // Build the final file placeholder as deterministic local paths only.
-  const filePlaceholder =
-    fallbackParts.length > 0 ? `[file: ${fallbackParts.join("; ")}]` : null;
+  const filePlaceholder = fallbackParts.length > 0 ? `[file: ${fallbackParts.join("; ")}]` : null;
 
   // For media-only messages, pick the right placeholder:
   // - Audio messages: "<media:audio>" triggers STT pipeline (same as Telegram pattern).
@@ -1371,9 +1354,68 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     `[${account.accountId}] inbound: chat=${chatId} from=${senderId} type=${chatType}${mediaPath ? (isAudioMedia ? " +audio" : " +image") : ""}`,
   );
   setStatus({ lastInboundAt: Date.now() });
+  const shouldCanonicalizeCurrentMessage = Boolean(
+    messageId &&
+    (isGroup || parentId || (Array.isArray(message?.mentions) && message.mentions.length > 0)),
+  );
+  const canonicalCurrentMessage =
+    shouldCanonicalizeCurrentMessage && messageId
+      ? await fetchCanonicalMessageItem({ account, messageId, log })
+      : null;
+  let currentMessageMentionsResolved = parseFeishuMentions(
+    canonicalCurrentMessage?.mentions ?? message?.mentions,
+  );
+  let currentMessageActor = applyFeishuKnownBotDisplayName(
+    buildFeishuActorFromEventSender(sender),
+    account,
+  );
+  let senderDisplayName: string | undefined;
+  try {
+    const nameResult = await resolveFeishuSenderName({ account, senderOpenId: senderId, log });
+    senderDisplayName = nameResult.name;
+    if (nameResult.permissionError) {
+      const cooldownKey = account.appId ?? "default";
+      const lastNotified = permissionErrorNotifiedAt.get(cooldownKey) ?? 0;
+      if (Date.now() - lastNotified > PERMISSION_ERROR_COOLDOWN_MS) {
+        permissionErrorNotifiedAt.set(cooldownKey, Date.now());
+        log?.error(
+          `[${account.accountId}] Feishu permission error (sender name): ${nameResult.permissionError.message}` +
+            (nameResult.permissionError.grantUrl
+              ? ` Grant: ${nameResult.permissionError.grantUrl}`
+              : ""),
+        );
+      }
+    }
+  } catch {
+    // Best-effort — continue without display name.
+  }
+  if (senderDisplayName) {
+    currentMessageActor = {
+      ...currentMessageActor,
+      displayName: senderDisplayName,
+      resolutionSource: "directory",
+      resolved: true,
+    };
+    log?.info(`[${account.accountId}] sender resolved: ${senderId} -> ${senderDisplayName}`);
+  }
+  const currentMessageArchiveText = renderFeishuTextWithMentions({
+    text: buildFeishuTextPayload(textFromMessage).withoutFooter,
+    mentions: currentMessageMentionsResolved,
+  });
+  const currentMessageParentId = canonicalCurrentMessage?.parent_id ?? parentId;
+  const currentMessageRootId = canonicalCurrentMessage?.root_id ?? message.root_id ?? "";
+  const currentMessageThreadId = canonicalCurrentMessage?.thread_id ?? message.thread_id ?? "";
+  const currentMessageReply = buildFeishuReplyRef({
+    parentId: currentMessageParentId,
+    rootId: currentMessageRootId,
+    threadId: currentMessageThreadId,
+    hasThread: Boolean(currentMessageThreadId),
+  });
+  if (messageId && currentMessageArchiveText) {
+    cacheMessageText(messageId, currentMessageArchiveText);
+  }
   let groupChatName: string | undefined;
   let currentGroupMentions: FeishuMention[] = [];
-  let currentGroupBotOpenId: string | null = null;
   const isCommand = cleanText.startsWith("/");
   const ACK_EMOJI = "Get";
   let ackReactionId: string | null = null;
@@ -1422,17 +1464,30 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     // Archive all group messages (regardless of who sent them).
     const shouldArchive = groupConfig?.archive !== false;
     if (shouldArchive) {
-      const senderName = extractSenderName(sender);
+      const senderName = formatFeishuActorLabel(currentMessageActor, { includeCanonicalId: false });
       try {
         archiveGroupMessage({
           chatId,
           chatName: groupChatName ?? null,
-          senderId,
+          senderId: currentMessageActor.canonicalId || senderId,
           senderName: senderName || senderId,
-          text: cleanText,
+          text: currentMessageArchiveText || cleanText,
           msgId: messageId,
+          actor: currentMessageActor,
+          messageType: msgType,
+          mentions: currentMessageMentionsResolved.map((mention) => ({
+            key: mention.key,
+            id: mention.actor.canonicalId,
+            ...(mention.name && { name: mention.name }),
+            renderedText: mention.renderedText,
+          })),
+          attachments: currentMessageAttachments,
+          textParts: buildFeishuTextPayload(currentMessageArchiveText || cleanText),
+          ...(currentMessageReply && { reply: currentMessageReply }),
         });
-        log?.info(`[${account.accountId}] archived group msg from ${senderId} in ${chatId}`);
+        log?.info(
+          `[${account.accountId}] archived group msg from ${currentMessageActor.canonicalId || senderId} in ${chatId}`,
+        );
       } catch (err) {
         log?.error(`[${account.accountId}] group archive failed: ${String(err)}`);
       }
@@ -1444,19 +1499,27 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     }
 
     // Parse @mentions to detect if bot was mentioned.
-    const mentions = parseMentions(message);
+    const mentions = currentMessageMentionsResolved.map((mention) => ({
+      key: mention.key,
+      id: mention.actor.canonicalId,
+      name: mention.name,
+    }));
     currentGroupMentions = mentions;
-    let botOpenId: string | null = null;
-    try {
-      botOpenId = await getBotOpenId(account);
-    } catch (err) {
-      log?.error(`[${account.accountId}] getBotOpenId failed: ${String(err)}`);
+    if (
+      Array.isArray(message?.mentions) &&
+      message.mentions.length > 0 &&
+      !canonicalCurrentMessage
+    ) {
+      log?.error(
+        `[${account.accountId}] skipping group mention routing for ${messageId} because canonical message data is unavailable`,
+      );
+      return;
     }
-    currentGroupBotOpenId = botOpenId;
-    const wasMentioned = botOpenId ? mentions.some((m) => m.id === botOpenId) : false;
+    const botAppId = account.appId;
+    const wasMentioned = Boolean(botAppId) && mentions.some((m) => m.id === botAppId);
 
     log?.info(
-      `[${account.accountId}] group mention check: botOpenId=${botOpenId} mentions=${JSON.stringify(mentions.map((m) => ({ key: m.key, id: m.id, name: m.name })))} wasMentioned=${wasMentioned}`,
+      `[${account.accountId}] group mention check: botAppId=${botAppId} mentions=${JSON.stringify(mentions.map((m) => ({ key: m.key, id: m.id, name: m.name })))} wasMentioned=${wasMentioned}`,
     );
 
     if (!wasMentioned) {
@@ -1650,32 +1713,6 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // Give the user immediate feedback before any slower context enrichment.
   await addAckReaction();
 
-  // ── Resolve sender display name (best-effort, non-blocking) ──
-  let senderDisplayName: string | undefined;
-  try {
-    const nameResult = await resolveFeishuSenderName({ account, senderOpenId: senderId, log });
-    senderDisplayName = nameResult.name;
-    // Surface permission errors once per cooldown period so the admin knows.
-    if (nameResult.permissionError) {
-      const cooldownKey = account.appId ?? "default";
-      const lastNotified = permissionErrorNotifiedAt.get(cooldownKey) ?? 0;
-      if (Date.now() - lastNotified > PERMISSION_ERROR_COOLDOWN_MS) {
-        permissionErrorNotifiedAt.set(cooldownKey, Date.now());
-        log?.error(
-          `[${account.accountId}] Feishu permission error (sender name): ${nameResult.permissionError.message}` +
-            (nameResult.permissionError.grantUrl
-              ? ` Grant: ${nameResult.permissionError.grantUrl}`
-              : ""),
-        );
-      }
-    }
-  } catch {
-    // Best-effort — continue without display name.
-  }
-  if (senderDisplayName) {
-    log?.info(`[${account.accountId}] sender resolved: ${senderId} -> ${senderDisplayName}`);
-  }
-
   // ── Fetch quoted message content (if this is a reply) ──
   let quotedContext = "";
   let quotedBodyForReply: string | undefined;
@@ -1684,6 +1721,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       const quoted = await getQuotedMessageContent({
         account,
         parentMessageId: parentId,
+        currentChatId: chatId,
         log,
         mergeForwardSourceAccess,
       });
@@ -1693,12 +1731,19 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           text: quoted.content,
         });
         quotedContext =
-          `\n[Quoted message (message_id=${parentId}): "${quoted.content.slice(0, 500)}"]` +
-          (quotedDriveFileContext ? `\n${quotedDriveFileContext}` : "");
+          `\n${renderFeishuQuotedContext({
+            messageId: parentId,
+            messageType: quoted.contentType,
+            sender: quoted.sender,
+            text: quoted.content.slice(0, 500),
+          })}` + (quotedDriveFileContext ? `\n${quotedDriveFileContext}` : "");
         // Prefix with message_id so AI can extract it even in DMs where core strips reply_to_id.
-        quotedBodyForReply =
-          `[message_id=${parentId}]\n${quoted.content.slice(0, 2000)}` +
-          (quotedDriveFileContext ? `\n${quotedDriveFileContext}` : "");
+        quotedBodyForReply = `${renderFeishuQuotedReplyBody({
+          messageId: parentId,
+          messageType: quoted.contentType,
+          sender: quoted.sender,
+          text: quoted.content.slice(0, 2000),
+        })}${quotedDriveFileContext ? `\n${quotedDriveFileContext}` : ""}`;
         log?.info(
           `[${account.accountId}] quoted msg fetched: ${parentId} -> ${quoted.content.slice(0, 80)}`,
         );
@@ -1777,7 +1822,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // Uses tenant_access_token (no user OAuth needed) for the /im/v1/messages API.
   // Aligns with upstream's 20-message default (DEFAULT_MESSAGE_LIMIT).
   const GROUP_INJECT_LIMIT = 20;
-  let groupContextPrefix = "";
+  let promptContextPrefix = buildFeishuBotIdentityBlock(account, {
+    focusText: enrichedBody,
+  });
   if (isGroup) {
     try {
       const token = await getTenantAccessToken(account);
@@ -1792,34 +1839,42 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       });
       if (result.messages.length > 0) {
         const chronological = [...result.messages].reverse();
-        const senderNameMap = await resolveInjectedGroupSenderNames({ account, chatId });
-        const selfMention = currentGroupBotOpenId
-          ? currentGroupMentions.find(
-              (mention) => mention.id === currentGroupBotOpenId && mention.name?.trim(),
-            )
-          : undefined;
-        if (selfMention?.name?.trim()) {
-          senderNameMap.set(account.appId, selfMention.name.trim());
-        }
+        const lines = chronological.map((m) => {
+          return renderFeishuRecentContextLine({
+            messageId: m.message_id,
+            chatId: m.chat_id,
+            messageType: m.msg_type,
+            createTime: m.create_time,
+            createTimeMs: Number(m.create_time) || undefined,
+            createTimeHuman: m.create_time_human,
+            sender:
+              m.sender_actor ??
+              buildFeishuActorFromApiSender({
+                id: m.sender_id,
+                sender_type: m.sender_type,
+              }),
+            mentions:
+              m.mentions_resolved ??
+              parseFeishuMentions(m.mentions?.map((mention) => ({ ...mention, id: mention.id }))),
+            attachments: m.attachments ?? [],
+            text: m.text_parts ?? buildFeishuTextPayload(stripInjectedStatusFooter(m.text)),
+            coverage: m.coverage,
+            provenance: { sourcePath: "history_api", tokenMode: "tenant" },
+          });
+        });
+        const promptFocusText = `${enrichedBody}\n${lines.join("\n")}`;
         const currentReplyRule = buildCurrentGroupReplyRuleText({
+          account,
           senderId,
           senderDisplayName,
+          focusText: promptFocusText,
+        });
+        const botIdentityBlock = buildFeishuBotIdentityBlock(account, {
+          focusText: promptFocusText,
         });
 
-        const lines = chronological.map((m) => {
-          const ts = m.create_time_human || new Date(Number(m.create_time)).toISOString();
-          const resolved = senderNameMap.get(m.sender_id)?.trim();
-          const who = resolved ? `${resolved} (${m.sender_id})` : m.sender_id;
-          // Resolve @_user_N placeholders to actual names using mentions array.
-          let text = stripInjectedStatusFooter(m.text);
-          if (m.mentions) {
-            for (const mention of m.mentions) {
-              text = text.replaceAll(mention.key, `@${mention.name}`);
-            }
-          }
-          return `Feishu message from ${who} at ${ts}: ${text}`;
-        });
-        groupContextPrefix =
+        promptContextPrefix =
+          botIdentityBlock +
           `[Chat messages since recent activity — ${lines.length} messages for context]\n` +
           `${lines.join("\n")}\n` +
           `[End of recent messages]\n\n` +
@@ -1840,8 +1895,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
   // BodyForAgent is what the LLM actually sees (finalizeInboundContext prefers it
   // over CommandBody/RawBody/Body). Prepend group context to the full envelope
-  // (rawBody) so the LLM gets both injected messages AND the sender identity.
-  const bodyForAgent = groupContextPrefix ? `${groupContextPrefix}${rawBody}` : undefined;
+  // (rawBody) so the LLM gets bot identity in all Feishu contexts, and recent
+  // group context when available.
+  const bodyForAgent = promptContextPrefix ? `${promptContextPrefix}${rawBody}` : undefined;
 
   const ctxPayload = core.channel.reply.finalizeInboundContext({
     Body: rawBody,
@@ -1892,9 +1948,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // onReplyStart: create the card stream when the AI actually starts processing
   // (after session lane queuing — never fires for queued messages).
   const startCardStream = async () => {
-    // Group chats: send text/post instead of interactive cards so other bots
-    // (and the history API) can read Her's output. Card streaming is private-chat only.
-    if (isGroup || isCommand || cardStream) return;
+    if (isCommand || cardStream) return;
     try {
       cardStream = await createFeishuCardStream({
         account,
@@ -1920,6 +1974,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   let cardStreamLastPartial = "";
   let cardStreamFinalText = "";
   let groupAccumulatedText = "";
+  let groupAccumulatedReplyToId: string | undefined;
 
   const updateCardStream = (text?: string) => {
     if (!text || !cardStream?.started) return;
@@ -1982,6 +2037,11 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         // Group chats without card stream: accumulate text and send as a single
         // message after the full turn completes, avoiding fragmented bubbles.
         if (isGroup && !cardStream?.started && payload.text) {
+          const payloadReplyToId =
+            typeof payload.replyToId === "string" ? payload.replyToId.trim() : "";
+          if (payloadReplyToId && !groupAccumulatedReplyToId) {
+            groupAccumulatedReplyToId = payloadReplyToId;
+          }
           groupAccumulatedText = accumulateGroupedReplyText(groupAccumulatedText, payload.text);
           log?.info(
             `[${account.accountId}] deliver: group text accumulated (${groupAccumulatedText.length} chars total)`,
@@ -1989,7 +2049,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           setStatus({ lastOutboundAt: Date.now() });
           if (hasMedia) {
             await deliverFeishuReply({
-              payload: { mediaUrls },
+              payload: { mediaUrls, replyToId: payloadReplyToId || undefined },
               account,
               chatId,
               isGroup,
@@ -2023,7 +2083,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
             if (hasMedia) {
               await deliverFeishuReply({
-                payload: { mediaUrls },
+                payload: { mediaUrls, replyToId: payload.replyToId },
                 account,
                 chatId,
                 isGroup,
@@ -2075,7 +2135,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     const footer = buildFeishuStatusFooter({ storePath, sessionKey: route.sessionKey, config });
     const finalGroupText = finalizeGroupedReplyText(groupAccumulatedText, footer);
     await deliverFeishuReply({
-      payload: { text: finalGroupText },
+      payload: { text: finalGroupText, replyToId: groupAccumulatedReplyToId },
       account,
       chatId,
       isGroup,
@@ -2086,6 +2146,17 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       core,
     });
   }
+  // Fallback: if deliver() never fired (timeout, error, or tool-only response),
+  // reconstruct final text from the streaming partials that onPartialReply accumulated.
+  if (cardStream?.started && !cardStreamFinalText && (cardStreamPrefix || cardStreamLastPartial)) {
+    cardStreamFinalText = cardStreamPrefix
+      ? cardStreamPrefix + "\n\n" + cardStreamLastPartial
+      : cardStreamLastPartial;
+    log?.info(
+      `[${account.accountId}] cardStreamFinalText reconstructed from streaming partials (${cardStreamFinalText.length} chars)`,
+    );
+  }
+
   // Append status footer (model + context usage) to the card before closing.
   if (cardStream?.started && cardStreamFinalText) {
     const footer = buildFeishuStatusFooter({ storePath, sessionKey: route.sessionKey, config });
@@ -2100,10 +2171,32 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   ]);
 
   // Cache the final card text so quoted-message lookups can resolve the real content
-  // (im.message.get returns a degraded placeholder for CardKit interactive messages).
+  // (v1 inline cards are mostly readable via im.message.get, but caching avoids formatting loss).
   if (cardStream?.started && cardStream.messageId && cardStreamFinalText) {
     cacheCardText(cardStream.messageId, cardStreamFinalText);
+    cacheMessageText(cardStream.messageId, cardStreamFinalText);
     recordSentMessage(chatId, cardStream.messageId, cardStreamFinalText);
+
+    // Archive bot-sent card in group message log so chat-history tool sees it.
+    if (isGroup && account.config.groups?.archive !== false && cardStream.message) {
+      const botActor: FeishuActorRef = buildFeishuBotActorFromAccount(account);
+      archiveSentFeishuTextMessage({
+        chatId,
+        chatName: groupChatName ?? null,
+        message: cardStream.message,
+        senderId: account.appId,
+        senderName: account.accountId,
+        actor: botActor,
+        text: cardStreamFinalText,
+        textParts: buildFeishuTextPayload(cardStreamFinalText),
+        reply:
+          buildFeishuReplyRefFromSentMessage(cardStream.message) ??
+          buildFeishuReplyRef({ parentId: messageId }),
+      });
+      log?.info(
+        `[${account.accountId}] archived bot card stream msg ${cardStream.messageId} in ${chatId}`,
+      );
+    }
   }
 }
 
@@ -2122,6 +2215,12 @@ async function deliverFeishuReply(params: {
 }): Promise<void> {
   const { payload, account, chatId, isGroup, replyToMessageId, log, setStatus, config, core } =
     params;
+  const botActor = buildFeishuBotActorFromAccount(account);
+  const payloadReplyToId = typeof payload.replyToId === "string" ? payload.replyToId.trim() : "";
+  const effectiveReplyToMessageId = payloadReplyToId || replyToMessageId;
+  const resolveReplyRef = (message: Parameters<typeof buildFeishuReplyRefFromSentMessage>[0]) =>
+    buildFeishuReplyRefFromSentMessage(message) ??
+    buildFeishuReplyRef({ parentId: effectiveReplyToMessageId });
 
   // Handle media (images/audio) if present.
   const mediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
@@ -2162,14 +2261,22 @@ async function deliverFeishuReply(params: {
       if (isAudio) {
         const fileName = url.split("/").pop()?.split("?")[0] ?? `audio-${Date.now()}.ogg`;
         const fileKey = await uploadFeishuAudio({ account, buffer: media.buffer });
-        const mid = await sendFeishuAudio({ account, chatId, fileKey });
-        if (mid) {
-          recordSentMessage(chatId, mid, "[audio]");
+        const sentMessage = await sendFeishuAudioDetailed({
+          account,
+          chatId,
+          fileKey,
+          replyToMessageId: effectiveReplyToMessageId,
+        });
+        if (sentMessage) {
+          recordSentMessage(chatId, sentMessage.messageId, "[audio]");
           try {
             await archiveSentFeishuBinaryMessage({
               chatId,
-              messageId: mid,
+              message: sentMessage,
               senderId: account.appId,
+              senderName: account.accountId,
+              actor: botActor,
+              reply: resolveReplyRef(sentMessage),
               buffer: media.buffer,
               contentType: media.contentType,
               fileName,
@@ -2184,14 +2291,22 @@ async function deliverFeishuReply(params: {
       } else if (isVideo) {
         const fileName = url.split("/").pop()?.split("?")[0] ?? `video-${Date.now()}.mp4`;
         const fileKey = await uploadFeishuFile({ account, buffer: media.buffer, fileName });
-        const mid = await sendFeishuVideo({ account, chatId, fileKey });
-        if (mid) {
-          recordSentMessage(chatId, mid, "[video]");
+        const sentMessage = await sendFeishuVideoDetailed({
+          account,
+          chatId,
+          fileKey,
+          replyToMessageId: effectiveReplyToMessageId,
+        });
+        if (sentMessage) {
+          recordSentMessage(chatId, sentMessage.messageId, "[video]");
           try {
             await archiveSentFeishuBinaryMessage({
               chatId,
-              messageId: mid,
+              message: sentMessage,
               senderId: account.appId,
+              senderName: account.accountId,
+              actor: botActor,
+              reply: resolveReplyRef(sentMessage),
               buffer: media.buffer,
               contentType: media.contentType,
               fileName,
@@ -2206,14 +2321,22 @@ async function deliverFeishuReply(params: {
       } else if (isImage) {
         const fileName = url.split("/").pop()?.split("?")[0] ?? `image-${Date.now()}.png`;
         const imageKey = await uploadFeishuImage({ account, buffer: media.buffer });
-        const mid = await sendFeishuImage({ account, chatId, imageKey });
-        if (mid) {
-          recordSentMessage(chatId, mid, "[image]");
+        const sentMessage = await sendFeishuImageDetailed({
+          account,
+          chatId,
+          imageKey,
+          replyToMessageId: effectiveReplyToMessageId,
+        });
+        if (sentMessage) {
+          recordSentMessage(chatId, sentMessage.messageId, "[image]");
           try {
             await archiveSentFeishuBinaryMessage({
               chatId,
-              messageId: mid,
+              message: sentMessage,
               senderId: account.appId,
+              senderName: account.accountId,
+              actor: botActor,
+              reply: resolveReplyRef(sentMessage),
               buffer: media.buffer,
               contentType: media.contentType,
               fileName,
@@ -2228,14 +2351,22 @@ async function deliverFeishuReply(params: {
       } else {
         const fileName = url.split("/").pop()?.split("?")[0] ?? `file-${Date.now()}`;
         const fileKey = await uploadFeishuFile({ account, buffer: media.buffer, fileName });
-        const mid = await sendFeishuFile({ account, chatId, fileKey });
-        if (mid) {
-          recordSentMessage(chatId, mid, `[file: ${fileName}]`);
+        const sentMessage = await sendFeishuFileDetailed({
+          account,
+          chatId,
+          fileKey,
+          replyToMessageId: effectiveReplyToMessageId,
+        });
+        if (sentMessage) {
+          recordSentMessage(chatId, sentMessage.messageId, `[file: ${fileName}]`);
           try {
             await archiveSentFeishuBinaryMessage({
               chatId,
-              messageId: mid,
+              message: sentMessage,
               senderId: account.appId,
+              senderName: account.accountId,
+              actor: botActor,
+              reply: resolveReplyRef(sentMessage),
               buffer: media.buffer,
               contentType: media.contentType,
               fileName,
@@ -2265,17 +2396,30 @@ async function deliverFeishuReply(params: {
     const chunks = core.channel.text.chunkMarkdownTextWithMode(payload.text, chunkLimit, chunkMode);
     for (let ci = 0; ci < chunks.length; ci++) {
       try {
-        let sentMsgId: string | undefined;
-        if (isGroup && replyToMessageId && ci === 0) {
-          sentMsgId = await sendFeishuReply({
+        let sentMessage: Parameters<typeof buildFeishuReplyRefFromSentMessage>[0];
+        if (effectiveReplyToMessageId && ci === 0) {
+          sentMessage = await sendFeishuReplyDetailed({
             account,
-            messageId: replyToMessageId,
+            messageId: effectiveReplyToMessageId,
             text: chunks[ci],
           });
         } else {
-          sentMsgId = await sendFeishuRichText({ account, chatId, text: chunks[ci] });
+          sentMessage = await sendFeishuRichTextDetailed({ account, chatId, text: chunks[ci] });
         }
-        if (sentMsgId) recordSentMessage(chatId, sentMsgId, chunks[ci]);
+        if (sentMessage) {
+          recordSentMessage(chatId, sentMessage.messageId, chunks[ci]);
+          cacheMessageText(sentMessage.messageId, chunks[ci]);
+          archiveSentFeishuTextMessage({
+            chatId,
+            message: sentMessage,
+            senderId: account.appId,
+            senderName: account.accountId,
+            actor: botActor,
+            text: chunks[ci],
+            textParts: buildFeishuTextPayload(chunks[ci]),
+            reply: resolveReplyRef(sentMessage),
+          });
+        }
         setStatus({ lastOutboundAt: Date.now() });
       } catch (err) {
         log?.error(`Feishu send failed: ${String(err)}`);

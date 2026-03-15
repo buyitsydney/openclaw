@@ -4,6 +4,7 @@ import { join } from "node:path";
 import * as Lark from "@larksuiteoapi/node-sdk";
 import { fetchWithSsrFGuard, resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk";
 import type { ResolvedFeishuAccount } from "./accounts.js";
+import { buildFeishuSentMessageRef, type FeishuSentMessageRef } from "./message-metadata.js";
 
 // Cache Lark clients per appId to avoid redundant token fetches.
 const clientCache = new Map<string, Lark.Client>();
@@ -12,6 +13,25 @@ const clientCache = new Map<string, Lark.Client>();
 const botOpenIdCache = new Map<string, string>();
 
 const FEISHU_ALLOWED_HOSTNAMES = ["open.feishu.cn"];
+
+type FeishuSendResponse = {
+  data?: {
+    message_id?: string;
+    chat_id?: string;
+    msg_type?: string;
+    parent_id?: string;
+    root_id?: string;
+    thread_id?: string;
+    create_time?: string;
+  };
+};
+
+function extractFeishuSentMessageRef(
+  response: FeishuSendResponse | undefined,
+  fallback: { chatId?: string; messageType: string },
+): FeishuSentMessageRef | undefined {
+  return buildFeishuSentMessageRef(response?.data ?? {}, fallback);
+}
 
 export function getFeishuClient(account: ResolvedFeishuAccount): Lark.Client {
   const key = account.appId;
@@ -304,14 +324,6 @@ function parseInlineElements(text: string, forceBold = false): PostElement[][] {
   return [elements];
 }
 
-/** Detect whether text contains Markdown formatting worth converting. */
-function hasMarkdown(text: string): boolean {
-  // Check for common Markdown patterns.
-  return /(\*\*.+?\*\*|\*[^*]+?\*|`.+?`|```|\[.+?\]\(.+?\)|^#{1,6}\s|^[-*+]\s|^\d+\.\s|^---|<at\s+user_id="[^"]+">[^<]*<\/at>)/m.test(
-    text,
-  );
-}
-
 const OUTBOUND_URL_PATTERN = /https?:\/\/[^\s<>()]+/gi;
 const FEISHU_OAUTH_AUTHORIZE_URL_PREFIX =
   "https://accounts.feishu.cn/open-apis/authen/v1/authorize?";
@@ -395,96 +407,344 @@ export function assertNoForbiddenOpenPlatformUrls(text: string): void {
   }
 }
 
+const FEISHU_AT_TAG_RE = /<at\s+user_id="([^"]+)">([^<]*)<\/at>/gi;
+const FEISHU_EMPTY_AT_TAG_RE = /<at\s+user_id="([^"]+)"\s*\/?>/gi;
+const FEISHU_STRUCTURED_TAG_RE = /<\/?(?:file|media)\b[^>\n]*>/gi;
+
+type FeishuCardMentionAccount = Pick<
+  ResolvedFeishuAccount,
+  "appId" | "botOpenId" | "knownBots" | "knownBotOpenIds"
+>;
+
+/** Resolve an <at user_id="..."> target into a Feishu card-compatible ID.
+ *  Feishu cards reject cross-app bot open_ids (230099) and app_ids (230099).
+ *  Only self-mention (own botOpenId) and human open_ids are safe. */
+function resolveFeishuCardMentionTargetId(
+  account: FeishuCardMentionAccount,
+  userId: string,
+): string | null {
+  const normalizedUserId = userId.trim();
+  if (!normalizedUserId) {
+    return null;
+  }
+  if (!normalizedUserId.startsWith("cli_")) {
+    return normalizedUserId;
+  }
+  if (normalizedUserId === account.appId) {
+    const selfBotOpenId = account.botOpenId?.trim();
+    return selfBotOpenId || null;
+  }
+  return null;
+}
+
+function formatFeishuCardMention(
+  account: FeishuCardMentionAccount,
+  userId: string,
+  visibleText?: string,
+): string {
+  const normalizedUserId = userId.trim();
+  if (!normalizedUserId) {
+    return "";
+  }
+  const targetId = resolveFeishuCardMentionTargetId(account, normalizedUserId);
+  if (targetId) {
+    return `<at id=${targetId}></at>`;
+  }
+  if (normalizedUserId.startsWith("cli_")) {
+    const displayName =
+      visibleText?.trim() || account.knownBots[normalizedUserId]?.trim() || normalizedUserId;
+    return `@${displayName.replace(/^@+/, "")}`;
+  }
+  return `<at id=${normalizedUserId}></at>`;
+}
+
+function renderFeishuCardMarkdownTextSegment(
+  markdown: string,
+  account: FeishuCardMentionAccount,
+): string {
+  const replacedAtTags = markdown
+    .replace(FEISHU_AT_TAG_RE, (_match, userId: string, mentionText: string) =>
+      formatFeishuCardMention(account, userId, mentionText),
+    )
+    .replace(FEISHU_EMPTY_AT_TAG_RE, (_match, userId: string) =>
+      formatFeishuCardMention(account, userId),
+    );
+  return replacedAtTags.replace(FEISHU_STRUCTURED_TAG_RE, (tag) =>
+    tag.replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
+  );
+}
+
+/** Escape `<>` inside inline code spans so Feishu doesn't interpret
+ *  literal `<at>` / `<file>` examples as real tags. */
+function escapeAngleBracketsInInlineCode(line: string): string {
+  return line.replace(/(`+)(.*?)\1/g, (_m, ticks: string, content: string) => {
+    return ticks + content.replaceAll("<", "＜").replaceAll(">", "＞") + ticks;
+  });
+}
+
+const MD_TABLE_SEPARATOR_RE = /^\|\s*[-:]+[-|\s:]*$/;
+
+/** Detect whether a line is a markdown table row (`| ... | ... |`). */
+function isMarkdownTableRow(line: string): boolean {
+  const trimmed = line.trim();
+  return trimmed.startsWith("|") && trimmed.endsWith("|") && trimmed.includes("|");
+}
+
+/** Parse a markdown table row into cell values (strips leading/trailing pipes). */
+function parseMarkdownTableRow(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+/** Strip inline code backticks from table cell content.
+ *  Feishu JSON 1.0 doesn't support inline code — backticks in card markdown
+ *  cause the renderer to break and swallow all subsequent content.
+ *  Content inside backticks often contains XML/HTML-like tags (e.g. `<at>`,
+ *  `<file>`) as code examples — strip tags to plain text to avoid both
+ *  230099 mention errors and ugly fullwidth bracket display. */
+function stripTableCellBackticks(cell: string): string {
+  return cell
+    .replace(/`([^`]*)`/g, (_m, content: string) => content.replace(/<[^>]*>/g, ""))
+    .replaceAll("`", "");
+}
+
+/** Convert a markdown table into bold-header + bullet-list format.
+ *  Feishu card `tag:"markdown"` can't render `| ... |` pipe tables (shown as
+ *  raw text) or `<table>` tags (rendered as blank in bot cards).
+ *  Using bold + bullets which are confirmed to render correctly.
+ *  Also strips backticks from cells (unsupported → breaks rendering). */
+function convertMarkdownTableToFeishuList(tableLines: string[]): string {
+  if (tableLines.length < 2) return tableLines.join("\n");
+  const headerCells = parseMarkdownTableRow(tableLines[0]);
+  const dataStartIndex = MD_TABLE_SEPARATOR_RE.test(tableLines[1].trim()) ? 2 : 1;
+  const sep = " | ";
+
+  const headerLine = headerCells.map((h) => `**${stripTableCellBackticks(h)}**`).join(sep);
+  const rows: string[] = [headerLine];
+  for (let i = dataStartIndex; i < tableLines.length; i++) {
+    const cells = parseMarkdownTableRow(tableLines[i]).map(stripTableCellBackticks);
+    rows.push("- " + cells.join(sep));
+  }
+  return rows.join("\n");
+}
+
+/** Convert markdown heading (`# ...`) to bold text with level distinction.
+ *  Feishu JSON 1.0 card `tag:"markdown"` does NOT support heading syntax.
+ *  H1 → bold + divider (visually prominent), H2+ → bold only.
+ *  See docs/her/feishu-card-markdown-official-spec.md */
+function convertHeadingToBold(line: string): string {
+  const m = line.match(/^(#{1,6})\s+(.*)/);
+  if (!m) return line;
+  const level = m[1].length;
+  if (level === 1) return `**${m[2]}**\n---`;
+  return `**${m[2]}**`;
+}
+
+/** Convert blockquote (`> ...`) to plain text (strip the `>` prefix).
+ *  Feishu JSON 1.0 card `tag:"markdown"` does NOT support blockquote syntax.
+ *  `>` alone would be swallowed or render as raw `>`. */
+function convertBlockquote(line: string): string {
+  const m = line.match(/^>\s?(.*)/);
+  if (!m) return line;
+  return `｜${m[1]}`;
+}
+
+/** Normalize markdown for the Feishu card `tag:"markdown"` component (JSON 1.0).
+ *  Based on 100% confirmed official docs (feishu-card-markdown-official-spec.md):
+ *
+ *  Supported (passthrough): bold, italic, strikethrough, links, ordered/unordered
+ *  lists, fenced code blocks (7.6+), images, dividers, @mentions, font color, tags.
+ *
+ *  NOT supported (must convert):
+ *  - `# heading` → `**bold**`
+ *  - `> blockquote` → `｜text` (fullwidth bar prefix)
+ *  - `| table |` → bold-header + bullet-list
+ *
+ *  Also: escape `<>` inside code regions to prevent tag interpretation. */
+function normalizeFeishuCardMarkdown(markdown: string): string {
+  const lines = markdown.split("\n");
+  const result: string[] = [];
+  let inFence = false;
+  let tableBuffer: string[] = [];
+
+  const flushTable = () => {
+    if (tableBuffer.length > 0) {
+      result.push(convertMarkdownTableToFeishuList(tableBuffer));
+      tableBuffer = [];
+    }
+  };
+
+  for (const line of lines) {
+    if (line.trimStart().startsWith("```")) {
+      flushTable();
+      inFence = !inFence;
+      result.push(line);
+      continue;
+    }
+    if (inFence) {
+      result.push(line.replaceAll("<", "＜").replaceAll(">", "＞"));
+      continue;
+    }
+    if (
+      isMarkdownTableRow(line) ||
+      (tableBuffer.length > 0 && MD_TABLE_SEPARATOR_RE.test(line.trim()))
+    ) {
+      tableBuffer.push(line);
+      continue;
+    }
+    flushTable();
+
+    const trimmed = line.trimStart();
+    if (/^#{1,6}\s+/.test(trimmed)) {
+      result.push(convertHeadingToBold(line));
+    } else if (/^>\s?/.test(trimmed)) {
+      result.push(convertBlockquote(line));
+    } else {
+      result.push(escapeAngleBracketsInInlineCode(line));
+    }
+  }
+  flushTable();
+  return result.join("\n").trimEnd();
+}
+
+function escapeUnmatchedInlineBacktick(markdown: string): string {
+  let inFence = false;
+  let unmatchedInlineBacktickIndex = -1;
+  for (let i = 0; i < markdown.length; i++) {
+    if (markdown.startsWith("```", i)) {
+      inFence = !inFence;
+      i += 2;
+      continue;
+    }
+    if (inFence || markdown[i] !== "`" || markdown[i - 1] === "\\") {
+      continue;
+    }
+    unmatchedInlineBacktickIndex = unmatchedInlineBacktickIndex === -1 ? i : -1;
+  }
+  if (unmatchedInlineBacktickIndex === -1) {
+    return markdown;
+  }
+  return (
+    markdown.slice(0, unmatchedInlineBacktickIndex) +
+    "\\`" +
+    markdown.slice(unmatchedInlineBacktickIndex + 1)
+  );
+}
+
+function stabilizeFeishuCardMarkdown(markdown: string): string {
+  let stabilized = escapeUnmatchedInlineBacktick(markdown);
+  const fenceCount = stabilized.match(/```/g)?.length ?? 0;
+  if (fenceCount % 2 === 1) {
+    stabilized += "\n```";
+  }
+  return stabilized;
+}
+
+export function renderFeishuUserFacingCardText(
+  text: string,
+  account: FeishuCardMentionAccount,
+): string {
+  const displayText = formatFeishuUserFacingText(text).trimEnd();
+  const stabilizedSource = stabilizeFeishuCardMarkdown(displayText);
+  // Feishu v1 card markdown supports only a small subset. Normalize general
+  // markdown into a deterministic, card-safe text form before rewriting live mentions.
+  return renderFeishuCardMarkdownTextSegment(
+    normalizeFeishuCardMarkdown(stabilizedSource),
+    account,
+  );
+}
+
+export async function sendFeishuUserFacingCardDetailed(params: {
+  account: ResolvedFeishuAccount;
+  chatId?: string;
+  text: string;
+  replyToMessageId?: string;
+}): Promise<FeishuSentMessageRef | undefined> {
+  const displayText = renderFeishuUserFacingCardText(params.text, params.account);
+  assertNoForbiddenOpenPlatformUrls(displayText);
+  const stream = await createFeishuCardStream({
+    account: params.account,
+    chatId: params.chatId,
+    replyToMessageId: params.replyToMessageId,
+  });
+  if (!stream.started || !stream.messageId) return undefined;
+  await stream.sendFinal(displayText);
+  await stream.finalize(displayText);
+  stream.stop();
+  return stream.message;
+}
+
+export async function sendFeishuUserFacingCard(params: {
+  account: ResolvedFeishuAccount;
+  chatId?: string;
+  text: string;
+  replyToMessageId?: string;
+}): Promise<string | undefined> {
+  return (await sendFeishuUserFacingCardDetailed(params))?.messageId;
+}
+
+export async function sendFeishuRichTextDetailed(params: {
+  account: ResolvedFeishuAccount;
+  chatId: string;
+  text: string;
+  replyToMessageId?: string;
+}): Promise<FeishuSentMessageRef | undefined> {
+  return sendFeishuUserFacingCardDetailed(params);
+}
+
 /** Send a rich-text Post message to a Feishu chat or user.
- *  Converts Markdown to Feishu Post format for nice rendering.
- *  Falls back to plain text if the text has no Markdown formatting. */
+ *  User-facing text is now unified to interactive cards for deterministic display. */
 export async function sendFeishuRichText(params: {
   account: ResolvedFeishuAccount;
   chatId: string;
   text: string;
+  replyToMessageId?: string;
 }): Promise<string | undefined> {
-  const displayText = formatFeishuUserFacingText(params.text);
-  assertNoForbiddenOpenPlatformUrls(displayText);
-  const client = getFeishuClient(params.account);
-  const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
-
-  // oxlint-disable-next-line typescript/no-explicit-any
-  let resp: any;
-  if (hasMarkdown(displayText)) {
-    const postContent = markdownToPost(displayText);
-    resp = await client.im.message.create({
-      params: { receive_id_type: receiveIdType },
-      data: {
-        receive_id: receiveId,
-        content: JSON.stringify(postContent),
-        msg_type: "post",
-      },
-    });
-  } else {
-    resp = await client.im.message.create({
-      params: { receive_id_type: receiveIdType },
-      data: {
-        receive_id: receiveId,
-        content: JSON.stringify({ text: displayText }),
-        msg_type: "text",
-      },
-    });
-  }
-  return resp?.data?.message_id;
+  return (await sendFeishuRichTextDetailed(params))?.messageId;
 }
 
-/** Send a plain text message to a Feishu chat or user (no Markdown conversion). */
+export async function sendFeishuTextDetailed(params: {
+  account: ResolvedFeishuAccount;
+  chatId: string;
+  text: string;
+  replyToMessageId?: string;
+}): Promise<FeishuSentMessageRef | undefined> {
+  return sendFeishuUserFacingCardDetailed(params);
+}
+
+/** Send a user-facing text message using the unified interactive-card path. */
 export async function sendFeishuText(params: {
   account: ResolvedFeishuAccount;
   chatId: string;
   text: string;
+  replyToMessageId?: string;
 }): Promise<string | undefined> {
-  assertNoForbiddenOpenPlatformUrls(params.text);
-  const client = getFeishuClient(params.account);
-  const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const resp: any = await client.im.message.create({
-    params: { receive_id_type: receiveIdType },
-    data: {
-      receive_id: receiveId,
-      content: JSON.stringify({ text: params.text }),
-      msg_type: "text",
-    },
-  });
-  return resp?.data?.message_id;
+  return (await sendFeishuTextDetailed(params))?.messageId;
 }
 
-/** Send a reply to a specific message (quote-reply).
- *  Supports Markdown → Post format for rich rendering. */
+export async function sendFeishuReplyDetailed(params: {
+  account: ResolvedFeishuAccount;
+  messageId: string;
+  text: string;
+}): Promise<FeishuSentMessageRef | undefined> {
+  return sendFeishuUserFacingCardDetailed({
+    account: params.account,
+    text: params.text,
+    replyToMessageId: params.messageId,
+  });
+}
+
+/** Send a reply to a specific message using the unified interactive-card path. */
 export async function sendFeishuReply(params: {
   account: ResolvedFeishuAccount;
   messageId: string;
   text: string;
 }): Promise<string | undefined> {
-  const displayText = formatFeishuUserFacingText(params.text);
-  assertNoForbiddenOpenPlatformUrls(displayText);
-  const client = getFeishuClient(params.account);
-  // oxlint-disable-next-line typescript/no-explicit-any
-  let resp: any;
-  if (hasMarkdown(displayText)) {
-    const postContent = markdownToPost(displayText);
-    resp = await client.im.message.reply({
-      path: { message_id: params.messageId },
-      data: {
-        content: JSON.stringify(postContent),
-        msg_type: "post",
-      },
-    });
-  } else {
-    resp = await client.im.message.reply({
-      path: { message_id: params.messageId },
-      data: {
-        content: JSON.stringify({ text: displayText }),
-        msg_type: "text",
-      },
-    });
-  }
-  return resp?.data?.message_id;
+  return (await sendFeishuReplyDetailed(params))?.messageId;
 }
 
 /** Upload an image buffer to Feishu and return the image_key.
@@ -704,30 +964,56 @@ export async function uploadFeishuAudio(params: {
 
 /** Send an audio message to a Feishu chat or user.
  *  Uses `msg_type: "audio"` with the `file_key` from `uploadFeishuAudio`. */
+async function sendFeishuBinaryMessageDetailed(params: {
+  account: ResolvedFeishuAccount;
+  chatId: string;
+  content: string;
+  messageType: "audio" | "media" | "file" | "image";
+  replyToMessageId?: string;
+}): Promise<FeishuSentMessageRef | undefined> {
+  const client = getFeishuClient(params.account);
+  // oxlint-disable-next-line typescript/no-explicit-any
+  let resp: any;
+  if (params.replyToMessageId) {
+    resp = await client.im.message.reply({
+      path: { message_id: params.replyToMessageId },
+      data: { content: params.content, msg_type: params.messageType },
+    });
+  } else {
+    const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
+    resp = await client.im.message.create({
+      params: { receive_id_type: receiveIdType },
+      data: { receive_id: receiveId, content: params.content, msg_type: params.messageType },
+    });
+  }
+  return extractFeishuSentMessageRef(resp as FeishuSendResponse, {
+    chatId: params.chatId,
+    messageType: params.messageType,
+  });
+}
+
+export async function sendFeishuAudioDetailed(params: {
+  account: ResolvedFeishuAccount;
+  chatId: string;
+  fileKey: string;
+  replyToMessageId?: string;
+}): Promise<FeishuSentMessageRef | undefined> {
+  return sendFeishuBinaryMessageDetailed({
+    account: params.account,
+    chatId: params.chatId,
+    content: JSON.stringify({ file_key: params.fileKey }),
+    messageType: "audio",
+    replyToMessageId: params.replyToMessageId,
+  });
+}
+
 export async function sendFeishuAudio(params: {
   account: ResolvedFeishuAccount;
   chatId: string;
   fileKey: string;
   replyToMessageId?: string;
 }): Promise<string | undefined> {
-  const client = getFeishuClient(params.account);
-  const content = JSON.stringify({ file_key: params.fileKey });
-
-  // oxlint-disable-next-line typescript/no-explicit-any
-  let resp: any;
-  if (params.replyToMessageId) {
-    resp = await client.im.message.reply({
-      path: { message_id: params.replyToMessageId },
-      data: { content, msg_type: "audio" },
-    });
-  } else {
-    const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
-    resp = await client.im.message.create({
-      params: { receive_id_type: receiveIdType },
-      data: { receive_id: receiveId, content, msg_type: "audio" },
-    });
-  }
-  return resp?.data?.message_id;
+  return (await sendFeishuAudioDetailed(params))?.messageId;
 }
 
 // ── File upload/send (PPT, PDF, DOCX, etc.) ─────────────────────────────
@@ -807,24 +1093,22 @@ export async function sendFeishuVideo(params: {
   fileKey: string;
   replyToMessageId?: string;
 }): Promise<string | undefined> {
-  const client = getFeishuClient(params.account);
-  const content = JSON.stringify({ file_key: params.fileKey });
+  return (await sendFeishuVideoDetailed(params))?.messageId;
+}
 
-  // oxlint-disable-next-line typescript/no-explicit-any
-  let resp: any;
-  if (params.replyToMessageId) {
-    resp = await client.im.message.reply({
-      path: { message_id: params.replyToMessageId },
-      data: { content, msg_type: "media" },
-    });
-  } else {
-    const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
-    resp = await client.im.message.create({
-      params: { receive_id_type: receiveIdType },
-      data: { receive_id: receiveId, content, msg_type: "media" },
-    });
-  }
-  return resp?.data?.message_id;
+export async function sendFeishuVideoDetailed(params: {
+  account: ResolvedFeishuAccount;
+  chatId: string;
+  fileKey: string;
+  replyToMessageId?: string;
+}): Promise<FeishuSentMessageRef | undefined> {
+  return sendFeishuBinaryMessageDetailed({
+    account: params.account,
+    chatId: params.chatId,
+    content: JSON.stringify({ file_key: params.fileKey }),
+    messageType: "media",
+    replyToMessageId: params.replyToMessageId,
+  });
 }
 
 /** Send a file message to a Feishu chat or user.
@@ -835,24 +1119,22 @@ export async function sendFeishuFile(params: {
   fileKey: string;
   replyToMessageId?: string;
 }): Promise<string | undefined> {
-  const client = getFeishuClient(params.account);
-  const content = JSON.stringify({ file_key: params.fileKey });
+  return (await sendFeishuFileDetailed(params))?.messageId;
+}
 
-  // oxlint-disable-next-line typescript/no-explicit-any
-  let resp: any;
-  if (params.replyToMessageId) {
-    resp = await client.im.message.reply({
-      path: { message_id: params.replyToMessageId },
-      data: { content, msg_type: "file" },
-    });
-  } else {
-    const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
-    resp = await client.im.message.create({
-      params: { receive_id_type: receiveIdType },
-      data: { receive_id: receiveId, content, msg_type: "file" },
-    });
-  }
-  return resp?.data?.message_id;
+export async function sendFeishuFileDetailed(params: {
+  account: ResolvedFeishuAccount;
+  chatId: string;
+  fileKey: string;
+  replyToMessageId?: string;
+}): Promise<FeishuSentMessageRef | undefined> {
+  return sendFeishuBinaryMessageDetailed({
+    account: params.account,
+    chatId: params.chatId,
+    content: JSON.stringify({ file_key: params.fileKey }),
+    messageType: "file",
+    replyToMessageId: params.replyToMessageId,
+  });
 }
 
 /** Send an image message to a Feishu chat or user. */
@@ -861,30 +1143,34 @@ export async function sendFeishuImage(params: {
   chatId: string;
   imageKey: string;
   caption?: string;
+  replyToMessageId?: string;
 }): Promise<string | undefined> {
-  const client = getFeishuClient(params.account);
-  const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const resp: any = await client.im.message.create({
-    params: { receive_id_type: receiveIdType },
-    data: {
-      receive_id: receiveId,
-      content: JSON.stringify({ image_key: params.imageKey }),
-      msg_type: "image",
-    },
+  return (await sendFeishuImageDetailed(params))?.messageId;
+}
+
+export async function sendFeishuImageDetailed(params: {
+  account: ResolvedFeishuAccount;
+  chatId: string;
+  imageKey: string;
+  caption?: string;
+  replyToMessageId?: string;
+}): Promise<FeishuSentMessageRef | undefined> {
+  const message = await sendFeishuBinaryMessageDetailed({
+    account: params.account,
+    chatId: params.chatId,
+    content: JSON.stringify({ image_key: params.imageKey }),
+    messageType: "image",
+    replyToMessageId: params.replyToMessageId,
   });
   if (params.caption) {
-    assertNoForbiddenOpenPlatformUrls(params.caption);
-    await client.im.message.create({
-      params: { receive_id_type: receiveIdType },
-      data: {
-        receive_id: receiveId,
-        content: JSON.stringify({ text: params.caption }),
-        msg_type: "text",
-      },
+    await sendFeishuUserFacingCardDetailed({
+      account: params.account,
+      chatId: params.chatId,
+      text: params.caption,
+      replyToMessageId: params.replyToMessageId,
     });
   }
-  return resp?.data?.message_id;
+  return message;
 }
 
 // ── Board / Whiteboard API (raw HTTP — SDK has no board namespace) ───────
@@ -922,11 +1208,17 @@ export async function downloadWhiteboardImage(params: {
   }
 }
 
-// ── CardKit Streaming (typing / typewriter effect) ───────────────────────
+// ── Interactive Card Streaming (tag:"markdown" + im.message.patch) ───────
+// Uses v1 top-level `elements: [{tag:"markdown"}]` cards. Tested to produce:
+//   ✓ native markdown rendering in UI (headings, tables, code fences, etc.)
+//   ✓ PATCH support for streaming
+//   ✓ `message.get` readback with `coverage: partial` (preserves markdown syntax)
+// Schema 2.0 cards break readback entirely (`coverage: none`), so avoided.
+// `div+lark_md` strips markdown formatting in readback, so also avoided.
+// Updates via PATCH /im/v1/messages/{id} — 5 QPS rate limit, no total count limit.
 
 const DEFAULT_STREAM_THROTTLE_MS = 300;
-/** Stable element ID used inside every streaming card. */
-const STREAM_ELEMENT_ID = "stream_content";
+const FEISHU_API_BASE = "https://open.feishu.cn/open-apis";
 
 export type FeishuCardStream = {
   /** Push new accumulated text; throttled internally. */
@@ -938,30 +1230,47 @@ export type FeishuCardStream = {
   /** Send final complete text directly, bypassing throttle/inFlight guards.
    *  Call after stop() to ensure the card displays the full content. */
   sendFinal: (text: string) => Promise<void>;
-  /** Close streaming mode and update chat-list preview summary.
-   *  Pass the final text so summary.content is set to a snippet.
-   *  Call before stop(). */
+  /** Close streaming mode (no-op for v1 patch cards — kept for interface compat). */
   finalize: (finalText: string) => Promise<void>;
   /** Whether the stream was successfully started (card created + message sent). */
   started: boolean;
   /** The message_id of the card message (for potential deletion later). */
   messageId?: string;
+  /** Full message metadata returned by Feishu at create/reply time. */
+  message?: FeishuSentMessageRef;
+};
+
+function buildInlineCardJson(markdown: string): string {
+  return JSON.stringify({
+    config: {
+      update_multi: true,
+      wide_screen_mode: true,
+    },
+    elements: [{ tag: "markdown", content: markdown }],
+  });
+}
+
+const NOOP_STREAM: FeishuCardStream = {
+  update: () => {},
+  flush: async () => {},
+  stop: () => {},
+  sendFinal: async () => {},
+  finalize: async () => {},
+  started: false,
 };
 
 /**
- * Create a Feishu card, send it as a message, and return a stream object
- * that updates the card content with a typewriter effect.
+ * Send a v1 inline card and return a stream object that updates it via im.message.patch.
  *
  * Flow:
- *  1. cardkit.card.create() → get card_id
- *  2. im.message.create(msg_type="interactive") → get message_id
- *  3. Caller calls stream.update(text) repeatedly
- *  4. Internally throttled calls to cardkit.cardElement.content() with sequence++
- *     → Feishu renders incremental text with native typewriter animation
+ *  1. im.message.create(msg_type="interactive", content=v1_inline_card_json) → message_id
+ *  2. Caller calls stream.update(text) repeatedly
+ *  3. Internally throttled PATCH /im/v1/messages/{id} replaces card content
+ *  4. Readback still works through the interactive-card parser/archive path
  */
 export async function createFeishuCardStream(params: {
   account: ResolvedFeishuAccount;
-  chatId: string;
+  chatId?: string;
   /** When set, the card message is sent as a reply to this message (quote-reply style). */
   replyToMessageId?: string;
   throttleMs?: number;
@@ -970,11 +1279,9 @@ export async function createFeishuCardStream(params: {
 }): Promise<FeishuCardStream> {
   const throttleMs = Math.max(50, params.throttleMs ?? DEFAULT_STREAM_THROTTLE_MS);
   const client = getFeishuClient(params.account);
-  const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
 
-  let cardId: string | undefined;
+  let message: FeishuSentMessageRef | undefined;
   let messageId: string | undefined;
-  let sequence = 1;
   let lastSentText = "";
   let lastSentAt = 0;
   let pendingText = "";
@@ -982,118 +1289,97 @@ export async function createFeishuCardStream(params: {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let stopped = false;
 
-  // ── Step 1: Create card instance with a single markdown element ──
-  const cardData = {
-    schema: "2.0",
-    body: {
-      elements: [
-        {
-          tag: "markdown",
-          content: "...",
-          element_id: STREAM_ELEMENT_ID,
-        },
-      ],
-    },
-    // Enable streaming mode. Do NOT set custom summary.content — Feishu's
-    // default "[生成中...]" is controlled by streaming_mode and clears
-    // automatically when streaming_mode is set to false via card.settings().
-    // A custom summary.content persists independently and causes stale previews.
-    config: {
-      streaming_mode: true,
-    },
-  };
-
-  try {
-    const createResp = await client.cardkit.v1.card.create({
-      data: {
-        type: "card_json",
-        data: JSON.stringify(cardData),
-      },
-    });
-    cardId = createResp?.data?.card_id;
-    if (!cardId) {
-      params.warn?.("Feishu card stream: card.create returned no card_id");
-      return {
-        update: () => {},
-        flush: async () => {},
-        stop: () => {},
-        sendFinal: async () => {},
-        finalize: async (_t: string) => {},
-        started: false,
-      };
-    }
-  } catch (err) {
-    params.warn?.(`Feishu card stream: card.create failed: ${String(err)}`);
-    return {
-      update: () => {},
-      flush: async () => {},
-      stop: () => {},
-      sendFinal: async () => {},
-      finalize: async (_t: string) => {},
-      started: false,
-    };
-  }
-
-  // ── Step 2: Send the card as a message (reply style when replyToMessageId is set) ──
-  const cardContent = JSON.stringify({ type: "card", data: { card_id: cardId } });
+  // ── Step 1: Send initial v1 inline card ──
+  const initialContent = buildInlineCardJson("⏳ ...");
   try {
     // oxlint-disable-next-line typescript/no-explicit-any
     let sendResp: any;
     if (params.replyToMessageId) {
-      // Quote-reply: card appears as a reply to the user's message.
       sendResp = await client.im.message.reply({
         path: { message_id: params.replyToMessageId },
-        data: { content: cardContent, msg_type: "interactive" },
+        data: { content: initialContent, msg_type: "interactive" },
       });
     } else {
+      if (!params.chatId) {
+        params.warn?.("Feishu card stream: chatId is required when replyToMessageId is absent");
+        return NOOP_STREAM;
+      }
+      const { receiveId, receiveIdType } = resolveReceiveId(params.chatId);
       sendResp = await client.im.message.create({
         params: { receive_id_type: receiveIdType },
-        data: { receive_id: receiveId, content: cardContent, msg_type: "interactive" },
+        data: { receive_id: receiveId, content: initialContent, msg_type: "interactive" },
       });
     }
-    messageId = sendResp?.data?.message_id;
+    message = extractFeishuSentMessageRef(sendResp as FeishuSendResponse, {
+      chatId: params.chatId,
+      messageType: "interactive",
+    });
+    messageId = message?.messageId;
     if (!messageId) {
       params.warn?.("Feishu card stream: message send returned no message_id");
-      return {
-        update: () => {},
-        flush: async () => {},
-        stop: () => {},
-        sendFinal: async () => {},
-        finalize: async (_t: string) => {},
-        started: false,
-      };
+      return NOOP_STREAM;
     }
   } catch (err) {
     params.warn?.(`Feishu card stream: message send failed: ${String(err)}`);
-    return {
-      update: () => {},
-      flush: async () => {},
-      stop: () => {},
-      sendFinal: async () => {},
-      finalize: async (_t: string) => {},
-      started: false,
-    };
+    return NOOP_STREAM;
+  }
+
+  // Re-fetch token on each PATCH call so long-running streams survive token rotation.
+  // The SDK's tokenManager caches internally and only refreshes when expired.
+  const getToken = async (): Promise<string | null> => {
+    // oxlint-disable-next-line typescript/no-explicit-any
+    return (client as any).tokenManager.getTenantAccessToken({});
+  };
+
+  const initialToken = await getToken();
+  if (!initialToken) {
+    params.warn?.("Feishu card stream: cannot obtain tenant_access_token for patch");
+    return { ...NOOP_STREAM, started: true, messageId, message };
   }
 
   params.log?.(
-    `Feishu card stream ready (cardId=${cardId}, messageId=${messageId}, throttleMs=${throttleMs})`,
+    `Feishu card stream ready (v1-patch, messageId=${messageId}, throttleMs=${throttleMs})`,
   );
 
-  // ── Step 3: Stream updates via cardElement.content() ──
+  // ── Step 2: Stream updates via PATCH /im/v1/messages/{id} ──
+  const patchCard = async (
+    content: string,
+    token: string,
+    _label: string,
+  ): Promise<{ code: number; msg: string }> => {
+    const res = await fetch(`${FEISHU_API_BASE}/im/v1/messages/${messageId}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ content: buildInlineCardJson(content) }),
+    });
+    return (await res.json()) as { code: number; msg: string };
+  };
+
   const sendUpdate = async (text: string) => {
-    if (stopped || !cardId) return;
-    const rendered = formatFeishuUserFacingText(text.trimEnd());
+    if (stopped || !messageId) return;
+    const rendered = renderFeishuUserFacingCardText(text, params.account);
     if (!rendered || rendered === lastSentText) return;
     lastSentText = rendered;
     lastSentAt = Date.now();
+    const token = await getToken();
+    if (!token) {
+      stopped = true;
+      params.warn?.("Feishu card stream: token refresh failed, stopping stream");
+      return;
+    }
     try {
-      await client.cardkit.v1.cardElement.content({
-        path: { card_id: cardId, element_id: STREAM_ELEMENT_ID },
-        data: { content: rendered, sequence: sequence++ },
-      });
+      const data = await patchCard(rendered, token, "patch");
+      if (data.code !== 0) {
+        if (data.code === 230020) {
+          params.warn?.("Feishu card stream: rate limited (230020), will retry");
+        } else {
+          stopped = true;
+          params.warn?.(`Feishu card stream patch failed: ${data.code} ${data.msg}`);
+        }
+      }
     } catch (err) {
       stopped = true;
-      params.warn?.(`Feishu card stream update failed: ${String(err)}`);
+      params.warn?.(`Feishu card stream patch error: ${String(err)}`);
     }
   };
 
@@ -1153,44 +1439,31 @@ export async function createFeishuCardStream(params: {
     }
   };
 
-  // Send final complete text directly, bypassing throttle/inFlight guards.
-  // Called after stop() to push the full content before finalize closes streaming.
   const sendFinal = async (text: string) => {
-    if (!cardId) return;
-    const rendered = formatFeishuUserFacingText(text.trimEnd());
+    if (!messageId) return;
+    const rendered = renderFeishuUserFacingCardText(text, params.account);
     if (!rendered) return;
+    const token = await getToken();
+    if (!token) {
+      params.warn?.("Feishu card stream sendFinal: token refresh failed");
+      return;
+    }
     try {
-      await client.cardkit.v1.cardElement.content({
-        path: { card_id: cardId, element_id: STREAM_ELEMENT_ID },
-        data: { content: rendered, sequence: sequence++ },
-      });
+      const data = await patchCard(rendered, token, "sendFinal");
+      if (data.code !== 0) {
+        params.warn?.(`Feishu card stream sendFinal failed: ${data.code} ${data.msg}`);
+      }
     } catch (err) {
-      params.warn?.(`Feishu card stream sendFinal failed: ${String(err)}`);
+      params.warn?.(`Feishu card stream sendFinal error: ${String(err)}`);
     }
   };
 
-  // Close streaming mode. No custom summary was set on creation, so Feishu's
-  // default "[生成中...]" clears automatically when streaming_mode is turned off.
-  // Ref: https://open.feishu.cn/document/cardkit-v1/streaming-updates-openapi-overview
+  // v1 inline cards have no streaming_mode to close — finalize is a no-op.
   const finalize = async (_finalText: string) => {
-    if (!cardId) return;
-    try {
-      await client.cardkit.v1.card.settings({
-        path: { card_id: cardId },
-        data: {
-          settings: JSON.stringify({
-            config: { streaming_mode: false },
-          }),
-          sequence: sequence++,
-        },
-      });
-      params.log?.("card stream finalize: streaming_mode closed");
-    } catch (err) {
-      params.warn?.(`card stream finalize failed: ${String(err)}`);
-    }
+    params.log?.("card stream finalize: v1-patch complete (no streaming_mode to close)");
   };
 
-  return { update, flush, stop, sendFinal, finalize, started: true, messageId };
+  return { update, flush, stop, sendFinal, finalize, started: true, messageId, message };
 }
 
 // ── Emoji Reactions ─────────────────────────────────────────────────────

@@ -7,7 +7,33 @@ const larkState = vi.hoisted(() => ({
   handlers: {} as Record<string, (data: unknown) => unknown>,
 }));
 const recordSessionMetaFromInboundMock = vi.hoisted(() => vi.fn(async () => {}));
-const getBotOpenIdMock = vi.hoisted(() => vi.fn(async () => "ou_bot"));
+const contactUserGetMock = vi.hoisted(() =>
+  vi.fn(async () => ({ data: { user: { name: "owner" } } })),
+);
+const messageGetMock = vi.hoisted(() =>
+  vi.fn(async ({ path }: { path: { message_id: string } }) => ({
+    code: 0,
+    data: {
+      items: [
+        {
+          message_id: path.message_id,
+          chat_id: "oc_test_room",
+          msg_type: "text",
+          create_time: "1772930795127",
+          sender: { id: "ou_owner", sender_type: "user" },
+          body: { content: JSON.stringify({ text: "@_user_1 你在哪个群" }) },
+          mentions: [{ key: "@_user_1", id: "cli_x", name: "her" }],
+        },
+      ],
+    },
+  })),
+);
+const getFeishuClientMock = vi.hoisted(() =>
+  vi.fn(() => ({
+    contact: { user: { get: contactUserGetMock } },
+    im: { message: { get: messageGetMock } },
+  })),
+);
 const getFeishuChatNameMock = vi.hoisted(() => vi.fn(async () => "test"));
 const buildDriveFileContextFromTextMock = vi.hoisted(() => vi.fn(async () => ""));
 const downloadFeishuFileMock = vi.hoisted(() => vi.fn());
@@ -43,7 +69,7 @@ vi.mock("./outbound.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./outbound.js")>();
   return {
     ...actual,
-    getBotOpenId: getBotOpenIdMock,
+    getFeishuClient: getFeishuClientMock,
     getFeishuChatName: getFeishuChatNameMock,
     addFeishuReaction: vi.fn(async () => null),
     removeFeishuReaction: vi.fn(async () => {}),
@@ -51,16 +77,32 @@ vi.mock("./outbound.js", async (importOriginal) => {
   };
 });
 
-import { startFeishuGateway } from "./gateway.js";
+import {
+  buildCurrentGroupReplyRuleText,
+  buildFeishuBotIdentityBlock,
+  startFeishuGateway,
+} from "./gateway.js";
 import { setFeishuRuntime } from "./runtime.js";
 
 const account: ResolvedFeishuAccount = {
   accountId: "default",
+  name: "her",
+  knownBots: {
+    cli_helper: "helper",
+    cli_tester: "tester",
+  },
+  knownBotOpenIds: {
+    ou_helper_open: "cli_helper",
+    ou_her_open: "cli_x",
+    ou_tester_open: "cli_tester",
+  },
+  botOpenId: "ou_her_open",
   enabled: true,
   appId: "cli_x",
   appSecret: "sec_x",
   credentialSource: "config",
   config: {
+    name: "her",
     dm: { allowFrom: ["ou_owner"] },
     groups: { enabled: true, archive: false, ownerIds: ["ou_owner"] },
   },
@@ -127,6 +169,28 @@ function createInboundEvent(params: {
   };
 }
 
+function createDirectInboundEvent(params: {
+  chatId: string;
+  senderId: string;
+  text: string;
+  messageId: string;
+}) {
+  return {
+    message: {
+      message_id: params.messageId,
+      chat_id: params.chatId,
+      chat_type: "p2p",
+      message_type: "text",
+      content: JSON.stringify({ text: params.text }),
+      mentions: [],
+    },
+    sender: {
+      sender_id: { open_id: params.senderId },
+      sender_type: "user",
+    },
+  };
+}
+
 function createInboundFileEvent(params: {
   chatId: string;
   senderId: string;
@@ -170,10 +234,53 @@ async function waitForRecordCalls(expectedCount: number) {
 }
 
 describe("feishu gateway inbound session metadata", () => {
+  it("builds bot identity prompt with only focused peer bots", () => {
+    const block = buildFeishuBotIdentityBlock(account, {
+      focusText: "请提醒 tester 去 test 群找 her",
+    });
+
+    expect(block).toContain("你是: her (app_id=cli_x, bot_open_id=ou_her_open)");
+    expect(block).toContain("- tester (app_id=cli_tester, bot_open_id=ou_tester_open)");
+    expect(block).not.toContain("- helper (app_id=cli_helper");
+    expect(block).toContain("app_id 只用于稳定识别 bot 身份");
+    expect(block).toContain("真正艾特某个 bot，必须使用它的 bot_open_id");
+  });
+
+  it("builds current group reply rules for sender plus focused peer bot mentions", () => {
+    const rules = buildCurrentGroupReplyRuleText({
+      account,
+      senderId: "ou_owner",
+      senderDisplayName: "owner",
+      focusText: "请提醒 tester 去 test 群找 her",
+    });
+
+    expect(rules).toContain("你当前正在回复的人：owner（open_id=ou_owner）。");
+    expect(rules).toContain('<at user_id="ou_owner">owner</at>');
+    expect(rules).toContain('<at user_id="ou_tester_open">tester</at>');
+    expect(rules).not.toContain('<at user_id="ou_helper_open">helper</at>');
+    expect(rules).toContain("绝对不要把 app_id 填进 <at user_id");
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     larkState.handlers = {};
-    getBotOpenIdMock.mockResolvedValue("ou_bot");
+    contactUserGetMock.mockResolvedValue({ data: { user: { name: "owner" } } });
+    messageGetMock.mockImplementation(async ({ path }: { path: { message_id: string } }) => ({
+      code: 0,
+      data: {
+        items: [
+          {
+            message_id: path.message_id,
+            chat_id: "oc_test_room",
+            msg_type: "text",
+            create_time: "1772930795127",
+            sender: { id: "ou_owner", sender_type: "user" },
+            body: { content: JSON.stringify({ text: "@_user_1 你在哪个群" }) },
+            mentions: [{ key: "@_user_1", id: "cli_x", name: "her" }],
+          },
+        ],
+      },
+    }));
     getFeishuChatNameMock.mockResolvedValue("test");
     buildDriveFileContextFromTextMock.mockResolvedValue("");
     downloadFeishuFileMock.mockResolvedValue({
@@ -260,6 +367,43 @@ describe("feishu gateway inbound session metadata", () => {
     expect(params?.ctx?.ConversationLabel).toBe("oc_fallback_room");
     expect(params?.ctx?.GroupSubject).toBe("oc_fallback_room");
     expect(params?.groupResolution?.id).toBe("oc_fallback_room");
+
+    abortController.abort();
+    await gatewayPromise;
+  });
+
+  it("injects focused bot identity in direct messages for cross-group actions", async () => {
+    const abortController = new AbortController();
+    const gatewayPromise = startFeishuGateway({
+      account,
+      config,
+      abortSignal: abortController.signal,
+      setStatus: vi.fn(),
+      log: { info: vi.fn(), error: vi.fn() },
+    });
+    const handler = larkState.handlers["im.message.receive_v1"];
+    expect(handler).toBeTypeOf("function");
+
+    handler?.(
+      createDirectInboundEvent({
+        chatId: "oc_direct_room",
+        senderId: "ou_owner",
+        text: "请你去 test 群艾特 tester 和 her",
+        messageId: "om_direct_msg_1",
+      }),
+    );
+    await waitForRecordCalls(1);
+
+    const [call] = recordSessionMetaFromInboundMock.mock.calls;
+    const params = call?.[0];
+    expect(params?.ctx?.BodyForAgent).toContain("[Bot Identity]");
+    expect(params?.ctx?.BodyForAgent).toContain(
+      "你是: her (app_id=cli_x, bot_open_id=ou_her_open)",
+    );
+    expect(params?.ctx?.BodyForAgent).toContain(
+      "- tester (app_id=cli_tester, bot_open_id=ou_tester_open)",
+    );
+    expect(params?.ctx?.BodyForAgent).not.toContain("- helper (app_id=cli_helper");
 
     abortController.abort();
     await gatewayPromise;

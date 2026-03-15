@@ -4,6 +4,20 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, extname, join, parse } from "node:path";
 import { extractPdfContent } from "../../../src/media/pdf-extract.ts";
+import {
+  buildFeishuTextPayload,
+  formatFeishuActorLabel,
+  type FeishuActorRef,
+  type FeishuAttachmentRef,
+  type FeishuMentionRef,
+  type FeishuReplyRef,
+  type FeishuTextPayload,
+} from "./feishu-message.js";
+import { extractFeishuAtTextMentions } from "./mention-text.js";
+import {
+  buildFeishuReplyRefFromSentMessage,
+  type FeishuSentMessageRef,
+} from "./message-metadata.js";
 
 export type ArchiveLogSink = {
   info?: (message: string) => void;
@@ -11,11 +25,18 @@ export type ArchiveLogSink = {
 };
 
 export type GroupArchiveEntry = {
+  schemaVersion?: 2;
   ts: number;
   sender: string;
   senderId: string;
   text: string;
   msgId: string;
+  actor?: FeishuActorRef;
+  messageType?: string;
+  mentions?: Array<Pick<FeishuMentionRef, "key" | "id" | "name" | "renderedText">>;
+  attachments?: FeishuAttachmentRef[];
+  textParts?: FeishuTextPayload;
+  reply?: FeishuReplyRef;
 };
 
 const OFFICE_EXTS = new Set([".pptx", ".docx", ".xlsx", ".odt", ".odp", ".ods", ".rtf"]);
@@ -46,7 +67,7 @@ export function loadArchiveEntries(chatId: string): Map<string, GroupArchiveEntr
     for (const line of content.split("\n")) {
       if (!line.trim()) continue;
       try {
-        const entry = JSON.parse(line) as GroupArchiveEntry;
+        const entry = normalizeArchiveEntry(JSON.parse(line) as GroupArchiveEntry);
         if (entry.msgId) map.set(entry.msgId, entry);
       } catch {
         // Ignore malformed archive lines.
@@ -66,6 +87,12 @@ export function archiveGroupMessage(params: {
   text: string;
   msgId: string;
   ts?: number;
+  actor?: FeishuActorRef;
+  messageType?: string;
+  mentions?: Array<Pick<FeishuMentionRef, "key" | "id" | "name" | "renderedText">>;
+  attachments?: FeishuAttachmentRef[];
+  textParts?: FeishuTextPayload;
+  reply?: FeishuReplyRef;
 }): void {
   const archiveDir = resolveGroupArchiveDir();
   const chatDir = join(archiveDir, params.chatId);
@@ -75,11 +102,20 @@ export function archiveGroupMessage(params: {
   }
 
   const record: GroupArchiveEntry = {
+    schemaVersion: 2,
     ts: params.ts ?? Math.floor(Date.now() / 1000),
-    sender: params.senderName || params.senderId,
+    sender: params.actor
+      ? formatFeishuActorLabel(params.actor, { includeCanonicalId: false })
+      : params.senderName || params.senderId,
     senderId: params.senderId,
     text: params.text,
     msgId: params.msgId,
+    ...(params.actor && { actor: params.actor }),
+    ...(params.messageType && { messageType: params.messageType }),
+    ...(params.mentions && params.mentions.length > 0 && { mentions: params.mentions }),
+    ...(params.attachments && params.attachments.length > 0 && { attachments: params.attachments }),
+    textParts: params.textParts ?? buildFeishuTextPayload(params.text),
+    ...(params.reply && { reply: params.reply }),
   };
   appendFileSync(join(chatDir, "messages.jsonl"), JSON.stringify(record) + "\n");
 
@@ -98,6 +134,66 @@ export function archiveGroupMessage(params: {
     lastMessage: new Date((params.ts ?? Math.floor(Date.now() / 1000)) * 1000).toISOString(),
   };
   writeFileSync(indexPath, JSON.stringify(index, null, 2) + "\n");
+}
+
+function inferActorIdType(senderId: string): FeishuActorRef["canonicalIdType"] {
+  if (senderId.startsWith("ou_")) return "open_id";
+  if (senderId.startsWith("cli_")) return "app_id";
+  if (senderId) return "user_id";
+  return "unknown";
+}
+
+function inferActorKind(senderId: string): FeishuActorRef["actorKind"] {
+  const idType = inferActorIdType(senderId);
+  if (idType === "app_id") return "bot";
+  if (idType === "open_id" || idType === "user_id") return "human";
+  return "unknown";
+}
+
+export function normalizeArchiveEntry(entry: GroupArchiveEntry): GroupArchiveEntry {
+  const senderId = entry.senderId?.trim() || "";
+  const sender = entry.sender?.trim() || senderId;
+  const actor =
+    entry.actor ??
+    ({
+      canonicalId: senderId,
+      canonicalIdType: inferActorIdType(senderId),
+      senderType: inferActorKind(senderId) === "bot" ? "app" : "user",
+      actorKind: inferActorKind(senderId),
+      ...(sender && sender !== senderId ? { displayName: sender } : {}),
+      rawIds:
+        inferActorIdType(senderId) === "open_id"
+          ? { open_id: senderId }
+          : inferActorIdType(senderId) === "app_id"
+            ? { app_id: senderId }
+            : inferActorIdType(senderId) === "user_id"
+              ? { user_id: senderId }
+              : {},
+      resolutionSource: "archive" as const,
+      resolved: Boolean(senderId || sender),
+    } satisfies FeishuActorRef);
+
+  return {
+    ...entry,
+    schemaVersion: 2,
+    sender,
+    senderId,
+    text: entry.text ?? "",
+    actor,
+    textParts: entry.textParts ?? buildFeishuTextPayload(entry.text ?? ""),
+  };
+}
+
+export function getArchiveEntryDisplaySender(entry: GroupArchiveEntry): string {
+  const normalized = normalizeArchiveEntry(entry);
+  return normalized.actor
+    ? formatFeishuActorLabel(normalized.actor, { includeCanonicalId: false })
+    : normalized.sender || normalized.senderId;
+}
+
+export function getArchiveEntryDisplayText(entry: GroupArchiveEntry): string {
+  const normalized = normalizeArchiveEntry(entry);
+  return normalized.textParts?.withoutFooter || normalized.text;
 }
 
 function sanitizeFilename(name: string): string {
@@ -249,18 +345,73 @@ export async function createArchiveTextForBuffer(params: {
   });
 }
 
+function extractArchiveMentionsFromText(
+  text: string,
+): Array<Pick<FeishuMentionRef, "key" | "id" | "name" | "renderedText">> | undefined {
+  const mentions = extractFeishuAtTextMentions(text).map((mention) => ({
+    key: mention.key,
+    id: mention.id,
+    ...(mention.name && { name: mention.name }),
+    renderedText: mention.renderedText,
+  }));
+  return mentions.length > 0 ? mentions : undefined;
+}
+
+export function archiveSentFeishuTextMessage(params: {
+  chatId: string;
+  chatName?: string | null;
+  message: FeishuSentMessageRef;
+  senderId: string;
+  senderName?: string;
+  actor?: FeishuActorRef;
+  text: string;
+  mentions?: Array<Pick<FeishuMentionRef, "key" | "id" | "name" | "renderedText">>;
+  attachments?: FeishuAttachmentRef[];
+  textParts?: FeishuTextPayload;
+  reply?: FeishuReplyRef;
+}): void {
+  if (!params.chatId.startsWith("oc_")) return;
+  const mentions =
+    params.mentions && params.mentions.length > 0
+      ? params.mentions
+      : extractArchiveMentionsFromText(params.text);
+  archiveGroupMessage({
+    chatId: params.chatId,
+    chatName: params.chatName ?? null,
+    senderId: params.senderId,
+    senderName: params.senderName ?? params.senderId,
+    text: params.text,
+    msgId: params.message.messageId,
+    ...(params.actor && { actor: params.actor }),
+    messageType: params.message.messageType,
+    ...(mentions && { mentions }),
+    ...(params.attachments && params.attachments.length > 0 && { attachments: params.attachments }),
+    textParts: params.textParts ?? buildFeishuTextPayload(params.text),
+    ...(params.reply
+      ? { reply: params.reply }
+      : buildFeishuReplyRefFromSentMessage(params.message)
+        ? { reply: buildFeishuReplyRefFromSentMessage(params.message) }
+        : {}),
+  });
+}
+
 export async function archiveSentFeishuBinaryMessage(params: {
   chatId: string;
+  message?: FeishuSentMessageRef;
   messageId?: string;
   senderId: string;
   senderName?: string;
+  actor?: FeishuActorRef;
+  messageType?: string;
+  reply?: FeishuReplyRef;
   buffer: Buffer;
   contentType?: string;
   fileName?: string;
   defaultBaseName: string;
   log?: ArchiveLogSink;
 }): Promise<void> {
-  if (!params.messageId || !params.chatId.startsWith("oc_")) return;
+  const messageId = params.message?.messageId ?? params.messageId;
+  if (!messageId || !params.chatId.startsWith("oc_")) return;
   const text = await createArchiveTextForBuffer({
     buffer: params.buffer,
     contentType: params.contentType,
@@ -274,7 +425,17 @@ export async function archiveSentFeishuBinaryMessage(params: {
     senderId: params.senderId,
     senderName: params.senderName ?? params.senderId,
     text,
-    msgId: params.messageId,
+    msgId: messageId,
+    ...(params.actor && { actor: params.actor }),
+    ...((params.messageType ?? params.message?.messageType) && {
+      messageType: params.messageType ?? params.message?.messageType,
+    }),
+    textParts: buildFeishuTextPayload(text),
+    ...(params.reply
+      ? { reply: params.reply }
+      : buildFeishuReplyRefFromSentMessage(params.message)
+        ? { reply: buildFeishuReplyRefFromSentMessage(params.message) }
+        : {}),
   });
 }
 
