@@ -1,6 +1,7 @@
 /**
  * Feishu Calendar tool — list/get/create/update/delete calendar events.
- * Uses calendar v4 API (requires calendar:calendar scope).
+ * Uses calendar v4 API with user_access_token (OAuth) for full event details.
+ * Falls back to tenant_access_token for check_freebusy (no user auth needed).
  * Ref: https://open.feishu.cn/document/server-docs/calendar-v4/overview
  */
 
@@ -9,6 +10,12 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { stringEnum } from "openclaw/plugin-sdk";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
+import {
+  callFeishuApiWithUserToken,
+  getValidUserToken,
+  requireUserToken,
+  resolveOAuthRedirectUri,
+} from "../oauth.js";
 import { getFeishuClient } from "../outbound.js";
 
 function json(data: unknown) {
@@ -23,6 +30,11 @@ function json(data: unknown) {
 /** Convert ISO 8601 string to Unix timestamp (seconds). */
 function toTimestamp(iso: string): string {
   return String(Math.floor(new Date(iso).getTime() / 1000));
+}
+
+/** Convert ISO 8601 / any date string to RFC 3339 UTC string for freebusy API. */
+function toRfc3339(iso: string): string {
+  return new Date(iso).toISOString();
 }
 
 /** Extract useful fields from a raw calendar event. */
@@ -46,16 +58,16 @@ function formatEvent(e: any) {
   };
 }
 
-// ── Actions ──
+// ── User-token calendar API calls ──
 
-async function listCalendars(client: Lark.Client, pageSize?: number, pageToken?: string) {
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const res: any = await client.calendar.calendar.list({
-    params: {
-      page_size: pageSize ?? 500,
-      ...(pageToken && { page_token: pageToken }),
-    },
-  });
+async function listCalendarsUser(userToken: string, pageSize?: number, pageToken?: string) {
+  const query: Record<string, string> = { page_size: String(pageSize ?? 500) };
+  if (pageToken) query.page_token = pageToken;
+  const res = await callFeishuApiWithUserToken<{
+    calendar_list?: { calendar_id: string; summary: string; description: string; type: string; role: string; permissions: string }[];
+    has_more?: boolean;
+    page_token?: string;
+  }>({ method: "GET", endpoint: "/calendar/v4/calendars", userToken, query });
   if (res.code !== 0) throw new Error(res.msg);
   return {
     // oxlint-disable-next-line typescript/no-explicit-any
@@ -72,10 +84,244 @@ async function listCalendars(client: Lark.Client, pageSize?: number, pageToken?:
   };
 }
 
-/** Convert ISO 8601 / any date string to RFC 3339 UTC string for freebusy API. */
-function toRfc3339(iso: string): string {
-  return new Date(iso).toISOString();
+async function getPrimaryCalendarUser(userToken: string) {
+  const res = await callFeishuApiWithUserToken<{
+    calendars?: { calendar?: { calendar_id: string; summary: string; type: string; role: string } }[];
+  }>({ method: "GET", endpoint: "/calendar/v4/calendars/primary", userToken, query: { user_id_type: "open_id" } });
+  if (res.code !== 0) throw new Error(res.msg);
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const calendars = (res.data?.calendars ?? []).map((c: any) => ({
+    calendar_id: c.calendar?.calendar_id,
+    summary: c.calendar?.summary,
+    type: c.calendar?.type,
+    role: c.calendar?.role,
+  }));
+  return { calendars };
 }
+
+async function searchCalendarsUser(userToken: string, query: string, pageSize?: number) {
+  const res = await callFeishuApiWithUserToken<{
+    items?: { calendar_id: string; summary: string; description: string; type: string; role: string; permissions: string }[];
+  }>({
+    method: "POST",
+    endpoint: "/calendar/v4/calendars/search",
+    userToken,
+    body: { query },
+    query: { page_size: String(pageSize ?? 50) },
+  });
+  if (res.code !== 0) throw new Error(res.msg);
+  // oxlint-disable-next-line typescript/no-explicit-any
+  return {
+    calendars: (res.data?.items ?? []).map((c: any) => ({
+      calendar_id: c.calendar_id,
+      summary: c.summary,
+      description: c.description,
+      type: c.type,
+      role: c.role,
+      permissions: c.permissions,
+    })),
+  };
+}
+
+async function subscribeCalendarUser(userToken: string, calendarId: string) {
+  const res = await callFeishuApiWithUserToken<{
+    calendar?: { calendar_id: string; summary: string; type: string; role: string };
+  }>({ method: "POST", endpoint: `/calendar/v4/calendars/${calendarId}/subscribe`, userToken });
+  if (res.code !== 0) throw new Error(res.msg);
+  const cal = res.data?.calendar;
+  return {
+    subscribed: true,
+    calendar_id: cal?.calendar_id,
+    summary: cal?.summary,
+    type: cal?.type,
+    role: cal?.role,
+  };
+}
+
+async function listEventsUser(
+  userToken: string,
+  calendarId: string,
+  startTime?: string,
+  endTime?: string,
+  pageSize?: number,
+  pageToken?: string,
+) {
+  const query: Record<string, string> = { page_size: String(Math.max(pageSize ?? 50, 50)) };
+  if (startTime) query.start_time = toTimestamp(startTime);
+  if (endTime) query.end_time = toTimestamp(endTime);
+  if (pageToken) query.page_token = pageToken;
+  const res = await callFeishuApiWithUserToken<{
+    items?: unknown[];
+    has_more?: boolean;
+    page_token?: string;
+  }>({ method: "GET", endpoint: `/calendar/v4/calendars/${calendarId}/events`, userToken, query });
+  if (res.code !== 0) throw new Error(res.msg);
+  return {
+    // oxlint-disable-next-line typescript/no-explicit-any
+    events: (res.data?.items ?? []).map((e: any) => formatEvent(e)),
+    has_more: res.data?.has_more ?? false,
+    page_token: res.data?.page_token,
+  };
+}
+
+async function getEventUser(userToken: string, calendarId: string, eventId: string) {
+  const res = await callFeishuApiWithUserToken<{ event?: unknown }>({
+    method: "GET",
+    endpoint: `/calendar/v4/calendars/${calendarId}/events/${eventId}`,
+    userToken,
+    query: { need_attendee: "true", user_id_type: "open_id" },
+  });
+  if (res.code !== 0) throw new Error(res.msg);
+  return { event: formatEvent(res.data?.event ?? {}) };
+}
+
+async function createEventUser(
+  userToken: string,
+  calendarId: string,
+  summary: string,
+  startTime: string,
+  endTime: string,
+  description?: string,
+  location?: string,
+  attendeeIds?: string[],
+  timezone?: string,
+) {
+  const tz = timezone ?? "Asia/Shanghai";
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const data: any = {
+    summary,
+    start_time: { timestamp: toTimestamp(startTime), timezone: tz },
+    end_time: { timestamp: toTimestamp(endTime), timezone: tz },
+    attendee_ability: "can_see_others",
+    need_notification: true,
+    ...(description && { description }),
+    ...(location && { location: { name: location } }),
+  };
+  const res = await callFeishuApiWithUserToken<{ event?: unknown }>({
+    method: "POST",
+    endpoint: `/calendar/v4/calendars/${calendarId}/events`,
+    userToken,
+    body: data,
+    query: { user_id_type: "open_id" },
+  });
+  if (res.code !== 0) throw new Error(res.msg);
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const event = res.data?.event as any;
+
+  if (attendeeIds && attendeeIds.length > 0 && event?.event_id) {
+    await addAttendeesUser(userToken, calendarId, event.event_id, attendeeIds);
+  }
+
+  return { event: formatEvent(event ?? {}) };
+}
+
+async function addAttendeesUser(
+  userToken: string,
+  calendarId: string,
+  eventId: string,
+  attendeeIds: string[],
+) {
+  const res = await callFeishuApiWithUserToken({
+    method: "POST",
+    endpoint: `/calendar/v4/calendars/${calendarId}/events/${eventId}/attendees`,
+    userToken,
+    body: {
+      attendees: attendeeIds.map((id) => ({ type: "user", user_id: id })),
+      need_notification: true,
+    },
+    query: { user_id_type: "open_id" },
+  });
+  if (res.code !== 0) throw new Error(res.msg);
+  return res.data;
+}
+
+async function removeAttendeesUser(
+  userToken: string,
+  calendarId: string,
+  eventId: string,
+  attendeeIds: string[],
+) {
+  // List current attendees to find their attendee_ids by open_id
+  const listRes = await callFeishuApiWithUserToken<{
+    items?: { attendee_id: string; user_id?: string }[];
+  }>({
+    method: "GET",
+    endpoint: `/calendar/v4/calendars/${calendarId}/events/${eventId}/attendees`,
+    userToken,
+    query: { user_id_type: "open_id", page_size: "50" },
+  });
+  if (listRes.code !== 0) throw new Error(listRes.msg);
+
+  const items = listRes.data?.items ?? [];
+  const toRemove = items
+    .filter((a) => attendeeIds.includes(a.user_id ?? ""))
+    .map((a) => a.attendee_id);
+  if (toRemove.length === 0) {
+    return { removed: 0, message: "No matching attendees found to remove" };
+  }
+
+  const res = await callFeishuApiWithUserToken({
+    method: "POST",
+    endpoint: `/calendar/v4/calendars/${calendarId}/events/${eventId}/attendees/batch_delete`,
+    userToken,
+    body: { attendee_ids: toRemove, need_notification: true },
+  });
+  if (res.code !== 0) throw new Error(res.msg);
+  return { removed: toRemove.length };
+}
+
+async function updateEventUser(
+  userToken: string,
+  calendarId: string,
+  eventId: string,
+  summary?: string,
+  startTime?: string,
+  endTime?: string,
+  description?: string,
+  location?: string,
+  timezone?: string,
+  attendeeIds?: string[],
+) {
+  const tz = timezone ?? "Asia/Shanghai";
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const data: any = {};
+  if (summary !== undefined) data.summary = summary;
+  if (description !== undefined) data.description = description;
+  if (startTime) data.start_time = { timestamp: toTimestamp(startTime), timezone: tz };
+  if (endTime) data.end_time = { timestamp: toTimestamp(endTime), timezone: tz };
+  if (location) data.location = { name: location };
+
+  if (Object.keys(data).length > 0) {
+    const res = await callFeishuApiWithUserToken({
+      method: "PATCH",
+      endpoint: `/calendar/v4/calendars/${calendarId}/events/${eventId}`,
+      userToken,
+      body: data,
+      query: { user_id_type: "open_id" },
+    });
+    if (res.code !== 0) throw new Error(res.msg);
+  }
+
+  if (attendeeIds && attendeeIds.length > 0) {
+    await addAttendeesUser(userToken, calendarId, eventId, attendeeIds);
+  }
+
+  // Verify
+  return getEventUser(userToken, calendarId, eventId);
+}
+
+async function deleteEventUser(userToken: string, calendarId: string, eventId: string) {
+  const res = await callFeishuApiWithUserToken({
+    method: "DELETE",
+    endpoint: `/calendar/v4/calendars/${calendarId}/events/${eventId}`,
+    userToken,
+    query: { need_notification: "true" },
+  });
+  if (res.code !== 0) throw new Error(res.msg);
+  return { deleted: true, event_id: eventId };
+}
+
+// ── Freebusy uses tenant token (no user auth needed) ──
 
 async function checkFreebusy(
   client: Lark.Client,
@@ -99,240 +345,6 @@ async function checkFreebusy(
   };
 }
 
-async function searchCalendars(client: Lark.Client, query: string, pageSize?: number) {
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const res: any = await client.calendar.calendar.search({
-    data: { query },
-    params: { page_size: pageSize ?? 50 },
-  });
-  if (res.code !== 0) throw new Error(res.msg);
-  return {
-    // oxlint-disable-next-line typescript/no-explicit-any
-    calendars: (res.data?.items ?? []).map((c: any) => ({
-      calendar_id: c.calendar_id,
-      summary: c.summary,
-      description: c.description,
-      type: c.type,
-      role: c.role,
-      permissions: c.permissions,
-    })),
-  };
-}
-
-async function subscribeCalendar(client: Lark.Client, calendarId: string) {
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const res: any = await client.calendar.calendar.subscribe({
-    path: { calendar_id: calendarId },
-  });
-  if (res.code !== 0) throw new Error(res.msg);
-  const cal = res.data?.calendar;
-  return {
-    subscribed: true,
-    calendar_id: cal?.calendar_id,
-    summary: cal?.summary,
-    type: cal?.type,
-    role: cal?.role,
-  };
-}
-
-async function getPrimaryCalendar(client: Lark.Client) {
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const res: any = await client.calendar.calendar.primary({
-    params: { user_id_type: "open_id" },
-  });
-  if (res.code !== 0) throw new Error(res.msg);
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const calendars = (res.data?.calendars ?? []).map((c: any) => ({
-    calendar_id: c.calendar?.calendar_id,
-    summary: c.calendar?.summary,
-    type: c.calendar?.type,
-    role: c.calendar?.role,
-  }));
-  return { calendars };
-}
-
-async function listEvents(
-  client: Lark.Client,
-  calendarId: string,
-  startTime?: string,
-  endTime?: string,
-  pageSize?: number,
-  pageToken?: string,
-) {
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const res: any = await client.calendar.calendarEvent.list({
-    path: { calendar_id: calendarId },
-    params: {
-      page_size: Math.max(pageSize ?? 50, 50),
-      ...(startTime && { start_time: toTimestamp(startTime) }),
-      ...(endTime && { end_time: toTimestamp(endTime) }),
-      ...(pageToken && { page_token: pageToken }),
-    },
-  });
-  if (res.code !== 0) throw new Error(res.msg);
-  return {
-    // oxlint-disable-next-line typescript/no-explicit-any
-    events: (res.data?.items ?? []).map((e: any) => formatEvent(e)),
-    has_more: res.data?.has_more ?? false,
-    page_token: res.data?.page_token,
-  };
-}
-
-async function getEvent(client: Lark.Client, calendarId: string, eventId: string) {
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const res: any = await client.calendar.calendarEvent.get({
-    path: { calendar_id: calendarId, event_id: eventId },
-    params: { need_attendee: true, user_id_type: "open_id" },
-  });
-  if (res.code !== 0) throw new Error(res.msg);
-  return { event: formatEvent(res.data?.event ?? {}) };
-}
-
-async function createEvent(
-  client: Lark.Client,
-  calendarId: string,
-  summary: string,
-  startTime: string,
-  endTime: string,
-  description?: string,
-  location?: string,
-  attendeeIds?: string[],
-  timezone?: string,
-) {
-  const tz = timezone ?? "Asia/Shanghai";
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const data: any = {
-    summary,
-    start_time: { timestamp: toTimestamp(startTime), timezone: tz },
-    end_time: { timestamp: toTimestamp(endTime), timezone: tz },
-    attendee_ability: "can_see_others",
-    need_notification: true,
-    ...(description && { description }),
-    ...(location && { location: { name: location } }),
-  };
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const res: any = await client.calendar.calendarEvent.create({
-    path: { calendar_id: calendarId },
-    data,
-    params: { user_id_type: "open_id" },
-  });
-  if (res.code !== 0) throw new Error(res.msg);
-  const event = res.data?.event;
-
-  if (attendeeIds && attendeeIds.length > 0 && event?.event_id) {
-    await addAttendees(client, calendarId, event.event_id, attendeeIds);
-  }
-
-  return { event: formatEvent(event ?? {}) };
-}
-
-async function addAttendees(
-  client: Lark.Client,
-  calendarId: string,
-  eventId: string,
-  attendeeIds: string[],
-) {
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const res: any = await (client.calendar as any).calendarEventAttendee.create({
-    path: { calendar_id: calendarId, event_id: eventId },
-    data: {
-      attendees: attendeeIds.map((id) => ({ type: "user", user_id: id })),
-      need_notification: true,
-    },
-    params: { user_id_type: "open_id" },
-  });
-  if (res.code !== 0) throw new Error(res.msg);
-  return res.data;
-}
-
-async function removeAttendees(
-  client: Lark.Client,
-  calendarId: string,
-  eventId: string,
-  attendeeIds: string[],
-) {
-  // First list current attendees to find their attendee_ids by open_id
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const listRes: any = await (client.calendar as any).calendarEventAttendee.list({
-    path: { calendar_id: calendarId, event_id: eventId },
-    params: { user_id_type: "open_id", page_size: 50 },
-  });
-  if (listRes.code !== 0) throw new Error(listRes.msg);
-
-  const items: { attendee_id: string; user_id?: string }[] = listRes.data?.items ?? [];
-  const toRemove = items
-    .filter((a) => attendeeIds.includes(a.user_id ?? ""))
-    .map((a) => ({ type: "user" as const, attendee_id: a.attendee_id }));
-  if (toRemove.length === 0) {
-    return { removed: 0, message: "No matching attendees found to remove" };
-  }
-
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const res: any = await (client.calendar as any).calendarEventAttendee.batchDelete({
-    path: { calendar_id: calendarId, event_id: eventId },
-    data: {
-      attendee_ids: toRemove.map((a) => a.attendee_id),
-      need_notification: true,
-    },
-  });
-  if (res.code !== 0) throw new Error(res.msg);
-  return { removed: toRemove.length };
-}
-
-async function updateEvent(
-  client: Lark.Client,
-  calendarId: string,
-  eventId: string,
-  summary?: string,
-  startTime?: string,
-  endTime?: string,
-  description?: string,
-  location?: string,
-  timezone?: string,
-  attendeeIds?: string[],
-) {
-  const tz = timezone ?? "Asia/Shanghai";
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const data: any = {};
-  if (summary !== undefined) data.summary = summary;
-  if (description !== undefined) data.description = description;
-  if (startTime) data.start_time = { timestamp: toTimestamp(startTime), timezone: tz };
-  if (endTime) data.end_time = { timestamp: toTimestamp(endTime), timezone: tz };
-  if (location) data.location = { name: location };
-
-  if (Object.keys(data).length > 0) {
-    // oxlint-disable-next-line typescript/no-explicit-any
-    const res: any = await client.calendar.calendarEvent.patch({
-      path: { calendar_id: calendarId, event_id: eventId },
-      data,
-      params: { user_id_type: "open_id" },
-    });
-    if (res.code !== 0) throw new Error(res.msg);
-  }
-
-  if (attendeeIds && attendeeIds.length > 0) {
-    await addAttendees(client, calendarId, eventId, attendeeIds);
-  }
-
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const verify: any = await client.calendar.calendarEvent.get({
-    path: { calendar_id: calendarId, event_id: eventId },
-    params: { need_attendee: true, user_id_type: "open_id" },
-  });
-  if (verify.code !== 0) throw new Error(verify.msg);
-  return { event: formatEvent(verify.data?.event ?? {}) };
-}
-
-async function deleteEvent(client: Lark.Client, calendarId: string, eventId: string) {
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const res: any = await client.calendar.calendarEvent.delete({
-    path: { calendar_id: calendarId, event_id: eventId },
-    params: { need_notification: "true" },
-  });
-  if (res.code !== 0) throw new Error(res.msg);
-  return { deleted: true, event_id: eventId };
-}
-
 // ── Schema ──
 
 const CALENDAR_ACTIONS = [
@@ -352,8 +364,8 @@ const CALENDAR_ACTIONS = [
 const FeishuCalendarSchema = Type.Object({
   action: stringEnum(CALENDAR_ACTIONS, {
     description:
-      "Calendar operation: get_primary (get bot's own primary calendar), " +
-      "list_calendars (list ALL calendars the bot can access, including shared ones), " +
+      "Calendar operation: get_primary (get user's own primary calendar), " +
+      "list_calendars (list ALL calendars the user can access, including shared ones), " +
       "search_calendars (search public calendars or user primary calendars by keyword), " +
       "subscribe_calendar (subscribe to a public/shared calendar to access its events), " +
       "list_events (list events with optional time range), " +
@@ -423,33 +435,52 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
   if (accounts.length === 0) return;
   const firstAccount: ResolvedFeishuAccount = accounts[0];
   const getClient = () => getFeishuClient(firstAccount);
+  const redirectUri = resolveOAuthRedirectUri(api.config);
 
   api.registerTool(
     {
       name: "feishu_calendar",
       label: "Feishu Calendar",
       description:
-        "Feishu calendar operations. IMPORTANT: The bot can only read events from calendars it owns or " +
-        "has been shared/subscribed to. To see a user's calendar events, the user must first share their " +
-        "calendar with the bot in Feishu settings. Use check_freebusy to check any user's busy/free time " +
-        "by open_id WITHOUT calendar sharing. Use search_calendars to find public calendars, then " +
-        "subscribe_calendar to subscribe. Requires calendar:calendar scope. " +
+        "Feishu calendar operations using the user's own identity (OAuth). " +
+        "Can read the user's own calendar events, create/update/delete events, and manage attendees. " +
+        "Use check_freebusy to check any user's busy/free time by open_id (no OAuth needed). " +
+        "Requires calendar:calendar scope via OAuth. " +
         "Times use ISO 8601 format with timezone (e.g. 2026-02-25T14:00:00+08:00).",
       parameters: FeishuCalendarSchema,
       // oxlint-disable-next-line typescript/no-explicit-any
       async execute(_toolCallId: string, params: any) {
         try {
-          const client = getClient();
+          // check_freebusy works with tenant token — no user auth needed
+          if (params.action === "check_freebusy") {
+            if (!params.user_open_id || !params.start_time || !params.end_time)
+              return json({ error: "user_open_id, start_time, and end_time are required" });
+            const client = getClient();
+            return json(
+              await checkFreebusy(client, params.user_open_id, params.start_time, params.end_time),
+            );
+          }
+
+          // All other actions need user_access_token
+          const tokenResult = await requireUserToken({
+            account: firstAccount,
+            redirectUri,
+            tokenPromise: getValidUserToken(firstAccount),
+            toolLabel: "日历",
+          });
+          if (!tokenResult.ok) return tokenResult.authResponse;
+          const userToken = tokenResult.token.access_token;
+
           switch (params.action) {
             case "get_primary":
-              return json(await getPrimaryCalendar(client));
+              return json(await getPrimaryCalendarUser(userToken));
 
             case "list_calendars":
-              return json(await listCalendars(client, params.page_size, params.page_token));
+              return json(await listCalendarsUser(userToken, params.page_size, params.page_token));
 
             case "search_calendars": {
               if (!params.query) return json({ error: "query is required for search_calendars" });
-              return json(await searchCalendars(client, params.query, params.page_size));
+              return json(await searchCalendarsUser(userToken, params.query, params.page_size));
             }
 
             case "subscribe_calendar": {
@@ -457,15 +488,15 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
                 return json({
                   error: "calendar_id is required. Only public/shared calendars can be subscribed.",
                 });
-              return json(await subscribeCalendar(client, params.calendar_id));
+              return json(await subscribeCalendarUser(userToken, params.calendar_id));
             }
 
             case "list_events": {
               if (!params.calendar_id)
                 return json({ error: "calendar_id is required. Use get_primary first." });
               return json(
-                await listEvents(
-                  client,
+                await listEventsUser(
+                  userToken,
                   params.calendar_id,
                   params.start_time,
                   params.end_time,
@@ -478,7 +509,7 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
             case "get_event": {
               if (!params.calendar_id || !params.event_id)
                 return json({ error: "calendar_id and event_id are required" });
-              return json(await getEvent(client, params.calendar_id, params.event_id));
+              return json(await getEventUser(userToken, params.calendar_id, params.event_id));
             }
 
             case "create_event": {
@@ -487,8 +518,8 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
                   error: "calendar_id, summary, start_time, and end_time are required",
                 });
               return json(
-                await createEvent(
-                  client,
+                await createEventUser(
+                  userToken,
                   params.calendar_id,
                   params.summary,
                   params.start_time,
@@ -505,8 +536,8 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
               if (!params.calendar_id || !params.event_id)
                 return json({ error: "calendar_id and event_id are required" });
               return json(
-                await updateEvent(
-                  client,
+                await updateEventUser(
+                  userToken,
                   params.calendar_id,
                   params.event_id,
                   params.summary,
@@ -523,7 +554,7 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
             case "delete_event": {
               if (!params.calendar_id || !params.event_id)
                 return json({ error: "calendar_id and event_id are required" });
-              return json(await deleteEvent(client, params.calendar_id, params.event_id));
+              return json(await deleteEventUser(userToken, params.calendar_id, params.event_id));
             }
 
             case "remove_attendees": {
@@ -532,26 +563,11 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
                   error: "calendar_id, event_id, and attendee_ids are required",
                 });
               return json(
-                await removeAttendees(
-                  client,
+                await removeAttendeesUser(
+                  userToken,
                   params.calendar_id,
                   params.event_id,
                   params.attendee_ids,
-                ),
-              );
-            }
-
-            case "check_freebusy": {
-              if (!params.user_open_id || !params.start_time || !params.end_time)
-                return json({
-                  error: "user_open_id, start_time, and end_time are required",
-                });
-              return json(
-                await checkFreebusy(
-                  client,
-                  params.user_open_id,
-                  params.start_time,
-                  params.end_time,
                 ),
               );
             }
@@ -574,5 +590,5 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
     },
     { name: "feishu_calendar" },
   );
-  api.logger.info?.("feishu: registered feishu_calendar tool");
+  api.logger.info?.("feishu: registered feishu_calendar tool (user_access_token mode)");
 }

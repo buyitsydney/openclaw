@@ -533,7 +533,7 @@ type FeishuApiResponse<T = unknown> = {
 };
 
 export async function callFeishuApiWithUserToken<T = unknown>(params: {
-  method: "GET" | "POST";
+  method: "GET" | "POST" | "PATCH" | "DELETE";
   endpoint: string;
   userToken: string;
   body?: Record<string, unknown>;
