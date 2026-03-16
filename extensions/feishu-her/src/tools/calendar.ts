@@ -85,18 +85,11 @@ async function listCalendarsUser(userToken: string, pageSize?: number, pageToken
 }
 
 async function getPrimaryCalendarUser(userToken: string) {
-  const res = await callFeishuApiWithUserToken<{
-    calendars?: { calendar?: { calendar_id: string; summary: string; type: string; role: string } }[];
-  }>({ method: "GET", endpoint: "/calendar/v4/calendars/primary", userToken, query: { user_id_type: "open_id" } });
-  if (res.code !== 0) throw new Error(res.msg);
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const calendars = (res.data?.calendars ?? []).map((c: any) => ({
-    calendar_id: c.calendar?.calendar_id,
-    summary: c.calendar?.summary,
-    type: c.calendar?.type,
-    role: c.calendar?.role,
-  }));
-  return { calendars };
+  // Use list_calendars + filter for role=owner instead of /calendars/primary,
+  // because the /primary endpoint may route as /:calendar_id with user tokens.
+  const all = await listCalendarsUser(userToken);
+  const primary = all.calendars.filter((c) => c.role === "owner");
+  return { calendars: primary };
 }
 
 async function searchCalendarsUser(userToken: string, query: string, pageSize?: number) {
