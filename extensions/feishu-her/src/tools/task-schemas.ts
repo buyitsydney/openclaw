@@ -264,6 +264,24 @@ export const DeleteTaskAttachmentSchema = Type.Object({
   attachment_guid: Type.String({ description: "Attachment GUID to delete" }),
 });
 
+export const AddTaskMembersSchema = Type.Object({
+  task_guid: Type.String({ description: "Task GUID to add members to" }),
+  members: Type.Array(MEMBER_SCHEMA, {
+    minItems: 1,
+    description: "Members to add (role: assignee or follower)",
+  }),
+  user_id_type: Type.Optional(Type.String({ description: "open_id/user_id/union_id" })),
+});
+
+export const RemoveTaskMembersSchema = Type.Object({
+  task_guid: Type.String({ description: "Task GUID to remove members from" }),
+  members: Type.Array(MEMBER_SCHEMA, {
+    minItems: 1,
+    description: "Members to remove (id + role required to identify the membership)",
+  }),
+  user_id_type: Type.Optional(Type.String({ description: "open_id/user_id/union_id" })),
+});
+
 export const ListTasklistTasksSchema = Type.Object({
   tasklist_guid: Type.String({ description: "Tasklist GUID to list tasks for" }),
   page_size: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
@@ -397,6 +415,16 @@ export type GetTaskAttachmentParams = {
 };
 export type DeleteTaskAttachmentParams = {
   attachment_guid: string;
+};
+export type AddTaskMembersParams = {
+  task_guid: string;
+  members: Array<{ id: string; type?: string; role: string; name?: string }>;
+  user_id_type?: string;
+};
+export type RemoveTaskMembersParams = {
+  task_guid: string;
+  members: Array<{ id: string; type?: string; role: string; name?: string }>;
+  user_id_type?: string;
 };
 export type ListTasklistTasksParams = {
   tasklist_guid: string;

@@ -5,6 +5,7 @@ import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk";
 import type { TaskClient } from "./task-common.js";
 import { runTaskApiCall } from "./task-common.js";
 import type {
+  AddTaskMembersParams,
   AddTaskToTasklistParams,
   AddTasklistMembersParams,
   CreateSubtaskParams,
@@ -27,6 +28,7 @@ import type {
   GetTasklistParams,
   ListTasklistsParams,
   RemoveTaskFromTasklistParams,
+  RemoveTaskMembersParams,
   RemoveTasklistMembersParams,
   UpdateTaskParams,
   UpdateTasklistParams,
@@ -252,6 +254,34 @@ export async function deleteTask(client: TaskClient, params: DeleteTaskParams) {
     }),
   );
   return { success: true, task_guid: params.task_guid };
+}
+
+export async function addTaskMembers(client: TaskClient, params: AddTaskMembersParams) {
+  const c = client as unknown as {
+    task: { v2: { task: { addMembers: (args: unknown) => Promise<Record<string, unknown>> } } };
+  };
+  const res = await runTaskApiCall("task.v2.task.addMembers", () =>
+    c.task.v2.task.addMembers({
+      path: { task_guid: params.task_guid },
+      data: { members: params.members },
+      params: omitUndefined({ user_id_type: params.user_id_type }),
+    }),
+  );
+  return { task: formatTask((res.data as { task?: Record<string, unknown> } | undefined)?.task) };
+}
+
+export async function removeTaskMembers(client: TaskClient, params: RemoveTaskMembersParams) {
+  const c = client as unknown as {
+    task: { v2: { task: { removeMembers: (args: unknown) => Promise<Record<string, unknown>> } } };
+  };
+  const res = await runTaskApiCall("task.v2.task.removeMembers", () =>
+    c.task.v2.task.removeMembers({
+      path: { task_guid: params.task_guid },
+      data: { members: params.members },
+      params: omitUndefined({ user_id_type: params.user_id_type }),
+    }),
+  );
+  return { task: formatTask((res.data as { task?: Record<string, unknown> } | undefined)?.task) };
 }
 
 export async function updateTask(client: TaskClient, params: UpdateTaskParams) {

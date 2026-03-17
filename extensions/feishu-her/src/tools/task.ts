@@ -11,6 +11,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import { getFeishuClient } from "../outbound.js";
 import {
+  addTaskMembers,
   addTaskToTasklist,
   createTaskComment,
   addTasklistMembers,
@@ -31,6 +32,7 @@ import {
   listTasklistTasks,
   listTasklists,
   removeTaskFromTasklist,
+  removeTaskMembers,
   removeTasklistMembers,
   uploadTaskAttachment,
   updateTaskComment,
@@ -39,6 +41,8 @@ import {
 } from "./task-actions.js";
 import { errorResult, json, type TaskClient } from "./task-common.js";
 import {
+  AddTaskMembersSchema,
+  type AddTaskMembersParams,
   AddTaskToTasklistSchema,
   type AddTaskToTasklistParams,
   AddTasklistMembersSchema,
@@ -79,6 +83,8 @@ import {
   type ListTasklistsParams,
   RemoveTaskFromTasklistSchema,
   type RemoveTaskFromTasklistParams,
+  RemoveTaskMembersSchema,
+  type RemoveTaskMembersParams,
   RemoveTasklistMembersSchema,
   type RemoveTasklistMembersParams,
   UploadTaskAttachmentSchema,
@@ -172,6 +178,24 @@ export function registerFeishuTaskTools(api: OpenClawPluginApi) {
     description: "Delete a Feishu task by task_guid (Task v2)",
     parameters: DeleteTaskSchema,
     run: async ({ client }, params) => deleteTask(client, params),
+  });
+
+  registerTaskTool<AddTaskMembersParams>(api, {
+    name: "feishu_task_add_members",
+    label: "Feishu Task Add Members",
+    description:
+      "Add members to a Feishu task (Task v2). Use role 'assignee' for responsible person, 'follower' for watcher.",
+    parameters: AddTaskMembersSchema,
+    run: async ({ client }, params) => addTaskMembers(client, params),
+  });
+
+  registerTaskTool<RemoveTaskMembersParams>(api, {
+    name: "feishu_task_remove_members",
+    label: "Feishu Task Remove Members",
+    description:
+      "Remove members from a Feishu task (Task v2). Both id and role are required to identify the membership to remove.",
+    parameters: RemoveTaskMembersSchema,
+    run: async ({ client }, params) => removeTaskMembers(client, params),
   });
 
   registerTaskTool<CreateTasklistParams>(api, {
