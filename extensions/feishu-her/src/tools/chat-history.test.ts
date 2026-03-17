@@ -437,13 +437,11 @@ describe("feishu group history archive hydration", () => {
       }>;
     };
 
-    expect(details.messages[0].sender_open_id).toBe("ou_user_1");
-    expect(details.messages[0].mentions_resolved?.[0]?.actor.canonicalId).toBe("cli_tester");
-    expect(details.messages[0].mentions_resolved?.[0]?.actor.actorKind).toBe("bot");
-    expect(details.messages[0].mentions_resolved?.[0]?.actor.displayName).toBe("tester");
-    expect(details.messages[0].mentions_resolved?.[0]?.actor.rawIds?.open_id).toBe(
-      "ou_tester_open_id",
-    );
+    // Output is compacted: sender_open_id and mentions_resolved are stripped
+    // (redundant with sender_id and mentions). See docs/her/her-context-protection.md
+    expect(details.messages[0].sender_open_id).toBeUndefined();
+    expect(details.messages[0].mentions_resolved).toBeUndefined();
+    // Compact mentions still carry the essential identity fields
     expect(details.messages[0].mentions?.[0]?.open_id).toBe("ou_tester_open_id");
     expect(details.messages[0].mentions?.[0]?.app_id).toBe("cli_tester");
     expect(details.messages[0].mentions?.[0]?.actor_kind).toBe("bot");

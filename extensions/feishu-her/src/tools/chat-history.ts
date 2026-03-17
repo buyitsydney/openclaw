@@ -387,6 +387,50 @@ const ARCHIVE_SUPPLEMENTABLE = new Set([
   "audio",
 ]);
 
+/**
+ * Strip redundant fields from a NormalizedMessage before returning to the agent.
+ * Removes duplicated sender identifiers, the nested sender_actor object,
+ * mentions_resolved (superset of mentions), and text_parts.raw/normalized
+ * which duplicate the top-level `text` field.
+ *
+ * This reduces per-message output by ~60% with zero information loss.
+ * See docs/her/her-context-protection.md for rationale.
+ */
+function compactMessageForOutput(msg: NormalizedMessage): Record<string, unknown> {
+  const compact: Record<string, unknown> = {
+    message_id: msg.message_id,
+    msg_type: msg.msg_type,
+    sender_id: msg.sender_id,
+    sender_type: msg.sender_type,
+    ...(msg.sender_name && { sender_name: msg.sender_name }),
+    create_time_human: msg.create_time_human,
+    text: msg.text,
+    has_thread: msg.has_thread,
+    coverage: msg.coverage,
+  };
+
+  // Keep withoutFooter only when it differs from text (bot messages with footers)
+  if (msg.text_parts?.withoutFooter && msg.text_parts.withoutFooter !== msg.text) {
+    compact.text_without_footer = msg.text_parts.withoutFooter;
+  }
+
+  // Optional fields — only include when present
+  if (msg.thread_id) compact.thread_id = msg.thread_id;
+  if (msg.parent_id) compact.parent_id = msg.parent_id;
+  if (msg.root_id) compact.root_id = msg.root_id;
+  if (msg.mentions && msg.mentions.length > 0) compact.mentions = msg.mentions;
+  if (msg.attachments && msg.attachments.length > 0) compact.attachments = msg.attachments;
+  if (msg.file_name) compact.file_name = msg.file_name;
+  if (msg.file_key) compact.file_key = msg.file_key;
+  if (msg.image_key) compact.image_key = msg.image_key;
+
+  return compact;
+}
+
+function compactMessagesForOutput(messages: NormalizedMessage[]): Record<string, unknown>[] {
+  return messages.map(compactMessageForOutput);
+}
+
 function buildCoverageSummary(messages: NormalizedMessage[]) {
   const coverage = { full: 0, partial: 0, none: 0 };
   for (const message of messages) coverage[message.coverage]++;
@@ -941,9 +985,14 @@ async function handleListHistory(
     }
 
     if (Object.keys(threadReplies).length > 0) {
+      const compactThreadReplies: Record<string, Record<string, unknown>[]> = {};
+      for (const [threadId, replies] of Object.entries(threadReplies)) {
+        compactThreadReplies[threadId] = compactMessagesForOutput(replies);
+      }
       return json({
         ...result,
-        thread_replies: threadReplies,
+        messages: compactMessagesForOutput(result.messages),
+        thread_replies: compactThreadReplies,
         threads_fetched: Object.keys(threadReplies).length,
         user_open_id: userToken.open_id,
         ...(usedTenantFallback && { token_mode: "tenant_fallback" }),
@@ -953,6 +1002,7 @@ async function handleListHistory(
 
   return json({
     ...result,
+    messages: compactMessagesForOutput(result.messages),
     user_open_id: userToken.open_id,
     ...(usedTenantFallback && { token_mode: "tenant_fallback" }),
   });
@@ -1004,6 +1054,7 @@ async function handleListThread(
 
   return json({
     ...result,
+    messages: compactMessagesForOutput(result.messages),
     thread_id: params.thread_id,
     total_fetched: result.messages.length,
     user_open_id: userToken.open_id,
