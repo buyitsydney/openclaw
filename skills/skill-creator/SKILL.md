@@ -260,6 +260,32 @@ Example: When building a `big-query` skill to handle queries like "How many user
 
 To establish the skill's contents, analyze each concrete example to create a list of the reusable resources to include: scripts, references, and assets.
 
+### Skill Placement — Where to Put Your Skill
+
+Skills have a three-tier hierarchy. **Ask the user which tier they want.** Do not guess.
+
+| Tier | Scope | Path | Who manages |
+|------|-------|------|-------------|
+| **Company (全员)** | All users | `~/.openclaw/skills/<skill-name>/` | System admin |
+| **Department (部门)** | One department | `~/.openclaw/dept-skills/<dept>/<skill-name>/` | Department admin |
+| **Personal (个人)** | One user only | `<workspace>/.agents/skills/<skill-name>/` | User / Her |
+
+**Precedence** (highest wins when names collide): Personal > Department > Company > Bundled.
+
+Same-name skills at a higher tier override lower tiers. Deleting a higher-tier skill automatically falls back to the next lower tier.
+
+In Docker containers, these map to:
+
+| Tier | Container path |
+|------|---------------|
+| Company | `/data/.openclaw/skills/` |
+| Department | `/data/.agents/skills/` |
+| Personal | `/data/.openclaw/workspace/.agents/skills/` |
+
+Additionally, `repo/skills/` serves as **bundled baseline** skills (lowest precedence, updated via Docker image rebuild).
+
+For full architecture details, see `docs/her/her-shared-skills-architecture.md`.
+
 ### Step 3: Initializing the Skill
 
 At this point, it is time to actually create the skill.
@@ -277,9 +303,9 @@ scripts/init_skill.py <skill-name> --path <output-directory> [--resources script
 Examples:
 
 ```bash
-scripts/init_skill.py my-skill --path skills/public
-scripts/init_skill.py my-skill --path skills/public --resources scripts,references
-scripts/init_skill.py my-skill --path skills/public --resources scripts --examples
+scripts/init_skill.py my-skill --path ~/.openclaw/skills              # company-wide
+scripts/init_skill.py my-skill --path ~/.openclaw/dept-skills/default  # department
+scripts/init_skill.py my-skill --path .agents/skills --resources scripts,references  # personal
 ```
 
 The script:
