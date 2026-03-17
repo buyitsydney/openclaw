@@ -396,7 +396,27 @@ const ARCHIVE_SUPPLEMENTABLE = new Set([
  * This reduces per-message output by ~60% with zero information loss.
  * See docs/her/her-context-protection.md for rationale.
  */
+/**
+ * Strip `[local archive: ...]` suffix from message text.
+ * Bot messages with coverage=full often embed a full markdown copy after
+ * this marker, doubling the text size.
+ *
+ * Only applied to coverage=full messages — for partial/none messages,
+ * the archive section contains UNIQUE extracted content (file text,
+ * image descriptions) that isn't present elsewhere.
+ */
+function stripLocalArchiveSuffix(text: string): string {
+  const marker = "\n[local archive: ";
+  const idx = text.indexOf(marker);
+  if (idx === -1) return text;
+  return text.substring(0, idx).trimEnd();
+}
+
 function compactMessageForOutput(msg: NormalizedMessage): Record<string, unknown> {
+  // Only strip [local archive:] from full-coverage messages where it's a duplicate.
+  // For partial/none coverage, the archive contains unique extracted content.
+  const text = msg.coverage === "full" ? stripLocalArchiveSuffix(msg.text) : msg.text;
+
   const compact: Record<string, unknown> = {
     message_id: msg.message_id,
     msg_type: msg.msg_type,
@@ -404,7 +424,7 @@ function compactMessageForOutput(msg: NormalizedMessage): Record<string, unknown
     sender_type: msg.sender_type,
     ...(msg.sender_name && { sender_name: msg.sender_name }),
     create_time_human: msg.create_time_human,
-    text: msg.text,
+    text,
     has_thread: msg.has_thread,
     coverage: msg.coverage,
   };
