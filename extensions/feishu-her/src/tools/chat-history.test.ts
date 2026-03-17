@@ -517,11 +517,9 @@ describe("feishu group history archive hydration", () => {
         query: { user_id_type: "open_id" },
       }),
     );
-    expect(details.message.sender_open_id).toBe("ou_user_1");
-    expect(details.message.mentions_resolved?.[0]?.actor.canonicalId).toBe("cli_tester");
-    expect(details.message.mentions_resolved?.[0]?.actor.actorKind).toBe("bot");
-    expect(details.message.mentions_resolved?.[0]?.actor.displayName).toBe("tester");
-    expect(details.message.mentions_resolved?.[0]?.actor.rawIds?.open_id).toBe("ou_tester_open_id");
+    // Output is compacted: sender_open_id and mentions_resolved are stripped
+    expect(details.message.sender_open_id).toBeUndefined();
+    expect(details.message.mentions_resolved).toBeUndefined();
     expect(details.message.mentions?.[0]?.open_id).toBe("ou_tester_open_id");
     expect(details.message.mentions?.[0]?.app_id).toBe("cli_tester");
     expect(details.message.mentions?.[0]?.actor_kind).toBe("bot");

@@ -1104,7 +1104,7 @@ async function handleGetMessage(
   });
 
   return json({
-    message,
+    message: compactMessageForOutput(message),
     user_open_id: userToken.open_id,
   });
 }
