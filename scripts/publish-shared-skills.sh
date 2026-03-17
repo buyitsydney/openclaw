@@ -1,11 +1,17 @@
 #!/bin/bash
+#
+# 全员 skills 管理：查看本地 + 推送到服务器
+#
+# 全员 skills 存放在 ~/.openclaw/skills/，通过 bind mount 同步到所有 Docker 容器。
+# 本脚本把 Mac 本地的全员 skills 推送到所有服务器，保持一致。
+# 不需要重建容器，推送后用户 /new 即可加载新 skill。
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-SOURCE_ROOT="${REPO_ROOT}/skills"
-TARGET_ROOT="${HOME}/.openclaw/skills"
+SKILLS_DIR="${HOME}/.openclaw/skills"
+SERVERS_FILE="${REPO_ROOT}/docker/servers.txt"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -15,110 +21,111 @@ NC='\033[0m'
 
 usage() {
   cat <<EOF
-用法:
-  ./scripts/publish-shared-skills.sh sync <skill...>
-  ./scripts/publish-shared-skills.sh remove <skill...>
-  ./scripts/publish-shared-skills.sh list-source
-  ./scripts/publish-shared-skills.sh list-target
+全员 Skills 管理
 
-说明:
-  sync   把 repo skills/<name>/ 同步到 ~/.openclaw/skills/<name>/
-  remove 删除 ~/.openclaw/skills/<name>/
+用法:
+  ./scripts/publish-shared-skills.sh list      列出本地全员 skills
+  ./scripts/publish-shared-skills.sh push      推送到所有服务器（rsync --delete）
+  ./scripts/publish-shared-skills.sh diff      对比本地和服务器的差异
+
+本地目录: ~/.openclaw/skills/
 EOF
 }
 
-require_skill_args() {
-  if [ "$#" -eq 0 ]; then
-    echo -e "${RED}✗ 必须至少指定一个 skill 名称${NC}"
-    usage
-    exit 1
-  fi
-}
-
-sync_skill() {
-  local name="$1"
-  local src="${SOURCE_ROOT}/${name}"
-  local dst="${TARGET_ROOT}/${name}"
-
-  if [ ! -d "$src" ]; then
-    echo -e "${RED}✗ 源 skill 不存在: ${src}${NC}"
-    exit 1
-  fi
-  if [ ! -f "${src}/SKILL.md" ]; then
-    echo -e "${RED}✗ 源 skill 缺少 SKILL.md: ${src}${NC}"
-    exit 1
-  fi
-
-  rm -rf "$dst"
-  cp -R "$src" "$dst"
-  echo -e "${GREEN}✓ 已同步: ${name}${NC}"
-  echo -e "  source: ${src}"
-  echo -e "  target: ${dst}"
-}
-
-remove_skill() {
-  local name="$1"
-  local dst="${TARGET_ROOT}/${name}"
-
-  if [ ! -e "$dst" ]; then
-    echo -e "${YELLOW}· 目标不存在，跳过: ${dst}${NC}"
-    return
-  fi
-
-  rm -rf "$dst"
-  echo -e "${GREEN}✓ 已删除: ${name}${NC}"
-  echo -e "  target: ${dst}"
-}
-
-list_dir() {
+list_skills() {
   local dir="$1"
   if [ ! -d "$dir" ]; then
-    echo -e "${YELLOW}· 目录不存在: ${dir}${NC}"
+    echo -e "${YELLOW}目录不存在: ${dir}${NC}"
     return
   fi
-
-  python3 - "$dir" <<'PY'
-import os
-import sys
-from pathlib import Path
-
-root = Path(sys.argv[1])
-items = sorted(
-    p.name for p in root.iterdir()
-    if p.is_dir() and (p / "SKILL.md").exists()
-)
-for item in items:
-    print(item)
-PY
+  for d in "$dir"/*/; do
+    [ -f "${d}SKILL.md" ] || continue
+    local name=$(basename "$d")
+    local lines=$(wc -l < "${d}SKILL.md" | tr -d ' ')
+    echo "  ${name} (${lines} lines)"
+  done
 }
 
-mkdir -p "$TARGET_ROOT"
+push_to_servers() {
+  if [ ! -f "$SERVERS_FILE" ]; then
+    echo -e "${RED}✗ 服务器配置不存在: ${SERVERS_FILE}${NC}"
+    exit 1
+  fi
+  if ! command -v sshpass &>/dev/null; then
+    echo -e "${RED}✗ 需要 sshpass: brew install hudochenkov/sshpass/sshpass${NC}"
+    exit 1
+  fi
+
+  local total=0 ok=0
+
+  while IFS=$' \t' read -r ip user pass _rest; do
+    [[ "$ip" =~ ^#.*$ || -z "$ip" ]] && continue
+    total=$((total + 1))
+    echo -e "${CYAN}→ ${ip}${NC}"
+
+    sshpass -p "$pass" ssh -o StrictHostKeyChecking=no "${user}@${ip}" \
+      "mkdir -p ~/.openclaw/skills" 2>/dev/null
+
+    if sshpass -p "$pass" rsync -az --delete \
+      -e "ssh -o StrictHostKeyChecking=no" \
+      "${SKILLS_DIR}/" "${user}@${ip}:~/.openclaw/skills/" 2>/dev/null; then
+      ok=$((ok + 1))
+      local remote
+      remote=$(sshpass -p "$pass" ssh -o StrictHostKeyChecking=no "${user}@${ip}" \
+        "ls ~/.openclaw/skills/ 2>/dev/null" | tr '\n' ' ')
+      echo -e "${GREEN}  ✓ ${remote}${NC}"
+    else
+      echo -e "${RED}  ✗ rsync 失败${NC}"
+    fi
+  done < "$SERVERS_FILE"
+
+  echo ""
+  echo -e "${GREEN}完成: ${ok}/${total} 台服务器${NC}"
+}
+
+diff_with_servers() {
+  if [ ! -f "$SERVERS_FILE" ]; then
+    echo -e "${RED}✗ 服务器配置不存在: ${SERVERS_FILE}${NC}"
+    exit 1
+  fi
+
+  echo -e "${CYAN}本地:${NC}"
+  list_skills "$SKILLS_DIR"
+  echo ""
+
+  while IFS=$' \t' read -r ip user pass _rest; do
+    [[ "$ip" =~ ^#.*$ || -z "$ip" ]] && continue
+    echo -e "${CYAN}${ip}:${NC}"
+    local remote_list
+    remote_list=$(sshpass -p "$pass" ssh -o StrictHostKeyChecking=no "${user}@${ip}" \
+      "for d in ~/.openclaw/skills/*/; do [ -f \"\${d}SKILL.md\" ] && echo \"  \$(basename \$d) (\$(wc -l < \"\${d}SKILL.md\" | tr -d ' ') lines)\"; done" 2>/dev/null)
+    if [ -z "$remote_list" ]; then
+      echo -e "  ${YELLOW}(空)${NC}"
+    else
+      echo "$remote_list"
+    fi
+  done < "$SERVERS_FILE"
+}
+
+mkdir -p "$SKILLS_DIR"
 
 COMMAND="${1:-}"
-shift || true
 
 case "$COMMAND" in
-  sync)
-    require_skill_args "$@"
-    echo -e "${CYAN}同步到 shared skills 目录: ${TARGET_ROOT}${NC}"
-    for skill in "$@"; do
-      sync_skill "$skill"
-    done
+  list)
+    echo -e "${CYAN}本地全员 skills:${NC}"
+    list_skills "$SKILLS_DIR"
     ;;
-  remove)
-    require_skill_args "$@"
-    echo -e "${CYAN}从 shared skills 目录删除: ${TARGET_ROOT}${NC}"
-    for skill in "$@"; do
-      remove_skill "$skill"
-    done
+  push)
+    echo -e "${CYAN}推送本地全员 skills 到所有服务器${NC}"
+    echo ""
+    echo -e "本地:"
+    list_skills "$SKILLS_DIR"
+    echo ""
+    push_to_servers
     ;;
-  list-source)
-    echo -e "${CYAN}repo skills:${NC}"
-    list_dir "$SOURCE_ROOT"
-    ;;
-  list-target)
-    echo -e "${CYAN}shared skills:${NC}"
-    list_dir "$TARGET_ROOT"
+  diff)
+    diff_with_servers
     ;;
   *)
     usage

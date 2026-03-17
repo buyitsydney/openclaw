@@ -1,119 +1,79 @@
 ---
 name: openclaw-skill-creation
-description: Create or add new OpenClaw agent skills (bundled or workspace). Use when adding a new skill to the OpenClaw skills/ directory, creating SKILL.md files for the agent, or modifying skill loading/filtering logic.
+description: 创建和管理 OpenClaw agent skills。Use when adding a new skill, creating SKILL.md, modifying skill loading/filtering, or understanding skill architecture.
 ---
 
-# Adding Skills to OpenClaw
+# Skill 创建与管理
 
-## CRITICAL: Skill 存放位置规则
+## 两套 skill：bundled vs 全员
 
-**所有 skill 必须放在 repo 的 `skills/` 目录下！禁止在 workspace 创建 skill！**
+| 类型        | 位置                         | 谁管              | 能改吗                |
+| ----------- | ---------------------------- | ----------------- | --------------------- |
+| **Bundled** | `repo/skills/<name>/`        | OpenClaw upstream | 不改，避免 merge 冲突 |
+| **全员**    | `~/.openclaw/skills/<name>/` | 我们自己          | 自由管理，不在 git 里 |
 
-- **允许**: `skills/<name>/SKILL.md`（repo 内，自动同步到所有 Docker 容器）
-- **禁止**: `~/.openclaw/workspace/skills/`（本地 workspace，不会同步到 Docker，造成本地和容器不一致）
-- **禁止**: AI 运行时自动在 workspace 下新建/迁移 skill
+全员层优先级高于 bundled。同名 skill 全员层自动覆盖 bundled 版。
 
-原因：Docker 镜像只打包 repo 内的 `skills/`。workspace skills 不会同步到容器，导致本地 Her 和 Docker 企业部署的 skill 版本不一致。
+**创建新 skill 时**：如果是 CarHer 企业定制的，放全员层。如果要贡献给 upstream，才放 repo。
 
-**如果 AI 在运行时修改了 skill 内容**（如更新 `references/sources.md`），修改应直接写入 repo 的 `skills/` 目录，而不是 workspace。
-
-## Skill Types and Where to Put Them
-
-| Type                   | Path                                         | Scope                            | Use When                                         |
-| ---------------------- | -------------------------------------------- | -------------------------------- | ------------------------------------------------ |
-| **Bundled (唯一推荐)** | `skills/<name>/SKILL.md` (source repo)       | All users, all Docker containers | 所有 skill 都放这里                              |
-| ~~Workspace~~          | ~~`~/.openclaw/workspace/skills/`~~          | ~~Single user~~                  | **禁止使用！不同步 Docker！**                    |
-| **Managed**            | `~/.openclaw/skills/<name>/SKILL.md`         | Single machine                   | 仅限 `openclaw skill install` 安装的第三方 skill |
-| **Plugin**             | `extensions/<plugin>/skills/<name>/SKILL.md` | Users who enable the plugin      | Skill tied to a specific plugin                  |
-
-**For Docker deployments**: only **bundled** skills are automatically included in the image.
-
-## Creating a New Bundled Skill
-
-### 1. Create the directory
+## Skill 文件结构
 
 ```
-skills/<skill-name>/
-└── SKILL.md          # Required
-└── references/       # Optional: docs loaded on-demand
-└── scripts/          # Optional: executable helpers
+<name>/
+├── SKILL.md          # 必须，name + description 在 frontmatter
+├── references/       # 可选，按需加载的文档
+├── scripts/          # 可选，可执行脚本
+└── assets/           # 可选，模板/图片等输出资源
 ```
 
-### 2. Write SKILL.md
-
-Frontmatter (YAML, required fields):
+## SKILL.md 格式
 
 ```yaml
 ---
 name: my-skill
-description: What this skill does. Use when <trigger conditions>. Triggers on <keywords>.
-metadata: { "openclaw": { "emoji": "🔧", "requires": { "bins": ["jq"] } } }
+description: 做什么 + 什么时候触发。description 是触发机制，写清楚。
 ---
+# 正文（触发后才加载）
 ```
 
-- `name` + `description`: **Required**. Description is the primary trigger — the agent reads it to decide if the skill applies.
-- `metadata.openclaw.requires.bins`: Optional. Skill hidden if listed binaries not in PATH.
-- `metadata.openclaw.requires.envs`: Optional. Skill hidden if listed env vars not set.
-- `metadata.openclaw.os`: Optional. Restrict to `["macos"]`, `["linux"]`, etc.
+- `name` + `description`：必填。description 决定是否触发，要写清楚触发条件
+- 正文在触发后才加载到 context，平时不占 token
+- 正文控制在 500 行以内，超出拆到 references/
 
-Body: Concise instructions the agent reads _after_ deciding to use the skill. Keep under 500 lines. Use `references/` for large docs.
+## 最新版 skill-creator
 
-### 3. Style Guidelines
+Anthropic 官方最新 skill-creator 在 `github.com/anthropics/skills` 仓库。本地全员层 `~/.openclaw/skills/skill-creator/` 是该版本 + CarHer 适配，包含：
 
-- Refer to `skills/weather/SKILL.md` (simple, shell-based) and `skills/session-logs/SKILL.md` (local file reading with jq) as good examples.
-- Be concise — the context window is shared. Only include info the agent doesn't already know.
-- Use imperative form ("Read the index file", not "You should read the index file").
-- Include concrete shell commands or code snippets the agent can copy-paste.
+- 完整 eval 闭环（with_skill vs without_skill 对比）
+- blind A/B comparison（盲测）
+- description 触发率优化
+- CarHer 三层路径规范
+- 定时任务（cron）skill 的执行模型和 payload 设计规范
 
-## Configuration and Filtering
+## 禁止事项
 
-### allowBundled whitelist
+- 不要修改 `repo/skills/` 下的文件（upstream 会冲突）
+- 不要在 SKILL.md 里写死绝对路径（`/Users/xxx/` 或 `/data/.openclaw/`）
+- 不要在 repo 根目录创建 `.clawhub/` 目录
 
-In `openclaw.json`:
+## Skill 加载机制
+
+```
+扫描所有 skill 目录 → 解析 frontmatter → 过滤（enabled/allowBundled/requires/os）
+→ 注入 system prompt 的 <available_skills> 列表（只有 name + description）
+→ 用户消息匹配 description → 触发 → agent 用 read 工具读取 SKILL.md 正文
+```
+
+## 配置
 
 ```json
-{ "skills": { "allowBundled": ["weather", "github"] } }
+// openclaw.json
+{
+  "skills": {
+    "allowBundled": ["weather", "github"], // 白名单，空=全部启用
+    "entries": {
+      "my-skill": { "enabled": false } // 单个禁用
+    }
+  }
+}
 ```
-
-- **If not set or empty**: all bundled skills are enabled (default).
-- **If set**: only listed skills appear in the agent prompt.
-
-### Per-skill toggle
-
-```json
-{ "skills": { "entries": { "my-skill": { "enabled": false } } } }
-```
-
-### Per-skill env/apiKey injection
-
-```json
-{ "skills": { "entries": { "my-skill": { "apiKey": "sk-xxx", "env": { "FOO": "bar" } } } } }
-```
-
-Injected at agent run start, restored after run ends.
-
-## How Skills Reach the Agent
-
-```
-loadSkillEntries()          — src/agents/skills/workspace.ts
-  scan all skill dirs, parse SKILL.md frontmatter
-    ↓
-shouldIncludeSkill()        — src/agents/skills/config.ts
-  filter by enabled, allowBundled, OS, bins, envs
-    ↓
-buildWorkspaceSkillsPrompt() — src/agents/skills/workspace.ts
-  format as XML <available_skills> list
-    ↓
-buildSkillsSection()        — src/agents/system-prompt.ts
-  inject into agent system prompt as "## Skills (mandatory)"
-```
-
-The agent sees skill names + descriptions. When a skill matches, it reads the full SKILL.md via the `read` tool, then follows instructions.
-
-## Checklist
-
-- [ ] `SKILL.md` has `name` and `description` in frontmatter
-- [ ] Description includes trigger conditions and keywords
-- [ ] Body is concise, imperative, with concrete examples
-- [ ] No `README.md` or other auxiliary files — only SKILL.md + resources
-- [ ] Tested: restart gateway, verify skill appears in agent's skill list
