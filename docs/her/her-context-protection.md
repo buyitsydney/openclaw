@@ -1,7 +1,28 @@
 # Her Context Protection 架构设计
 
 > 日期: 2026-03-17
-> 状态: 分析完成，待实施
+> 更新: 2026-03-18
+> 状态: P0-1 + P0-2 已实施并验证，P1/P2/P3 待实施
+
+## 已完成
+
+### P0-1: feishu_group_history 字段精简 ✅
+
+- 去掉 sender_actor、sender_open_id、sender_id_type、sender_actor_kind、text_parts、mentions_resolved、chat_id（每条重复）
+- 效果：每条消息 -60%（~1500 → ~500 字符）
+- 覆盖 list_history、list_thread、get_message 三个 action
+
+### P0-2: feishu_group_history [local archive] 副本剥离 ✅
+
+- 对 coverage=full 消息剥离 `[local archive: ...]` 后缀（文本消息的完整副本）
+- 对 coverage=partial/none 保留（文件/图片的提取内容是唯一信息源）
+- 效果：全文重复消息再降 45%
+
+### 三 bot 验证结论（零功能衰退）
+
+- sender_name、mentions、parent_id/root_id、coverage、attachments 全部正确
+- 搜索质量零衰退
+- tester/tester2 新消息完全干净
 
 ## 背景
 
@@ -13,43 +34,43 @@ Docker13 在执行"扫描所有群聊提取有价值信息"任务时，session �
 
 ### 危险级（可返回无限量数据，无截断）
 
-| 工具 | 风险点 | 默认输出上限 | 最大理论输出 | 文件位置 |
-|------|--------|-------------|-------------|---------|
-| **feishu_group_history** | page_size 最大 200，含消息富化、线程展开、附件水合 | 20 条 | 200 条 × 76+ 字段 × 线程回复 = **无上限** | `extensions/feishu-her/src/tools/chat-history.ts:562` |
-| **feishu_doc read** | 读取整篇文档 markdown，无截断 | 全文 | **无上限**（取决于文档长度） | `extensions/feishu/src/docx.ts:710-748` |
-| **feishu_doc list_blocks** | 返回文档所有 block，无分页 | 全量 | **无上限** | `extensions/feishu/src/docx.ts:1184-1195` |
-| **feishu_sheet read_range** | 按范围读取，无单元格数量限制 | 指定范围 | **无上限**（A1:Z10000） | `extensions/feishu-her/src/tools/sheet.ts:285-303` |
+| 工具                        | 风险点                                             | 默认输出上限 | 最大理论输出                              | 文件位置                                              |
+| --------------------------- | -------------------------------------------------- | ------------ | ----------------------------------------- | ----------------------------------------------------- |
+| **feishu_group_history**    | page_size 最大 200，含消息富化、线程展开、附件水合 | 20 条        | 200 条 × 76+ 字段 × 线程回复 = **无上限** | `extensions/feishu-her/src/tools/chat-history.ts:562` |
+| **feishu_doc read**         | 读取整篇文档 markdown，无截断                      | 全文         | **无上限**（取决于文档长度）              | `extensions/feishu/src/docx.ts:710-748`               |
+| **feishu_doc list_blocks**  | 返回文档所有 block，无分页                         | 全量         | **无上限**                                | `extensions/feishu/src/docx.ts:1184-1195`             |
+| **feishu_sheet read_range** | 按范围读取，无单元格数量限制                       | 指定范围     | **无上限**（A1:Z10000）                   | `extensions/feishu-her/src/tools/sheet.ts:285-303`    |
 
 ### 高风险（有分页但可累积大量数据）
 
-| 工具 | 风险点 | 默认分页 | 最大分页 | 文件位置 |
-|------|--------|---------|---------|---------|
-| **feishu_deep_search** | 5 关键词 × 5 结果 × 4 来源 + 全量 archive 搜索 | 5/关键词 | ~100 结果 | `extensions/feishu-her/src/tools/deep-search.ts:119` |
-| **feishu_bitable list_records** | 分页但无总量限制 | 100 条 | 500 条/页，无页数限制 | `extensions/feishu/src/bitable.ts:461-470` |
-| **feishu_calendar list_events** | 日历事件分页，默认 50 | 50 | 无上限 | `extensions/feishu-her/src/tools/calendar.ts:142` |
-| **feishu_directory** | 通讯录分页，默认 50 | 50 | 无上限 | `extensions/feishu-her/src/tools/directory.ts:144` |
-| **feishu_chat_members** | 群成员分页 | 50 | 无上限 | `extensions/feishu-her/src/tools/chat-members.ts:30-38` |
+| 工具                            | 风险点                                         | 默认分页 | 最大分页              | 文件位置                                                |
+| ------------------------------- | ---------------------------------------------- | -------- | --------------------- | ------------------------------------------------------- |
+| **feishu_deep_search**          | 5 关键词 × 5 结果 × 4 来源 + 全量 archive 搜索 | 5/关键词 | ~100 结果             | `extensions/feishu-her/src/tools/deep-search.ts:119`    |
+| **feishu_bitable list_records** | 分页但无总量限制                               | 100 条   | 500 条/页，无页数限制 | `extensions/feishu/src/bitable.ts:461-470`              |
+| **feishu_calendar list_events** | 日历事件分页，默认 50                          | 50       | 无上限                | `extensions/feishu-her/src/tools/calendar.ts:142`       |
+| **feishu_directory**            | 通讯录分页，默认 50                            | 50       | 无上限                | `extensions/feishu-her/src/tools/directory.ts:144`      |
+| **feishu_chat_members**         | 群成员分页                                     | 50       | 无上限                | `extensions/feishu-her/src/tools/chat-members.ts:30-38` |
 
 ### 中风险（有限制但需关注）
 
-| 工具 | 风险点 | 上限 | 文件位置 |
-|------|--------|------|---------|
-| **feishu_conversation_search** | 内存中加载全量 archive 文件 | 50 结果 | `extensions/feishu-her/src/tools/conversation-search.ts:257` |
-| **feishu_minutes** | 搜索限制 5 结果，但 list 无限制 | 搜索 5 / list 无限 | `extensions/feishu-her/src/tools/minutes.ts:85-88` |
-| **feishu_wiki nodes** | 节点列表无分页 | 全量 | `extensions/feishu/src/wiki.ts:20-81` |
-| **feishu_drive list** | 文件夹内容，page_token 未暴露给 agent | 全量 | `extensions/feishu/src/drive.ts:33-56` |
+| 工具                           | 风险点                                | 上限               | 文件位置                                                     |
+| ------------------------------ | ------------------------------------- | ------------------ | ------------------------------------------------------------ |
+| **feishu_conversation_search** | 内存中加载全量 archive 文件           | 50 结果            | `extensions/feishu-her/src/tools/conversation-search.ts:257` |
+| **feishu_minutes**             | 搜索限制 5 结果，但 list 无限制       | 搜索 5 / list 无限 | `extensions/feishu-her/src/tools/minutes.ts:85-88`           |
+| **feishu_wiki nodes**          | 节点列表无分页                        | 全量               | `extensions/feishu/src/wiki.ts:20-81`                        |
+| **feishu_drive list**          | 文件夹内容，page_token 未暴露给 agent | 全量               | `extensions/feishu/src/drive.ts:33-56`                       |
 
 ### 低风险（单次操作或有严格限制）
 
-| 工具 | 说明 |
-|------|------|
-| feishu_search | 严格限制 20 结果，每源 5 条 |
-| feishu_message | 最多 50 条发送记录 |
-| feishu_chat info/manage | 单条 CRUD |
-| feishu_chat_controls | 单条操作 |
-| feishu_chat_tabs/pins/top_notice | 单条操作 |
-| feishu_chat_capability | 静态状态 |
-| feishu_perm | 权限列表，通常很小 |
+| 工具                             | 说明                        |
+| -------------------------------- | --------------------------- |
+| feishu_search                    | 严格限制 20 结果，每源 5 条 |
+| feishu_message                   | 最多 50 条发送记录          |
+| feishu_chat info/manage          | 单条 CRUD                   |
+| feishu_chat_controls             | 单条操作                    |
+| feishu_chat_tabs/pins/top_notice | 单条操作                    |
+| feishu_chat_capability           | 静态状态                    |
+| feishu_perm                      | 权限列表，通常很小          |
 
 ## Docker13 崩溃复盘
 
@@ -84,18 +105,19 @@ main lane 阻塞 437 秒 → 用户所有消息排队 → Her 卡死 20+ 分钟
 
 **去掉的字段（100% 冗余，零信息损失）：**
 
-| 字段 | 去掉理由 |
-|------|---------|
-| `sender_actor` | 嵌套对象，每个子字段都和外层重复（canonicalId=sender_id, displayName=sender_name 等）。最大浪费源，每条 ~200 tokens |
-| `sender_open_id` | = sender_id，完全相同 |
-| `sender_id_type` | 永远是 open_id |
-| `sender_actor_kind` | = sender_type（user→human, app→bot） |
-| `chat_id`（每条重复） | 调用者传入的参数，不需要每条回传。在顶层返回一次即可 |
-| `text_parts.raw` | = text |
-| `text_parts.normalized` | = text（几乎总是） |
-| `mentions_resolved` | = mentions 的臃肿版，多了 renderedText 和又一个嵌套 actor 对象 |
+| 字段                    | 去掉理由                                                                                                            |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `sender_actor`          | 嵌套对象，每个子字段都和外层重复（canonicalId=sender_id, displayName=sender_name 等）。最大浪费源，每条 ~200 tokens |
+| `sender_open_id`        | = sender_id，完全相同                                                                                               |
+| `sender_id_type`        | 永远是 open_id                                                                                                      |
+| `sender_actor_kind`     | = sender_type（user→human, app→bot）                                                                                |
+| `chat_id`（每条重复）   | 调用者传入的参数，不需要每条回传。在顶层返回一次即可                                                                |
+| `text_parts.raw`        | = text                                                                                                              |
+| `text_parts.normalized` | = text（几乎总是）                                                                                                  |
+| `mentions_resolved`     | = mentions 的臃肿版，多了 renderedText 和又一个嵌套 actor 对象                                                      |
 
 **保留的字段：**
+
 - message_id, msg_type, sender_id, sender_type, sender_name
 - create_time_human, text, text_parts.withoutFooter（仅 bot 消息时保留）
 - has_thread, thread_id, parent_id, root_id
@@ -104,6 +126,7 @@ main lane 阻塞 437 秒 → 用户所有消息排队 → Her 卡死 20+ 分钟
 **效果：** 每条消息从 ~1500 字符降到 ~500-600 字符（降 60%）。180 条消息从 270K 降到 ~100K。
 
 **文件：** `extensions/feishu-her/src/tools/chat-history.ts`
+
 - 改 `normalizeMessage()` 函数（:159），不再填充冗余字段
 - 改输出序列化，去掉 `sender_actor`、`mentions_resolved`、`text_parts.raw/normalized`
 - `chat_id` 移到顶层返回对象，不在每条消息里重复
@@ -113,6 +136,7 @@ main lane 阻塞 437 秒 → 用户所有消息排队 → Her 卡死 20+ 分钟
 **三个 bot 一致发现的最大膨胀源。** 与 P0-1 的字段精简是不同的问题。
 
 bot 消息的 `text` 字段末尾包含 `[local archive: 完整 markdown 副本]`，导致同一内容出现两次。
+
 - 实测：200 条消息中 archive 重复占 **45%（~100K chars）**
 - 一条 800 字的回复变成 1600 字
 - 剥离 `[local archive: ...]` 后缀可减少 30-50% 数据量
@@ -164,6 +188,7 @@ bot 消息的 `text` 字段末尾包含 `[local archive: 完整 markdown 副本]
 ### P2: 全局 tool 输出保护层
 
 兜底方案。在 tool 结果返回给 agent 之前加全局截断层：
+
 - 任何 tool 输出超过 80000 字符自动截断
 - 截断时附提示告知 agent
 - 不需要每个 tool 单独改
@@ -171,5 +196,6 @@ bot 消息的 `text` 字段末尾包含 `[local archive: 完整 markdown 副本]
 ### P3: compaction 超时保护
 
 当前 compaction 调 API 做摘要，内容太多时 API 本身超时导致 run 超时。
+
 - compaction 前检查 context 大小，超过阈值直接丢弃最旧的 tool 结果
 - 这是 OpenClaw 核心代码改动，需要评估
