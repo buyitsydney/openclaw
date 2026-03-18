@@ -11,14 +11,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -60,7 +53,6 @@ const OAUTH_SCOPES = [
   "calendar:calendar:readonly",
   // ── Contact ──
   "contact:user.base:readonly",
-  "contact:user:search",
   // ── Docs ──
   "docs:doc:readonly",
   "docx:document:readonly",

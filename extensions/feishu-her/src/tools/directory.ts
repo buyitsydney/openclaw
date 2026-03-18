@@ -11,12 +11,6 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { stringEnum } from "openclaw/plugin-sdk";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
-import {
-  callFeishuApiWithUserToken,
-  getValidUserToken,
-  requireUserToken,
-  resolveOAuthRedirectUri,
-} from "../oauth.js";
 import { getFeishuClient } from "../outbound.js";
 
 function json(data: unknown) {
@@ -127,66 +121,15 @@ async function listDepartments(
   };
 }
 
-/** Search users by name keyword. Requires user_access_token (OAuth). */
-async function searchUsers(
-  userToken: string,
-  query: string,
-  pageSize?: number,
-  pageToken?: string,
-) {
-  const params: Record<string, string> = {
-    query,
-    page_size: String(Math.min(pageSize ?? 20, 200)),
-  };
-  if (pageToken) params.page_token = pageToken;
-
-  const res = await callFeishuApiWithUserToken<{
-    users?: {
-      avatar?: { avatar_72?: string };
-      name?: string;
-      open_id?: string;
-      user_id?: string;
-      department_ids?: string[];
-    }[];
-    has_more?: boolean;
-    page_token?: string;
-  }>({
-    method: "GET",
-    endpoint: "/search/v1/user",
-    userToken,
-    query: params,
-  });
-  if (res.code !== 0) throw new Error(res.msg);
-  return {
-    // oxlint-disable-next-line typescript/no-explicit-any
-    users: (res.data?.users ?? []).map((u: any) => ({
-      open_id: u.open_id,
-      user_id: u.user_id,
-      name: u.name,
-      avatar: u.avatar?.avatar_72,
-      department_ids: u.department_ids,
-    })),
-    has_more: res.data?.has_more ?? false,
-    page_token: res.data?.page_token,
-  };
-}
-
 // ── Schema ──
 
-const DIRECTORY_ACTIONS = ["search_users", "list_users", "get_user", "list_departments"] as const;
+const DIRECTORY_ACTIONS = ["list_users", "get_user", "list_departments"] as const;
 
 const FeishuDirectorySchema = Type.Object({
   action: stringEnum(DIRECTORY_ACTIONS, {
     description:
-      "Directory operation: search_users (search by name keyword, PREFERRED for finding people), " +
-      "list_users (by department), get_user (single user info by ID), list_departments",
+      "Directory operation: list_users (by department), get_user (single user info), list_departments",
   }),
-  query: Type.Optional(
-    Type.String({
-      description:
-        "Search keyword for search_users. Matches against user names. Required for search_users.",
-    }),
-  ),
   user_id: Type.Optional(Type.String({ description: "User ID (ou_/on_/user_id) for get_user" })),
   user_id_type: Type.Optional(
     Type.String({
@@ -198,9 +141,7 @@ const FeishuDirectorySchema = Type.Object({
       description: "Department ID for list_users/list_departments. Use '0' for root (default)",
     }),
   ),
-  page_size: Type.Optional(
-    Type.Number({ description: "Results per page (default 20 for search, 50 for list)" }),
-  ),
+  page_size: Type.Optional(Type.Number({ description: "Results per page (default 50)" })),
   page_token: Type.Optional(Type.String({ description: "Pagination token for next page" })),
 });
 
@@ -211,54 +152,29 @@ export function registerFeishuDirectoryTools(api: OpenClawPluginApi) {
   if (accounts.length === 0) return;
   const firstAccount: ResolvedFeishuAccount = accounts[0];
   const getClient = () => getFeishuClient(firstAccount);
-  const redirectUri = resolveOAuthRedirectUri(api.config);
 
   api.registerTool(
     {
       name: "feishu_directory",
       label: "Feishu Directory",
       description:
-        "Feishu contacts/directory lookup. Actions: search_users (search by name keyword — PREFERRED way to find people), " +
-        "list_users (list users in a department), get_user (single user by open_id/union_id), list_departments. " +
-        "Use search_users first when looking for someone by name. Requires OAuth for search_users.",
+        "Feishu contacts/directory lookup. Actions: list_users (list users in a department, use department_id='0' for all), get_user (single user by open_id/union_id), list_departments. Note: personal Feishu edition may not return user names (platform limitation).",
       parameters: FeishuDirectorySchema,
       // oxlint-disable-next-line typescript/no-explicit-any
       async execute(_toolCallId: string, params: any) {
         try {
+          const client = getClient();
           switch (params.action) {
-            case "search_users": {
-              if (!params.query)
-                return json({ error: "query is required for search_users action" });
-              const tokenResult = await requireUserToken({
-                account: firstAccount,
-                redirectUri,
-                tokenPromise: getValidUserToken(firstAccount),
-                toolLabel: "通讯录搜索",
-              });
-              if (!tokenResult.ok) return tokenResult.authResponse;
-              return json(
-                await searchUsers(
-                  tokenResult.token.access_token,
-                  params.query,
-                  params.page_size,
-                  params.page_token,
-                ),
-              );
-            }
-            case "list_users": {
-              const client = getClient();
+            case "list_users":
               return json(
                 await listUsers(client, params.department_id, params.page_size, params.page_token),
               );
-            }
             case "get_user": {
               if (!params.user_id)
                 return json({ error: "user_id is required for get_user action" });
-              const client = getClient();
               return json(await getUser(client, params.user_id, params.user_id_type));
             }
-            case "list_departments": {
-              const client = getClient();
+            case "list_departments":
               return json(
                 await listDepartments(
                   client,
@@ -267,7 +183,6 @@ export function registerFeishuDirectoryTools(api: OpenClawPluginApi) {
                   params.page_token,
                 ),
               );
-            }
             default:
               return json({ error: `Unknown action: ${params.action}` });
           }
@@ -278,5 +193,5 @@ export function registerFeishuDirectoryTools(api: OpenClawPluginApi) {
     },
     { name: "feishu_directory" },
   );
-  api.logger.info?.("feishu: registered feishu_directory tool (with search_users)");
+  api.logger.info?.("feishu: registered feishu_directory tool");
 }

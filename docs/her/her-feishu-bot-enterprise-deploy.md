@@ -710,7 +710,7 @@ git checkout v旧版本
 
 点击「下一步，确认新增权限」→ 确认即可。已开通的权限不会重复添加。
 
-> **权限分类（tenant 161 个 + user 55 个，共 216 个）**：
+> **权限分类（tenant 161 个 + user 54 个，共 215 个）**：
 >
 > **Tenant 权限（161 个）**：
 >
@@ -719,7 +719,7 @@ git checkout v旧版本
 > - **群聊管理**（27 个）：`im:chat` + `im:chat.*`（19）+ `im:chat:*`（7） — 群组 CRUD、公告、置顶、成员管理、标签页、菜单树、审核、小组件、Bot 事件
 > - **卡片流式回复**（1 个）：`cardkit:card:write` — AI 打字机效果
 > - **日历**（16 个）：`calendar:calendar*` — 日历/日程 CRUD、ACL 权限、忙闲查询、订阅（`feishu_calendar` 工具）
-> - **联系人**（3 个）：`contact:contact.base:readonly`、`contact:user.base:readonly`、`contact:department.base:readonly` — 获取发送者姓名 + @mention 查询 + 按部门查人（按姓名搜人需额外 user 权限 `contact:user:search`，见下方 User 权限）
+> - **联系人**（3 个）：`contact:contact.base:readonly`、`contact:user.base:readonly`、`contact:department.base:readonly` — 获取发送者姓名 + @mention 查询 + 按部门查人
 > - **文档**（35 个）：`docs:*`（30）+ `docx:*`（5） — 旧版/新版文档读写、评论、媒体上传下载、权限管理、事件订阅
 > - **云盘**（14 个）：`drive:drive*`（6）+ `drive:export:readonly` + `drive:file*`（7） — 云盘读写/搜索/版本、文件上传下载/元数据
 > - **多维表格**（2 个）：`bitable:app`、`bitable:app:readonly`
@@ -737,7 +737,7 @@ git checkout v旧版本
 > - **消息读取**（6 个）：`im:chat:readonly`、`im:message.group_msg:get_as_user`（**群聊历史**）、`im:message.p2p_msg:get_as_user`（**私聊历史**）、`im:message.pins:read`、`im:message.reactions:read`、`im:message:readonly` — Her 以用户身份读取群聊/私聊消息，需 OAuth 授权
 > - **日历只读**（6 个）：`calendar:calendar` + `calendar:calendar.*:read`（5） — 以用户身份读取日历/日程/忙闲
 > - **文档/云盘只读**（8 个）：`docs:doc:readonly`、`docx:document:readonly`、`drive:*:readonly`（5）、`bitable:app:readonly` — 以用户身份读取文档/云盘/多维表格
-> - **联系人**（2 个）：`contact:user.base:readonly`、`contact:user:search` — 以用户身份查询通讯录 + 按姓名搜索用户（`search_users` action）
+> - **联系人**（1 个）：`contact:user.base:readonly` — 以用户身份查询通讯录
 > - **搜索**（4 个）：`search:app`、`search:department:read`、`search:docs:read`、`search:message` — 以用户身份搜索消息/文档/人员
 > - **妙记**（6 个）：`minutes:minutes*` — 以用户身份读取会议纪要
 > - **其他只读**（7 个）：`sheets:spreadsheet:readonly`、`task:task:readonly`、`vc:*:readonly`（4）、`wiki:wiki:readonly` — 以用户身份读取表格/任务/视频会议/Wiki
