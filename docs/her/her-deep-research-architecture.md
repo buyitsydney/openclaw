@@ -33,7 +33,8 @@ HER 目前有两条独立的知识检索路径：
 
 - 必须使用 `user_access_token`（不支持 `tenant_access_token`）
 - 需要 OAuth scope：`search:knowledge_qa:read`
-- 当前 `oauth.ts` 的 `OAUTH_SCOPES` 尚未包含此 scope
+- 注意：此 scope 需要飞书后台开通"飞书知识问答"应用能力，非企业版 app 可能没有此能力（错误码 20027）
+- `oauth.ts` 的 `OAUTH_SCOPES` 中已注释掉此 scope（本地测试 app 不支持），企业版部署时按需启用
 
 ### 2.3 请求参数
 
@@ -375,7 +376,7 @@ HER 接入飞书知识空间的进度如下：
 
 | 项目           | 文件                                  | 说明                                         |
 | -------------- | ------------------------------------- | -------------------------------------------- |
-| 加 OAuth scope | `oauth.ts`                            | `OAUTH_SCOPES` 加 `search:knowledge_qa:read` |
+| 加 OAuth scope | `oauth.ts`                            | `OAUTH_SCOPES` 启用 `search:knowledge_qa:read`（需飞书后台开通"知识问答"能力） |
 | 新建工具       | `tools/knowledge-qa.ts`               | 实现 `feishu_knowledge_qa`，支持流式/非流式  |
 | 注册工具       | `gateway.ts`                          | 在 tool 注册链路中加入 knowledge-qa          |
 | SKILL.md       | `skills/feishu-knowledge-qa/SKILL.md` | 使用指南                                     |
@@ -402,19 +403,18 @@ HER 接入飞书知识空间的进度如下：
 
 ## 8. OAuth scope 变更
 
-当前 `oauth.ts` 的 `OAUTH_SCOPES`（65行）需要新增：
+`oauth.ts` 的 `OAUTH_SCOPES` 中 `search:knowledge_qa:read` 已注释掉：
 
-```diff
-  // ── Search ──
-  "search:docs:read",
-  "search:message",
-+ "search:knowledge_qa:read",
+```typescript
+  // "search:knowledge_qa:read", // requires "飞书知识问答" app capability — only enterprise apps have this
 ```
 
-变更影响：
+**启用条件**：飞书后台已开通"飞书知识问答"应用能力（非企业版会报错误码 20027）。
 
-- 用户需要重新授权一次（旧 token 没有此 scope）
-- `getValidUserToken` 已有 scope drift 检测，会自动提示重新授权
+**变更影响**：
+
+- `OAUTH_SCOPES` 已与飞书后台 user scope 对齐（54 个），新增/删除 scope 不再废掉已有 token（scope drift 降级为 warning）
+- 飞书服务端拒绝 token（99991668/99991677/99991679）时，会自动删除本地 token 并在下次调用时触发重新授权
 - 不影响现有工具的权限
 
 ---

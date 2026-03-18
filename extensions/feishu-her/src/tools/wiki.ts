@@ -11,6 +11,7 @@ import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accoun
 import {
   callFeishuApiWithUserToken,
   getValidUserToken,
+  handleFeishuTokenError,
   requireUserToken,
   resolveOAuthRedirectUri,
 } from "../oauth.js";
@@ -412,6 +413,7 @@ export function registerFeishuWikiTools(api: OpenClawPluginApi) {
               return json({ error: `Unknown action: ${params.action}` });
           }
         } catch (err) {
+          handleFeishuTokenError(err);
           return json({ error: err instanceof Error ? err.message : String(err) });
         }
       },

@@ -13,6 +13,7 @@ import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accoun
 import {
   callFeishuApiWithUserToken,
   getValidUserToken,
+  handleFeishuTokenError,
   requireUserToken,
   resolveOAuthRedirectUri,
 } from "../oauth.js";
@@ -569,6 +570,7 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
               return json({ error: `Unknown action: ${params.action}` });
           }
         } catch (err) {
+          handleFeishuTokenError(err);
           // oxlint-disable-next-line typescript/no-explicit-any
           const axiosData = (err as any)?.response?.data;
           if (axiosData?.code && axiosData?.msg) {

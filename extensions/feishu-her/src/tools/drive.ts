@@ -14,6 +14,7 @@ import { fetchWithSsrFGuard, stringEnum } from "openclaw/plugin-sdk";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
   getValidUserToken,
+  handleFeishuTokenError,
   requireUserToken,
   resolveOAuthRedirectUri,
 } from "../oauth.js";
@@ -660,6 +661,7 @@ export function registerFeishuDriveTools(api: OpenClawPluginApi) {
               return json({ error: `Unknown action: ${params.action}` });
           }
         } catch (err) {
+          handleFeishuTokenError(err);
           return json({ error: err instanceof Error ? err.message : String(err) });
         }
       },

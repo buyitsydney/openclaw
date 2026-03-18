@@ -41,6 +41,7 @@ import {
   callFeishuApiWithUserToken,
   getValidUserToken,
   getValidUserTokenForOpenId,
+  handleFeishuTokenError,
   requireUserToken,
   resolveOAuthRedirectUri,
   type FeishuUserToken,
@@ -907,6 +908,7 @@ export function registerFeishuChatHistoryTool(api: OpenClawPluginApi) {
               return json({ error: `Unknown action: ${params.action}` });
           }
         } catch (err) {
+          handleFeishuTokenError(err);
           const msg = err instanceof Error ? err.message : String(err);
           return json({ error: msg });
         }

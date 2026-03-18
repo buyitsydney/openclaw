@@ -21,6 +21,7 @@ import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accoun
 import {
   callFeishuApiWithUserToken,
   getValidUserToken,
+  handleFeishuTokenError,
   requireUserToken,
   resolveOAuthRedirectUri,
   type FeishuUserToken,
@@ -36,7 +37,7 @@ const FeishuMinutesSchema = Type.Object({
     description:
       "list: discover recent meeting minutes (default 7 days). " +
       "get: get minute details + AI summary by minute_token. " +
-      "transcript: get full transcript by minute_token. " +
+      "transcript: get full transcript by minute_token or doc_token. " +
       "search: search minutes by keyword.",
   }),
   minute_token: Type.Optional(
@@ -46,13 +47,15 @@ const FeishuMinutesSchema = Type.Object({
   ),
   doc_token: Type.Optional(
     Type.String({
-      description: "Document token of the 智能纪要 docx. Used by get action to read AI summary.",
+      description:
+        "Document token of the 智能纪要 docx. Used by get action to read AI summary, " +
+        "and by transcript action as fallback when minutes API is unavailable.",
     }),
   ),
   query: Type.Optional(Type.String({ description: "Search keyword for search action." })),
   days: Type.Optional(
     Type.Number({
-      description: "Time range in days for list action (default 7, max 30).",
+      description: "Time range in days for list action (default 30, max 30).",
     }),
   ),
 });
@@ -172,6 +175,57 @@ async function extractMinuteTokensFromDoc(
   return [...tokens];
 }
 
+// ── Combined blocks scan: extract minute tokens + linked docx in one pass ──
+
+type DocxLinksResult = {
+  minuteTokens: string[];
+  linkedDocToken: string | null;
+};
+
+async function extractDocxLinks(
+  client: Lark.Client,
+  docToken: string,
+  userAccessToken: string,
+): Promise<DocxLinksResult> {
+  const minuteTokens = new Set<string>();
+  let linkedDocToken: string | null = null;
+  let pageToken: string | undefined;
+
+  do {
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const res: any = await client.docx.documentBlock.list(
+      {
+        path: { document_id: docToken },
+        params: { page_size: 500, ...(pageToken ? { page_token: pageToken } : {}) },
+      },
+      Lark.withUserAccessToken(userAccessToken),
+    );
+    if (res.code !== 0) break;
+
+    const blocks = res.data?.items ?? [];
+    for (const block of blocks) {
+      const blockJson = JSON.stringify(block);
+      let match: RegExpExecArray | null;
+      MINUTES_URL_PATTERN.lastIndex = 0;
+      while ((match = MINUTES_URL_PATTERN.exec(blockJson)) !== null) {
+        minuteTokens.add(match[1]);
+      }
+      if (!linkedDocToken) {
+        DOCX_URL_PATTERN.lastIndex = 0;
+        while ((match = DOCX_URL_PATTERN.exec(blockJson)) !== null) {
+          if (match[1] !== docToken) {
+            linkedDocToken = match[1];
+            break;
+          }
+        }
+      }
+    }
+    pageToken = res.data?.has_more ? res.data.page_token : undefined;
+  } while (pageToken);
+
+  return { minuteTokens: [...minuteTokens], linkedDocToken };
+}
+
 /**
  * "文字记录" docx links to its corresponding "智能纪要" docx via a /docx/XXXX URL in blocks.
  * Returns the first linked docx token that isn't the document itself.
@@ -217,6 +271,8 @@ type MinuteInfo = {
   create_time?: string;
   doc_token?: string;
   doc_title?: string;
+  text_record_doc_token?: string;
+  has_ai_summary?: boolean;
 };
 
 async function getMinuteInfo(
@@ -718,7 +774,7 @@ async function listMinutes(
 
     for (const doc of recentDocs) {
       try {
-        const minuteTokens = await extractMinuteTokensFromDoc(
+        const { minuteTokens, linkedDocToken } = await extractDocxLinks(
           client,
           doc.docs_token,
           userToken.access_token,
@@ -729,13 +785,18 @@ async function listMinutes(
             if (info) {
               info.doc_token = doc.docs_token;
               info.doc_title = doc.title;
+              if (linkedDocToken) info.text_record_doc_token = linkedDocToken;
               driveResults.push(info);
             } else {
-              driveResults.push(docxFallbackInfo(doc, mt));
+              const fallback = docxFallbackInfo(doc, mt);
+              if (linkedDocToken) fallback.text_record_doc_token = linkedDocToken;
+              driveResults.push(fallback);
             }
           }
         } else {
-          driveResults.push(docxFallbackInfo(doc));
+          const fallback = docxFallbackInfo(doc);
+          if (linkedDocToken) fallback.text_record_doc_token = linkedDocToken;
+          driveResults.push(fallback);
         }
       } catch (err) {
         errors.push(`${doc.title}: ${err instanceof Error ? err.message : String(err)}`);
@@ -768,12 +829,14 @@ async function listMinutes(
   for (const r of driveResults) {
     if (!seen.has(r.minute_token)) {
       seen.add(r.minute_token);
+      r.has_ai_summary = Boolean(r.doc_token);
       merged.push(r);
     }
   }
   for (const r of calendarResults) {
     if (!seen.has(r.minute_token)) {
       seen.add(r.minute_token);
+      r.has_ai_summary = Boolean(r.doc_token);
       merged.push(r);
     }
   }
@@ -788,7 +851,7 @@ async function listMinutes(
       calendar_vc: calendarResults.length,
     },
     ...(errors.length > 0 ? { warnings: errors } : {}),
-    tip: "Use get action with minute_token or doc_token to read AI summary. Use transcript action with minute_token for full transcript.",
+    tip: "Use get action with minute_token or doc_token to read AI summary. Use transcript action with minute_token or doc_token for full transcript.",
   };
 }
 
@@ -803,9 +866,50 @@ async function getMinute(
     info = await getMinuteInfo(client, minuteToken, userToken.access_token);
   }
 
+  // Fallback: build metadata from docx when minutes API fails (403)
+  if (!info && docToken) {
+    try {
+      // oxlint-disable-next-line typescript/no-explicit-any
+      const docRes: any = await client.docx.document.get(
+        { path: { document_id: docToken } },
+        Lark.withUserAccessToken(userToken.access_token),
+      );
+      if (docRes.code === 0 && docRes.data?.document?.title) {
+        const title = docRes.data.document.title as string;
+        const date = parseDateFromTitle(title);
+        info = {
+          minute_token: minuteToken ?? `doc:${docToken}`,
+          title: parseMeetingNameFromTitle(title),
+          doc_token: docToken,
+          doc_title: title,
+          ...(date ? { create_time: String(date.getTime()) } : {}),
+        };
+      }
+    } catch {
+      // best-effort
+    }
+  }
+
+  // Auto-resolve doc_token: when we have minute metadata (title) but no doc_token,
+  // search Drive for the corresponding "智能纪要" docx by title.
+  let resolvedDocToken = docToken ?? null;
+  if (!resolvedDocToken && info?.title) {
+    try {
+      const docs = await searchSmartMinutesDocs(userToken.access_token, info.title, 10);
+      for (const doc of docs) {
+        if (doc.title.startsWith("智能纪要") && doc.title.includes(info.title)) {
+          resolvedDocToken = doc.docs_token;
+          break;
+        }
+      }
+    } catch {
+      // best-effort
+    }
+  }
+
   let aiSummary: string | null = null;
-  if (docToken) {
-    aiSummary = await getAiSummary(client, docToken, userToken.access_token);
+  if (resolvedDocToken) {
+    aiSummary = await getAiSummary(client, resolvedDocToken, userToken.access_token);
   }
 
   if (!info && !aiSummary) {
@@ -814,29 +918,82 @@ async function getMinute(
 
   return {
     ...(info ?? { minute_token: minuteToken ?? "unknown" }),
-    ...(docToken ? { doc_token: docToken } : {}),
+    ...(resolvedDocToken ? { doc_token: resolvedDocToken } : {}),
     ai_summary: aiSummary,
-    tip: aiSummary
-      ? undefined
-      : "Provide doc_token (from list results) to also read the AI summary.",
+    ...(aiSummary ? {} : { has_ai_summary: false }),
   };
 }
 
 async function getMinuteTranscript(
   client: Lark.Client,
   userToken: FeishuUserToken,
-  minuteToken: string,
+  minuteToken?: string,
+  docToken?: string,
 ): Promise<unknown> {
-  const info = await getMinuteInfo(client, minuteToken, userToken.access_token);
-  if (!info) {
-    return { error: `minute_token ${minuteToken} not found or no permission.` };
+  // ── Primary path: minutes.v1 API ──
+  if (minuteToken && !minuteToken.startsWith("doc:")) {
+    const info = await getMinuteInfo(client, minuteToken, userToken.access_token);
+    if (info) {
+      const transcript = await getTranscript(client, minuteToken, userToken.access_token);
+      if (transcript) {
+        return { minute_token: minuteToken, title: info.title, transcript };
+      }
+    }
   }
 
-  const transcript = await getTranscript(client, minuteToken, userToken.access_token);
+  // ── Fallback: read "文字记录" docx via docx API ──
+  const smartDocToken = docToken ?? null;
+  if (!smartDocToken) {
+    return {
+      error: `minutes API denied for ${minuteToken ?? "unknown"}. Provide doc_token of the 智能纪要 docx to use the transcript fallback.`,
+    };
+  }
+
+  let textRecordDocToken: string | null = null;
+  try {
+    textRecordDocToken = await extractLinkedSmartMinutesDocToken(
+      client,
+      smartDocToken,
+      userToken.access_token,
+    );
+  } catch {
+    // best-effort
+  }
+
+  if (!textRecordDocToken) {
+    return {
+      error: `Minutes API returned 403 and no linked 文字记录 docx found in ${smartDocToken}.`,
+    };
+  }
+
+  const docxTranscript = await getDocxRawContent(client, textRecordDocToken, userToken.access_token);
+  if (!docxTranscript) {
+    return {
+      error: `Found 文字记录 docx (${textRecordDocToken}) but could not read its content.`,
+    };
+  }
+
+  // Build title from docx metadata
+  let title: string | undefined;
+  try {
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const docRes: any = await client.docx.document.get(
+      { path: { document_id: smartDocToken } },
+      Lark.withUserAccessToken(userToken.access_token),
+    );
+    if (docRes.code === 0 && docRes.data?.document?.title) {
+      title = parseMeetingNameFromTitle(docRes.data.document.title as string);
+    }
+  } catch {
+    // best-effort
+  }
+
   return {
-    minute_token: minuteToken,
-    title: info.title,
-    transcript: transcript ?? "Transcript not available.",
+    minute_token: minuteToken ?? `doc:${smartDocToken}`,
+    title,
+    transcript: docxTranscript,
+    source: "docx_fallback",
+    text_record_doc_token: textRecordDocToken,
   };
 }
 
@@ -1059,7 +1216,7 @@ export function registerFeishuMinutesTools(api: OpenClawPluginApi): void {
 
           switch (params.action) {
             case "list": {
-              const days = Math.min(Math.max(params.days ?? 7, 1), 30);
+              const days = Math.min(Math.max(params.days ?? 30, 1), 30);
               return json(await listMinutes(client, userToken, days, toolLog));
             }
             case "get": {
@@ -1073,12 +1230,19 @@ export function registerFeishuMinutesTools(api: OpenClawPluginApi): void {
               );
             }
             case "transcript": {
-              if (!params.minute_token) {
+              if (!params.minute_token && !params.doc_token) {
                 return json({
-                  error: "minute_token is required for transcript action.",
+                  error: "minute_token or doc_token is required for transcript action.",
                 });
               }
-              return json(await getMinuteTranscript(client, userToken, params.minute_token));
+              return json(
+                await getMinuteTranscript(
+                  client,
+                  userToken,
+                  params.minute_token,
+                  params.doc_token,
+                ),
+              );
             }
             case "search": {
               if (!params.query) {
@@ -1090,6 +1254,7 @@ export function registerFeishuMinutesTools(api: OpenClawPluginApi): void {
               return json({ error: `Unknown action: ${params.action}` });
           }
         } catch (err) {
+          handleFeishuTokenError(err);
           const message = err instanceof Error ? err.message : String(err);
           return json({ error: message });
         }

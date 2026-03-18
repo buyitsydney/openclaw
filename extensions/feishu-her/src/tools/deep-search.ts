@@ -24,6 +24,7 @@ import { syncGroupArchivesToMemory } from "../memory-bridge.js";
 import {
   callFeishuApiWithUserToken,
   getValidUserToken,
+  handleFeishuTokenError,
   requireUserToken,
   resolveOAuthRedirectUri,
 } from "../oauth.js";
@@ -481,6 +482,7 @@ export function registerFeishuDeepSearchTool(api: OpenClawPluginApi): void {
               "for semantic recall from local memory.",
           });
         } catch (err) {
+          handleFeishuTokenError(err);
           return json({ error: err instanceof Error ? err.message : String(err) });
         }
       },

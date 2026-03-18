@@ -18,6 +18,7 @@ import { readDriveFileContextByToken } from "../drive-file-read.js";
 import {
   callFeishuApiWithUserToken,
   getValidUserToken,
+  handleFeishuTokenError,
   requireUserToken,
   resolveOAuthRedirectUri,
 } from "../oauth.js";
@@ -1603,6 +1604,7 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
               return json({ error: `Unknown action: ${params.action}` });
           }
         } catch (err) {
+          handleFeishuTokenError(err);
           return json({ error: err instanceof Error ? err.message : String(err) });
         }
       },

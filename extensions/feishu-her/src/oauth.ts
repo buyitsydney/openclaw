@@ -11,7 +11,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -22,46 +22,77 @@ import { getFeishuClient, sendFeishuRichText } from "./outbound.js";
 
 const FEISHU_ALLOWED_HOSTNAMES = ["open.feishu.cn", "accounts.feishu.cn"];
 
-// Comprehensive read-only scopes so Her has the same visibility as the user.
+// All user scopes from Feishu app backend — must stay in sync with admin console.
+// Last synced: 2026-03-18 (55 scopes).
 const OAUTH_SCOPES = [
-  // ── Messages & chat ──
-  "im:message:readonly",
-  "im:message.group_msg:get_as_user",
-  "im:message.p2p_msg:readonly",
-  "im:chat:readonly",
-  "im:resource",
-  // ── Drive & docs (read-only) ──
-  "drive:drive:readonly",
-  "drive:drive.search:readonly",
-  "drive:drive.metadata:readonly",
-  "drive:file:readonly",
-  "drive:export:readonly",
-  "docx:document:readonly",
-  "docs:doc:readonly",
-  "sheets:spreadsheet:readonly",
+  // ── AI assistant (aily) ──
+  "aily:data_asset:read",
+  "aily:data_asset:upload_file",
+  "aily:data_asset:write",
+  "aily:file:read",
+  "aily:file:write",
+  "aily:knowledge:ask",
+  "aily:knowledge:read",
+  "aily:knowledge:write",
+  "aily:message:read",
+  "aily:message:write",
+  "aily:run:read",
+  "aily:run:write",
+  "aily:session:read",
+  "aily:session:write",
+  "aily:skill:read",
+  "aily:skill:write",
+  // ── Bitable ──
   "bitable:app:readonly",
-  // ── Wiki ──
-  "wiki:wiki:readonly",
-  // ── Search ──
-  "search:docs:read",
-  "search:message",
   // ── Calendar ──
   "calendar:calendar",
+  "calendar:calendar.acl:read",
+  "calendar:calendar.event:read",
+  "calendar:calendar.free_busy:read",
+  "calendar:calendar:read",
   "calendar:calendar:readonly",
+  // ── Contact ──
+  "contact:user.base:readonly",
+  // ── Docs ──
+  "docs:doc:readonly",
+  "docx:document:readonly",
+  // ── Drive ──
+  "drive:drive.metadata:readonly",
+  "drive:drive.search:readonly",
+  "drive:drive:readonly",
+  "drive:export:readonly",
+  "drive:file:readonly",
+  // ── Messages & chat ──
+  "im:chat:readonly",
+  "im:message.group_msg:get_as_user",
+  "im:message.p2p_msg:get_as_user",
+  "im:message.pins:read",
+  "im:message.reactions:read",
+  "im:message:readonly",
   // ── Minutes (妙记) ──
   "minutes:minutes",
-  "minutes:minutes:readonly",
   "minutes:minutes.basic:read",
+  "minutes:minutes.media:export",
+  "minutes:minutes.statistics:read",
   "minutes:minutes.transcript:export",
+  "minutes:minutes:readonly",
+  // ── Search ──
+  "search:app",
+  "search:department:read",
+  "search:docs:read",
+  // "search:knowledge_qa:read", // requires "飞书知识问答" app capability — only enterprise apps have this
+  "search:message",
+  // ── Sheets ──
+  "sheets:spreadsheet:readonly",
+  // ── Tasks ──
+  "task:task:readonly",
   // ── Video conference ──
+  "vc:export",
   "vc:meeting:readonly",
   "vc:record:readonly",
   "vc:room:readonly",
-  "vc:export",
-  // ── Contact (resolve user names) ──
-  "contact:user.base:readonly",
-  // ── Tasks ──
-  "task:task:readonly",
+  // ── Wiki ──
+  "wiki:wiki:readonly",
 ];
 
 // ── Types ──
@@ -116,6 +147,73 @@ function saveUserToken(token: FeishuUserToken): void {
   writeFileSync(filePath, JSON.stringify(token, null, 2), "utf-8");
 }
 
+/** Delete all user tokens so the next OAuth tool call triggers re-authorization. */
+function invalidateAllUserTokens(): void {
+  const dir = resolveTokenDir();
+  if (!existsSync(dir)) return;
+  for (const file of readdirSync(dir)) {
+    if (file.endsWith(".json")) {
+      try {
+        unlinkSync(join(dir, file));
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  }
+}
+
+// Feishu error codes that mean the user_access_token is invalid/revoked server-side.
+const TOKEN_INVALID_CODES = new Set([
+  99991668, // user_access_token invalid or expired
+  99991679, // user not authorized (token revoked)
+  99991677, // user_access_token expired, needs refresh
+]);
+
+/**
+ * Check if a Feishu API error indicates the user token is invalid/revoked.
+ * If so, delete local token files so the next tool call triggers re-authorization.
+ * Call this from any tool's error handler that uses user_access_token.
+ *
+ * Returns true if the token was invalidated (caller should prompt re-auth).
+ */
+export function handleFeishuTokenError(err: unknown): boolean {
+  // Extract error code from various error shapes
+  let code: number | undefined;
+
+  if (err && typeof err === "object") {
+    // Lark SDK error: err.code or err.response.data.code
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const e = err as any;
+    code = typeof e.code === "number" ? e.code : undefined;
+    if (code === undefined && e.response?.data?.code != null) {
+      code = e.response.data.code;
+    }
+    // Tool result JSON: { code: 99991677, msg: "..." }
+    if (code === undefined && typeof e.msg === "string" && typeof e.code === "number") {
+      code = e.code;
+    }
+  }
+
+  // Also check error message string for known codes
+  if (code === undefined && err instanceof Error) {
+    for (const c of TOKEN_INVALID_CODES) {
+      if (err.message.includes(String(c))) {
+        code = c;
+        break;
+      }
+    }
+  }
+
+  if (code !== undefined && TOKEN_INVALID_CODES.has(code)) {
+    console.warn(
+      `[feishu-oauth] Feishu token error (code=${code}). Deleting local tokens to trigger re-authorization.`,
+    );
+    invalidateAllUserTokens();
+    return true;
+  }
+  return false;
+}
+
 /** Find any valid user token from the store. For single-user (personal Her) this is sufficient. */
 export function findAnyUserToken(): FeishuUserToken | null {
   const dir = resolveTokenDir();
@@ -149,6 +247,12 @@ async function refreshUserToken(
     if (res.code !== 0 || !res.data?.access_token) return null;
 
     const now = Date.now();
+    // Update scopes from refresh response if Feishu returns them;
+    // otherwise keep the existing scopes unchanged.
+    const refreshScopeStr: string = res.data.scope ?? "";
+    const refreshedScopes = refreshScopeStr
+      ? refreshScopeStr.split(/[\s,]+/).filter(Boolean)
+      : token.scopes;
     const updated: FeishuUserToken = {
       ...token,
       access_token: res.data.access_token,
@@ -158,6 +262,7 @@ async function refreshUserToken(
         res.data.refresh_expires_in != null
           ? now + res.data.refresh_expires_in * 1000
           : token.refresh_token_expires_at,
+      scopes: refreshedScopes,
       updated_at: now,
     };
     saveUserToken(updated);
@@ -180,10 +285,16 @@ async function ensureValidUserToken(
   if (now >= token.refresh_token_expires_at) return null;
 
   // Scope drift: if code now requests scopes the saved token doesn't have,
-  // treat the token as invalid so the user gets prompted to re-authorize.
+  // log a warning but still use the token. Let the API call fail naturally
+  // rather than preemptively invalidating a token that may still work
+  // (Feishu's granted scopes in the token file are not always reliable).
   const granted = new Set(token.scopes ?? []);
   const missing = OAUTH_SCOPES.filter((s) => !granted.has(s));
-  if (missing.length > 0) return null;
+  if (missing.length > 0) {
+    console.warn(
+      `[feishu-oauth] scope drift: token missing ${missing.length} scope(s): ${missing.join(", ")}. Continuing with existing token.`,
+    );
+  }
 
   // access_token still valid
   if (now < token.access_token_expires_at - REFRESH_MARGIN_MS) return token;
@@ -196,8 +307,8 @@ async function ensureValidUserToken(
 /**
  * Get a valid user_access_token. Auto-refreshes if the access_token is expired
  * but refresh_token is still valid.
- * Returns null if no token exists, refresh_token has expired, or token is
- * missing scopes that OAUTH_SCOPES now requires (triggers re-authorization).
+ * Returns null if no token exists or refresh_token has expired.
+ * Scope drift is logged as a warning but does not invalidate the token.
  */
 export async function getValidUserToken(
   account: ResolvedFeishuAccount,
@@ -387,6 +498,11 @@ export async function handleOAuthCallback(
     const grantedScopes = grantedScopeStr
       ? grantedScopeStr.split(/[\s,]+/).filter(Boolean)
       : OAUTH_SCOPES;
+    if (!grantedScopeStr) {
+      callbackDeps.warn(
+        "OAuth token response did not include scope field; falling back to OAUTH_SCOPES. Actual granted scopes may differ.",
+      );
+    }
 
     const userToken: FeishuUserToken = {
       open_id: tokenRes.data.open_id ?? "",
@@ -566,8 +682,18 @@ export async function callFeishuApiWithUserToken<T = unknown>(params: {
   try {
     const raw = await response.text();
     const parsed = JSON.parse(raw) as FeishuApiResponse<T>;
+    const code = parsed.code ?? -1;
+    // If Feishu says the token is invalid/revoked, delete local token files
+    // so the next tool call triggers re-authorization instead of retrying
+    // with a dead token.
+    if (TOKEN_INVALID_CODES.has(code)) {
+      console.warn(
+        `[feishu-oauth] Feishu rejected user token (code=${code}): ${parsed.msg}. Deleting local tokens to trigger re-authorization.`,
+      );
+      invalidateAllUserTokens();
+    }
     return {
-      code: parsed.code ?? -1,
+      code,
       msg: parsed.msg ?? "",
       data: parsed.data ?? null,
     };
