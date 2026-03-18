@@ -30,7 +30,7 @@ import { getFeishuClient, sendFeishuRichText } from "./outbound.js";
 const FEISHU_ALLOWED_HOSTNAMES = ["open.feishu.cn", "accounts.feishu.cn"];
 
 // All user scopes from Feishu app backend — must stay in sync with admin console.
-// Last synced: 2026-03-18 (55 scopes).
+// Last synced: 2026-03-18 (56 scopes).
 const OAUTH_SCOPES = [
   // ── AI assistant (aily) ──
   "aily:data_asset:read",
