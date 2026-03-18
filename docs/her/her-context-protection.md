@@ -185,13 +185,29 @@ bot 消息的 `text` 字段末尾包含 `[local archive: 完整 markdown 副本]
 
 **文件：** `extensions/feishu-her/src/tools/minutes.ts:707`
 
-### P2: 全局 tool 输出保护层
+### P2: ~~全局 tool 输出保护层~~ → 调查结论：OpenClaw 已有但未生效
 
-兜底方案。在 tool 结果返回给 agent 之前加全局截断层：
+**深度调查结论（2026-03-18）：**
 
-- 任何 tool 输出超过 80000 字符自动截断
-- 截断时附提示告知 agent
-- 不需要每个 tool 单独改
+OpenClaw 已有 5 层 tool 输出保护，但对 LLM 对话实际生效的只有 session 持久化时的 400K cap：
+
+| 层                                                   | 限制            | 实际状态                                                     |
+| ---------------------------------------------------- | --------------- | ------------------------------------------------------------ |
+| sanitizeToolResult (8K/block)                        | 事件系统截断    | **不作用于 LLM 对话** — Pi Agent 内部拿到的是完整 raw result |
+| capToolResultSize (400K)                             | session 持久化  | **生效但阈值太高** — docker13 的 393K 刚好没触发             |
+| truncateOversizedToolResultsInMessages (30% context) | 发送 LLM 前截断 | **函数存在但从未被调用！** 只在测试里引用                    |
+| tool-result-context-guard                            | 运行时 guard    | 依赖 compaction 成功，compaction 本身可能超时                |
+| truncateOversizedToolResultsInSession                | 事后修复        | 事后补救，已经来不及                                         |
+
+**关键发现：LLM 对话里没有任何实时的大小限制。** Tool execute() 返回多大，Pi Agent 就吃多大。
+
+**结论：P0-1/P0-2 在 tool execute() 层面的精简是目前唯一真正有效的保护。** 不能依赖框架层截断，每个高风险工具必须在 execute() 返回之前自己做保护。
+
+**文件参考：**
+
+- `src/agents/pi-embedded-subscribe.tools.ts:9` — TOOL_RESULT_MAX_CHARS = 8000（仅事件，不作用于对话）
+- `src/agents/session-tool-result-guard.ts:9` — HARD_MAX = 400K（session 持久化）
+- `src/agents/pi-embedded-runner/tool-result-truncation.ts:340` — truncateOversizedToolResultsInMessages（已实现未调用）
 
 ### P3: compaction 超时保护
 
