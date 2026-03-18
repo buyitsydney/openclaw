@@ -179,11 +179,13 @@ bot 消息的 `text` 字段末尾包含 `[local archive: 完整 markdown 副本]
 
 **文件：** `extensions/feishu-her/src/tools/deep-search.ts:119`
 
-### P1-3: feishu_minutes list 加结果数限制
+### P1-3: feishu_minutes list 加结果数限制 — 已部分实施
 
-修复：list action 加 max_results 参数（默认 20）。
+- 默认时间窗口从 7 天改为 30 天（Phase 8, 2026-03-18）
+- 新增 `has_ai_summary` 字段，AI 可据此跳过无摘要的妙记，减少无意义的 `get` 调用
+- max_results 参数待实施
 
-**文件：** `extensions/feishu-her/src/tools/minutes.ts:707`
+**文件：** `extensions/feishu-her/src/tools/minutes.ts`
 
 ### P2: ~~全局 tool 输出保护层~~ → 调查结论：OpenClaw 已有但未生效
 

@@ -15,10 +15,10 @@ metadata: { "openclaw": { "emoji": "🎙️" } }
 
 ## 操作边界
 
-- `list` — 用于基于时间的回忆
+- `list` — 用于基于时间的回忆（默认 30 天）
 - `search` — 用于按主题查找
-- `get` — 用于获取某次会议的 AI 摘要/详情
-- `transcript` — 仅当用户明确要求原话、证据、引用或精确发言归属时使用
+- `get` — 用于获取某次会议的 AI 摘要/详情。**传 `doc_token` 效果最好**；只传 `minute_token` 时工具会自动尝试查找对应 doc_token
+- `transcript` — 获取完整转写。支持 `minute_token` 或 `doc_token`
 
 普通摘要请求不要直接跳到 `transcript`。
 
@@ -36,6 +36,8 @@ metadata: { "openclaw": { "emoji": "🎙️" } }
 - 用户问会议讲了什么、要纪要、原话、谁说的时用妙记
 - 如果 `search` 已提供足够证据，直接回答，不要强制调 `get` 或 `transcript`
 - 摘要看起来有误且上下文充足时自行修正，否则升级到 `transcript`
+- `list` 返回的结果中看 `has_ai_summary` 字段：为 `false` 时该妙记没有 AI 摘要文档，`get` 无法获取摘要，需要直接用 `transcript` 获取内容
+- 调用 `get`/`transcript` 时，优先传 `doc_token`（从 `list` 结果获取），比只传 `minute_token` 更可靠
 
 ## 输出规则
 
