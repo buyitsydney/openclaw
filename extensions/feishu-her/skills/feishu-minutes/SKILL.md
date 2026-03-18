@@ -15,10 +15,10 @@ metadata: { "openclaw": { "emoji": "🎙️" } }
 
 ## 操作边界
 
-- `list` — 用于基于时间的回忆（默认 30 天）
+- `list` — 用于基于时间的回忆（默认 30 天）。返回 `doc_token`、`text_record_doc_token`、`has_ai_summary` 等字段
 - `search` — 用于按主题查找
-- `get` — 用于获取某次会议的 AI 摘要/详情。**传 `doc_token` 效果最好**；只传 `minute_token` 时工具会自动尝试查找对应 doc_token
-- `transcript` — 获取完整转写。支持 `minute_token` 或 `doc_token`
+- `get` — 用于获取 AI 摘要。**必须传 `doc_token`**（从 `list` 结果获取）才能读到 AI 摘要；只传 `minute_token` 只返回元数据，不含摘要
+- `transcript` — 获取完整转写。**优先传 `doc_token`**（走 docx 路径，最可靠）；也支持 `minute_token`
 
 普通摘要请求不要直接跳到 `transcript`。
 
@@ -36,8 +36,9 @@ metadata: { "openclaw": { "emoji": "🎙️" } }
 - 用户问会议讲了什么、要纪要、原话、谁说的时用妙记
 - 如果 `search` 已提供足够证据，直接回答，不要强制调 `get` 或 `transcript`
 - 摘要看起来有误且上下文充足时自行修正，否则升级到 `transcript`
-- `list` 返回的结果中看 `has_ai_summary` 字段：为 `false` 时该妙记没有 AI 摘要文档，`get` 无法获取摘要，需要直接用 `transcript` 获取内容
-- 调用 `get`/`transcript` 时，优先传 `doc_token`（从 `list` 结果获取），比只传 `minute_token` 更可靠
+- **标准工作流**：先 `list` → 拿到 `doc_token` → 传给 `get`/`transcript`。不要跳过 `list` 直接用 `minute_token` 调 `get`
+- `has_ai_summary: false` 的妙记：`get` 无法获取摘要，直接用 `transcript` 获取内容
+- `has_ai_summary: true` 的妙记：`get(doc_token=X)` 获取 AI 摘要；需要原文时再 `transcript(doc_token=X)`
 
 ## 输出规则
 

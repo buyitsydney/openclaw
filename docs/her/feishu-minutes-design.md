@@ -77,24 +77,26 @@
 > 关系：会议结束 → 飞书自动生成"妙记"（实时转写，无需录制）→"智能纪要助手"自动生成 docx 存入**组织者 Drive 空间**，
 > 并把"会议参与者"加为 docx 协作者。minute_token 和 doc_token 是**不同标识符**，无公开 API 互转。
 >
-> ### Phase 8 — docx-native fallback（2026-03-18）
+> ### Phase 8 — docx-primary 架构（2026-03-18）
 >
-> **问题**：`minutes.v1.minute.get` 和 `minuteTranscript.get` 在 docker13 上 100% 返回 `403 / 2091005 permission deny`，即使 OAuth scope 齐全。飞书 minutes-v1 API 有独立于 OAuth 的权限模型。
+> **问题**：`minutes.v1.minute.get` 和 `minuteTranscript.get` 在 docker13 上 100% 返回 `403 / 2091005 permission deny`（80 次错误，0 次成功），即使 OAuth scope 齐全。飞书 minutes-v1 API 有独立于 OAuth 的权限模型。
 >
-> **方案**：不删除 minutes.v1 调用（保留为主路径），新增 docx-based fallback：
+> **方案**：docx 作为主路径，minutes.v1 仅作为 calendar-only 妙记的备用路径：
 >
-> | 改动                               | 说明                                                                                                                        |
-> | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-> | `extractDocxLinks`                 | 合并 blocks 扫描，单次 `documentBlock.list` 同时提取 `/minutes/obcnXXX`（minute_token）和 `/docx/XXX`（文字记录 doc_token） |
-> | `MinuteInfo.text_record_doc_token` | 新字段，携带"文字记录" docx token 供 transcript fallback                                                                    |
-> | `MinuteInfo.has_ai_summary`        | 新字段，`list` 结果中标记是否有 AI 摘要（`Boolean(doc_token)`）                                                             |
-> | `getMinute` auto-resolve           | 只传 `minute_token` 时自动 Drive search 查找对应"智能纪要" docx，读取 AI 摘要                                               |
-> | `getMinuteTranscript` fallback     | `minuteTranscript.get` 失败时，从"智能纪要" blocks 找到"文字记录" docx，读取 `rawContent` 作为转写                          |
-> | 默认窗口 7→30 天                   | `list` action 默认时间范围从 7 天改为 30 天                                                                                 |
-> | `transcript` 接受 `doc_token`      | schema 扩展，transcript action 也可通过 doc_token 触发 fallback                                                             |
+> | 改动                               | 说明                                                                                             |
+> | ---------------------------------- | ------------------------------------------------------------------------------------------------ |
+> | `extractDocxLinks`                 | 合并 blocks 扫描，单次 `documentBlock.list` 同时提取 minute_token 和文字记录 doc_token           |
+> | `listMinutes` docx-primary         | 跳过 `minute.get`，直接用 docx 元数据构建 MinuteInfo（消除 N 次 403）                            |
+> | `getMinute` docx-primary           | 有 `doc_token` 时直接读 docx AI 摘要；只有 `minute_token` 时返回元数据 + `has_ai_summary: false` |
+> | `getMinuteTranscript` docx-primary | 有 `doc_token` 时直接从"文字记录" docx 读取转写；仅 calendar-only 才走 minutes.v1                |
+> | `has_ai_summary` 字段              | `list` 结果标记是否有 AI 摘要，Her 据此决定调 `get` 还是 `transcript`                            |
+> | 默认窗口 7→30 天                   | `list` action 默认时间范围从 7 天改为 30 天                                                      |
+> | 标准工作流                         | `list` → 拿到 `doc_token` → 传给 `get`/`transcript`（Her 不需要猜）                              |
 >
-> **验证**：carher-1 + carher-101 全面回归（19 工具/action），零回退，零 2091005。
-> Her 评估：`get` 自动解析 doc_token ✅、`has_ai_summary` 标识 ✅、默认 30 天 ✅、Skill fallback 指导 ✅。
+> **重要设计决策**：删除了 `get` 的 auto-discover（按标题 Drive search 匹配 doc_token）。
+> 测试发现标题匹配会导致 P1 bug——同名会议匹配到错误的 AI 摘要。改为显式传 `doc_token`，零歧义。
+>
+> **验证**：carher-1 第六轮回归 + carher-101 全面压测（57 项），妙记模块零 bug，P1/P2 修复确认，Skill 文档与代码行为一致。
 
 ---
 
@@ -900,12 +902,13 @@ Docker1 工具层全量回归：4 action × 全场景 + search 11 场景 = **100
   - [x] 返回 `scan_stats`，便于调试召回范围和成本
   - [x] 严格限制 search 返回内容预算，避免 transcript 撑爆 context window
   - [ ] 以 `overview/lookup/deep-dive/evidence/synthesis` 五类任务做 docker1 实测验证（当前已完成 `lookup(summary)` + `lookup/evidence(transcript)`）
-- [x] Phase 8：docx-native fallback（2026-03-18）
+- [x] Phase 8：docx-primary 架构（2026-03-18）
   - [x] `extractDocxLinks` 合并 blocks 扫描（minute tokens + linked docx 单次 API）
   - [x] `MinuteInfo` 新增 `text_record_doc_token` 和 `has_ai_summary` 字段
-  - [x] `listMinutes` 传播 `text_record_doc_token`，合并时标记 `has_ai_summary`
-  - [x] `getMinute` 自动 Drive search 查找 `doc_token`（只在缺失时触发）
-  - [x] `getMinuteTranscript` docx fallback（从"智能纪要"找"文字记录" → `rawContent`）
+  - [x] `listMinutes` docx-primary：跳过 `minute.get`，直接用 docx 元数据（消除 N 次 403）
+  - [x] `getMinute` docx-primary：有 `doc_token` 时读 docx；无则返回元数据 + `has_ai_summary: false`
+  - [x] `getMinuteTranscript` docx-primary：有 `doc_token` 时直接读"文字记录" docx
+  - [x] 删除 `get` auto-discover（标题匹配会导致 P1 错误会议摘要 bug）
   - [x] transcript action schema 扩展接受 `doc_token`
   - [x] 默认时间窗口 7→30 天
   - [x] Skill 补充 `has_ai_summary` 使用指导和 fallback 路由规则

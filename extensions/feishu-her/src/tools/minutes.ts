@@ -69,7 +69,6 @@ function json(data: unknown) {
   };
 }
 
-
 // ── Drive search: find "智能纪要" documents ──
 
 type DriveSearchDoc = {
@@ -779,25 +778,13 @@ async function listMinutes(
           doc.docs_token,
           userToken.access_token,
         );
-        if (minuteTokens.length > 0) {
-          for (const mt of minuteTokens) {
-            const info = await getMinuteInfo(client, mt, userToken.access_token);
-            if (info) {
-              info.doc_token = doc.docs_token;
-              info.doc_title = doc.title;
-              if (linkedDocToken) info.text_record_doc_token = linkedDocToken;
-              driveResults.push(info);
-            } else {
-              const fallback = docxFallbackInfo(doc, mt);
-              if (linkedDocToken) fallback.text_record_doc_token = linkedDocToken;
-              driveResults.push(fallback);
-            }
-          }
-        } else {
-          const fallback = docxFallbackInfo(doc);
-          if (linkedDocToken) fallback.text_record_doc_token = linkedDocToken;
-          driveResults.push(fallback);
-        }
+        // Docx-primary: build info from docx metadata directly (no minute.get call).
+        // minute.get consistently returns 403/2091005 on production apps.
+        const mt = minuteTokens[0];
+        const info = docxFallbackInfo(doc, mt);
+        if (linkedDocToken) info.text_record_doc_token = linkedDocToken;
+        if (mt) info.url = `https://meetings.feishu.cn/minutes/${mt}`;
+        driveResults.push(info);
       } catch (err) {
         errors.push(`${doc.title}: ${err instanceof Error ? err.message : String(err)}`);
         driveResults.push(docxFallbackInfo(doc));
@@ -861,46 +848,35 @@ async function getMinute(
   minuteToken?: string,
   docToken?: string,
 ): Promise<unknown> {
-  let info: MinuteInfo | null = null;
-  if (minuteToken && !minuteToken.startsWith("doc:")) {
-    info = await getMinuteInfo(client, minuteToken, userToken.access_token);
-  }
+  // ── Docx-primary: resolve doc_token first ──
+  let resolvedDocToken = docToken ?? null;
 
-  // Fallback: build metadata from docx when minutes API fails (403)
-  if (!info && docToken) {
-    try {
-      // oxlint-disable-next-line typescript/no-explicit-any
-      const docRes: any = await client.docx.document.get(
-        { path: { document_id: docToken } },
-        Lark.withUserAccessToken(userToken.access_token),
-      );
-      if (docRes.code === 0 && docRes.data?.document?.title) {
-        const title = docRes.data.document.title as string;
-        const date = parseDateFromTitle(title);
-        info = {
-          minute_token: minuteToken ?? `doc:${docToken}`,
-          title: parseMeetingNameFromTitle(title),
-          doc_token: docToken,
-          doc_title: title,
-          ...(date ? { create_time: String(date.getTime()) } : {}),
-        };
-      }
-    } catch {
-      // best-effort
+  // If no doc_token, try minutes API directly (no Drive search — title matching is unreliable)
+  if (!resolvedDocToken && minuteToken && !minuteToken.startsWith("doc:")) {
+    const info = await getMinuteInfo(client, minuteToken, userToken.access_token);
+    if (info) {
+      return {
+        ...info,
+        ai_summary: null,
+        has_ai_summary: false,
+        tip: "Pass doc_token (from list results) to get the AI summary.",
+      };
     }
   }
 
-  // Auto-resolve doc_token: when we have minute metadata (title) but no doc_token,
-  // search Drive for the corresponding "智能纪要" docx by title.
-  let resolvedDocToken = docToken ?? null;
-  if (!resolvedDocToken && info?.title) {
+  // ── Docx path: build metadata + read AI summary ──
+  let title: string | undefined;
+  let docTitle: string | undefined;
+  if (resolvedDocToken) {
     try {
-      const docs = await searchSmartMinutesDocs(userToken.access_token, info.title, 10);
-      for (const doc of docs) {
-        if (doc.title.startsWith("智能纪要") && doc.title.includes(info.title)) {
-          resolvedDocToken = doc.docs_token;
-          break;
-        }
+      // oxlint-disable-next-line typescript/no-explicit-any
+      const docRes: any = await client.docx.document.get(
+        { path: { document_id: resolvedDocToken } },
+        Lark.withUserAccessToken(userToken.access_token),
+      );
+      if (docRes.code === 0 && docRes.data?.document?.title) {
+        docTitle = docRes.data.document.title as string;
+        title = parseMeetingNameFromTitle(docTitle);
       }
     } catch {
       // best-effort
@@ -912,13 +888,17 @@ async function getMinute(
     aiSummary = await getAiSummary(client, resolvedDocToken, userToken.access_token);
   }
 
-  if (!info && !aiSummary) {
+  if (!title && !aiSummary) {
     return { error: "minute_token or doc_token required. Could not retrieve any data." };
   }
 
+  const date = docTitle ? parseDateFromTitle(docTitle) : null;
   return {
-    ...(info ?? { minute_token: minuteToken ?? "unknown" }),
+    minute_token: minuteToken ?? `doc:${resolvedDocToken}`,
+    title,
     ...(resolvedDocToken ? { doc_token: resolvedDocToken } : {}),
+    ...(docTitle ? { doc_title: docTitle } : {}),
+    ...(date ? { create_time: String(date.getTime()) } : {}),
     ai_summary: aiSummary,
     ...(aiSummary ? {} : { has_ai_summary: false }),
   };
@@ -930,7 +910,50 @@ async function getMinuteTranscript(
   minuteToken?: string,
   docToken?: string,
 ): Promise<unknown> {
-  // ── Primary path: minutes.v1 API ──
+  // ── Docx-primary: read "文字记录" docx directly ──
+  if (docToken) {
+    let textRecordDocToken: string | null = null;
+    try {
+      textRecordDocToken = await extractLinkedSmartMinutesDocToken(
+        client,
+        docToken,
+        userToken.access_token,
+      );
+    } catch {
+      // best-effort
+    }
+
+    if (textRecordDocToken) {
+      const docxTranscript = await getDocxRawContent(
+        client,
+        textRecordDocToken,
+        userToken.access_token,
+      );
+      if (docxTranscript) {
+        let title: string | undefined;
+        try {
+          // oxlint-disable-next-line typescript/no-explicit-any
+          const docRes: any = await client.docx.document.get(
+            { path: { document_id: docToken } },
+            Lark.withUserAccessToken(userToken.access_token),
+          );
+          if (docRes.code === 0 && docRes.data?.document?.title) {
+            title = parseMeetingNameFromTitle(docRes.data.document.title as string);
+          }
+        } catch {
+          // best-effort
+        }
+        return {
+          minute_token: minuteToken ?? `doc:${docToken}`,
+          title,
+          transcript: docxTranscript,
+          text_record_doc_token: textRecordDocToken,
+        };
+      }
+    }
+  }
+
+  // ── Fallback: minutes.v1 API (for calendar-only discoveries without doc_token) ──
   if (minuteToken && !minuteToken.startsWith("doc:")) {
     const info = await getMinuteInfo(client, minuteToken, userToken.access_token);
     if (info) {
@@ -941,59 +964,8 @@ async function getMinuteTranscript(
     }
   }
 
-  // ── Fallback: read "文字记录" docx via docx API ──
-  const smartDocToken = docToken ?? null;
-  if (!smartDocToken) {
-    return {
-      error: `minutes API denied for ${minuteToken ?? "unknown"}. Provide doc_token of the 智能纪要 docx to use the transcript fallback.`,
-    };
-  }
-
-  let textRecordDocToken: string | null = null;
-  try {
-    textRecordDocToken = await extractLinkedSmartMinutesDocToken(
-      client,
-      smartDocToken,
-      userToken.access_token,
-    );
-  } catch {
-    // best-effort
-  }
-
-  if (!textRecordDocToken) {
-    return {
-      error: `Minutes API returned 403 and no linked 文字记录 docx found in ${smartDocToken}.`,
-    };
-  }
-
-  const docxTranscript = await getDocxRawContent(client, textRecordDocToken, userToken.access_token);
-  if (!docxTranscript) {
-    return {
-      error: `Found 文字记录 docx (${textRecordDocToken}) but could not read its content.`,
-    };
-  }
-
-  // Build title from docx metadata
-  let title: string | undefined;
-  try {
-    // oxlint-disable-next-line typescript/no-explicit-any
-    const docRes: any = await client.docx.document.get(
-      { path: { document_id: smartDocToken } },
-      Lark.withUserAccessToken(userToken.access_token),
-    );
-    if (docRes.code === 0 && docRes.data?.document?.title) {
-      title = parseMeetingNameFromTitle(docRes.data.document.title as string);
-    }
-  } catch {
-    // best-effort
-  }
-
   return {
-    minute_token: minuteToken ?? `doc:${smartDocToken}`,
-    title,
-    transcript: docxTranscript,
-    source: "docx_fallback",
-    text_record_doc_token: textRecordDocToken,
+    error: `Could not retrieve transcript. ${docToken ? "No linked 文字记录 docx found." : "Provide doc_token of the 智能纪要 docx."}`,
   };
 }
 
@@ -1236,12 +1208,7 @@ export function registerFeishuMinutesTools(api: OpenClawPluginApi): void {
                 });
               }
               return json(
-                await getMinuteTranscript(
-                  client,
-                  userToken,
-                  params.minute_token,
-                  params.doc_token,
-                ),
+                await getMinuteTranscript(client, userToken, params.minute_token, params.doc_token),
               );
             }
             case "search": {
