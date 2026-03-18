@@ -30,7 +30,7 @@ import { getFeishuClient, sendFeishuRichText } from "./outbound.js";
 const FEISHU_ALLOWED_HOSTNAMES = ["open.feishu.cn", "accounts.feishu.cn"];
 
 // All user scopes from Feishu app backend — must stay in sync with admin console.
-// Last synced: 2026-03-18 (56 scopes).
+// Last synced: 2026-03-18 (55 scopes).
 const OAUTH_SCOPES = [
   // ── AI assistant (aily) ──
   "aily:data_asset:read",
@@ -60,7 +60,11 @@ const OAUTH_SCOPES = [
   "calendar:calendar:readonly",
   // ── Contact ──
   "contact:user.base:readonly",
-  "contact:user:search",
+  // NOTE: "contact:user:search" is NOT included here — it must be enabled per-app
+  // in the Feishu admin console first. If included here without backend enablement,
+  // Feishu blocks the ENTIRE OAuth flow (error 20027), breaking all OAuth features.
+  // The search_users action in directory.ts uses the existing token and degrades
+  // gracefully if the scope is missing (Feishu returns a clear API error).
   // ── Docs ──
   "docs:doc:readonly",
   "docx:document:readonly",

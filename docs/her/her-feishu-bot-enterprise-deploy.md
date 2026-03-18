@@ -710,7 +710,7 @@ git checkout v旧版本
 
 点击「下一步，确认新增权限」→ 确认即可。已开通的权限不会重复添加。
 
-> **权限分类（tenant 161 个 + user 56 个，共 217 个）**：
+> **权限分类（tenant 161 个 + user 55 个，共 216 个）**：
 >
 > **Tenant 权限（161 个）**：
 >
@@ -737,7 +737,7 @@ git checkout v旧版本
 > - **消息读取**（6 个）：`im:chat:readonly`、`im:message.group_msg:get_as_user`（**群聊历史**）、`im:message.p2p_msg:get_as_user`（**私聊历史**）、`im:message.pins:read`、`im:message.reactions:read`、`im:message:readonly` — Her 以用户身份读取群聊/私聊消息，需 OAuth 授权
 > - **日历只读**（6 个）：`calendar:calendar` + `calendar:calendar.*:read`（5） — 以用户身份读取日历/日程/忙闲
 > - **文档/云盘只读**（8 个）：`docs:doc:readonly`、`docx:document:readonly`、`drive:*:readonly`（5）、`bitable:app:readonly` — 以用户身份读取文档/云盘/多维表格
-> - **联系人**（2 个）：`contact:user.base:readonly`、`contact:user:search` — 以用户身份查询通讯录 + 按姓名搜索用户（`search_users` action）
+> - **联系人**（1 个 + 1 可选）：`contact:user.base:readonly`（必需）、`contact:user:search`（可选，需管理员在后台开通后才能加入 OAuth scope）— 以用户身份查询通讯录 + 按姓名搜索用户（`search_users` action）
 > - **搜索**（4 个）：`search:app`、`search:department:read`、`search:docs:read`、`search:message` — 以用户身份搜索消息/文档/人员
 > - **妙记**（6 个）：`minutes:minutes*` — 以用户身份读取会议纪要
 > - **其他只读**（7 个）：`sheets:spreadsheet:readonly`、`task:task:readonly`、`vc:*:readonly`（4）、`wiki:wiki:readonly` — 以用户身份读取表格/任务/视频会议/Wiki
