@@ -442,7 +442,7 @@ git checkout v旧版本
 | --- | --------------------- | ------------------------------------------------------------ |
 | 1   | 创建应用 + 启用机器人 | 命名格式：`{人名}的her`（如：老杨的her），添加「机器人」能力 |
 | 2   | 记录凭证              | 复制 App ID + App Secret                                     |
-| 3   | 批量导入权限          | 粘贴 JSON 导入 215 个权限（161 tenant + 54 user）            |
+| 3   | 批量导入权限          | 粘贴 JSON 导入 219 个权限（163 tenant + 56 user）            |
 | 3b  | 配置安全设置          | 安全设置 → 重定向 URL → 添加 OAuth 回调 URL                  |
 | 4   | 第一次发布            | 可用范围 = 指定人员，只选一人（见下方说明）                  |
 | 5   | 确认 Bot 可见         | 让目标员工搜索 Bot，确认能找到                               |
@@ -502,6 +502,7 @@ git checkout v旧版本
       "aily:session:write",
       "aily:skill:read",
       "aily:skill:write",
+      "application:application.collaborators:write",
       "bitable:app",
       "bitable:app:readonly",
       "board:whiteboard:node:create",
@@ -526,6 +527,7 @@ git checkout v旧版本
       "contact:contact.base:readonly",
       "contact:department.base:readonly",
       "contact:user.base:readonly",
+      "contact:user.employee_id:readonly",
       "docs:doc",
       "docs:doc:readonly",
       "docs:document.comment:create",
@@ -673,6 +675,7 @@ git checkout v旧版本
       "calendar:calendar:read",
       "calendar:calendar:readonly",
       "contact:user.base:readonly",
+      "contact:user:search",
       "docs:doc:readonly",
       "docx:document:readonly",
       "drive:drive.metadata:readonly",
@@ -695,6 +698,7 @@ git checkout v旧版本
       "search:app",
       "search:department:read",
       "search:docs:read",
+      "search:knowledge_qa:read",
       "search:message",
       "sheets:spreadsheet:readonly",
       "task:task:readonly",
@@ -710,16 +714,17 @@ git checkout v旧版本
 
 点击「下一步，确认新增权限」→ 确认即可。已开通的权限不会重复添加。
 
-> **权限分类（tenant 161 个 + user 55 个，共 216 个）**：
+> **权限分类（tenant 163 个 + user 56 个，共 219 个）**：
 >
-> **Tenant 权限（161 个）**：
+> **Tenant 权限（163 个）**：
 >
 > - **Aily 智能伙伴**（16 个）：`aily:data_asset:*`（3）+ `aily:file:*`（2）+ `aily:knowledge:*`（3）+ `aily:message:*`（2）+ `aily:run:*`（2）+ `aily:session:*`（2）+ `aily:skill:*`（2） — 智能伙伴数据资产、文件、知识库、会话、技能管理
+> - **应用管理**（1 个）：`application:application.collaborators:write` — 应用协作者管理
 > - **消息核心**（11 个）：`im:message`、`im:message:send_as_bot`、`im:message.group_msg`、`im:message.group_at_msg:readonly`、`im:message.p2p_msg:readonly`、`im:message.pins:read/write_only`（2）、`im:message.reactions:read/write_only`（2）、`im:message:readonly`、`im:resource` — 消息收发 + 群消息 + @mention + 置顶 + 表情
 > - **群聊管理**（27 个）：`im:chat` + `im:chat.*`（19）+ `im:chat:*`（7） — 群组 CRUD、公告、置顶、成员管理、标签页、菜单树、审核、小组件、Bot 事件
 > - **卡片流式回复**（1 个）：`cardkit:card:write` — AI 打字机效果
 > - **日历**（16 个）：`calendar:calendar*` — 日历/日程 CRUD、ACL 权限、忙闲查询、订阅（`feishu_calendar` 工具）
-> - **联系人**（3 个）：`contact:contact.base:readonly`、`contact:user.base:readonly`、`contact:department.base:readonly` — 获取发送者姓名 + @mention 查询 + 按部门查人（按姓名搜人需额外 user 权限 `contact:user:search`，见下方 User 权限）
+> - **联系人**（4 个）：`contact:contact.base:readonly`、`contact:user.base:readonly`、`contact:user.employee_id:readonly`、`contact:department.base:readonly` — 获取发送者姓名 + 员工工号 + @mention 查询 + 按部门查人（按姓名搜人需额外 user 权限 `contact:user:search`，见下方 User 权限）
 > - **文档**（35 个）：`docs:*`（30）+ `docx:*`（5） — 旧版/新版文档读写、评论、媒体上传下载、权限管理、事件订阅
 > - **云盘**（14 个）：`drive:drive*`（6）+ `drive:export:readonly` + `drive:file*`（7） — 云盘读写/搜索/版本、文件上传下载/元数据
 > - **多维表格**（2 个）：`bitable:app`、`bitable:app:readonly`
@@ -731,14 +736,14 @@ git checkout v旧版本
 > - **视频会议**（7 个）：`vc:export`、`vc:meeting`、`vc:meeting.all_meeting:readonly`、`vc:meeting:readonly`、`vc:record:readonly`、`vc:room`、`vc:room:readonly` — 会议/录制/会议室
 > - **表格**（1 个）：`sheets:spreadsheet:readonly`
 >
-> **User 权限（54 个）**：
+> **User 权限（56 个）**：
 >
 > - **Aily 智能伙伴**（16 个）：与 tenant 同名的 `aily:*` — 以用户身份调用 Aily 智能伙伴 API
 > - **消息读取**（6 个）：`im:chat:readonly`、`im:message.group_msg:get_as_user`（**群聊历史**）、`im:message.p2p_msg:get_as_user`（**私聊历史**）、`im:message.pins:read`、`im:message.reactions:read`、`im:message:readonly` — Her 以用户身份读取群聊/私聊消息，需 OAuth 授权
 > - **日历只读**（6 个）：`calendar:calendar` + `calendar:calendar.*:read`（5） — 以用户身份读取日历/日程/忙闲
 > - **文档/云盘只读**（8 个）：`docs:doc:readonly`、`docx:document:readonly`、`drive:*:readonly`（5）、`bitable:app:readonly` — 以用户身份读取文档/云盘/多维表格
 > - **联系人**（2 个）：`contact:user.base:readonly`、`contact:user:search` — 以用户身份查询通讯录 + 按姓名搜索用户（`search_users` action）
-> - **搜索**（4 个）：`search:app`、`search:department:read`、`search:docs:read`、`search:message` — 以用户身份搜索消息/文档/人员
+> - **搜索**（5 个）：`search:app`、`search:department:read`、`search:docs:read`、`search:knowledge_qa:read`、`search:message` — 以用户身份搜索消息/文档/人员/知识库问答
 > - **妙记**（6 个）：`minutes:minutes*` — 以用户身份读取会议纪要
 > - **其他只读**（7 个）：`sheets:spreadsheet:readonly`、`task:task:readonly`、`vc:*:readonly`（4）、`wiki:wiki:readonly` — 以用户身份读取表格/任务/视频会议/Wiki
 >
@@ -993,5 +998,5 @@ CSV 含密钥，已加入 `.gitignore`，**不通过 git 同步**。
 | 单点故障   | **无**：1 容器崩只影响 1 人                                                                                        |
 | 升级       | **滚动升级**：逐容器重启，每次只影响 1 人 2-3 秒                                                                   |
 | 代码修改   | **零**（纯配置 + Docker），与上游零冲突                                                                            |
-| 飞书 Bot   | IT 手动创建（无 API，每个 ~15 分钟：创建 + 导入 215 权限 + 配 OAuth URL + 两次发布）                               |
+| 飞书 Bot   | IT 手动创建（无 API，每个 ~15 分钟：创建 + 导入 219 权限 + 配 OAuth URL + 两次发布）                               |
 | 月费用     | ~$2,000-7,000（取决于模型和语音使用量）                                                                            |
