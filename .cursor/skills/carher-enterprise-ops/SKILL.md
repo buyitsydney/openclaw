@@ -79,30 +79,34 @@ sshpass -p 'PWD' ssh USER@IP "docker exec carher-N cat /tmp/openclaw/openclaw-\$
 - **全量重启/批量重启必须先向用户报告完整方案（含服务器顺序、容器列表、预计耗时），等用户明确确认后才能执行，绝不允许自作主张**
 - 每个容器重建前必须检查活跃状态（15 分钟内有 `deliver:` 消息则跳过）
 
-### 镜像缓存机制（必须理解！）
+### 构建与部署分离（必须理解！）
 
-`start-user.sh` 比较 `git SHA + dirty diff hash` 与 `carher:local` 镜像 label：
-- **不一致** → 触发 `docker build`（约 60-90s）
-- **一致** → 跳过 build，直接启动容器（gateway 启动约 35-40s）
+构建和部署是**两个独立步骤**，由不同脚本负责：
+
+| 脚本 | 职责 | 关键参数 |
+|------|------|---------|
+| `build-image.sh` | 构建 Docker 镜像 | `--tag=NAME`, `--branch=BRANCH`, `--force`, `--check` |
+| `start-user.sh` | 启动/管理容器 | `--image=NAME`（默认 `carher:local`） |
+
+**`start-user.sh` 永远不构建镜像。** 如果镜像不存在，会报错并提示运行 `build-image.sh`。
 
 同一台服务器的所有容器**共享同一个 `carher:local` 镜像**，所以：
-- 第一个容器触发 build 后，后续容器全部复用缓存
-- **缓存就绪后，同一台服务器上的多个容器可以并行启动，互不干扰**
+- `build-image.sh` 构建一次，所有容器复用
+- **实验隔离**：`build-image.sh --branch=feature/xxx --tag=carher:xxx` 构建实验镜像，`start-user.sh --id=N --image=carher:xxx` 只让指定容器用实验镜像，不影响其他容器
 
 ### 批量升级正确流程（两阶段）
 
-**阶段 1：镜像重建（三台服务器并行，各启动 1 个容器）**
+**阶段 1：镜像构建（三台服务器并行）**
 
 ```bash
-# S1、S2、S3 各挑 1 个 IDLE 容器并行启动，触发 docker build
-# 三台服务器并行执行，约 90s 全部完成
-sshpass -p 'PWD' ssh USER@S1 "cd /Data/CarHer && ./start-user.sh --id=X" &
-sshpass -p 'PWD' ssh USER@S2 "cd /Data/CarHer && ./start-user.sh --id=Y" &
-sshpass -p 'PWD' ssh USER@S3 "cd /Data/CarHer && ./start-user.sh --id=Z" &
+# S1、S2、S3 各自构建镜像（并行，约 60-90s）
+sshpass -p 'PWD' ssh USER@S1 "cd /Data/CarHer && ./build-image.sh" &
+sshpass -p 'PWD' ssh USER@S2 "cd /Data/CarHer && ./build-image.sh" &
+sshpass -p 'PWD' ssh USER@S3 "cd /Data/CarHer && ./build-image.sh" &
 wait
 ```
 
-**阶段 2：并行重启所有剩余容器（镜像已缓存，全部并行）**
+**阶段 2：并行重启所有容器（镜像已就绪）**
 
 ```bash
 # 1. 批量检查所有待重启容器的 15min 活跃度
@@ -112,7 +116,7 @@ for id in 2 3 4 5 ...; do
   else echo "carher-$id: IDLE"; fi
 done
 
-# 2. 所有 IDLE 容器并行重启（用 & 后台执行 + wait 等待全部完成）
+# 2. 所有 IDLE 容器并行重启
 for id in <IDLE容器列表>; do
   ./start-user.sh --id=$id > /tmp/restart-$id.log 2>&1 &
 done
@@ -124,26 +128,33 @@ for id in <所有容器>; do
 done
 ```
 
-**关键：阶段 2 的并行重启在一台服务器上同时启动所有容器，总耗时 ≈ 单个容器启动时间（约 40s），而非 N × 40s！**
+**关键：阶段 2 的并行重启总耗时 ≈ 单个容器启动时间（约 40s），而非 N × 40s！**
 
-**单个容器重建步骤（非批量场景）：**
+**单个容器重启步骤（非批量场景）：**
 
 ```bash
 # 1. 检查该容器活跃状态（>0 则跳过）
 sshpass -p 'PWD' ssh USER@IP "docker logs carher-N --since=15m 2>&1 | grep -c 'deliver:'"
 
-# 2. 确认 0 条消息后重建
+# 2. 确认 0 条消息后重启
 sshpass -p 'PWD' ssh USER@IP "cd /Data/CarHer && ./start-user.sh --id=N 2>&1 | tail -5"
 
 # 3. 确认 WSClient connected
 sshpass -p 'PWD' ssh USER@IP "docker logs carher-N --since=120s 2>&1 | grep 'WSClient connected'"
 ```
 
-重建会自动执行：
+**实验分支隔离测试（单个容器用不同代码）：**
 
-- 镜像更新（检测代码变更）
-- `fix-device-pairing.js`（修复设备配对 scopes）
-- 从 CSV 生成 `openclaw.json`（含 Owner 配置）
+```bash
+# 构建实验镜像（自动创建/清理 worktree）
+sshpass -p 'PWD' ssh USER@IP "cd /Data/CarHer && ./build-image.sh --branch=feature/xxx --tag=carher:xxx"
+
+# 只让指定容器用实验镜像
+sshpass -p 'PWD' ssh USER@IP "cd /Data/CarHer && ./start-user.sh --id=N --image=carher:xxx"
+
+# 回退：不加 --image 即用回 carher:local
+sshpass -p 'PWD' ssh USER@IP "cd /Data/CarHer && ./start-user.sh --id=N"
+```
 
 ### 代码更新（必须走 git 标准流程！）
 
@@ -155,10 +166,10 @@ git commit -m "描述"
 # 2. 推送到远程
 git push --no-verify
 
-# 3. 各服务器 pull
-sshpass -p 'PWD' ssh USER@IP "cd /Data/CarHer && git pull"
+# 3. 各服务器 pull + 构建
+sshpass -p 'PWD' ssh USER@IP "cd /Data/CarHer && git pull && ./build-image.sh"
 
-# 4. 需要时重建相关容器
+# 4. 重启相关容器
 sshpass -p 'PWD' ssh USER@IP "cd /Data/CarHer && ./start-user.sh --id=N"
 ```
 
