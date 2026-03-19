@@ -2,15 +2,15 @@
 # CarHer Docker 镜像构建（与 start-user.sh 分离）
 #
 # 用法:
-#   ./build-image.sh                              # 构建 carher:local（默认）
+#   ./build-image.sh                              # 构建 carher:local（默认，从当前工作区）
 #   ./build-image.sh --tag=carher:search          # 自定义镜像名
-#   ./build-image.sh --branch=feature/search-users --tag=carher:search  # 从指定分支构建
+#   ./build-image.sh --branch=feature/xxx --tag=carher:xxx  # 从指定分支构建（自动 fetch + detach worktree）
 #   ./build-image.sh --force                      # 跳过缓存检查，强制重建
 #   ./build-image.sh --check                      # 仅检查是否需要重建，不构建
 #
 # 构建完成后，用 start-user.sh 启动容器:
 #   ./start-user.sh --id=1                        # 使用默认 carher:local
-#   ./start-user.sh --id=13 --image=carher:search # 使用自定义镜像
+#   ./start-user.sh --id=13 --image=carher:xxx    # 使用自定义镜像
 
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,10 +36,10 @@ for arg in "$@"; do
     -h|--help)
       echo "用法: ./build-image.sh [--tag=NAME] [--branch=BRANCH] [--force] [--check]"
       echo ""
-      echo "  --tag=NAME     镜像名称（默认: carher:local）"
-      echo "  --branch=BRANCH  从指定 git 分支构建（使用临时 worktree）"
-      echo "  --force        跳过缓存检查，强制重建"
-      echo "  --check        仅检查是否需要重建，不执行构建"
+      echo "  --tag=NAME       镜像名称（默认: carher:local）"
+      echo "  --branch=BRANCH  从指定 git 分支构建（自动 fetch，使用 detach worktree）"
+      echo "  --force          跳过缓存检查，强制重建"
+      echo "  --check          仅检查是否需要重建，不执行构建"
       exit 0
       ;;
     *)
@@ -52,14 +52,48 @@ done
 echo -e "${YELLOW}🔨 CarHer 镜像构建${NC}"
 echo ""
 
-# --- Branch mode: create temporary worktree ---
+# --- Branch mode: resolve ref + create detached worktree ---
 if [ -n "$BRANCH" ]; then
+  # 1. Clean stale worktrees (previous SSH drops, /tmp cleanups, etc.)
+  git -C "$SCRIPT_DIR" worktree prune 2>/dev/null
+
+  # 2. Fetch latest from remote (handles force-push / amend)
+  echo -e "${YELLOW}  ⟳ Fetching origin/${BRANCH}...${NC}"
+  if ! git -C "$SCRIPT_DIR" fetch origin "$BRANCH" 2>/dev/null; then
+    # Branch might already be an origin/ ref or a full ref
+    git -C "$SCRIPT_DIR" fetch origin 2>/dev/null || true
+  fi
+
+  # 3. Resolve to the correct ref — always prefer remote over local
+  RESOLVED_REF=""
+  if git -C "$SCRIPT_DIR" rev-parse --verify "origin/$BRANCH" &>/dev/null; then
+    RESOLVED_REF="origin/$BRANCH"
+  elif git -C "$SCRIPT_DIR" rev-parse --verify "$BRANCH" &>/dev/null; then
+    RESOLVED_REF="$BRANCH"
+  else
+    echo -e "${RED}  ✗ 分支不存在: $BRANCH (本地和远端都找不到)${NC}"
+    exit 1
+  fi
+
+  RESOLVED_SHA=$(git -C "$SCRIPT_DIR" rev-parse --short "$RESOLVED_REF")
+  echo -e "${YELLOW}  ✓ 解析: ${BRANCH} → ${RESOLVED_REF} (${RESOLVED_SHA})${NC}"
+
+  # 4. Create detached worktree (no local branch lock — immune to stale refs)
   WORKTREE_DIR=$(mktemp -d /tmp/carher-build-XXXXXX)
-  echo -e "${YELLOW}  ⟳ 创建临时 worktree: ${BRANCH} → ${WORKTREE_DIR}${NC}"
-  git -C "$SCRIPT_DIR" worktree add "$WORKTREE_DIR" "$BRANCH" 2>&1 | tail -1
+  echo -e "${YELLOW}  ⟳ 创建 detached worktree → ${WORKTREE_DIR}${NC}"
+  git -C "$SCRIPT_DIR" worktree add --detach "$WORKTREE_DIR" "$RESOLVED_REF" 2>&1 | tail -1
   BUILD_DIR="$WORKTREE_DIR"
-  # Cleanup worktree on exit (success or failure)
-  trap 'echo -e "${YELLOW}  ⟳ 清理 worktree...${NC}"; git -C "$SCRIPT_DIR" worktree remove "$WORKTREE_DIR" 2>/dev/null; echo -e "${GREEN}  ✓ worktree 已清理${NC}"' EXIT
+
+  # 5. Cleanup on exit (success or failure) — force remove
+  trap 'echo -e "${YELLOW}  ⟳ 清理 worktree...${NC}"; git -C "$SCRIPT_DIR" worktree remove --force "$WORKTREE_DIR" 2>/dev/null || rm -rf "$WORKTREE_DIR"; git -C "$SCRIPT_DIR" worktree prune 2>/dev/null; echo -e "${GREEN}  ✓ worktree 已清理${NC}"' EXIT
+
+  # 6. Verify the worktree has the expected commit
+  WORKTREE_SHA=$(git -C "$WORKTREE_DIR" rev-parse --short HEAD)
+  if [ "$WORKTREE_SHA" != "$RESOLVED_SHA" ]; then
+    echo -e "${RED}  ✗ worktree commit 不匹配！期望 ${RESOLVED_SHA}，实际 ${WORKTREE_SHA}${NC}"
+    exit 1
+  fi
+  echo -e "${GREEN}  ✓ worktree commit 验证通过: ${WORKTREE_SHA}${NC}"
 fi
 
 # --- Check if rebuild needed (skip for --force or --branch) ---
