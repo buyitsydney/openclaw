@@ -99,9 +99,11 @@ message(action="send", channel="feishu", target="oc_xxx|ou_xxx", message="...")
 
 ## 联系人和名字
 
-- 个人版飞书中 `feishu_directory` 可能只返回 `open_id` + 状态
-- 需要真实显示名且目标在群内时，优先用 `feishu_chat_members(action="list")`
-- 组织查找用 `feishu_directory(action="list_departments")` 再 `list_users`
+- **按姓名找人**：优先用 `feishu_directory(action="search_users", query="张三")` — 直接按关键词搜索全公司通讯录，返回 name + open_id + department_ids（需 OAuth）
+- 需要真实显示名且目标在群内时，也可用 `feishu_chat_members(action="list")`
+- 组织架构浏览用 `feishu_directory(action="list_departments")` 再 `list_users`
+- 个人版飞书中 `list_users`/`get_user` 可能只返回 `open_id` + 状态（平台限制）
+- 找到 open_id 后可直接：发消息（`message` 工具）、拉会（`feishu_calendar` create_event + attendee_ids）、派任务（`feishu_task`）
 
 ## 从聊天中分享文档
 

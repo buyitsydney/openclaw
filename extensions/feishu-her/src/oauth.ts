@@ -60,6 +60,7 @@ const OAUTH_SCOPES = [
   "calendar:calendar:readonly",
   // ── Contact ──
   "contact:user.base:readonly",
+  "contact:user:search",
   // ── Docs ──
   "docs:doc:readonly",
   "docx:document:readonly",

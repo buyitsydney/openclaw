@@ -411,23 +411,37 @@ type KnowledgeQAResult = {
 
 ## 8. 实现计划
 
-### Phase 1：基础工具
+### Phase 1：基础工具 ✅ 已完成（2026-03-19）
 
-- [ ] `oauth.ts` 启用 `search:knowledge_qa:read` scope
-- [ ] 新建 `extensions/feishu-her/src/tools/knowledge-qa.ts`
-- [ ] 实现 `ask` action（非流式 `/answer`）
-- [ ] 实现 `search` action（向量搜索 `/search`）
-- [ ] 注册到 `tools/index.ts`
-- [ ] 新建 `skills/feishu-knowledge-qa/SKILL.md`
-- [ ] carher-101 本地测试
+- [x] `oauth.ts` 启用 `search:knowledge_qa:read` scope
+- [x] 新建 `extensions/feishu-her/src/tools/knowledge-qa.ts`
+- [x] 实现 `ask` action（非流式 `/answer`）
+- [x] 实现 `search` action（向量搜索 `/search`）
+- [x] `sources` 参数控制搜索范围（space/wiki/message/minutes/comment/lingo/helpdesk_faq）
+- [x] `chat_ids` + `time_start`/`time_end` 消息精确过滤
+- [x] 注册到 `tools/index.ts`
+- [x] Skill 合并到 `skills/feishu-knowledge-search/SKILL.md`（含参数用法示例）
+- [x] docker13 压力测试：5 批 23 个用例，零工具 bug
+- [x] 关键验证：API 返回扁平 JSON（非标准 {code,msg,data} 包装），用 native fetch + 90s timeout
+- [x] time_range 过滤验证：秒级时间戳正确生效（传今天 → 14 条精准结果 vs 不传 → 20 条混杂旧消息）
 
-### Phase 2：流式 + 额度管理
+### Phase 1 实测结论（docker13 Her 三轮+压力测试汇总）
+
+知识问答独占能力（Her 原生做不了）：
+
+1. 搜索私聊消息
+2. 妙记听写全文语义搜索（score 0.94）
+3. 跨私聊+群聊+文档统一语义搜索
+
+四层优先级：search（P0，3 秒）→ Her 精读（P1）→ ask（P2，20-60 秒）→ deep_search（P3）
+
+### Phase 2：流式 + 额度管理（待实施）
 
 - [ ] 实现 SSE 流式 `/stream_answer`（长查询场景，避免超时）
 - [ ] 额度感知（1270002 → 标记当日用完 → 降级到 deep_search）
 - [ ] session 级缓存（同 query 不重复调用）
 
-### Phase 3：Deep Research 融合
+### Phase 3：Deep Research 融合（待实施）
 
 - [ ] knowledge_qa references → deep_search 搜索种子
 - [ ] 质量判断自动路由
@@ -437,8 +451,10 @@ type KnowledgeQAResult = {
 
 ## 9. 已知限制
 
-- **每日免费额度有限**（实测约 2-3 次/天），超额返回 `1270002`
-- 企业搜索耗时较长（5-62 秒），偶尔超时
+- **每日免费额度有限**，超额返回 `1270002`
+- ask 耗时 20-60 秒（deepseek 更慢，doubao 更快）
 - 必须 `user_access_token`（不支持 tenant_access_token）
 - `knowledge_scope=enterprise` 时 `enterprise_knowledge_source` 必填
+- search 端点不需要 `knowledge_scope` / `model_type`
 - 答案质量依赖飞书 RAG 系统，非 100% 准确
+- API 返回扁平 JSON，不是标准 `{code, msg, data}` 包装（尽管官方文档示例显示有包装）
