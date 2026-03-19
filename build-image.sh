@@ -95,6 +95,12 @@ fi
 
 # --- Build ---
 echo ""
+# When using --branch, touch all source files to invalidate Docker layer cache.
+# BuildKit's content-addressed cache can miss single-file changes across worktrees.
+if [ -n "$BRANCH" ]; then
+  find "$BUILD_DIR/extensions" "$BUILD_DIR/src" -name '*.ts' -exec touch {} + 2>/dev/null
+fi
+
 DOCKER_BUILDKIT=1 docker build \
   -f "$BUILD_DIR/Dockerfile.carher" \
   --build-arg BUILD_HASH="$CURRENT_BUILD_HASH" \
