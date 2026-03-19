@@ -64,8 +64,9 @@ if command -v hostname >/dev/null && hostname -I >/dev/null 2>&1; then
 else
   HOST_ARG=$(ipconfig getifaddr en0)
 fi
-NO_REBUILD=""  # 跳过自动重建检查
+NO_REBUILD=""  # 跳过自动重建检查（向后兼容，已无实际作用）
 DEV_MODE=""    # --dev: bind mount 源码，跳过镜像重建（秒级启动）
+IMAGE_NAME=""  # --image=NAME: 使用指定镜像（默认 carher:local）
 
 for arg in "$@"; do
   case "$arg" in
@@ -80,12 +81,14 @@ for arg in "$@"; do
     --list) ACTION="list" ;;
     --sync-workspace) ACTION="sync-workspace" ;;
     --no-rebuild) NO_REBUILD="yes" ;;
+    --image=*) IMAGE_NAME="${arg#--image=}" ;;
     --dev) DEV_MODE="yes" ;;
     -h|--help)
       echo "用法: ./start-user.sh --id=N [--model=MODEL] [--host=IP] [--down] [--logs]"
       echo ""
       echo "  --id=N        用户编号 (1-999)"
       echo "  --model=MODEL 指定 AI 模型（覆盖 users.csv 中的设置）"
+      echo "  --image=NAME  使用指定 Docker 镜像（默认 carher:local，用 build-image.sh 构建）"
       echo "  --host=IP     Webchat 访问地址（默认 localhost，企业部署用内网 IP）"
       echo "  --random      附加临时随机隧道（一次性演示，关终端就消失）"
       echo "  --reset       重置语音 token（不重启容器，立即生效）"
@@ -275,9 +278,10 @@ echo ""
 echo -e "${YELLOW}🚗 CarHer User ${USER_ID} — 启动${NC}"
 echo ""
 
-# --- Auto-rebuild: compare full workspace snapshot hash with image label ---
+# --- Image check (build is now separate: use build-image.sh) ---
+RUNTIME_IMAGE="${IMAGE_NAME:-carher:local}"
 if [ -n "$DEV_MODE" ]; then
-  # Dev mode: skip full rebuild, just ensure base image exists for node_modules/pip
+  # Dev mode: ensure base image + dist/ exist
   if ! docker image inspect carher:local &>/dev/null; then
     echo -e "${YELLOW}  ⟳ Dev 模式: 首次构建基础镜像...${NC}"
     echo ""
@@ -285,39 +289,19 @@ if [ -n "$DEV_MODE" ]; then
     echo ""
     echo -e "${GREEN}  ✓ 基础镜像构建完成${NC}"
   fi
-  # Ensure dist/ exists on host (compiled core gateway code)
   if [ ! -d "dist" ]; then
     echo -e "${YELLOW}  ⟳ Dev 模式: 编译核心代码 (pnpm build)...${NC}"
     pnpm build
   fi
-  echo -e "${GREEN}  ✓ Dev 模式: bind mount 源码，跳过镜像重建${NC}"
+  echo -e "${GREEN}  ✓ Dev 模式: bind mount 源码${NC}"
 else
-  CURRENT_BUILD_HASH=$(node scripts/workspace-build-hash.mjs)
-
-  IMAGE_BUILD_HASH=$(docker inspect carher:local --format '{{index .Config.Labels "carher.build.hash"}}' 2>/dev/null || echo "none")
-
-  NEED_REBUILD=""
-  if ! docker image inspect carher:local &>/dev/null; then
-    NEED_REBUILD="镜像不存在"
-  elif [ "$IMAGE_BUILD_HASH" = "none" ] || [ "$IMAGE_BUILD_HASH" = "unknown" ] || [ "$IMAGE_BUILD_HASH" = "" ]; then
-    NEED_REBUILD="镜像无版本标记（旧版构建）"
-  elif [ "$CURRENT_BUILD_HASH" != "$IMAGE_BUILD_HASH" ]; then
-    NEED_REBUILD="工作区快照已变更 (镜像: ${IMAGE_BUILD_HASH:0:16}, 当前: ${CURRENT_BUILD_HASH:0:16})"
+  if ! docker image inspect "$RUNTIME_IMAGE" &>/dev/null; then
+    echo -e "${RED}  ✗ 镜像 ${RUNTIME_IMAGE} 不存在，请先运行: ./build-image.sh${NC}"
+    [ -n "$IMAGE_NAME" ] && echo -e "${YELLOW}    提示: ./build-image.sh --tag=${IMAGE_NAME}${NC}"
+    exit 1
   fi
-
-  if [ -n "$NEED_REBUILD" ]; then
-    if [ -n "$NO_REBUILD" ]; then
-      echo -e "${YELLOW}  ⚠ 镜像需要重建 (${NEED_REBUILD})，但 --no-rebuild 已跳过${NC}"
-    else
-      echo -e "${YELLOW}  ⟳ 自动重建镜像: ${NEED_REBUILD}${NC}"
-      echo ""
-      DOCKER_BUILDKIT=1 docker build -f Dockerfile.carher --build-arg BUILD_HASH="$CURRENT_BUILD_HASH" -t carher:local .
-      echo ""
-      echo -e "${GREEN}  ✓ 镜像自动重建完成${NC}"
-    fi
-  else
-    echo -e "${GREEN}  ✓ Docker 镜像已是最新 (${CURRENT_BUILD_HASH:0:16})${NC}"
-  fi
+  IMAGE_HASH=$(docker inspect "$RUNTIME_IMAGE" --format '{{index .Config.Labels "carher.build.hash"}}' 2>/dev/null || echo "unknown")
+  echo -e "${GREEN}  ✓ 使用镜像: ${RUNTIME_IMAGE} (${IMAGE_HASH:0:16})${NC}"
 fi
 
 # Check cloudflared (only for --random)
@@ -711,7 +695,7 @@ docker run -d \
   -v "${SCRIPT_DIR}/docker/carher-config.json:/data/.openclaw/carher-config.json:ro" \
   -v "${SCRIPT_DIR}/docker/shared-config.json5:/data/.openclaw/shared-config.json5:ro" \
   "${DEV_MOUNTS[@]}" \
-  carher:local
+  "$RUNTIME_IMAGE"
 
 echo -e "${GREEN}  ✓ 容器已启动${NC}"
 
