@@ -20,6 +20,7 @@ import { registerFeishuDeepSearchTool } from "./deep-search.js";
 import { registerFeishuDirectoryTools } from "./directory.js";
 import { registerFeishuDocTools } from "./docx.js";
 import { registerFeishuDriveTools } from "./drive.js";
+import { registerFeishuKnowledgeQATool } from "./knowledge-qa.js";
 import { registerFeishuMessageTools } from "./message.js";
 import { registerFeishuMinutesTools } from "./minutes.js";
 import { registerFeishuSearchTool } from "./search.js";
@@ -51,4 +52,5 @@ export function registerAllFeishuTools(api: OpenClawPluginApi): void {
   registerFeishuTaskTools(api);
   registerFeishuMessageTools(api);
   registerFeishuMinutesTools(api);
+  registerFeishuKnowledgeQATool(api);
 }

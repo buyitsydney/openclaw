@@ -11,7 +11,14 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -80,7 +87,7 @@ const OAUTH_SCOPES = [
   "search:app",
   "search:department:read",
   "search:docs:read",
-  // "search:knowledge_qa:read", // requires "飞书知识问答" app capability — only enterprise apps have this
+  "search:knowledge_qa:read",
   "search:message",
   // ── Sheets ──
   "sheets:spreadsheet:readonly",
