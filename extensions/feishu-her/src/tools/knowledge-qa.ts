@@ -276,6 +276,13 @@ async function fetchKQA(
 
 // ── Actions ──
 
+/**
+ * Ask via SSE streaming (/stream_answer). Collects all chunks until event=finished,
+ * then returns the final accumulated result. SSE keeps the connection alive so no 504.
+ *
+ * Each SSE chunk is a JSON object:
+ * { code, msg, id, event: "pending"|"finished"|"failed", data: { answer, reasoning_content, references, status_code } }
+ */
 async function askKnowledgeQA(userToken: string, params: Params): Promise<unknown> {
   const knowledgeScope = params.knowledge_scope ?? "enterprise";
   const modelType = params.model_type ?? "deepseek";
@@ -289,38 +296,150 @@ async function askKnowledgeQA(userToken: string, params: Params): Promise<unknow
     body.enterprise_knowledge_source = buildSourcesParam(params);
   }
 
-  const res = await fetchKQA(userToken, "/search/v2/knowledge_qa/answer", body);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), KQA_TIMEOUT_MS);
 
-  if (res.code && res.code !== 0) {
-    const quality = judgeQuality(res.code, undefined);
+  try {
+    const res = await fetch(`${KQA_BASE}/search/v2/knowledge_qa/stream_answer`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${userToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    if (res.status === 403) {
+      return {
+        quality: "error" as QualityLevel,
+        error: "OAuth token missing search:knowledge_qa:read scope. User needs to re-authorize.",
+        suggestion: "OAuth permission error. User needs to re-authorize.",
+        answer: null,
+        references: { enterprise: [], internet: [], total: 0 },
+      };
+    }
+    if (res.status >= 400) {
+      const text = await res.text();
+      return {
+        quality: "error" as QualityLevel,
+        error: `HTTP ${res.status}: ${text.slice(0, 200)}`,
+        suggestion: "Try search action or feishu_deep_search.",
+        answer: null,
+        references: { enterprise: [], internet: [], total: 0 },
+      };
+    }
+
+    // Collect SSE chunks. Each line is BASE64-ENCODED JSON (not raw JSON!).
+    // Decoded structure: { id, event, data: "<nested JSON string>" }
+    // The inner `data` field is a JSON string that must be parsed again.
+    const text = await res.text();
+    const lines = text.split("\n").filter((l) => l.trim());
+
+    let finalAnswer = "";
+    let finalReasoning = "";
+    // oxlint-disable-next-line typescript/no-explicit-any
+    let finalRefs: any = {};
+    let lastEvent = "";
+    let errorCode = 0;
+    let errorMsg = "";
+
+    for (const line of lines) {
+      try {
+        // Step 1: base64 decode
+        const decoded = Buffer.from(line, "base64").toString("utf-8");
+        // Step 2: parse outer JSON
+        const chunk = JSON.parse(decoded);
+        // Auth error in stream
+        if (chunk.code && chunk.code !== 0) {
+          errorCode = chunk.code;
+          errorMsg = chunk.msg ?? "";
+          continue;
+        }
+        if (chunk.event) lastEvent = chunk.event;
+        // Step 3: parse inner data (may be a JSON string or already an object)
+        let d = chunk.data;
+        if (typeof d === "string") {
+          try {
+            d = JSON.parse(d);
+          } catch {
+            d = null;
+          }
+        }
+        if (d) {
+          if (d.answer) finalAnswer = d.answer;
+          if (d.reasoning_content) finalReasoning = d.reasoning_content;
+          if (d.references) finalRefs = d.references;
+        }
+      } catch {
+        // Try raw JSON parse as fallback (in case format changes)
+        try {
+          const chunk = JSON.parse(line);
+          if (chunk.event) lastEvent = chunk.event;
+          const d = chunk.data;
+          if (d?.answer) finalAnswer = d.answer;
+          if (d?.reasoning_content) finalReasoning = d.reasoning_content;
+          if (d?.references) finalRefs = d.references;
+        } catch {
+          // skip unparseable lines
+        }
+      }
+    }
+
+    if (errorCode !== 0) {
+      const quality = judgeQuality(errorCode, undefined);
+      return {
+        quality,
+        error: errorMsg || `API error code=${errorCode}`,
+        suggestion:
+          quality === "quota_exceeded"
+            ? "Daily quota exceeded. Use feishu_deep_search as fallback."
+            : String(errorCode).includes("9999")
+              ? "OAuth permission error. User needs to re-authorize."
+              : "Try search action or feishu_deep_search.",
+        answer: null,
+        references: { enterprise: [], internet: [], total: 0 },
+      };
+    }
+
+    if (lastEvent === "failed") {
+      return {
+        quality: "error" as QualityLevel,
+        error: "Stream ended with failed event.",
+        suggestion: "Try search action or feishu_deep_search.",
+        answer: null,
+        references: { enterprise: [], internet: [], total: 0 },
+      };
+    }
+
+    const quality = judgeQuality(0, finalAnswer);
+    const enterpriseRefs = (finalRefs.enterprise_refs ?? []).map(enrichRef);
+    const internetRefs = finalRefs.internet_refs ?? [];
+
     return {
       quality,
-      error: res.msg || `API error code=${res.code}`,
-      suggestion:
-        quality === "quota_exceeded"
-          ? "Daily quota exceeded. Use feishu_deep_search as fallback."
-          : String(res.code).includes("9999")
-            ? "OAuth permission error. User needs to re-authorize."
-            : "Try search action or feishu_deep_search.",
-      answer: null,
-      references: { enterprise: [], internet: [], total: 0 },
+      answer: finalAnswer || null,
+      reasoning_content: finalReasoning || null,
+      references: {
+        enterprise: enterpriseRefs,
+        internet: internetRefs,
+        total: enterpriseRefs.length + internetRefs.length,
+      },
     };
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      return {
+        quality: "error" as QualityLevel,
+        error: `Request timeout (${KQA_TIMEOUT_MS / 1000}s). Try a more specific question.`,
+        suggestion: "Try search action or feishu_deep_search.",
+        answer: null,
+        references: { enterprise: [], internet: [], total: 0 },
+      };
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
-
-  const quality = judgeQuality(0, res.answer);
-  const enterpriseRefs = (res.references?.enterprise_refs ?? []).map(enrichRef);
-  const internetRefs = res.references?.internet_refs ?? [];
-
-  return {
-    quality,
-    answer: res.answer ?? null,
-    reasoning_content: res.reasoning_content ?? null,
-    references: {
-      enterprise: enterpriseRefs,
-      internet: internetRefs,
-      total: enterpriseRefs.length + internetRefs.length,
-    },
-  };
 }
 
 async function searchKnowledgeQA(userToken: string, params: Params): Promise<unknown> {
