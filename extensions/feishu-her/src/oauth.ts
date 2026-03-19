@@ -162,10 +162,14 @@ function invalidateAllUserTokens(): void {
   }
 }
 
-// Feishu error codes that mean the user_access_token is invalid/revoked server-side.
+// Feishu error codes that DEFINITELY mean the token itself is broken.
+// 99991679 (Unauthorized) is intentionally EXCLUDED — it fires for both
+// "token revoked" AND "scope insufficient". Nuking all tokens on a scope
+// error destroys calendar/minutes/search OAuth for the entire session.
+// If a token is truly revoked, the refresh mechanism handles it naturally
+// (access_token expires → refresh fails → triggers re-authorization).
 const TOKEN_INVALID_CODES = new Set([
   99991668, // user_access_token invalid or expired
-  99991679, // user not authorized (token revoked)
   99991677, // user_access_token expired, needs refresh
 ]);
 
@@ -683,9 +687,11 @@ export async function callFeishuApiWithUserToken<T = unknown>(params: {
     const raw = await response.text();
     const parsed = JSON.parse(raw) as FeishuApiResponse<T>;
     const code = parsed.code ?? -1;
-    // If Feishu says the token is invalid/revoked, delete local token files
-    // so the next tool call triggers re-authorization instead of retrying
-    // with a dead token.
+    // If Feishu says the token is definitely invalid/expired, delete local
+    // token files so the next tool call triggers re-authorization.
+    // NOTE: 99991679 (Unauthorized) is NOT handled here — it can mean
+    // "scope insufficient" (not just "token revoked"), and nuking tokens
+    // on a scope error would break all OAuth tools in the session.
     if (TOKEN_INVALID_CODES.has(code)) {
       console.warn(
         `[feishu-oauth] Feishu rejected user token (code=${code}): ${parsed.msg}. Deleting local tokens to trigger re-authorization.`,
