@@ -47,6 +47,7 @@ import {
   type FeishuUserToken,
 } from "../oauth.js";
 import { downloadFeishuFile, downloadFeishuImage, getFeishuClient } from "../outbound.js";
+import { parseTime } from "./time-utils.js";
 
 function json(data: unknown) {
   return {
@@ -57,15 +58,9 @@ function json(data: unknown) {
 
 const MERGE_FORWARD_DISABLED_TEXT = "[merged forward disabled]";
 
-// ── Time helpers ──
-
+// Time conversion: use shared time-utils (parseTime)
 function parseTimeParam(value: string | undefined, fallbackMs: number): number {
-  if (!value) return fallbackMs;
-  const n = Number(value);
-  if (!Number.isNaN(n) && n > 1e12) return Math.floor(n);
-  const d = Date.parse(value);
-  if (!Number.isNaN(d)) return d;
-  return fallbackMs;
+  return parseTime(value, fallbackMs);
 }
 
 function msToFeishuTs(ms: number): string {

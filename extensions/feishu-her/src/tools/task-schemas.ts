@@ -18,7 +18,8 @@ const TASKLIST_UPDATE_FIELDS = ["name", "owner", "archive_tasklist"] as const;
 const DATE_SCHEMA = Type.Object({
   timestamp: Type.Optional(
     Type.String({
-      description: "Unix timestamp in milliseconds string, e.g. 1735689600000",
+      description:
+        "ISO 8601 datetime (e.g. 2026-03-19T18:00:00+08:00) or Unix ms string. Converted internally.",
     }),
   ),
   is_all_day: Type.Optional(Type.Boolean({ description: "Whether this is an all-day date" })),

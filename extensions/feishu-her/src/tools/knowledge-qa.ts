@@ -25,6 +25,7 @@ import {
   requireUserToken,
   resolveOAuthRedirectUri,
 } from "../oauth.js";
+import { toUnixSeconds } from "./time-utils.js";
 
 // ── Schema ──
 
@@ -68,15 +69,15 @@ const FeishuKnowledgeQASchema = Type.Object({
     }),
   ),
   time_start: Type.Optional(
-    Type.Number({
+    Type.String({
       description:
-        "Message time range start (unix timestamp seconds). Only applies to message source.",
+        "Message time range start (ISO 8601, e.g. 2026-03-17T00:00:00+08:00). Only applies to message source.",
     }),
   ),
   time_end: Type.Optional(
-    Type.Number({
+    Type.String({
       description:
-        "Message time range end (unix timestamp seconds). Only applies to message source.",
+        "Message time range end (ISO 8601, e.g. 2026-03-19T23:59:59+08:00). Only applies to message source.",
     }),
   ),
   knowledge_scope: Type.Optional(
@@ -147,8 +148,8 @@ function buildSourcesParam(params: Params): Record<string, unknown> {
     }
     if (params.time_start || params.time_end) {
       const timeRange: Record<string, number> = {};
-      if (params.time_start) timeRange.start = params.time_start;
-      if (params.time_end) timeRange.end = params.time_end;
+      if (params.time_start) timeRange.start = toUnixSeconds(params.time_start);
+      if (params.time_end) timeRange.end = toUnixSeconds(params.time_end);
       filter.time_range = timeRange;
     }
     if (Object.keys(filter).length > 0) {

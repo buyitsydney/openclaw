@@ -18,6 +18,7 @@ import {
   resolveOAuthRedirectUri,
 } from "../oauth.js";
 import { getFeishuClient } from "../outbound.js";
+import { toUnixSecondsStr, toRfc3339 } from "./time-utils.js";
 
 function json(data: unknown) {
   return {
@@ -28,15 +29,8 @@ function json(data: unknown) {
 
 // ── Helpers ──
 
-/** Convert ISO 8601 string to Unix timestamp (seconds). */
-function toTimestamp(iso: string): string {
-  return String(Math.floor(new Date(iso).getTime() / 1000));
-}
-
-/** Convert ISO 8601 / any date string to RFC 3339 UTC string for freebusy API. */
-function toRfc3339(iso: string): string {
-  return new Date(iso).toISOString();
-}
+// Time conversion: use shared time-utils (toUnixSecondsStr, toRfc3339)
+const toTimestamp = toUnixSecondsStr;
 
 /** Extract useful fields from a raw calendar event. */
 // oxlint-disable-next-line typescript/no-explicit-any
@@ -65,7 +59,14 @@ async function listCalendarsUser(userToken: string, pageSize?: number, pageToken
   const query: Record<string, string> = { page_size: String(pageSize ?? 500) };
   if (pageToken) query.page_token = pageToken;
   const res = await callFeishuApiWithUserToken<{
-    calendar_list?: { calendar_id: string; summary: string; description: string; type: string; role: string; permissions: string }[];
+    calendar_list?: {
+      calendar_id: string;
+      summary: string;
+      description: string;
+      type: string;
+      role: string;
+      permissions: string;
+    }[];
     has_more?: boolean;
     page_token?: string;
   }>({ method: "GET", endpoint: "/calendar/v4/calendars", userToken, query });
@@ -95,7 +96,14 @@ async function getPrimaryCalendarUser(userToken: string) {
 
 async function searchCalendarsUser(userToken: string, query: string, pageSize?: number) {
   const res = await callFeishuApiWithUserToken<{
-    items?: { calendar_id: string; summary: string; description: string; type: string; role: string; permissions: string }[];
+    items?: {
+      calendar_id: string;
+      summary: string;
+      description: string;
+      type: string;
+      role: string;
+      permissions: string;
+    }[];
   }>({
     method: "POST",
     endpoint: "/calendar/v4/calendars/search",
