@@ -44,13 +44,14 @@ export function buildFtsQuery(raw: string): string | null {
 }
 
 export function bm25RankToScore(rank: number): number {
-  // FTS5 bm25() returns negative values; more negative = more relevant.
-  // Convert to 0-1 score preserving rank ordering.
-  if (!Number.isFinite(rank) || rank >= 0) {
-    return 0;
+  if (!Number.isFinite(rank)) {
+    return 1 / (1 + 999);
   }
-  const absRank = Math.abs(rank);
-  return absRank / (1 + absRank);
+  if (rank < 0) {
+    const relevance = -rank;
+    return relevance / (1 + relevance);
+  }
+  return 1 / (1 + rank);
 }
 
 export async function mergeHybridResults(params: {
@@ -63,7 +64,7 @@ export async function mergeHybridResults(params: {
   mmr?: Partial<MMRConfig>;
   /** Temporal decay configuration for recency-aware scoring */
   temporalDecay?: Partial<TemporalDecayConfig>;
-  /** Test seam for deterministic time-dependent behavior */
+  /** Test hook for deterministic time-dependent behavior */
   nowMs?: number;
 }): Promise<
   Array<{

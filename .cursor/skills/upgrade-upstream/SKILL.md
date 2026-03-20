@@ -177,12 +177,12 @@ upstream 可能改变 `dist/` 输出结构。`realtime` 插件通过 `dist/exten
  }
 ```
 
-### Patch 2: `src/memory/hybrid.test.ts` — BM25 rank-to-score 测试修正
+### ~~Patch 2: `src/memory/hybrid.test.ts` — BM25 rank-to-score 测试修正~~ ✅ 已删除
 
-- **Commit**: `95d45f2e7` (2026-02-19)
-- **问题**: 测试用例假设 FTS5 rank 是正数，但 SQLite FTS5 的 `rank` 列返回负数（越负 = 越相关），导致 `bm25RankToScore` 测试错误
-- **修改**: 测试用例改为使用负数 rank 值，与 `5fbbc7215` 中 `bm25RankToScore` 的修复一致
-- **升级时检查**: `git diff v2026.X.Y -- src/memory/hybrid.test.ts`
+- **状态**: 2026-03-20 确认 upstream main 已自行修复 `bm25RankToScore`（正确处理负数 FTS5 rank）
+- **upstream 修复**: 虽然我们的 PR #14005 和 #33757 均未被直接合并，但 upstream 通过自己的提交实现了等效修复
+- **本地操作**: 已 revert `src/memory/hybrid.ts` 和 `src/memory/hybrid.test.ts` 到 upstream 版本，测试全过
+- **不再需要本地维护**
 
 ### Patch 3: `src/memory/session-files.ts` — .reset 文件纳入索引（待实施）
 

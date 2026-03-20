@@ -11,12 +11,10 @@ describe("memory hybrid helpers", () => {
   });
 
   it("bm25RankToScore is monotonic and clamped", () => {
-    expect(bm25RankToScore(Number.NaN)).toBeCloseTo(0);
-    expect(bm25RankToScore(0)).toBeCloseTo(0);
-    expect(bm25RankToScore(-1)).toBeCloseTo(0.5);
-    expect(bm25RankToScore(-10)).toBeGreaterThan(bm25RankToScore(-1));
-    expect(bm25RankToScore(-100)).toBeGreaterThan(0.99);
-    expect(bm25RankToScore(5)).toBeCloseTo(0);
+    expect(bm25RankToScore(0)).toBeCloseTo(1);
+    expect(bm25RankToScore(1)).toBeCloseTo(0.5);
+    expect(bm25RankToScore(10)).toBeLessThan(bm25RankToScore(1));
+    expect(bm25RankToScore(-100)).toBeCloseTo(1, 1);
   });
 
   it("bm25RankToScore preserves FTS5 BM25 relevance ordering", () => {
