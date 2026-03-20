@@ -474,6 +474,8 @@ async function searchKnowledgeQA(userToken: string, params: Params): Promise<unk
 
 // ── Registration ──
 
+export const KNOWLEDGE_QA_REQUIRED_SCOPE = "search:knowledge_qa:read";
+
 export function registerFeishuKnowledgeQATool(api: OpenClawPluginApi): void {
   const accounts = listEnabledFeishuAccounts(api.config);
   if (accounts.length === 0) return;

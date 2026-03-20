@@ -922,8 +922,10 @@ export function registerFeishuChatHistoryTool(api: OpenClawPluginApi) {
               return json({ error: `Unknown action: ${params.action}` });
           }
         } catch (err) {
-          handleFeishuTokenError(err);
+          const authResp = await handleFeishuTokenError(err, firstAccount, redirectUri);
           const msg = err instanceof Error ? err.message : String(err);
+          if (authResp) return authResp;
+
           return json({ error: msg });
         }
       },

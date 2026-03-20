@@ -578,10 +578,12 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
               return json({ error: `Unknown action: ${params.action}` });
           }
         } catch (err) {
-          handleFeishuTokenError(err);
+          const authResp = await handleFeishuTokenError(err, firstAccount, redirectUri);
           // oxlint-disable-next-line typescript/no-explicit-any
           const axiosData = (err as any)?.response?.data;
           if (axiosData?.code && axiosData?.msg) {
+            if (authResp) return authResp;
+
             return json({
               error: `Feishu API error ${axiosData.code}: ${axiosData.msg}`,
               field_violations: axiosData.error?.field_violations,

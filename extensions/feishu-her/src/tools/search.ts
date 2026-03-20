@@ -409,7 +409,8 @@ export function registerFeishuSearchTool(api: OpenClawPluginApi): void {
               "Drive and Wiki are searched independently. Root-level Drive folders are supplemented via user-root browse because Feishu's docs search may miss folders.",
           });
         } catch (err) {
-          handleFeishuTokenError(err);
+          const authResp = await handleFeishuTokenError(err, firstAccount, redirectUri);
+          if (authResp) return authResp;
           return json({ error: err instanceof Error ? err.message : String(err) });
         }
       },

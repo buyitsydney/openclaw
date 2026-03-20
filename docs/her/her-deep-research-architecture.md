@@ -34,7 +34,7 @@ HER 目前有两条独立的知识检索路径：
 - 必须使用 `user_access_token`（不支持 `tenant_access_token`）
 - 需要 OAuth scope：`search:knowledge_qa:read`
 - 注意：此 scope 需要飞书后台开通"飞书知识问答"应用能力，非企业版 app 可能没有此能力（错误码 20027）
-- `oauth.ts` 的 `OAUTH_SCOPES` 中已注释掉此 scope（本地测试 app 不支持），企业版部署时按需启用
+- **自动检测**：启动时通过 `application.scope.list` API 探测后台实际 scope，如果后台没有 `search:knowledge_qa:read`，knowledge_qa tool 自动不注册，OAuth URL 自动排除此 scope，零配置零报错
 
 ### 2.3 请求参数
 

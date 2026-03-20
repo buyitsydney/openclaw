@@ -413,7 +413,7 @@ type KnowledgeQAResult = {
 
 ### Phase 1：基础工具 ✅ 已完成（2026-03-19）
 
-- [x] `oauth.ts` 启用 `search:knowledge_qa:read` scope
+- [x] `oauth.ts` 启用 `search:knowledge_qa:read` scope（自动检测：启动时通过 `application.scope.list` API 探测后台是否有此 scope，没有则自动不注册 tool 且 OAuth URL 不请求此 scope）
 - [x] 新建 `extensions/feishu-her/src/tools/knowledge-qa.ts`
 - [x] 实现 `ask` action（非流式 `/answer`）
 - [x] 实现 `search` action（向量搜索 `/search`）
