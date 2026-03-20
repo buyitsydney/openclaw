@@ -1190,6 +1190,8 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     imagePlaceholder: "<media:image>",
     mediaPlaceholder: "[video]",
   }).attachments;
+  const mediaPaths: string[] = [];
+  const mediaTypes: string[] = [];
   if (msgType === "merge_forward" && messageId) {
     try {
       const expanded = await expandMergeForwardMessage({
@@ -1228,8 +1230,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // ── Download images (standalone image msgs + images embedded in post) ──
   let mediaPath: string | undefined;
   let mediaType: string | undefined;
-  const mediaPaths: string[] = [];
-  const mediaTypes: string[] = [];
+  // NOTE: mediaPaths/mediaTypes declared above merge_forward block (merge_forward may push to them)
   if (imageKeys.length > 0 && messageId) {
     for (const imageKey of imageKeys) {
       try {

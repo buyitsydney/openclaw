@@ -17,6 +17,7 @@ export type FeishuFetchedMessageItem = {
   chat_id?: string;
   body?: { content?: string };
   sender?: { id?: string; sender_type?: string };
+  mentions?: Array<{ key?: string; id?: string; name?: string }>;
 };
 
 export type MergeForwardMediaFile = {
@@ -256,6 +257,7 @@ export async function expandFetchedMessageItem(params: {
   account: ResolvedFeishuAccount;
   item: FeishuFetchedMessageItem;
   log?: ChannelLogSink;
+  sharedDownloadedKeys?: Set<string>;
   fetchItems?: FetchMessageItems;
   downloadFile?: DownloadFileResource;
   downloadImage?: DownloadImageResource;
@@ -291,6 +293,7 @@ export async function expandFetchedMessageItem(params: {
       account: params.account,
       messageId,
       log: params.log,
+      sharedDownloadedKeys: params.sharedDownloadedKeys,
       fetchItems,
       downloadFile,
       downloadImage,
@@ -299,10 +302,16 @@ export async function expandFetchedMessageItem(params: {
   }
 
   if (msgType === "text") {
-    return {
-      text: typeof parsed?.text === "string" ? parsed.text : rawContent || null,
-      coverage: "full",
-    };
+    let text = typeof parsed?.text === "string" ? parsed.text : rawContent || null;
+    // Resolve @_user_N mention placeholders to real names
+    if (text && params.item.mentions?.length) {
+      for (const m of params.item.mentions) {
+        if (m.key && m.name) {
+          text = text.replaceAll(m.key, `@${m.name}`);
+        }
+      }
+    }
+    return { text, coverage: "full" };
   }
   if (msgType === "post") {
     return parsed ? extractPostText(parsed) : { text: rawContent || null, coverage: "partial" };
@@ -589,8 +598,11 @@ export async function expandFetchedMessageItem(params: {
 
 export async function expandMergeForwardItems(params: {
   account: ResolvedFeishuAccount;
+  parentMessageId: string;
   items: FeishuFetchedMessageItem[];
   log?: ChannelLogSink;
+  /** Shared across nested layers to prevent duplicate downloads */
+  sharedDownloadedKeys?: Set<string>;
   fetchItems?: FetchMessageItems;
   downloadFile?: DownloadFileResource;
   downloadImage?: DownloadImageResource;
@@ -634,14 +646,67 @@ export async function expandMergeForwardItems(params: {
         imageKey: imageParams.imageKey,
       }));
 
+  // Deduplicate across all nesting layers
+  const downloadedKeys = params.sharedDownloadedKeys ?? new Set<string>();
+
+  // Batch-resolve sender names (best-effort, don't block on failure)
+  const senderNames = new Map<string, string>();
+  // Only resolve human users (ou_ prefix), skip bots (cli_ prefix) and other types
+  const humanSenderIds = [
+    ...new Set(
+      subMessages
+        .filter((m) => m.sender?.id?.startsWith("ou_"))
+        .map((m) => m.sender!.id!),
+    ),
+  ];
+  // For bot senders, use mention name or app_id prefix
+  for (const m of subMessages) {
+    const sid = m.sender?.id;
+    if (sid && !sid.startsWith("ou_") && !senderNames.has(sid)) {
+      // Find bot name from mentions (bot might be @mentioned somewhere)
+      const mentionName = m.mentions?.find((mt) => mt.id === sid)?.name;
+      senderNames.set(sid, mentionName ?? `bot:${sid.slice(0, 16)}`);
+    }
+  }
+  if (humanSenderIds.length > 0) {
+    const client = getFeishuClient(params.account);
+    await Promise.allSettled(
+      humanSenderIds.map(async (senderId) => {
+        try {
+          // oxlint-disable-next-line typescript/no-explicit-any
+          const res: any = await client.contact.user.get({
+            path: { user_id: senderId },
+            params: { user_id_type: "open_id" },
+          });
+          if (res.code === 0 && res.data?.user?.name) {
+            senderNames.set(senderId, res.data.user.name);
+          }
+        } catch {
+          // best-effort — skip if lookup fails
+        }
+      }),
+    );
+  }
+
   for (const item of subMessages) {
     const msgType = item.msg_type ?? "unknown";
     const messageId = item.message_id ?? "";
     const rawContent = item.body?.content ?? "";
     const parsed = parseJsonContent(rawContent);
 
+    // Build sender + time prefix for this sub-message
+    const senderId = item.sender?.id ?? "";
+    const senderName = senderNames.get(senderId) ?? senderId.slice(0, 12) ?? "unknown";
+    const timeStr = item.create_time
+      ? new Date(Number.parseInt(item.create_time, 10)).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })
+      : "";
+    const senderPrefix = timeStr ? `[${senderName} ${timeStr}]` : `[${senderName}]`;
+
     // Try direct media download for attachment types (using bot token)
-    if (isAttachmentMessageType(msgType) && messageId && parsed) {
+    // IMPORTANT: use parentMessageId for resource downloads — Feishu API error 234003
+    // ("File not in msg") if you use the sub-message's own message_id
+    const downloadMsgId = params.parentMessageId;
+    if (isAttachmentMessageType(msgType) && downloadMsgId && parsed) {
       try {
         let downloaded: { buffer: Buffer; contentType?: string } | null = null;
         let fileName = "";
@@ -649,10 +714,15 @@ export async function expandMergeForwardItems(params: {
 
         if (msgType === "image") {
           const imageKey = typeof parsed.image_key === "string" ? parsed.image_key : "";
-          if (imageKey) {
-            downloaded = await downloadImage({ messageId, imageKey });
+          if (imageKey && !downloadedKeys.has(imageKey)) {
+            downloadedKeys.add(imageKey);
+            downloaded = await downloadImage({ messageId: downloadMsgId, imageKey });
             fileName = `image-${messageId.slice(-8)}.png`;
             mediaType = "image";
+          } else if (imageKey) {
+            // Already downloaded, skip
+            blocks.push(prefixBulletBlock("[image: already included above]"));
+            continue;
           }
         } else {
           const fileKey = typeof parsed.file_key === "string" ? parsed.file_key : "";
@@ -660,8 +730,12 @@ export async function expandMergeForwardItems(params: {
             typeof parsed.file_name === "string" && parsed.file_name.trim()
               ? parsed.file_name.trim()
               : `${msgType}-${messageId.slice(-8)}`;
-          if (fileKey) {
-            downloaded = await downloadFile({ messageId, fileKey });
+          if (fileKey && !downloadedKeys.has(fileKey)) {
+            downloadedKeys.add(fileKey);
+            downloaded = await downloadFile({ messageId: downloadMsgId, fileKey });
+          } else if (fileKey) {
+            blocks.push(prefixBulletBlock(`[${msgType}: ${fileName} — already included above]`));
+            continue;
           }
           if (msgType === "audio") mediaType = "audio";
           else if (msgType === "media" || msgType === "video") mediaType = "video";
@@ -675,7 +749,7 @@ export async function expandMergeForwardItems(params: {
             fileName,
           });
           mediaFiles.push({ type: mediaType, localPath, fileName, contentType: ct });
-          blocks.push(prefixBulletBlock(`[${mediaType}: ${fileName} → saved: ${localPath}]`));
+          blocks.push(prefixBulletBlock(`${senderPrefix} [${mediaType}: ${fileName} → saved: ${localPath}]`));
           coverage = mergeCoverage(coverage, "full");
           params.log?.info?.(
             `[${params.account.accountId}] merge_forward media saved: ${mediaType} ${fileName} → ${localPath}`,
@@ -701,7 +775,7 @@ export async function expandMergeForwardItems(params: {
       resourceDownloadMode: isAttachmentMessageType(msgType) ? "forbid" : "allow",
     });
     coverage = mergeCoverage(coverage, expanded.coverage);
-    if (expanded.text) blocks.push(prefixBulletBlock(expanded.text));
+    if (expanded.text) blocks.push(prefixBulletBlock(`${senderPrefix} ${expanded.text}`));
     if (expanded.mediaFiles) mediaFiles.push(...expanded.mediaFiles);
   }
 
@@ -716,20 +790,24 @@ export async function expandMergeForwardMessage(params: {
   account: ResolvedFeishuAccount;
   messageId: string;
   log?: ChannelLogSink;
+  sharedDownloadedKeys?: Set<string>;
   fetchItems?: FetchMessageItems;
   downloadFile?: DownloadFileResource;
   downloadImage?: DownloadImageResource;
   resourceDownloadMode?: ResourceDownloadMode;
 }): Promise<ExpandedFeishuContent> {
   try {
+    const sharedDownloadedKeys = params.sharedDownloadedKeys ?? new Set<string>();
     const fetchItems =
       params.fetchItems ??
       ((messageId: string) => fetchMessageItemsViaBotClient(params.account, messageId));
     const items = await fetchItems(params.messageId);
     const expanded = await expandMergeForwardItems({
       account: params.account,
+      parentMessageId: params.messageId,
       items,
       log: params.log,
+      sharedDownloadedKeys,
       fetchItems,
       downloadFile: params.downloadFile,
       downloadImage: params.downloadImage,
