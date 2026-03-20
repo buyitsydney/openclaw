@@ -400,10 +400,23 @@ her：✅ 产品讨论群已从"群管家"切换为"自动回复"
 15:19:48 deliver: "✅ 已恢复默认模式，现在需要 @ 我才会回复"
 ```
 
+### 第二轮验证（2026-03-20，carher-101 tester2）
+
+| 测试 | 操作 | 结果 |
+|------|------|------|
+| monitor 切换 | @tester2 "帮我盯着这个群" | ✅ cron job created，"✅ 监控模式已启动！每1分钟轮询" |
+| monitor gateway 行为 | 群里多条消息不 @ | ✅ 全部 `archived only`（不触发 agent） |
+| monitor 关闭 | "关闭监控" | ✅ cron job disabled，"✅ 群监控已关闭，恢复默认" |
+| manager 切换 | "切换群管家模式" | ✅ "先检查有没有其他管家→没有→✅ 群管家模式已启动！" |
+| manager cron 调整 | "改成每1分钟" | ✅ cron job updated × 2 |
+| manager gateway 行为 | 群里多条消息不 @ | ✅ 全部 `archived only`（cron 处理） |
+
+### 已知问题
+
+- [ ] **cron agent 无法读取群历史中的图片**：gateway 下载图片时用 UUID 命名（`82bfcbdc-...jpg`），但 cron agent 通过 `feishu_group_history` 拿到的是 `image_key`（`img_v3_...`）。image_key → 本地路径的映射在 cron 独立 session 中丢失。这是 cron 图片读取的独立 issue，不是 group-modes 的 bug。
+
 ### 待验证
 
-- [ ] monitor 模式：cron 创建 + 私聊通知
-- [ ] manager 模式：cron 创建 + 群内回复
 - [ ] disabled 模式：完全不处理
 - [ ] 非主人在 auto-reply 模式下不触发回复
 - [ ] 多 her 同群不风暴
