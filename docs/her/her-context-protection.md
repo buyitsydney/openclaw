@@ -151,13 +151,16 @@ bot 消息的 `text` 字段末尾包含 `[local archive: 完整 markdown 副本]
 
 建议：当 `text_without_footer` 存在时，输出 `text_without_footer` 作为 `text`，不输出原始 text。
 
-### P0-4: feishu_doc read 加输出截断
+### P0-4: feishu_doc read 加输出截断 ✅ 已实施（2026-03-20）
 
-当前返回完整文档 markdown，无截断。大文档可能 100K+ 字符。
+- 截断阈值 50000 字符，在段落边界（`\n`）截断
+- 新增 `offset` 参数支持续读：Her 传 `next_offset` 可读后续内容
+- 返回 `total_chars`、`returned_chars`、`truncated`、`next_offset` 字段
+- 负数 offset 自动 clamp 到 0（防死循环）
+- 小文档（<50K）行为零变化
+- tester2 压测 25/25 全 PASS，含大文档 97K 截断 + 续读拼接验证
 
-修复：加 maxChars 参数（默认 50000），超过在段落边界截断并附提示。
-
-**文件：** `extensions/feishu/src/docx.ts:710-748`
+**文件：** `extensions/feishu-her/src/tools/docx.ts`（注意：不是社区插件 `feishu/src/docx.ts`）
 
 ### P0-3: feishu_doc list_blocks 加分页
 

@@ -60,7 +60,7 @@ const OAUTH_SCOPES = [
   "calendar:calendar:readonly",
   // ── Contact ──
   "contact:user.base:readonly",
-  "contact:user:search",
+  // "contact:user:search", // requires per-app enablement — uncomment only when app has it
   // ── Docs ──
   "docs:doc:readonly",
   "docx:document:readonly",
@@ -88,7 +88,7 @@ const OAUTH_SCOPES = [
   "search:app",
   "search:department:read",
   "search:docs:read",
-  "search:knowledge_qa:read",
+  // "search:knowledge_qa:read", // requires 飞书知识问答 capability — uncomment only when app has it
   "search:message",
   // ── Sheets ──
   "sheets:spreadsheet:readonly",

@@ -1,3 +1,6 @@
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { ChannelLogSink } from "openclaw/plugin-sdk";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { parseFeishuInteractiveText, parseFeishuPostText } from "./feishu-message.js";
@@ -16,9 +19,17 @@ export type FeishuFetchedMessageItem = {
   sender?: { id?: string; sender_type?: string };
 };
 
+export type MergeForwardMediaFile = {
+  type: "image" | "file" | "audio" | "video";
+  localPath: string;
+  fileName: string;
+  contentType: string;
+};
+
 export type ExpandedFeishuContent = {
   text: string | null;
   coverage: "full" | "partial" | "none";
+  mediaFiles?: MergeForwardMediaFile[];
 };
 
 type FetchMessageItems = (messageId: string) => Promise<FeishuFetchedMessageItem[]>;
@@ -32,6 +43,38 @@ type DownloadImageResource = (params: {
 }) => Promise<{ buffer: Buffer; contentType?: string } | null>;
 
 type ResourceDownloadMode = "allow" | "resolve_origin" | "forbid";
+
+const MIME_TO_EXT: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "audio/ogg": "ogg",
+  "audio/mpeg": "mp3",
+  "video/mp4": "mp4",
+  "application/pdf": "pdf",
+};
+
+function resolveInboundMediaDir(): string {
+  const base = process.env.OPENCLAW_HOME ?? join(homedir(), ".openclaw");
+  const dir = join(base, "media", "inbound");
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function saveMediaToDisk(params: {
+  buffer: Buffer;
+  contentType: string;
+  fileName: string;
+}): string {
+  const dir = resolveInboundMediaDir();
+  const ext = MIME_TO_EXT[params.contentType] ?? params.fileName.split(".").pop() ?? "bin";
+  const id = `mf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const safeName = params.fileName.replace(/[/\\:*?"<>|]/g, "_").slice(0, 100);
+  const filePath = join(dir, `${safeName}---${id}.${ext}`);
+  writeFileSync(filePath, params.buffer);
+  return filePath;
+}
 
 function mergeCoverage(
   left: ExpandedFeishuContent["coverage"],
@@ -572,7 +615,82 @@ export async function expandMergeForwardItems(params: {
 
   let coverage: ExpandedFeishuContent["coverage"] = "full";
   const blocks: string[] = [];
+  const mediaFiles: MergeForwardMediaFile[] = [];
+
+  const downloadFile =
+    params.downloadFile ??
+    ((fileParams: { messageId: string; fileKey: string }) =>
+      downloadFeishuFile({
+        account: params.account,
+        messageId: fileParams.messageId,
+        fileKey: fileParams.fileKey,
+      }));
+  const downloadImage =
+    params.downloadImage ??
+    ((imageParams: { messageId: string; imageKey: string }) =>
+      downloadFeishuImage({
+        account: params.account,
+        messageId: imageParams.messageId,
+        imageKey: imageParams.imageKey,
+      }));
+
   for (const item of subMessages) {
+    const msgType = item.msg_type ?? "unknown";
+    const messageId = item.message_id ?? "";
+    const rawContent = item.body?.content ?? "";
+    const parsed = parseJsonContent(rawContent);
+
+    // Try direct media download for attachment types (using bot token)
+    if (isAttachmentMessageType(msgType) && messageId && parsed) {
+      try {
+        let downloaded: { buffer: Buffer; contentType?: string } | null = null;
+        let fileName = "";
+        let mediaType: MergeForwardMediaFile["type"] = "file";
+
+        if (msgType === "image") {
+          const imageKey = typeof parsed.image_key === "string" ? parsed.image_key : "";
+          if (imageKey) {
+            downloaded = await downloadImage({ messageId, imageKey });
+            fileName = `image-${messageId.slice(-8)}.png`;
+            mediaType = "image";
+          }
+        } else {
+          const fileKey = typeof parsed.file_key === "string" ? parsed.file_key : "";
+          fileName =
+            typeof parsed.file_name === "string" && parsed.file_name.trim()
+              ? parsed.file_name.trim()
+              : `${msgType}-${messageId.slice(-8)}`;
+          if (fileKey) {
+            downloaded = await downloadFile({ messageId, fileKey });
+          }
+          if (msgType === "audio") mediaType = "audio";
+          else if (msgType === "media" || msgType === "video") mediaType = "video";
+        }
+
+        if (downloaded) {
+          const ct = downloaded.contentType ?? "application/octet-stream";
+          const localPath = saveMediaToDisk({
+            buffer: downloaded.buffer,
+            contentType: ct,
+            fileName,
+          });
+          mediaFiles.push({ type: mediaType, localPath, fileName, contentType: ct });
+          blocks.push(prefixBulletBlock(`[${mediaType}: ${fileName} → saved: ${localPath}]`));
+          coverage = mergeCoverage(coverage, "full");
+          params.log?.info?.(
+            `[${params.account.accountId}] merge_forward media saved: ${mediaType} ${fileName} → ${localPath}`,
+          );
+          continue;
+        }
+      } catch (err) {
+        params.log?.info?.(
+          `[${params.account.accountId}] merge_forward media download failed (${messageId}): ${String(err)}`,
+        );
+        // fall through to text expansion
+      }
+    }
+
+    // Text expansion (non-media or media download failed)
     const expanded = await expandFetchedMessageItem({
       account: params.account,
       item,
@@ -580,17 +698,17 @@ export async function expandMergeForwardItems(params: {
       fetchItems,
       downloadFile: params.downloadFile,
       downloadImage: params.downloadImage,
-      resourceDownloadMode: isAttachmentMessageType(item.msg_type ?? "")
-        ? "resolve_origin"
-        : "allow",
+      resourceDownloadMode: isAttachmentMessageType(msgType) ? "forbid" : "allow",
     });
     coverage = mergeCoverage(coverage, expanded.coverage);
     if (expanded.text) blocks.push(prefixBulletBlock(expanded.text));
+    if (expanded.mediaFiles) mediaFiles.push(...expanded.mediaFiles);
   }
 
   return {
     text: blocks.length > 0 ? blocks.join("\n") : null,
     coverage: blocks.length > 0 ? coverage : "none",
+    mediaFiles: mediaFiles.length > 0 ? mediaFiles : undefined,
   };
 }
 

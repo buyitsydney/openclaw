@@ -961,10 +961,13 @@ async function readDoc(client: Lark.Client, docToken: string, account?: Resolved
   return json(result);
 }
 
+const DOC_READ_MAX_CHARS = 50_000;
+
 async function readDocByUser(
   account: ResolvedFeishuAccount,
   userToken: string,
   docToken: string,
+  offset?: number,
 ) {
   const [contentRes, infoRes, blocks] = await Promise.all([
     callFeishuApiWithUserToken<DocxRawContentResponse>({
@@ -981,6 +984,21 @@ async function readDocByUser(
   ]);
   if (contentRes.code !== 0) throw new Error(contentRes.msg);
   if (infoRes.code !== 0) throw new Error(infoRes.msg);
+
+  // Truncation: slice content from offset, cap at DOC_READ_MAX_CHARS
+  const raw = contentRes.data?.content ?? "";
+  const start = Math.max(offset ?? 0, 0);
+  let content: string;
+  let truncated = false;
+  if (raw.length - start > DOC_READ_MAX_CHARS) {
+    const end = start + DOC_READ_MAX_CHARS;
+    const cutPoint = raw.lastIndexOf("\n", end);
+    content = raw.slice(start, cutPoint > start ? cutPoint : end);
+    truncated = true;
+  } else {
+    content = raw.slice(start);
+  }
+
   const blockCounts: Record<string, number> = {};
   const structuredTypes: string[] = [];
   for (const b of blocks) {
@@ -1003,15 +1021,29 @@ async function readDocByUser(
     docxImages = await fetchDocxImages(account, docxImageBlocks);
   }
 
+  const hints: string[] = [];
+  if (structuredTypes.length > 0) {
+    hints.push(
+      `This document contains ${structuredTypes.join(", ")} which are NOT included in the plain text above. Use feishu_doc with action: "list_blocks" to get full content.`,
+    );
+  }
+  if (truncated) {
+    hints.push(
+      `Document truncated (showing ${content.length} of ${raw.length} chars from offset ${start}). Pass offset=${start + content.length} to continue reading.`,
+    );
+  }
+
   const result = {
     title: infoRes.data?.document?.title,
-    content: contentRes.data?.content,
+    content,
     revision_id: infoRes.data?.document?.revision_id,
+    total_chars: raw.length,
+    returned_chars: content.length,
+    ...(start > 0 && { offset: start }),
+    ...(truncated && { next_offset: start + content.length, truncated: true }),
     block_count: blocks.length,
     block_types: blockCounts,
-    ...(structuredTypes.length > 0 && {
-      hint: `This document contains ${structuredTypes.join(", ")} which are NOT included in the plain text above. Use feishu_doc with action: "list_blocks" to get full content.`,
-    }),
+    ...(hints.length > 0 && { hint: hints.join(" ") }),
     ...(boardImages &&
       boardImages.length > 0 && {
         board_count: boardImages.length,
@@ -1269,6 +1301,12 @@ const FeishuDocSchema = Type.Object({
   end_block_id: Type.Optional(
     Type.String({ description: "Range end block ID, inclusive (for delete_range)" }),
   ),
+  offset: Type.Optional(
+    Type.Number({
+      description:
+        "Character offset for read action. Use next_offset from a truncated response to continue reading large documents.",
+    }),
+  ),
   find: Type.Optional(
     Type.String({
       description:
@@ -1348,7 +1386,12 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
               return await (async () => {
                 const guard = await requireReadAccess();
                 if (!guard.ok) return guard.authResponse;
-                return readDocByUser(firstAccount, guard.token.access_token, params.doc_token);
+                return readDocByUser(
+                  firstAccount,
+                  guard.token.access_token,
+                  params.doc_token,
+                  params.offset,
+                );
               })();
             case "write": {
               const content = resolveContent(params);
@@ -1383,7 +1426,10 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
               const guard = await requireReadAccess();
               if (!guard.ok) return guard.authResponse;
               // Paginated: fetches all blocks even for 500+ block documents.
-              const items = await listAllDocBlocksByUser(guard.token.access_token, params.doc_token);
+              const items = await listAllDocBlocksByUser(
+                guard.token.access_token,
+                params.doc_token,
+              );
               // Detect board blocks and fetch their images automatically.
               const boards = extractBoardBlocks(items);
               let boardData: BoardBlockInfo[] | undefined;
