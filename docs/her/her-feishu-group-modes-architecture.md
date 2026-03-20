@@ -378,8 +378,7 @@ her：✅ 产品讨论群已从"群管家"切换为"自动回复"
 |-------|------|--------|---------|
 | **Phase 1** | gateway.ts 加 `readGroupMode` + auto-reply 路径 | 小（~30 行） | 无 |
 | **Phase 2** | 合并 `feishu-group-mode` skill（统一管理五种模式） | 中 | Phase 1 |
-| **Phase 3** | gateway.ts 加 DM sender 检查 | 小（~10 行） | 无（可与 Phase 1 并行） |
-| **Phase 4** | 全员开放验证 | 飞书后台操作 | Phase 3 完成 |
+| **Phase 3** | 本地 her + docker tester 全量验证 | 小 | Phase 1+2 |
 
 ---
 
