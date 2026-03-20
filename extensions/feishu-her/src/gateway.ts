@@ -102,6 +102,32 @@ import { fetchChatHistory, getTenantAccessToken } from "./tools/chat-history.js"
 
 const MERGE_FORWARD_DISABLED_TEXT = "[merged forward disabled]";
 
+// ── Group mode resolution ─────────────────────────────────────────────────
+/**
+ * Read per-group mode from {workspace}/group-modes/{chatId}.json.
+ * Returns the mode string ("default", "auto-reply", "disabled", "monitor", "manager")
+ * or "default" if the file doesn't exist or is invalid.
+ */
+function readGroupMode(chatId: string): string {
+  const stateDir =
+    process.env.OPENCLAW_STATE_DIR?.trim() ||
+    process.env.CLAWDBOT_STATE_DIR?.trim() ||
+    join(homedir(), ".openclaw");
+  const filePath = join(stateDir, "workspace", "group-modes", `${chatId}.json`);
+  if (!existsSync(filePath)) {
+    return "default";
+  }
+  try {
+    const data = JSON.parse(readFileSync(filePath, "utf-8"));
+    if (typeof data?.mode === "string" && data.mode.trim()) {
+      return data.mode.trim();
+    }
+    return "default";
+  } catch {
+    return "default";
+  }
+}
+
 // ── Content-type inference for local files ────────────────────────────────
 /** Infer MIME content-type from a file path extension. */
 function inferContentType(filePath: string): string | undefined {
@@ -1598,23 +1624,53 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       `[${account.accountId}] group mention check: botAppId=${botAppId} mentions=${JSON.stringify(mentions.map((m) => ({ key: m.key, id: m.id, name: m.name })))} wasMentioned=${wasMentioned}`,
     );
 
-    if (!wasMentioned) {
-      log?.info(`[${account.accountId}] group msg not mentioning bot, archived only`);
+    // Read per-group mode from workspace file (checked per-message, no restart needed).
+    const groupMode = readGroupMode(chatId);
+
+    if (groupMode === "disabled") {
       return;
     }
 
-    // Bot was @mentioned. Check if sender is the owner.
-    const ownerIds = resolveGroupOwnerIds(account.config);
-    const isOwner = ownerIds.length === 0 || ownerIds.includes(senderId);
+    if (groupMode === "auto-reply") {
+      // In auto-reply mode, owner messages are processed without requiring @mention.
+      const ownerIds = resolveGroupOwnerIds(account.config);
+      const isOwner = ownerIds.length === 0 || ownerIds.includes(senderId);
+      if (isOwner && !isBotSender) {
+        log?.info(
+          `[${account.accountId}] auto-reply mode: owner ${senderId} in ${chatId}, processing`,
+        );
+        // Fall through to agent processing (skip wasMentioned check)
+      } else {
+        log?.info(
+          `[${account.accountId}] auto-reply mode: non-owner ${senderId}, archived only`,
+        );
+        return;
+      }
+    } else {
+      // "default" / "monitor" / "manager" — require @mention (existing behavior).
+      // "monitor" and "manager" are handled by cron, not gateway; gateway just archives.
+      if (!wasMentioned) {
+        log?.info(`[${account.accountId}] group msg not mentioning bot, archived only`);
+        return;
+      }
 
-    if (!isOwner) {
-      // Non-owner @mentioned bot — stay completely silent.
-      log?.info(`[${account.accountId}] non-owner ${senderId} @mentioned bot in group, ignoring`);
-      return;
+      // Bot was @mentioned. Check if sender is the owner.
+      const ownerIds = resolveGroupOwnerIds(account.config);
+      const isOwner = ownerIds.length === 0 || ownerIds.includes(senderId);
+
+      if (!isOwner) {
+        // Non-owner @mentioned bot — stay completely silent.
+        log?.info(
+          `[${account.accountId}] non-owner ${senderId} @mentioned bot in group, ignoring`,
+        );
+        return;
+      }
+
+      // Owner @mentioned bot in group — proceed to reply.
+      log?.info(
+        `[${account.accountId}] owner ${senderId} @mentioned bot in group, processing`,
+      );
     }
-
-    // Owner @mentioned bot in group — proceed to reply.
-    log?.info(`[${account.accountId}] owner ${senderId} @mentioned bot in group, processing`);
   }
 
   // DM access control: for now use "open" policy (private bot, only you can see it).
