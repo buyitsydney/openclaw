@@ -36,7 +36,7 @@ import {
   loadArchiveEntries,
   type GroupArchiveEntry,
 } from "../group-archive.js";
-import type { FeishuFetchedMessageItem } from "../merge-forward.js";
+import { expandMergeForwardMessage, type FeishuFetchedMessageItem } from "../merge-forward.js";
 import {
   callFeishuApiWithUserToken,
   getValidUserToken,
@@ -47,6 +47,7 @@ import {
   type FeishuUserToken,
 } from "../oauth.js";
 import { downloadFeishuFile, downloadFeishuImage, getFeishuClient } from "../outbound.js";
+import { parseTime } from "./time-utils.js";
 
 function json(data: unknown) {
   return {
@@ -57,15 +58,9 @@ function json(data: unknown) {
 
 const MERGE_FORWARD_DISABLED_TEXT = "[merged forward disabled]";
 
-// ── Time helpers ──
-
+// Time conversion: use shared time-utils (parseTime)
 function parseTimeParam(value: string | undefined, fallbackMs: number): number {
-  if (!value) return fallbackMs;
-  const n = Number(value);
-  if (!Number.isNaN(n) && n > 1e12) return Math.floor(n);
-  const d = Date.parse(value);
-  if (!Number.isNaN(d)) return d;
-  return fallbackMs;
+  return parseTime(value, fallbackMs);
 }
 
 function msToFeishuTs(ms: number): string {
@@ -372,10 +367,27 @@ async function canonicalizeMentionedMessage(params: {
   return items[0] ?? params.rawItem;
 }
 
-async function hydrateMergeForwardMessage(params: { message: NormalizedMessage }) {
+async function hydrateMergeForwardMessage(params: {
+  message: NormalizedMessage;
+  account: ResolvedFeishuAccount;
+}) {
   if (params.message.msg_type !== "merge_forward" || !params.message.message_id) return;
-  params.message.text = MERGE_FORWARD_DISABLED_TEXT;
-  params.message.coverage = "none";
+  try {
+    const expanded = await expandMergeForwardMessage({
+      account: params.account,
+      messageId: params.message.message_id,
+    });
+    if (expanded.text) {
+      params.message.text = expanded.text;
+      params.message.coverage = expanded.coverage;
+    } else {
+      params.message.text = "[合并转发消息 — 无法展开子消息]";
+      params.message.coverage = "none";
+    }
+  } catch {
+    params.message.text = "[合并转发消息 — 展开失败]";
+    params.message.coverage = "none";
+  }
 }
 
 const ARCHIVE_SUPPLEMENTABLE = new Set([
@@ -498,8 +510,7 @@ async function ensureArchivedMessages(params: {
 
   for (const message of params.messages) {
     if (message.msg_type === "merge_forward") {
-      message.text = MERGE_FORWARD_DISABLED_TEXT;
-      message.coverage = "none";
+      await hydrateMergeForwardMessage({ message, account: params.account });
       continue;
     }
 
@@ -688,6 +699,7 @@ export async function fetchChatHistory(params: {
       const normalized = normalizeMessage(canonicalItem);
       await hydrateMergeForwardMessage({
         message: normalized,
+        account: params.account,
       });
       messages.push(normalized);
       remaining--;
@@ -765,6 +777,7 @@ async function fetchThreadMessages(params: {
     const normalized = normalizeMessage(canonicalItem);
     await hydrateMergeForwardMessage({
       message: normalized,
+      account: params.account,
     });
     messages.push(normalized);
   }
@@ -793,6 +806,7 @@ async function fetchSingleMessage(params: {
   const message = normalizeMessage(items[0]);
   await hydrateMergeForwardMessage({
     message,
+    account: params.account,
   });
   await enrichNormalizedMessages({
     account: params.account,
@@ -876,7 +890,7 @@ export function registerFeishuChatHistoryTool(api: OpenClawPluginApi) {
         "- Messages with has_thread=true have thread replies. Use list_thread to fetch them.\n" +
         "- coverage='full' means text fully readable. 'partial' means metadata only (image/file/audio). " +
         "'none' means content degraded (interactive cards, video).\n" +
-        "- merge_forward: disabled deliberately. The tool returns a fixed placeholder and never expands nested content.\n" +
+        "- merge_forward: expanded via API — sub-messages are fetched and displayed inline. Cross-chat images may show placeholders if bot lacks source chat access.\n" +
         "- To check if a user was @mentioned: compare mentions[i].id with the user's own open_id.\n" +
         "- For comprehensive group summaries, set include_thread_replies=true.\n\n" +
         "If authorization is needed, the tool returns an auth_url — send it to the user as a clickable link.",
@@ -908,8 +922,10 @@ export function registerFeishuChatHistoryTool(api: OpenClawPluginApi) {
               return json({ error: `Unknown action: ${params.action}` });
           }
         } catch (err) {
-          handleFeishuTokenError(err);
+          const authResp = await handleFeishuTokenError(err, firstAccount, redirectUri);
           const msg = err instanceof Error ? err.message : String(err);
+          if (authResp) return authResp;
+
           return json({ error: msg });
         }
       },

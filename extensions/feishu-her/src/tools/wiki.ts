@@ -413,7 +413,8 @@ export function registerFeishuWikiTools(api: OpenClawPluginApi) {
               return json({ error: `Unknown action: ${params.action}` });
           }
         } catch (err) {
-          handleFeishuTokenError(err);
+          const authResp = await handleFeishuTokenError(err, firstAccount, oauthRedirectUri);
+          if (authResp) return authResp;
           return json({ error: err instanceof Error ? err.message : String(err) });
         }
       },

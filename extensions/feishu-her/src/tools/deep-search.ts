@@ -482,7 +482,8 @@ export function registerFeishuDeepSearchTool(api: OpenClawPluginApi): void {
               "for semantic recall from local memory.",
           });
         } catch (err) {
-          handleFeishuTokenError(err);
+          const authResp = await handleFeishuTokenError(err, firstAccount, redirectUri);
+          if (authResp) return authResp;
           return json({ error: err instanceof Error ? err.message : String(err) });
         }
       },

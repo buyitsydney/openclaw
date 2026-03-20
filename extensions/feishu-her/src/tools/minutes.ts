@@ -1221,8 +1221,10 @@ export function registerFeishuMinutesTools(api: OpenClawPluginApi): void {
               return json({ error: `Unknown action: ${params.action}` });
           }
         } catch (err) {
-          handleFeishuTokenError(err);
+          const authResp = await handleFeishuTokenError(err, firstAccount, redirectUri);
           const message = err instanceof Error ? err.message : String(err);
+          if (authResp) return authResp;
+
           return json({ error: message });
         }
       },

@@ -11,7 +11,14 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -22,8 +29,79 @@ import { getFeishuClient, sendFeishuRichText } from "./outbound.js";
 
 const FEISHU_ALLOWED_HOSTNAMES = ["open.feishu.cn", "accounts.feishu.cn"];
 
-// All user scopes from Feishu app backend — must stay in sync with admin console.
-// Last synced: 2026-03-18 (55 scopes).
+// ── Backend scope detection ──
+// Cached per app: what user scopes are actually granted in the Feishu app backend.
+const backendUserScopesCache = new Map<string, Set<string>>();
+
+/**
+ * Fetch the user scopes actually granted in the Feishu app backend via
+ * `application.scope.list` (tenant token). Results are cached per appId.
+ * Returns null on failure (caller should fallback to full OAUTH_SCOPES).
+ */
+export async function fetchBackendUserScopes(
+  account: ResolvedFeishuAccount,
+): Promise<Set<string> | null> {
+  const cached = backendUserScopesCache.get(account.appId);
+  if (cached) return cached;
+
+  try {
+    const client = getFeishuClient(account);
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const res: any = await (client.application as any).scope.list({});
+    if (res.code !== 0 || !Array.isArray(res.data?.scopes)) return null;
+
+    const userScopes = new Set<string>();
+    for (const s of res.data.scopes) {
+      if (s.grant_status === 1 && s.scope_type === "user" && typeof s.scope_name === "string") {
+        userScopes.add(s.scope_name);
+      }
+    }
+    backendUserScopesCache.set(account.appId, userScopes);
+    console.log(
+      `[feishu-oauth] backend scope probe: appId=${account.appId} user_scopes=${userScopes.size}`,
+    );
+    return userScopes;
+  } catch (err) {
+    console.warn(
+      `[feishu-oauth] backend scope probe failed for ${account.appId}: ${String(err)}. Falling back to full OAUTH_SCOPES.`,
+    );
+    return null;
+  }
+}
+
+/**
+ * Resolve the effective OAuth scopes: intersection of OAUTH_SCOPES (code)
+ * and backend granted scopes (Feishu app config). Falls back to full
+ * OAUTH_SCOPES if backend probe fails.
+ */
+export async function resolveEffectiveOAuthScopes(
+  account: ResolvedFeishuAccount,
+): Promise<string[]> {
+  const backend = await fetchBackendUserScopes(account);
+  if (!backend) return OAUTH_SCOPES;
+  const effective = OAUTH_SCOPES.filter((s) => backend.has(s));
+  if (effective.length < OAUTH_SCOPES.length) {
+    const skipped = OAUTH_SCOPES.filter((s) => !backend.has(s));
+    console.log(
+      `[feishu-oauth] filtered ${skipped.length} scope(s) not in backend: ${skipped.join(", ")}`,
+    );
+  }
+  return effective;
+}
+
+/**
+ * Check if a specific scope is available in this app's backend.
+ * Returns true if backend probe hasn't been done yet (optimistic).
+ */
+export function isBackendScopeAvailable(appId: string, scope: string): boolean {
+  const cached = backendUserScopesCache.get(appId);
+  if (!cached) return true; // optimistic: not probed yet
+  return cached.has(scope);
+}
+
+// All desired user scopes. At runtime, resolveEffectiveOAuthScopes() intersects
+// this list with the app's actual backend scopes (via application.scope.list API),
+// so scopes not enabled in the Feishu app backend are automatically skipped.
 const OAUTH_SCOPES = [
   // ── AI assistant (aily) ──
   "aily:data_asset:read",
@@ -53,6 +131,7 @@ const OAUTH_SCOPES = [
   "calendar:calendar:readonly",
   // ── Contact ──
   "contact:user.base:readonly",
+  "contact:user:search", // auto-filtered if app backend doesn't have this scope
   // ── Docs ──
   "docs:doc:readonly",
   "docx:document:readonly",
@@ -80,7 +159,7 @@ const OAUTH_SCOPES = [
   "search:app",
   "search:department:read",
   "search:docs:read",
-  // "search:knowledge_qa:read", // requires "飞书知识问答" app capability — only enterprise apps have this
+  "search:knowledge_qa:read", // auto-filtered if app backend doesn't have this capability
   "search:message",
   // ── Sheets ──
   "sheets:spreadsheet:readonly",
@@ -175,12 +254,17 @@ const TOKEN_INVALID_CODES = new Set([
 
 /**
  * Check if a Feishu API error indicates the user token is invalid/revoked.
- * If so, delete local token files so the next tool call triggers re-authorization.
- * Call this from any tool's error handler that uses user_access_token.
+ * If so, delete local token files and return an auth-required response
+ * that the tool can return directly to prompt re-authorization.
  *
- * Returns true if the token was invalidated (caller should prompt re-auth).
+ * Returns null if the error is not a token error (caller handles normally).
+ * Returns an auth response object if token was invalidated (caller returns this).
  */
-export function handleFeishuTokenError(err: unknown): boolean {
+export async function handleFeishuTokenError(
+  err: unknown,
+  account?: ResolvedFeishuAccount,
+  redirectUri?: string,
+): Promise<{ content: { type: "text"; text: string }[]; details: unknown } | null> {
   // Extract error code from various error shapes
   let code: number | undefined;
 
@@ -213,9 +297,39 @@ export function handleFeishuTokenError(err: unknown): boolean {
       `[feishu-oauth] Feishu token error (code=${code}). Deleting local tokens to trigger re-authorization.`,
     );
     invalidateAllUserTokens();
-    return true;
+
+    // Generate auth URL so the tool can return it directly to her
+    if (account && redirectUri) {
+      const effectiveScopes = await resolveEffectiveOAuthScopes(account);
+      const chatId = account.accountId;
+      const authUrl = getAuthUrlForChat(account, chatId, redirectUri, effectiveScopes);
+      const details = {
+        error: "user_auth_required",
+        message:
+          "用户 OAuth 授权已失效，需要重新授权。" +
+          "请将下方链接发送给用户，用户在飞书中点击后完成授权，然后重试。",
+        auth_url: authUrl,
+      };
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(details, null, 2) }],
+        details,
+      };
+    }
+    // No account/redirectUri → caller must handle re-auth separately
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify({
+            error: "user_auth_required",
+            message: "用户 OAuth 授权已失效，请重新授权后重试。",
+          }),
+        },
+      ],
+      details: { error: "user_auth_required" },
+    };
   }
-  return false;
+  return null;
 }
 
 /** Find any valid user token from the store. For single-user (personal Her) this is sufficient. */
@@ -329,12 +443,17 @@ export async function getValidUserTokenForOpenId(
 
 // ── OAuth URL ──
 
-export function buildOAuthAuthorizeUrl(appId: string, redirectUri: string, state: string): string {
+export function buildOAuthAuthorizeUrl(
+  appId: string,
+  redirectUri: string,
+  state: string,
+  scopes?: string[],
+): string {
   const params = new URLSearchParams({
     client_id: appId,
     redirect_uri: redirectUri,
     response_type: "code",
-    scope: OAUTH_SCOPES.join(" "),
+    scope: (scopes ?? OAUTH_SCOPES).join(" "),
     state,
   });
   return `https://accounts.feishu.cn/open-apis/authen/v1/authorize?${params.toString()}`;
@@ -566,9 +685,10 @@ export function getAuthUrlForChat(
   account: ResolvedFeishuAccount,
   chatId: string,
   redirectUri: string,
+  scopes?: string[],
 ): string {
   const state = createOAuthState(chatId, account.accountId);
-  return buildOAuthAuthorizeUrl(account.appId, redirectUri, state);
+  return buildOAuthAuthorizeUrl(account.appId, redirectUri, state, scopes);
 }
 
 // ── Standalone OAuth HTTP server ──
@@ -760,31 +880,33 @@ export type RequireUserTokenResult =
  *
  * Every tool that needs user_access_token should call this once at the top.
  */
-export function requireUserToken(params: {
+export async function requireUserToken(params: {
   account: ResolvedFeishuAccount;
   redirectUri: string;
   tokenPromise: Promise<FeishuUserToken | null>;
   toolLabel: string;
 }): Promise<RequireUserTokenResult> {
-  return params.tokenPromise.then((token) => {
-    if (token) return { ok: true as const, token };
-    const chatId = params.account.accountId;
-    const authUrl = getAuthUrlForChat(params.account, chatId, params.redirectUri);
-    const details = {
-      error: "user_auth_required",
-      message:
-        `需要用户 OAuth 授权才能使用${params.toolLabel}。` +
-        "请将下方链接发送给用户，用户在飞书中点击后完成授权，然后重试。",
-      auth_url: authUrl,
-    };
-    return {
-      ok: false as const,
-      authResponse: {
-        content: [{ type: "text" as const, text: JSON.stringify(details, null, 2) }],
-        details,
-      },
-    };
-  });
+  const token = await params.tokenPromise;
+  if (token) return { ok: true as const, token };
+
+  // Use effective scopes (intersection with backend) to avoid 20027 errors
+  const effectiveScopes = await resolveEffectiveOAuthScopes(params.account);
+  const chatId = params.account.accountId;
+  const authUrl = getAuthUrlForChat(params.account, chatId, params.redirectUri, effectiveScopes);
+  const details = {
+    error: "user_auth_required",
+    message:
+      `需要用户 OAuth 授权才能使用${params.toolLabel}。` +
+      "请将下方链接发送给用户，用户在飞书中点击后完成授权，然后重试。",
+    auth_url: authUrl,
+  };
+  return {
+    ok: false as const,
+    authResponse: {
+      content: [{ type: "text" as const, text: JSON.stringify(details, null, 2) }],
+      details,
+    },
+  };
 }
 
 /**

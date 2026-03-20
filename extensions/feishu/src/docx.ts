@@ -707,7 +707,9 @@ async function uploadFileBlock(
 
 const STRUCTURED_BLOCK_TYPES = new Set([14, 18, 21, 23, 27, 30, 31, 32]);
 
-async function readDoc(client: Lark.Client, docToken: string) {
+const DOC_READ_MAX_CHARS = 50_000;
+
+async function readDoc(client: Lark.Client, docToken: string, offset?: number) {
   const [contentRes, infoRes, blocksRes] = await Promise.all([
     client.docx.document.rawContent({ path: { document_id: docToken } }),
     client.docx.document.get({ path: { document_id: docToken } }),
@@ -716,6 +718,21 @@ async function readDoc(client: Lark.Client, docToken: string) {
 
   if (contentRes.code !== 0) {
     throw new Error(contentRes.msg);
+  }
+
+  const raw = contentRes.data?.content ?? "";
+  const start = offset ?? 0;
+
+  // Slice from offset, truncate at paragraph boundary if too long
+  let chunk: string;
+  let truncated = false;
+  if (raw.length - start > DOC_READ_MAX_CHARS) {
+    const end = start + DOC_READ_MAX_CHARS;
+    const cutPoint = raw.lastIndexOf("\n", end);
+    chunk = raw.slice(start, cutPoint > start ? cutPoint : end);
+    truncated = true;
+  } else {
+    chunk = raw.slice(start);
   }
 
   const blocks = blocksRes.data?.items ?? [];
@@ -732,18 +749,29 @@ async function readDoc(client: Lark.Client, docToken: string) {
     }
   }
 
-  let hint: string | undefined;
+  const hints: string[] = [];
   if (structuredTypes.length > 0) {
-    hint = `This document contains ${structuredTypes.join(", ")} which are NOT included in the plain text above. Use feishu_doc with action: "list_blocks" to get full content.`;
+    hints.push(
+      `This document contains ${structuredTypes.join(", ")} which are NOT included in the plain text above. Use feishu_doc with action: "list_blocks" to get full content.`,
+    );
+  }
+  if (truncated) {
+    hints.push(
+      `Document truncated (showing ${chunk.length} of ${raw.length} chars from offset ${start}). Pass offset=${start + chunk.length} to continue reading.`,
+    );
   }
 
   return {
     title: infoRes.data?.document?.title,
-    content: contentRes.data?.content,
+    content: chunk,
     revision_id: infoRes.data?.document?.revision_id,
     block_count: blocks.length,
     block_types: blockCounts,
-    ...(hint && { hint }),
+    ...(hints.length > 0 && { hint: hints.join(" ") }),
+    total_chars: raw.length,
+    returned_chars: chunk.length,
+    ...(start > 0 && { offset: start }),
+    ...(truncated && { next_offset: start + chunk.length, truncated: true }),
   };
 }
 
@@ -1276,7 +1304,7 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
               const client = getClient(p, defaultAccountId);
               switch (p.action) {
                 case "read":
-                  return json(await readDoc(client, p.doc_token));
+                  return json(await readDoc(client, p.doc_token, p.offset));
                 case "write":
                   return json(
                     await writeDoc(

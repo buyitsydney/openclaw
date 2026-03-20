@@ -976,10 +976,10 @@ export function parseFeishuMessageContent(params: {
       };
     }
     case "merge_forward": {
-      const rawText = "[merged forward disabled]";
+      // Initial parse returns null — gateway layer will expand via API
       return {
-        rawText,
-        text: buildFeishuTextPayload(rawText),
+        rawText: null,
+        text: buildFeishuTextPayload(""),
         coverage: "none",
         attachments: [],
         imageKeys: [],

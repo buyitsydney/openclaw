@@ -66,6 +66,7 @@ describe("gateway merge_forward", () => {
     });
     const result = await expandMergeForwardItems({
       account: MOCK_ACCOUNT,
+      parentMessageId: "om_parent_test",
       fetchItems,
       items: [
         {
@@ -105,6 +106,7 @@ describe("gateway merge_forward", () => {
     expect(fetchItems).toHaveBeenCalledWith("sub-2");
     expect(downloadFeishuFileMock).toHaveBeenCalledWith({
       account: MOCK_ACCOUNT,
+      parentMessageId: "om_parent_test",
       messageId: "sub-2",
       fileKey: "file_source_1",
     });
@@ -148,6 +150,7 @@ describe("gateway merge_forward", () => {
 
     const result = await expandMergeForwardMessage({
       account: MOCK_ACCOUNT,
+      parentMessageId: "om_parent_test",
       messageId: "om_merge_1",
     });
 
@@ -171,6 +174,7 @@ describe("gateway merge_forward", () => {
 
     const result = await expandMergeForwardItems({
       account: MOCK_ACCOUNT,
+      parentMessageId: "om_parent_test",
       fetchItems,
       items: [
         {
@@ -220,6 +224,7 @@ describe("gateway merge_forward", () => {
 
     const result = await expandMergeForwardItems({
       account: MOCK_ACCOUNT,
+      parentMessageId: "om_parent_test",
       fetchItems,
       items: [
         {

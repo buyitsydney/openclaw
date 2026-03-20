@@ -4,6 +4,13 @@ import path from "node:path";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk";
 import type { TaskClient } from "./task-common.js";
 import { runTaskApiCall } from "./task-common.js";
+import { toUnixMsStr } from "./time-utils.js";
+
+// oxlint-disable-next-line typescript/no-explicit-any
+function normalizeDateParam(due: any): any {
+  if (!due?.timestamp) return due;
+  return { ...due, timestamp: toUnixMsStr(due.timestamp) };
+}
 import type {
   AddTaskMembersParams,
   AddTaskToTasklistParams,
@@ -187,8 +194,8 @@ export async function createTask(client: TaskClient, params: CreateTaskParams) {
       data: omitUndefined({
         summary: params.summary,
         description: params.description,
-        due: params.due,
-        start: params.start,
+        due: normalizeDateParam(params.due),
+        start: normalizeDateParam(params.start),
         extra: params.extra,
         completed_at: params.completed_at,
         members: params.members,
@@ -213,8 +220,8 @@ export async function createSubtask(client: TaskClient, params: CreateSubtaskPar
       data: omitUndefined({
         summary: params.summary,
         description: params.description,
-        due: params.due,
-        start: params.start,
+        due: normalizeDateParam(params.due),
+        start: normalizeDateParam(params.start),
         extra: params.extra,
         completed_at: params.completed_at,
         members: params.members,
@@ -288,7 +295,11 @@ export async function updateTask(client: TaskClient, params: UpdateTaskParams) {
   const c = client as unknown as {
     task: { v2: { task: { patch: (args: unknown) => Promise<Record<string, unknown>> } } };
   };
-  const taskBody = omitUndefined(params.task);
+  const rawTask = omitUndefined(params.task);
+  // Normalize ISO 8601 date params before sending to Feishu API
+  if (rawTask.due) rawTask.due = normalizeDateParam(rawTask.due);
+  if (rawTask.start) rawTask.start = normalizeDateParam(rawTask.start);
+  const taskBody = rawTask;
   const updateFields = params.update_fields?.length
     ? [...params.update_fields]
     : inferUpdateFields(taskBody, TASK_UPDATE_FIELD_SET);

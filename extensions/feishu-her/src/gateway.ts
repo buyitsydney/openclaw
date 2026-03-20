@@ -55,7 +55,11 @@ import {
   normalizeArchiveEntry,
 } from "./group-archive.js";
 import { formatFeishuAtText } from "./mention-text.js";
-import { expandFetchedMessageItem, type FeishuFetchedMessageItem } from "./merge-forward.js";
+import {
+  expandFetchedMessageItem,
+  expandMergeForwardMessage,
+  type FeishuFetchedMessageItem,
+} from "./merge-forward.js";
 import { buildFeishuReplyRef, buildFeishuReplyRefFromSentMessage } from "./message-metadata.js";
 import { cacheMessageText, getCachedMessageText } from "./message-text-cache.js";
 import { rewriteModelShortcutCommand } from "./model-shortcuts.js";
@@ -1186,15 +1190,47 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     imagePlaceholder: "<media:image>",
     mediaPlaceholder: "[video]",
   }).attachments;
-  if (!rawText && msgType === "merge_forward" && messageId) {
-    rawText = MERGE_FORWARD_DISABLED_TEXT;
+  const mediaPaths: string[] = [];
+  const mediaTypes: string[] = [];
+  if (msgType === "merge_forward" && messageId) {
+    try {
+      const expanded = await expandMergeForwardMessage({
+        account,
+        messageId,
+        log,
+        fetchItems: mergeForwardSourceAccess?.fetchItems,
+        downloadFile: mergeForwardSourceAccess?.downloadFile,
+        downloadImage: mergeForwardSourceAccess?.downloadImage,
+      });
+      if (expanded.text) {
+        rawText = expanded.text;
+        log?.info(`[${account.accountId}] merge_forward expanded for inbound msg ${messageId}`);
+      } else {
+        rawText = "[合并转发消息 — 无法展开子消息]";
+      }
+      // Attach downloaded media files (images go to vision pipeline, others as file paths)
+      if (expanded.mediaFiles) {
+        for (const mf of expanded.mediaFiles) {
+          if (mf.type === "image") {
+            mediaPaths.push(mf.localPath);
+            mediaTypes.push(mf.contentType);
+            log?.info(`[${account.accountId}] merge_forward image attached: ${mf.localPath}`);
+          }
+          // audio/file/video: already referenced in text via [type: ... → saved: path]
+        }
+      }
+    } catch (err) {
+      log?.info(
+        `[${account.accountId}] merge_forward expansion failed for ${messageId}: ${String(err)}`,
+      );
+      rawText = "[合并转发消息 — 展开失败]";
+    }
   }
 
   // ── Download images (standalone image msgs + images embedded in post) ──
   let mediaPath: string | undefined;
   let mediaType: string | undefined;
-  const mediaPaths: string[] = [];
-  const mediaTypes: string[] = [];
+  // NOTE: mediaPaths/mediaTypes declared above merge_forward block (merge_forward may push to them)
   if (imageKeys.length > 0 && messageId) {
     for (const imageKey of imageKeys) {
       try {
