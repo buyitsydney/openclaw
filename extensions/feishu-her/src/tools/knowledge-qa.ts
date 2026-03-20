@@ -507,14 +507,34 @@ export function registerFeishuKnowledgeQATool(api: OpenClawPluginApi): void {
 
           const action = params.action ?? "search";
 
+          let result: unknown;
           switch (action) {
             case "ask":
-              return json(await askKnowledgeQA(userToken.access_token, params));
+              result = await askKnowledgeQA(userToken.access_token, params);
+              break;
             case "search":
-              return json(await searchKnowledgeQA(userToken.access_token, params));
+              result = await searchKnowledgeQA(userToken.access_token, params);
+              break;
             default:
               return json({ error: `Unknown action: ${action}` });
           }
+
+          // If API returned a token error, delete token and return auth_url
+          // so Her can prompt the user to re-authorize in this same response.
+          // oxlint-disable-next-line typescript/no-explicit-any
+          const r = result as any;
+          if (r?.quality === "error" && r?.error && /9999|Unauthorized|expired/i.test(String(r.error))) {
+            handleFeishuTokenError(firstAccount);
+            const reauth = await requireUserToken({
+              account: firstAccount,
+              redirectUri,
+              tokenPromise: getValidUserToken(firstAccount),
+              toolLabel: "飞书知识问答",
+            });
+            if (!reauth.ok) return reauth.authResponse;
+          }
+
+          return json(result);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           if (
@@ -523,6 +543,14 @@ export function registerFeishuKnowledgeQATool(api: OpenClawPluginApi): void {
             message.includes("99991679")
           ) {
             handleFeishuTokenError(firstAccount);
+            // Return auth_url instead of raw error
+            const reauth = await requireUserToken({
+              account: firstAccount,
+              redirectUri,
+              tokenPromise: getValidUserToken(firstAccount),
+              toolLabel: "飞书知识问答",
+            });
+            if (!reauth.ok) return reauth.authResponse;
           }
           return json({ error: message });
         }
