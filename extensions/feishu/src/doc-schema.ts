@@ -18,6 +18,13 @@ export const FeishuDocSchema = Type.Union([
   Type.Object({
     action: Type.Literal("read"),
     doc_token: Type.String({ description: "Document token (extract from URL /docx/XXX)" }),
+    offset: Type.Optional(
+      Type.Number({
+        description:
+          "Character offset to start reading from (default 0). " +
+          "Use next_offset from a previous truncated response to continue reading.",
+      }),
+    ),
   }),
   Type.Object({
     action: Type.Literal("write"),
