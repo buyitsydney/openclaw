@@ -372,19 +372,38 @@ her：✅ 产品讨论群已从"群管家"切换为"自动回复"
 
 ---
 
-## 实现优先级
+## 实现状态
 
-| Phase | 内容 | 工作量 | 前置条件 |
-|-------|------|--------|---------|
-| **Phase 1** | gateway.ts 加 `readGroupMode` + auto-reply 路径 | 小（~30 行） | 无 |
-| **Phase 2** | 合并 `feishu-group-mode` skill（统一管理五种模式） | 中 | Phase 1 |
-| **Phase 3** | 本地 her + docker tester 全量验证 | 小 | Phase 1+2 |
+| Phase | 内容 | 状态 | 验证 |
+|-------|------|------|------|
+| **Phase 1** | gateway.ts 加 `readGroupMode` + auto-reply 路径 | ✅ 已完成 | carher-101 验证通过 |
+| **Phase 2** | `feishu-group-mode` skill（自然语言切换模式） | ✅ 已完成 | carher-101 验证通过 |
+| **Phase 3** | 全量验证五种模式 | 🟡 进行中 | default/auto-reply/恢复 default 已通过，monitor/manager/disabled 待测 |
 
----
+### 已验证场景（2026-03-20，carher-101 tester2）
 
-## 待确认
+| 测试 | 操作 | 结果 |
+|------|------|------|
+| 默认模式（无文件） | 群里不 @tester2 说话 | ✅ 只 archive 不回复 |
+| 切换 auto-reply | @tester2 "改成自动回复" | ✅ her 写文件 + 回复确认 |
+| auto-reply 生效 | 群里不 @ 直接说话 | ✅ tester2 自动回复"能收到！" |
+| 切回默认 | "恢复默认" | ✅ her 删文件 + 回复确认 |
+| 默认模式恢复 | 群里不 @ 说话 | ✅ 只 archive 不回复 |
 
-1. ~~模式 4（管家）是 cron 定时处理~~ ✅ 已确认
-2. ~~模式 2（自动回复）是实时触发~~ ✅ 已确认
-3. 管家模式的 cron 间隔默认 30 分钟是否合适？
-4. 多主人模式下，监控/管家的通知发给谁？设置者还是所有主人？
+### 关键 log 证据
+
+```
+15:18:49 deliver: "当前这个群是默认模式（default）——只有被 @ 时我才回复"
+15:19:17 deliver: "✅ 已切换为自动回复模式"
+15:19:19 auto-reply mode: owner ou_7ec6c... in oc_d37eb..., processing
+15:19:31 deliver: "能收到！自动回复模式已生效"
+15:19:48 deliver: "✅ 已恢复默认模式，现在需要 @ 我才会回复"
+```
+
+### 待验证
+
+- [ ] monitor 模式：cron 创建 + 私聊通知
+- [ ] manager 模式：cron 创建 + 群内回复
+- [ ] disabled 模式：完全不处理
+- [ ] 非主人在 auto-reply 模式下不触发回复
+- [ ] 多 her 同群不风暴
