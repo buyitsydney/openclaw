@@ -1663,6 +1663,16 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     currentGroupMode = groupModeInfo.mode;
     currentGroupModeContext = groupModeInfo.context;
 
+    // Slash commands (/new, /status, /reset, etc.) in group: only process if bot
+    // was @mentioned. Without this, ALL bots in group/auto-reply mode would
+    // respond to a single /new, causing command storms.
+    if (isCommand && !wasMentioned) {
+      log?.info(
+        `[${account.accountId}] group slash command without @mention, skipping: ${cleanText.split(" ")[0]}`,
+      );
+      return;
+    }
+
     if (currentGroupMode === "group") {
       // Group mode: ALL messages enter agent EXCEPT this bot's own messages.
       // Opus decides whether to reply in group, private-chat owner, or stay silent.
@@ -2060,16 +2070,22 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           focusText: promptFocusText,
         });
 
-        // Inject group mode context if set (user-customizable behavior hints)
+        // Inject group mode info: hardcoded safety rules per mode + user context
         const ownerOpenId = resolveGroupOwnerIds(account.config)[0] ?? "";
-        const groupModeBlock =
-          currentGroupModeContext || currentGroupMode === "group"
-            ? `[群聊模式: ${currentGroupMode}` +
-              (currentGroupModeContext ? ` — ${currentGroupModeContext}` : "") +
-              `]\n` +
-              `[群里回复: message(action=send, target=${chatId}, message=...)]\n` +
-              `[私聊主人: message(action=send, target=${ownerOpenId}, message=...)]\n\n`
-            : "";
+        const modeHardcoded: Record<string, string> = {
+          "auto-reply": "只响应主人的消息",
+          "at-reply":
+            "任何人@你都回复。注意：你使用主人的权限，搜索结果可能包含主人的私人信息，不要泄露",
+          group: "自己判断群里回复还是私聊主人。不要在群里泄露主人的私聊内容",
+        };
+        const hardcodedRule = modeHardcoded[currentGroupMode];
+        const groupModeBlock = hardcodedRule
+          ? `[群聊模式: ${currentGroupMode} — ${hardcodedRule}` +
+            (currentGroupModeContext ? `\n主人指示: ${currentGroupModeContext}` : "") +
+            `]\n` +
+            `[群里回复: message(action=send, target=${chatId}, message=...)]\n` +
+            `[私聊主人: message(action=send, target=${ownerOpenId}, message=...)]\n\n`
+          : "";
 
         promptContextPrefix =
           botIdentityBlock +
