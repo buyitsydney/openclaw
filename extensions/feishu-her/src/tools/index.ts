@@ -23,6 +23,7 @@ import { registerFeishuDirectoryTools } from "./directory.js";
 import { registerFeishuDocTools } from "./docx.js";
 import { registerFeishuDriveTools } from "./drive.js";
 import { registerFeishuKnowledgeQATool, KNOWLEDGE_QA_REQUIRED_SCOPE } from "./knowledge-qa.js";
+import { registerFeishuMessageSearchTool } from "./message-search.js";
 import { registerFeishuMessageTools } from "./message.js";
 import { registerFeishuMinutesTools } from "./minutes.js";
 import { registerFeishuSearchTool } from "./search.js";
@@ -53,6 +54,7 @@ export async function registerAllFeishuTools(api: OpenClawPluginApi): Promise<vo
   registerFeishuCalendarTools(api);
   registerFeishuTaskTools(api);
   registerFeishuMessageTools(api);
+  registerFeishuMessageSearchTool(api);
   registerFeishuMinutesTools(api);
   // Gate knowledge-qa on backend scope availability (auto-detected, no config needed)
   const accounts = listEnabledFeishuAccounts(api.config);
