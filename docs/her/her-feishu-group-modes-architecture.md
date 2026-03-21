@@ -411,6 +411,22 @@ her：✅ 产品讨论群已从"群管家"切换为"自动回复"
 | manager cron 调整 | "改成每1分钟" | ✅ cron job updated × 2 |
 | manager gateway 行为 | 群里多条消息不 @ | ✅ 全部 `archived only`（cron 处理） |
 
+### Cron Payload v2 优化（2026-03-21，基于 tester2 对比实验）
+
+实验对比了 skill 版 cron 和用户手动版 cron，结论：
+
+| 维度 | Skill v1 | v2 增强版 |
+|------|----------|----------|
+| 扫描覆盖 | 单群 | 多群合并扫描 |
+| 效率 | 多次轮询重复扫描（5次 × 45K = 224K tokens） | 一次到位（38K tokens） |
+| 处理深度 | 监控只报告不处理 | **先处理再汇报**（用工具查文档/搜知识库） |
+| 状态管理 | 计数器文件 + 模式文件（复杂） | deleteAfterRun（简洁） |
+| 输出结构 | 文本摘要 | 结构化：📌需回复 → 📋需关注 → 🔧已执行 → 💬话题摘要 |
+
+**已将 v2 改进写入**：
+- `~/.openclaw/skills/feishu-group-monitor/references/poll-guide.md`
+- `~/.openclaw/skills/feishu-group-manager/references/poll-guide.md`
+
 ### 已知问题
 
 - [ ] **cron agent 无法读取群历史中的图片**：gateway 下载图片时用 UUID 命名（`82bfcbdc-...jpg`），但 cron agent 通过 `feishu_group_history` 拿到的是 `image_key`（`img_v3_...`）。image_key → 本地路径的映射在 cron 独立 session 中丢失。这是 cron 图片读取的独立 issue，不是 group-modes 的 bug。
