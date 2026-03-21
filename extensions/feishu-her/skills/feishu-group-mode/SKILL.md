@@ -88,56 +88,11 @@ mkdir -p {workspace}/group-modes
 }
 ```
 
-**对于 default 和 disabled**：直接写文件即可（或删除文件恢复默认）。
+**所有模式只需要写文件**。gateway 下一条消息立即读取生效。不需要创建 cron。
 
-**对于 auto-reply**：只写文件。gateway 下一条消息立即读取生效。
+**对于 default**：删除文件（或写 mode=default）。
 
-### Step 5: 处理 cron（仅 monitor/manager）
-
-**Payload 原则**：cron agent 醒来时有完整的工具和能力（feishu_group_history、message、web_search 等），有 MEMORY/SOUL，有 owner 权限。payload 只需要告诉它**做什么**和**约束**，不要教它怎么做。
-
-**进入 monitor 模式**：
-
-```javascript
-cron.add({
-  name: `群监控-${群名}`,
-  schedule: { kind: "every", everyMs: 3600000 }, // 60分钟
-  sessionTarget: "isolated",
-  payload: {
-    kind: "agentTurn",
-    message: `扫描 ${群名}(${chat_id}) 最近的消息，分析所有内容。有什么需要主人关注的，私聊告诉主人。如果主人留了指令帮主人执行。绝不在群里发消息。
-私聊主人：message(action=send, target=${owner_open_id}, message=...)
-不要用 channel 参数，只用 target。`
-  },
-  delivery: { mode: "none" },
-  enabled: true
-})
-```
-
-**进入 manager 模式**：
-
-```javascript
-cron.add({
-  name: `群管家-${群名}`,
-  schedule: { kind: "every", everyMs: 1800000 }, // 30分钟
-  sessionTarget: "isolated",
-  payload: {
-    kind: "agentTurn",
-    message: `扫描 ${群名}(${chat_id}) 最近的消息，分析所有内容。你是群管家，自己判断哪些消息在群里直接回复，哪些私聊通知主人。群内回复带 [群管家] 前缀。不要在群里泄露主人的私聊内容。
-群里回复：message(action=send, target=${chat_id}, message=...)
-私聊主人：message(action=send, target=${owner_open_id}, message=...)
-不要用 channel 参数，只用 target。`
-  },
-  delivery: { mode: "none" },
-  enabled: true
-})
-```
-
-创建后把 cron_id 回填到模式文件的 `cron_ids` 字段。
-
-**退出 monitor/manager**：用 `cron.remove` 删除 `cron_ids` 中记录的 cron job。
-
-### Step 6: 确认
+### Step 5: 确认
 
 **在群聊中**（只提当前群，不泄露其他群）：
 ```
