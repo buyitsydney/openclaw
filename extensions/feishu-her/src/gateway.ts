@@ -115,9 +115,14 @@ function readGroupMode(chatId: string): GroupModeInfo {
     process.env.OPENCLAW_STATE_DIR?.trim() ||
     process.env.CLAWDBOT_STATE_DIR?.trim() ||
     join(homedir(), ".openclaw");
-  const filePath = join(stateDir, "workspace", "group-modes", `${chatId}.json`);
+  const dir = join(stateDir, "workspace", "group-modes");
+  // Support both "oc_xxx.json" and "feishu:oc_xxx.json" (her may write either format)
+  let filePath = join(dir, `${chatId}.json`);
   if (!existsSync(filePath)) {
-    return { mode: "default" };
+    filePath = join(dir, `feishu:${chatId}.json`);
+    if (!existsSync(filePath)) {
+      return { mode: "default" };
+    }
   }
   try {
     const data = JSON.parse(readFileSync(filePath, "utf-8"));
