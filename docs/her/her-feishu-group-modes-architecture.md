@@ -6,7 +6,7 @@
 
 **核心设计**：全部实时 event-driven，不使用 cron 轮询。gateway.ts 根据模式决定哪些消息进入 agent，agent 自己判断怎么处理。
 
-## 四种群聊模式
+## 三种群聊模式
 
 ### 模式 1：默认模式（default）
 
@@ -61,10 +61,6 @@ her 自己发的消息                          → gateway 过滤 ❌（防自�
 her 自己发的消息                          → gateway 过滤 ❌（防自循环）
 ```
 
-### 模式 5：关闭（disabled）
-
-**行为**：her 不处理该群的任何消息。
-
 ---
 
 ## gateway.ts 消息过滤逻辑
@@ -74,8 +70,6 @@ her 自己发的消息                          → gateway 过滤 ❌（防自�
   ↓
 读 groupMode（从 workspace 文件）
   ↓
-├─ disabled:   return（不进入 agent）
-│
 ├─ default:    isBotSender → return
 │              !wasMentioned → return
 │              !isOwner → return
@@ -233,27 +227,30 @@ auto-reply 过滤所有 bot 消息，只响应各自主人。**零风暴风险�
 
 ## 实现状态
 
-| Phase | 内容 | 状态 |
-|-------|------|------|
-| Phase 1 | gateway readGroupMode + auto-reply | ✅ 已实现并验证 |
-| Phase 2 | feishu-group-mode skill | ✅ 已实现并验证 |
-| Phase 3 | monitor/manager 实时化（isSelfBot + 熔断） | 📋 待实现 |
-| Phase 4 | skill 简化（去掉 cron 相关内容） | 📋 待实现 |
+| 内容 | 状态 |
+|------|------|
+| gateway readGroupMode + auto-reply | ✅ 已实现并验证 |
+| group 模式实时化（isSelfBot + 熔断） | ✅ 已实现并验证 |
+| feishu-group-mode skill（三种模式） | ✅ 已实现并验证 |
+| context 字段注入到 agent prompt | ✅ 已实现并验证 |
+| 灰度部署 docker13/14/42/43 | ✅ 已部署 |
 
 ### 已验证（2026-03-21）
 
 - default 模式：@mention only ✅
 - auto-reply 模式：主人不 @ 也触发 ✅
+- group 模式：所有消息进 agent，Opus 自己判断回复到群里还是私聊主人 ✅
 - 模式切换（自然语言 → 写文件 → 立即生效）✅
-- 自动停止 + 恢复默认 ✅
-- message target 参数正确（零试错）✅
-- 灰度部署：docker13 + docker14 用 `carher:group-modes` 镜像 ✅
+- context 字段动态更新（用户自定义行为提示）✅
+- context 注入到 agent prompt ✅
+- isSelfBot 过滤（防自循环）✅
+- 滑动窗口熔断（60 秒 5 条，自动恢复）✅
+- message target 参数正确 ✅
+- 注入攻击防护（Opus 正确识别并忽略）✅
+- 灰度部署：docker13(S1) + docker14(S3) + docker42/43(S2) ✅
 
-### 待验证
+### 已知限制
 
-- [ ] monitor 实时模式：所有消息进 agent + 只私聊主人
-- [ ] manager 实时模式：所有消息进 agent + 群里回复
-- [ ] isSelfBot 过滤（防自循环）
-- [ ] 滑动窗口熔断（60 秒 5 条）
-- [ ] 多 manager 同群不风暴
-- [ ] 熔断后自动恢复
+- 飞书 `im.message.receive_v1` 不推送 bot 消息给其他 bot
+- bot 消息通过注入的群历史上下文（20 条）可见，延迟到下一次人类消息触发
+- 99% 场景是人类驱动，此限制影响极小
