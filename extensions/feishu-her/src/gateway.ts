@@ -1651,9 +1651,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     const wasMentioned = Boolean(botAppId) && mentions.some((m) => m.id === botAppId);
     // isSelfBot: true if this message was sent by THIS bot (not other bots).
     const isSelfBot =
-      isBotSender &&
-      Boolean(botAppId) &&
-      (senderId === botAppId || senderId === botOpenId);
+      isBotSender && Boolean(botAppId) && (senderId === botAppId || senderId === botOpenId);
 
     log?.info(
       `[${account.accountId}] group mention check: botAppId=${botAppId} mentions=${JSON.stringify(mentions.map((m) => ({ key: m.key, id: m.id, name: m.name })))} wasMentioned=${wasMentioned}`,
@@ -1673,9 +1671,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         return;
       }
       if (isRateLimited(chatId)) {
-        log?.warn(
-          `[${account.accountId}] group mode rate limited in ${chatId}, skipping`,
-        );
+        log?.warn(`[${account.accountId}] group mode rate limited in ${chatId}, skipping`);
         return;
       }
       log?.info(
@@ -1691,13 +1687,25 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       const ownerIds = resolveGroupOwnerIds(account.config);
       const isOwner = ownerIds.length === 0 || ownerIds.includes(senderId);
       if (!isOwner) {
-        log?.info(
-          `[${account.accountId}] auto-reply mode: non-owner ${senderId}, archived only`,
-        );
+        log?.info(`[${account.accountId}] auto-reply mode: non-owner ${senderId}, archived only`);
         return;
       }
       log?.info(
         `[${account.accountId}] auto-reply mode: owner ${senderId} in ${chatId}, processing`,
+      );
+      // Fall through to agent processing
+    } else if (currentGroupMode === "at-reply") {
+      // At-reply: anyone who @mentions the bot gets a response, no owner restriction.
+      if (isBotSender) {
+        log?.info(`[${account.accountId}] at-reply mode: bot msg, archived only`);
+        return;
+      }
+      if (!wasMentioned) {
+        log?.info(`[${account.accountId}] at-reply mode: not mentioned, archived only`);
+        return;
+      }
+      log?.info(
+        `[${account.accountId}] at-reply mode: ${senderId} @mentioned bot in ${chatId}, processing`,
       );
       // Fall through to agent processing
     } else {
@@ -1713,14 +1721,10 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       const ownerIds = resolveGroupOwnerIds(account.config);
       const isOwner = ownerIds.length === 0 || ownerIds.includes(senderId);
       if (!isOwner) {
-        log?.info(
-          `[${account.accountId}] non-owner ${senderId} @mentioned bot in group, ignoring`,
-        );
+        log?.info(`[${account.accountId}] non-owner ${senderId} @mentioned bot in group, ignoring`);
         return;
       }
-      log?.info(
-        `[${account.accountId}] owner ${senderId} @mentioned bot in group, processing`,
-      );
+      log?.info(`[${account.accountId}] owner ${senderId} @mentioned bot in group, processing`);
     }
   }
 
@@ -2074,7 +2078,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           `${lines.join("\n")}\n` +
           `[End of recent messages]\n\n` +
           `${currentReplyRule}\n`;
-        log?.info(`[${account.accountId}] injected ${lines.length} recent group messages via API${currentGroupModeContext ? " + mode context" : ""}`);
+        log?.info(
+          `[${account.accountId}] injected ${lines.length} recent group messages via API${currentGroupModeContext ? " + mode context" : ""}`,
+        );
       }
     } catch (err) {
       log?.error(`[${account.accountId}] failed to fetch recent group messages: ${String(err)}`);
