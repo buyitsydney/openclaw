@@ -102,6 +102,56 @@ import { fetchChatHistory, getTenantAccessToken } from "./tools/chat-history.js"
 
 const MERGE_FORWARD_DISABLED_TEXT = "[merged forward disabled]";
 
+// ── Group mode resolution ─────────────────────────────────────────────────
+/**
+ * Read per-group mode from {workspace}/group-modes/{chatId}.json.
+ * Returns the mode string ("default", "auto-reply", "disabled", "monitor", "manager")
+ * or "default" if the file doesn't exist or is invalid.
+ */
+function readGroupMode(chatId: string): string {
+  const stateDir =
+    process.env.OPENCLAW_STATE_DIR?.trim() ||
+    process.env.CLAWDBOT_STATE_DIR?.trim() ||
+    join(homedir(), ".openclaw");
+  const filePath = join(stateDir, "workspace", "group-modes", `${chatId}.json`);
+  if (!existsSync(filePath)) {
+    return "default";
+  }
+  try {
+    const data = JSON.parse(readFileSync(filePath, "utf-8"));
+    if (typeof data?.mode === "string" && data.mode.trim()) {
+      return data.mode.trim();
+    }
+    return "default";
+  } catch {
+    return "default";
+  }
+}
+
+// ── Manager mode rate limiter (sliding window) ───────────────────────────
+const groupReplyTimestamps = new Map<string, number[]>();
+const RATE_LIMIT_WINDOW_MS = 60_000; // 60 seconds
+const RATE_LIMIT_MAX_REPLIES = 5;
+
+/** Record a reply sent by this bot in a group. */
+export function recordGroupReply(chatId: string): void {
+  const now = Date.now();
+  const timestamps = groupReplyTimestamps.get(chatId) ?? [];
+  timestamps.push(now);
+  groupReplyTimestamps.set(chatId, timestamps);
+}
+
+/** Check if this bot has exceeded the reply rate limit for a group. */
+function isRateLimited(chatId: string): boolean {
+  const now = Date.now();
+  const timestamps = groupReplyTimestamps.get(chatId);
+  if (!timestamps) return false;
+  // Prune old entries outside the window
+  const recent = timestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+  groupReplyTimestamps.set(chatId, recent);
+  return recent.length >= RATE_LIMIT_MAX_REPLIES;
+}
+
 // ── Content-type inference for local files ────────────────────────────────
 /** Infer MIME content-type from a file path extension. */
 function inferContentType(filePath: string): string | undefined {
@@ -1569,11 +1619,6 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       }
     }
 
-    if (isBotSender) {
-      log?.info(`[${account.accountId}] bot msg in group archived, skipping reply`);
-      return;
-    }
-
     // Parse @mentions to detect if bot was mentioned.
     const mentions = currentMessageMentionsResolved.map((mention) => ({
       key: mention.key,
@@ -1592,29 +1637,82 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       return;
     }
     const botAppId = account.appId;
+    const botOpenId = account.botOpenId;
     const wasMentioned = Boolean(botAppId) && mentions.some((m) => m.id === botAppId);
+    // isSelfBot: true if this message was sent by THIS bot (not other bots).
+    const isSelfBot =
+      isBotSender &&
+      Boolean(botAppId) &&
+      (senderId === botAppId || senderId === botOpenId);
 
     log?.info(
       `[${account.accountId}] group mention check: botAppId=${botAppId} mentions=${JSON.stringify(mentions.map((m) => ({ key: m.key, id: m.id, name: m.name })))} wasMentioned=${wasMentioned}`,
     );
 
-    if (!wasMentioned) {
-      log?.info(`[${account.accountId}] group msg not mentioning bot, archived only`);
+    // Read per-group mode from workspace file (checked per-message, no restart needed).
+    const groupMode = readGroupMode(chatId);
+
+    if (groupMode === "disabled") {
       return;
     }
 
-    // Bot was @mentioned. Check if sender is the owner.
-    const ownerIds = resolveGroupOwnerIds(account.config);
-    const isOwner = ownerIds.length === 0 || ownerIds.includes(senderId);
-
-    if (!isOwner) {
-      // Non-owner @mentioned bot — stay completely silent.
-      log?.info(`[${account.accountId}] non-owner ${senderId} @mentioned bot in group, ignoring`);
-      return;
+    if (groupMode === "monitor" || groupMode === "manager") {
+      // Monitor/manager: ALL messages enter agent EXCEPT this bot's own messages.
+      if (isSelfBot) {
+        log?.info(`[${account.accountId}] ${groupMode} mode: self-bot msg, skipping`);
+        return;
+      }
+      // Manager mode: rate limit to prevent storms
+      if (groupMode === "manager" && isRateLimited(chatId)) {
+        log?.warn(
+          `[${account.accountId}] manager mode rate limited in ${chatId}, skipping`,
+        );
+        return;
+      }
+      log?.info(
+        `[${account.accountId}] ${groupMode} mode: ${isBotSender ? "bot" : "human"} msg from ${senderId} in ${chatId}, processing`,
+      );
+      // Fall through to agent processing
+    } else if (groupMode === "auto-reply") {
+      // Auto-reply: only owner's messages, filter all bot messages.
+      if (isBotSender) {
+        log?.info(`[${account.accountId}] auto-reply mode: bot msg, archived only`);
+        return;
+      }
+      const ownerIds = resolveGroupOwnerIds(account.config);
+      const isOwner = ownerIds.length === 0 || ownerIds.includes(senderId);
+      if (!isOwner) {
+        log?.info(
+          `[${account.accountId}] auto-reply mode: non-owner ${senderId}, archived only`,
+        );
+        return;
+      }
+      log?.info(
+        `[${account.accountId}] auto-reply mode: owner ${senderId} in ${chatId}, processing`,
+      );
+      // Fall through to agent processing
+    } else {
+      // Default mode: require @mention + owner check.
+      if (isBotSender) {
+        log?.info(`[${account.accountId}] bot msg in group archived, skipping reply`);
+        return;
+      }
+      if (!wasMentioned) {
+        log?.info(`[${account.accountId}] group msg not mentioning bot, archived only`);
+        return;
+      }
+      const ownerIds = resolveGroupOwnerIds(account.config);
+      const isOwner = ownerIds.length === 0 || ownerIds.includes(senderId);
+      if (!isOwner) {
+        log?.info(
+          `[${account.accountId}] non-owner ${senderId} @mentioned bot in group, ignoring`,
+        );
+        return;
+      }
+      log?.info(
+        `[${account.accountId}] owner ${senderId} @mentioned bot in group, processing`,
+      );
     }
-
-    // Owner @mentioned bot in group — proceed to reply.
-    log?.info(`[${account.accountId}] owner ${senderId} @mentioned bot in group, processing`);
   }
 
   // DM access control: for now use "open" policy (private bot, only you can see it).
@@ -2112,6 +2210,8 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     }
     // 3. Close streaming mode so "[生成中...]" clears.
     await cardStream.finalize(cardStreamFinalText);
+    // Record group reply for manager mode rate limiting
+    if (isGroup) recordGroupReply(chatId);
   };
 
   // Dispatch through the auto-reply pipeline and deliver response.
@@ -2307,6 +2407,8 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       config,
       core,
     });
+    // Record group reply for manager mode rate limiting
+    if (isGroup) recordGroupReply(chatId);
   }
   // Fallback: if deliver() never fired (timeout, error, or tool-only response),
   // reconstruct final text from the streaming partials that onPartialReply accumulated.
