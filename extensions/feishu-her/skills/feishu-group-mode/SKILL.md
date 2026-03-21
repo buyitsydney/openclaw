@@ -94,35 +94,46 @@ mkdir -p {workspace}/group-modes
 
 ### Step 5: 处理 cron（仅 monitor/manager）
 
+**Payload 原则**：cron agent 醒来时有完整的工具和能力（feishu_group_history、message、web_search 等），有 MEMORY/SOUL，有 owner 权限。payload 只需要告诉它**做什么**和**约束**，不要教它怎么做。
+
 **进入 monitor 模式**：
 
-创建两个 cron job（轮询 + 晚报）。Payload 引用现有的 `feishu-group-monitor` 的 references 文件。
-
 ```javascript
-// 轮询
 cron.add({
-  name: `群监控-轮询-${群名}`,
+  name: `群监控-${群名}`,
   schedule: { kind: "every", everyMs: 3600000 }, // 60分钟
   sessionTarget: "isolated",
-  payload: { kind: "agentTurn", message: POLL_PAYLOAD },
+  payload: {
+    kind: "agentTurn",
+    message: `扫描 ${群名}(${chat_id}) 最近的消息，分析所有内容。有什么需要主人关注的，私聊告诉主人。如果主人留了指令帮主人执行。绝不在群里发消息。
+私聊主人：message(action=send, target=${owner_open_id}, message=...)
+不要用 channel 参数，只用 target。`
+  },
   delivery: { mode: "none" },
   enabled: true
 })
+```
 
-// 晚报
+**进入 manager 模式**：
+
+```javascript
 cron.add({
-  name: `群监控-日报-${群名}`,
-  schedule: { kind: "cron", expr: "0 20 * * *", tz: "Asia/Shanghai" },
+  name: `群管家-${群名}`,
+  schedule: { kind: "every", everyMs: 1800000 }, // 30分钟
   sessionTarget: "isolated",
-  payload: { kind: "agentTurn", message: REPORT_PAYLOAD },
+  payload: {
+    kind: "agentTurn",
+    message: `扫描 ${群名}(${chat_id}) 最近的消息，分析所有内容。你是群管家，自己判断哪些消息在群里直接回复，哪些私聊通知主人。群内回复带 [群管家] 前缀。不要在群里泄露主人的私聊内容。
+群里回复：message(action=send, target=${chat_id}, message=...)
+私聊主人：message(action=send, target=${owner_open_id}, message=...)
+不要用 channel 参数，只用 target。`
+  },
   delivery: { mode: "none" },
   enabled: true
 })
 ```
 
 创建后把 cron_id 回填到模式文件的 `cron_ids` 字段。
-
-**进入 manager 模式**：类似 monitor，但 cron 间隔更短（默认 30 分钟），payload 引用 `feishu-group-manager` 的 references 文件。
 
 **退出 monitor/manager**：用 `cron.remove` 删除 `cron_ids` 中记录的 cron job。
 
@@ -169,7 +180,6 @@ cron.add({
 ## 安全铁律
 
 1. **私聊内容不泄露到群聊。** 在群聊中设置模式时，不能提及其他群的名称或状态。
-2. **auto-reply 只响应主人。** 非主人的消息在 auto-reply 模式下只归档，绝不回复。
-3. **bot 消息不触发 auto-reply。** 其他 bot 的消息只归档，防止对话风暴。
+2. **auto-reply 只响应主人。** 非主人和 bot 的消息由 gateway 自动过滤，不会到达你。
 4. **monitor 模式绝不在群里发消息。** 所有输出只通过私聊。
 5. **一个群最多一个管家。** 进入 manager 前必须检查。
