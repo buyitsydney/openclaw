@@ -2311,6 +2311,16 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
             info.kind === "block" &&
             payload.text.trimStart().startsWith("Reasoning:"));
 
+        // Group chats: skip "block" deliveries — accumulate text and wait for "final".
+        // Without this, block+final each create a separate card stream → duplicate messages.
+        if (isGroup && info.kind === "block" && payload.text && !isReasoningPayload) {
+          groupAccumulatedText = accumulateGroupedReplyText(groupAccumulatedText, payload.text);
+          log?.info(
+            `[${account.accountId}] deliver: group block accumulated (${groupAccumulatedText.length} chars), waiting for final`,
+          );
+          return;
+        }
+
         // Group chats without card stream: accumulate text and send as a single
         // message after the full turn completes, avoiding fragmented bubbles.
         if (isGroup && !cardStream?.started && payload.text && !isReasoningPayload) {

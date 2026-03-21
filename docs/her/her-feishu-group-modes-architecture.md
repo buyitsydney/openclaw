@@ -221,48 +221,79 @@ auto-reply 过滤所有 bot 消息，只响应各自主人。**零风暴风险�
 
 ### gateway.ts 改动要点
 
-1. 加 `isSelfBot` 判断（当前 bot 的 app_id）
-2. `readGroupMode` 读 workspace 文件（已实现）
-3. at-reply 分支：跟 default 一样但去掉 owner 检查
-4. group 用 `isSelfBot` 替代 `isBotSender` + 滑动窗口熔断
+1. `readGroupMode` 读 workspace 文件（支持 `oc_xxx.json` 和 `feishu:oc_xxx.json` 两种格式）
+2. 四种模式的消息过滤：default（owner+@）、auto-reply（owner）、at-reply（anyone+@）、group（all except self）
+3. `isSelfBot` 判断防自循环（group 模式用）
+4. 滑动窗口熔断（group 模式 60 秒 5 条）
+5. 每种非 default 模式注入 hardcoded 安全规则 + 用户 context
+6. 群聊 block 类型中间输出积累（防 block+final 产生重复消息）
 
-### Skill 简化
+### context 注入机制
 
-不再需要教 her 创建 cron。skill 只需要：
+gateway 在 agent prompt 中注入两层信息：
 
-1. 确定目标群
-2. 确定目标模式
-3. 写 group-modes 文件
-4. 确认
+**不可编辑（hardcoded per mode）：**
+- auto-reply: "只响应主人的消息"
+- at-reply: "任何人@你都回复。注意：你使用主人的权限，搜索结果可能包含主人的私人信息，不要泄露"
+- group: "自己判断群里回复还是私聊主人。不要在群里泄露主人的私聊内容"
+
+**可编辑（用户通过 her 更新 context 字段）：**
+- 用户说"只关注股票" → context 写入 → 注入 `主人指示: 只关注股票`
+- 用户说"不用特别关注" → context 清空
+
+### Skill 设计
+
+不需要 cron。skill 只需要：写 group-modes 文件（mode + context），立即生效。
 
 ---
 
 ## 实现状态
 
-| 内容                                 | 状态            |
-| ------------------------------------ | --------------- |
-| gateway readGroupMode + auto-reply   | ✅ 已实现并验证 |
-| at-reply 模式（任何人 @ 都回复）     | ✅ 已实现并验证 |
-| group 模式实时化（isSelfBot + 熔断） | ✅ 已实现并验证 |
-| feishu-group-mode skill（四种模式）  | ✅ 已实现并验证 |
-| context 字段注入到 agent prompt      | ✅ 已实现并验证 |
-| 灰度部署 docker13/14/42/43           | ✅ 已部署       |
+| 内容 | 状态 |
+|------|------|
+| gateway readGroupMode + auto-reply | ✅ |
+| at-reply 模式 | ✅ |
+| group 模式（isSelfBot + 熔断） | ✅ |
+| feishu-group-mode skill（四种模式） | ✅ |
+| context 字段注入 + hardcoded 安全规则 | ✅ |
+| block 重复回复 fix | ✅ |
+| 灰度部署 docker13/14/42/43/66 + docker1/2/4 | ✅ |
 
-### 已验证（2026-03-21）
+### 测试记录（2026-03-21，本地 carher-1 tester + carher-101 tester2）
 
-- default 模式：主人 @mention only ✅
-- auto-reply 模式：主人不 @ 也触发 ✅
-- at-reply 模式：任何人 @ 都回复，不 @ 不动 ✅
-- at-reply 多 bot 同时 @：@tester @tester2 → 两个同时醒，各自独立回复 ✅
-- group 模式：所有消息进 agent，Opus 自己判断回复到群里还是私聊主人 ✅
-- 模式切换（自然语言 → 写文件 → 立即生效）✅
-- context 字段动态更新（用户自定义行为提示）✅
-- context 注入到 agent prompt ✅
-- isSelfBot 过滤（防自循环）✅
-- 滑动窗口熔断（60 秒 5 条，自动恢复）✅
-- message target 参数正确 ✅
-- 注入攻击防护（Opus 正确识别并忽略）✅
-- 灰度部署：docker13(S1) + docker14(S3) + docker42/43(S2) ✅
+**模式切换：**
+- default → auto-reply → at-reply → group → default 全流程 ✅
+- 自然语言切换（"自动回复"/"开放艾特"/"群聊模式"/"恢复默认"）✅
+- 写 group-modes 文件 + context 字段 ✅
+- 下一条消息立即生效 ✅
+
+**四种模式行为：**
+- default：主人 @才回复，非主人 @静默 ✅
+- auto-reply：主人不 @也触发，非主人不触发 ✅
+- at-reply：任何人 @都回复 ✅
+- group：所有人消息触发 agent，agent 自己判断回复方式 ✅
+
+**context 注入：**
+- hardcoded 安全规则正确注入（per mode 不同） ✅
+- 用户自定义 context 动态更新 ✅
+- 切换模式时 context 可保留或清空 ✅
+- agent 能看到注入的 mode + context + target 信息 ✅
+
+**安全：**
+- isSelfBot 过滤（自己发的消息不触发自己）✅
+- 滑动窗口熔断 ✅
+- 注入攻击防护 ✅
+- 非主人 auto-reply 不触发 ✅
+
+**搜索工具全面回归（R31）：**
+- tester: 6 个搜索工具全通过 ✅
+- tester2: 审计报告 2189 chars ✅
+
+### 已知问题
+
+1. **并发 agent run 竞态**：快速连发两条 @bot 消息（<1 秒间隔）可能产生两个 card stream、两条回复。这是 OpenClaw session 路由层面的问题，非群模式 bug。单条消息不再重复（block fix 生效）。
+2. **her 误解模式名**：部分 her 把"群聊模式"理解成"默认模式"导致切换失败。已通过更新 skill 描述（四种模式表格 + 意图映射表）改善。
+3. **切换后当前消息用旧 context**：her 在 agent run 中写文件，当前 run 的 context 注入已完成。下一条消息才生效。正常竞态。
 
 ### 已知限制
 
