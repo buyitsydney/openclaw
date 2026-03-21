@@ -17,7 +17,6 @@ import { registerFeishuChatPinTools } from "./chat-pins.js";
 import { registerFeishuChatTabTools } from "./chat-tabs.js";
 import { registerFeishuChatTopNoticeTools } from "./chat-top-notice.js";
 import { registerFeishuChatTools } from "./chat.js";
-import { registerConversationSearchTool } from "./conversation-search.js";
 import { registerFeishuDeepSearchTool } from "./deep-search.js";
 import { registerFeishuDirectoryTools } from "./directory.js";
 import { registerFeishuDocTools } from "./docx.js";
@@ -36,7 +35,6 @@ export async function registerAllFeishuTools(api: OpenClawPluginApi): Promise<vo
   registerFeishuDocTools(api);
   registerFeishuSearchTool(api);
   registerFeishuDeepSearchTool(api);
-  registerConversationSearchTool(api);
   registerFeishuWikiTools(api);
   registerFeishuDriveTools(api);
   registerFeishuBitableTools(api);

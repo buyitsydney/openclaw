@@ -11,52 +11,99 @@ metadata: { "openclaw": { "emoji": "🔍" } }
 
 ## 铁律
 
-每调一个工具，调用前和返回后都输出中间状态。用户不能干等。
+1. 每调一个工具，调用前和返回后都输出中间状态。用户不能干等。
+2. 搜索结果是片段/摘要，不是精确原文，不得声称知道原话。
 
-## 按场景选工具
+## 硬性规则（不可违反）
 
-### 找消息（群聊/私聊/跨域）
+- **找消息** → `message_search` 或 `knowledge_qa search(sources=["message"])`。禁止用 `deep_search` 搜消息。
+- **找文档/Wiki** → `feishu_search` 或 `knowledge_qa search(sources=["wiki","space"])`。禁止用 `deep_search` 搜文档。
+- **找妙记** → `feishu_minutes search` 或 `knowledge_qa search(sources=["minutes"])`。`feishu_minutes search` 自带 `ai_summary`，不需要再调 `get`。
+- **找人** → `directory search_users`。
+- **`deep_search`** → 仅当无知识问答且以上工具返回 0 结果时才作为最后手段。
 
-| 场景                   | 工具                                                                                 | 说明                                           |
-| ---------------------- | ------------------------------------------------------------------------------------ | ---------------------------------------------- |
-| 语义搜（"谁在担忧XX"） | `knowledge_qa search(sources=["message"])`                                           | 理解意图，直接返回内容片段。仅知识问答用户可用 |
-| 关键词搜全域           | `message_search(query="关键词")`                                                     | **全员可用**，覆盖 bot 不在的群 + 私聊         |
-| 按人搜                 | `message_search(from_ids=["ou_xxx"])`                                                | 只搜某人发的消息                               |
-| 搜 @我的消息           | `message_search(at_chatter_ids=["ou_xxx"])`                                          | 谁在 @我                                       |
-| 按时间搜               | `message_search(start_time="2026-03-20T00:00:00+08:00")`                             |                                                |
-| 只搜群聊/私聊          | `message_search(chat_type="group_chat")` 或 `"p2p_chat"`                             |                                                |
-| 某个群的完整历史       | `group_history(chat_id="oc_xxx", start_time, end_time)`                              | 按时间全拉，不需要关键词                       |
-| 私聊内容               | `knowledge_qa search(sources=["message"])` 或 `message_search(chat_type="p2p_chat")` |                                                |
+## 快速判断：你有没有 `feishu_knowledge_qa`？
+
+看你的工具列表。如果有 → 你有**语义+精准双引擎**，按场景选。如果没有 → 你只有**精准引擎**，走"无知识问答"路径。
+
+---
+
+## 有知识问答时
+
+### 找消息
+
+| 场景                   | 工具                                                                |
+| ---------------------- | ------------------------------------------------------------------- |
+| 语义搜（"谁在担忧XX"） | `knowledge_qa search(sources=["message"])` — 理解意图，直接返回内容 |
+| 关键词搜               | `message_search(query="关键词")` — 全域，含 bot 不在的群            |
+| 按人搜                 | `message_search(from_ids=["ou_xxx"])`                               |
+| 搜 @我的消息           | `message_search(at_chatter_ids=["ou_xxx"])`                         |
+| 按时间搜               | `message_search(start_time="2026-03-20T00:00:00+08:00")`            |
+| 只搜群聊/私聊          | `message_search(chat_type="group_chat")` 或 `"p2p_chat"`            |
+| 某个群完整历史         | `group_history(chat_id="oc_xxx", start_time, end_time)`             |
 
 ### 找文档/Wiki
 
-| 场景     | 工具                                                             |
-| -------- | ---------------------------------------------------------------- |
-| 语义搜   | `knowledge_qa search(sources=["wiki","space"])` — 仅知识问答用户 |
-| 关键词搜 | `feishu_search` — 全员可用，Drive + Wiki                         |
-| 精读全文 | `feishu_doc read(doc_token="xxx")` — 从搜索结果拿 token          |
+| 场景     | 工具                                            |
+| -------- | ----------------------------------------------- |
+| 语义搜   | `knowledge_qa search(sources=["wiki","space"])` |
+| 关键词搜 | `feishu_search`                                 |
+| 精读全文 | `feishu_doc read(doc_token="xxx")`              |
 
-### 找妙记/会议
+### 找妙记
 
-| 场景           | 工具                                                            |
-| -------------- | --------------------------------------------------------------- |
-| 语义搜听写原文 | `knowledge_qa search(sources=["minutes"])` — 能搜到逐字转写内容 |
-| 按标题搜       | `feishu_minutes search` — 全员可用                              |
-| 读 AI 摘要     | `feishu_minutes get(doc_token="xxx")`                           |
-| 读完整转写     | `feishu_minutes transcript(doc_token="xxx")`                    |
+| 场景           | 工具                                                      |
+| -------------- | --------------------------------------------------------- |
+| 语义搜听写全文 | `knowledge_qa search(sources=["minutes"])` — 能搜逐字转写 |
+| 按标题搜       | `feishu_minutes search` — 自带 ai_summary，不需要再调 get |
+| 读完整转写     | `feishu_minutes transcript(doc_token="xxx")`              |
 
-### 找人
+### 跨源综合
 
-| 场景   | 工具                                         |
-| ------ | -------------------------------------------- |
-| 搜员工 | `directory search_users(query="姓名或拼音")` |
-| 查部门 | `directory list_departments`                 |
+| 场景                 | 工具                                        |
+| -------------------- | ------------------------------------------- |
+| 一次搜消息+文档+妙记 | `knowledge_qa search`（全源，不传 sources） |
+
+---
+
+## 无知识问答时
+
+### 找消息
+
+| 场景           | 工具                                                       |
+| -------------- | ---------------------------------------------------------- |
+| 关键词搜全域   | `message_search(query="关键词")` — 含 bot 不在的群         |
+| 按人/时间/类型 | `message_search` 的 from_ids / start_time / chat_type 参数 |
+| 某个群完整历史 | `group_history(chat_id="oc_xxx")`                          |
+
+### 找文档/Wiki
+
+| 场景     | 工具                               |
+| -------- | ---------------------------------- |
+| 关键词搜 | `feishu_search`                    |
+| 精读全文 | `feishu_doc read(doc_token="xxx")` |
+
+### 找妙记
+
+| 场景       | 工具                                         |
+| ---------- | -------------------------------------------- |
+| 按标题搜   | `feishu_minutes search` — 自带 ai_summary    |
+| 读完整转写 | `feishu_minutes transcript(doc_token="xxx")` |
 
 ### 兜底
 
-| 场景       | 工具                                               |
-| ---------- | -------------------------------------------------- |
-| 以上都不够 | `deep_search` — 多源关键词聚合，费 token，最后手段 |
+| 场景              | 工具                                     |
+| ----------------- | ---------------------------------------- |
+| 以上都返回 0 结果 | `deep_search` — 多源关键词聚合，费 token |
+
+---
+
+## 找人
+
+| 场景                | 工具                                   |
+| ------------------- | -------------------------------------- |
+| 搜员工（姓名/拼音） | `directory search_users(query="姓名")` |
+| 查部门              | `directory list_departments`           |
 
 ## 组合策略
 
@@ -64,23 +111,15 @@ metadata: { "openclaw": { "emoji": "🔍" } }
 
 ```
 1. message_search(query="关键词") → 找到 message_id + chat_id
-2. group_history(chat_id, start_time, end_time) → 拉该群完整历史看上下文
+2. group_history(chat_id, start_time, end_time) → 拉该群完整上下文
 ```
 
 ### 找 bot 不在的群的动态
 
 ```
-有知识问答: knowledge_qa search → 直接返回内容片段
-全员: message_search(query="项目名") → 找到消息 → 内容自动读取
-```
-
-### 跨源调研（某话题完整情况）
-
-```
-1. knowledge_qa search 或 message_search → 发现相关消息
-2. feishu_search → 发现相关文档
-3. feishu_doc read → 精读关键文档
-4. feishu_minutes transcript → 读会议原文
+有知识问答: knowledge_qa search(sources=["message"]) → 直接返回内容片段
+全员: message_search(query="项目名") → 找到消息，内容自动读取
+注意: bot 不在的群无法用 group_history 拉全量历史
 ```
 
 ### 晨报
@@ -88,30 +127,27 @@ metadata: { "openclaw": { "emoji": "🔍" } }
 ```
 有知识问答:
   1. knowledge_qa search("@我的名字 重要 紧急") → 3s 跨全域发现关键群
-  2. group_history → 只精读发现的重点群（不用扫全部群）
+  2. group_history → 只精读发现的重点群
 
 无知识问答:
   1. message_search(query="@我的名字", at_chatter_ids=["我的open_id"]) → 跨域发现
   2. group_history → 精读重点群
 ```
 
-## 有/无知识问答
+### 跨源调研
 
-Her 自动判断：看工具列表里有没有 `feishu_knowledge_qa`。
+```
+有知识问答:
+  1. knowledge_qa search → 发现相关消息+文档+妙记
+  2. feishu_doc read → 精读关键文档
+  3. feishu_minutes transcript → 读会议原文
 
-**有知识问答**——语义 + 精准双引擎：
+无知识问答:
+  1. message_search + feishu_search → 分别搜消息和文档
+  2. 精读同上
+```
 
-- 语义/模糊/多源 → `knowledge_qa search`
-- 精准/按人/按类型 → `message_search`
-- 两者按场景选，不是固定先后
-
-**无知识问答**——关键词引擎：
-
-- 消息搜索 → `message_search`（跨域，全员可用）
-- 文档搜索 → `feishu_search`
-- 以上不够 → `deep_search`
-
-## 三层权限（Her 需要知道的边界）
+## 三层权限
 
 | 层级  | 范围           | 搜索 | 读内容 | 拉全量历史 |
 | ----- | -------------- | :--: | :----: | :--------: |
@@ -119,20 +155,17 @@ Her 自动判断：看工具列表里有没有 `feishu_knowledge_qa`。
 | 第2层 | Bot 没加入的群 |  ✅  |   ✅   |     ❌     |
 | 第3层 | 别人的私聊     |  ✅  |   ❌   |     ❌     |
 
-- `message_search` 和 `knowledge_qa` 能搜全域（三层都能搜到）
-- 但读内容受限：第2层可读，第3层不可读
-- `group_history` 只能拉第1层的群
-
 ## 错误处理
 
-| 错误                   | 含义               | 后续                                             |
-| ---------------------- | ------------------ | ------------------------------------------------ |
-| 230002 Bot not in chat | bot 不在这个群     | 消息搜到了但读不了全量历史，用搜索结果的内容片段 |
-| 230013 No availability | bot 无权读这条消息 | 多为别人的私聊，搜到了但内容读不了               |
-| user_auth_required     | OAuth 需要授权     | 按 feishu-oauth 技能处理                         |
+| 错误                   | 含义       | 后续                                   |
+| ---------------------- | ---------- | -------------------------------------- |
+| 230002 Bot not in chat | bot 不在群 | 搜到了但拉不了全量历史，用搜索结果内容 |
+| 230013 No availability | 无权读消息 | 多为别人私聊，搜到了但内容读不了       |
+| user_auth_required     | 需要 OAuth | 按 feishu-oauth 技能处理               |
 
-## OAuth
+## 注意事项
 
-`message_search` 需要 `search:message` scope（全员可用）。
-`knowledge_qa` 需要 `search:knowledge_qa:read` scope（部分用户）。
-工具返回 `user_auth_required` 时，按 `feishu-oauth` 技能处理。
+- `message_search` 的 `message_type` 参数过滤的是消息**格式**（file/image/media），不是内容。纯图片消息没有可搜索文本。
+- 用户的 open_id 从消息的 sender_id 元数据获取。
+- `message_search` 需要 `search:message` scope（全员可用）。
+- `knowledge_qa` 需要 `search:knowledge_qa:read` scope（部分用户）。
