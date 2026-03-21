@@ -806,8 +806,16 @@ Her 需要在 5 个 skill 之间自己判断用哪个，容易选错或遗漏。
 
 ### 3.7 实施计划
 
-- [ ] Phase 3.1：新建 `feishu_message_search` 工具（封装 search/v2/message）
-- [ ] Phase 3.2：聚合 5 个搜索 skill → 1 个 `feishu-search` skill
-- [ ] Phase 3.3：本地 tester2 测试（无知识问答路径）
-- [ ] Phase 3.4：docker13 测试（有知识问答路径）
-- [ ] Phase 3.5：灰度 → 全量
+- [x] Phase 3.1：新建 `feishu_message_search` 工具 ✅ 2026-03-21
+  - [x] 封装 POST /search/v2/message（user_access_token, search:message scope, 全员可用）
+  - [x] 参数：query, from_ids, chat_ids, at_chatter_ids, chat_type, from_type, message_type, time range
+  - [x] user→tenant token fallback 读消息内容（复用 chat-history.ts 的 getTenantAccessToken）
+  - [x] tester2 压测：36 项测试，34 PASS，0 bug
+  - [x] 发现：message_type 过滤消息格式不是内容（已在 tool description 说明）
+  - [x] Her 评价："参数设计合理，过滤能力强，是目前最完整的消息搜索工具"
+- [ ] Phase 3.2：Skill 聚合 + 工具整合
+  - [ ] 合并 5 个搜索 skill → 1 个 `feishu-search` skill（有/无知识问答两条路径）
+  - [ ] 考虑合并 `conversation_search` 到 `message_search`（加 source=api|local|all 参数）
+  - [ ] 更新 Skill 加入 `message_search` 到搜索策略链
+- [ ] Phase 3.3：docker13 测试（knowledge_qa + message_search 组合验证）
+- [ ] Phase 3.4：灰度 → 全量

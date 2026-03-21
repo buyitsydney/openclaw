@@ -51,7 +51,10 @@ const FeishuMessageSearchSchema = Type.Object({
   ),
   message_type: Type.Optional(
     stringEnum(MESSAGE_TYPES, {
-      description: "Filter by message type: file, image, media (video). Omit for all types.",
+      description:
+        "Filter by message FORMAT (not content): file, image, media (video). " +
+        "Note: query is text keyword matching — pure image/file messages have no searchable text, " +
+        "so combining message_type=image with a text query will likely return 0 results.",
     }),
   ),
   chat_type: Type.Optional(
