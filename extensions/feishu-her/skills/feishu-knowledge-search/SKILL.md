@@ -30,33 +30,39 @@ metadata: { "openclaw": { "emoji": "🔍" } }
 
 ## 有知识问答时
 
+### 核心原则：knowledge_qa 是默认首选
+
+`knowledge_qa` 用 user token 搜索，能搜到 bot 不在的群、私聊、跨租户内容，且无 403 权限问题。`message_search` 用 tenant token，跨群搜索经常遇到权限墙（403/230013）。
+
+**搜任何内容，先用 knowledge_qa，再用其他工具补充精确过滤。**
+
 ### 找消息
 
-| 场景                   | 工具                                                                |
-| ---------------------- | ------------------------------------------------------------------- |
-| 语义搜（"谁在担忧XX"） | `knowledge_qa search(sources=["message"])` — 理解意图，直接返回内容 |
-| 关键词搜               | `message_search(query="关键词")` — 全域，含 bot 不在的群            |
-| 按人搜                 | `message_search(from_ids=["ou_xxx"])`                               |
-| 搜 @我的消息           | `message_search(at_chatter_ids=["ou_xxx"])`                         |
-| 按时间搜               | `message_search(start_time="2026-03-20T00:00:00+08:00")`            |
-| 只搜群聊/私聊          | `message_search(chat_type="group_chat")` 或 `"p2p_chat"`            |
-| 某个群完整历史         | `group_history(chat_id="oc_xxx", start_time, end_time)`             |
+**默认路径**：先 knowledge_qa → 再 message_search 补充
+
+| 优先级        | 工具                                                | 适用场景                                                             |
+| ------------- | --------------------------------------------------- | -------------------------------------------------------------------- |
+| **1（首选）** | `knowledge_qa search(sources=["message"])`          | 任何消息搜索的默认入口。语义+关键词都行，能搜私聊和跨群，无 403      |
+| 2（补充）     | `message_search(from_ids/chat_type/at_chatter_ids)` | 需要按发送人、群类型、@对象精确过滤时（knowledge_qa 不支持这些参数） |
+| 3（精读）     | `group_history(chat_id, start_time, end_time)`      | 需要某个群的完整时间线上下文                                         |
+
+**不要先用 message_search 再 fallback 到 knowledge_qa。反过来。**
 
 ### 找文档/Wiki
 
-| 场景     | 工具                                            |
-| -------- | ----------------------------------------------- |
-| 语义搜   | `knowledge_qa search(sources=["wiki","space"])` |
-| 关键词搜 | `feishu_search`                                 |
-| 精读全文 | `feishu_doc read(doc_token="xxx")`              |
+| 优先级        | 工具                                            | 适用场景                         |
+| ------------- | ----------------------------------------------- | -------------------------------- |
+| **1（首选）** | `knowledge_qa search(sources=["wiki","space"])` | 语义搜文档内容，能搜正文不只标题 |
+| 2（补充）     | `feishu_search`                                 | 按标题关键词精确匹配             |
+| 3（精读）     | `feishu_doc read(doc_token="xxx")`              | 读取完整文档内容                 |
 
 ### 找妙记
 
-| 场景           | 工具                                                      |
-| -------------- | --------------------------------------------------------- |
-| 语义搜听写全文 | `knowledge_qa search(sources=["minutes"])` — 能搜逐字转写 |
-| 按标题搜       | `feishu_minutes search` — 自带 ai_summary，不需要再调 get |
-| 读完整转写     | `feishu_minutes transcript(doc_token="xxx")`              |
+| 优先级        | 工具                                         | 适用场景                   |
+| ------------- | -------------------------------------------- | -------------------------- |
+| **1（首选）** | `knowledge_qa search(sources=["minutes"])`   | 能搜逐字转写原文，不只标题 |
+| 2（补充）     | `feishu_minutes search`                      | 按标题搜，自带 ai_summary  |
+| 3（精读）     | `feishu_minutes transcript(doc_token="xxx")` | 读完整转写原文             |
 
 ### 跨源综合
 
@@ -110,15 +116,16 @@ metadata: { "openclaw": { "emoji": "🔍" } }
 ### 找某个群里谁说了什么
 
 ```
-1. message_search(query="关键词") → 找到 message_id + chat_id
-2. group_history(chat_id, start_time, end_time) → 拉该群完整上下文
+1. knowledge_qa search(sources=["message"], query="关键词") → 首选，直接返回内容
+2. 如需精确过滤: message_search(query="关键词") → 找到 chat_id
+3. group_history(chat_id, start_time, end_time) → 拉该群完整上下文
 ```
 
-### 找 bot 不在的群的动态
+### 找 bot 不在的群/私聊的内容
 
 ```
-有知识问答: knowledge_qa search(sources=["message"]) → 直接返回内容片段
-全员: message_search(query="项目名") → 找到消息，内容自动读取
+knowledge_qa search(sources=["message"]) → 首选！能搜私聊、跨群，无 403
+message_search → 补充，但跨群可能 403
 注意: bot 不在的群无法用 group_history 拉全量历史
 ```
 
