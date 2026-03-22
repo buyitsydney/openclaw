@@ -17,12 +17,12 @@ import { registerFeishuChatPinTools } from "./chat-pins.js";
 import { registerFeishuChatTabTools } from "./chat-tabs.js";
 import { registerFeishuChatTopNoticeTools } from "./chat-top-notice.js";
 import { registerFeishuChatTools } from "./chat.js";
-import { registerConversationSearchTool } from "./conversation-search.js";
 import { registerFeishuDeepSearchTool } from "./deep-search.js";
 import { registerFeishuDirectoryTools } from "./directory.js";
 import { registerFeishuDocTools } from "./docx.js";
 import { registerFeishuDriveTools } from "./drive.js";
 import { registerFeishuKnowledgeQATool, KNOWLEDGE_QA_REQUIRED_SCOPE } from "./knowledge-qa.js";
+import { registerFeishuMessageSearchTool } from "./message-search.js";
 import { registerFeishuMessageTools } from "./message.js";
 import { registerFeishuMinutesTools } from "./minutes.js";
 import { registerFeishuSearchTool } from "./search.js";
@@ -35,7 +35,6 @@ export async function registerAllFeishuTools(api: OpenClawPluginApi): Promise<vo
   registerFeishuDocTools(api);
   registerFeishuSearchTool(api);
   registerFeishuDeepSearchTool(api);
-  registerConversationSearchTool(api);
   registerFeishuWikiTools(api);
   registerFeishuDriveTools(api);
   registerFeishuBitableTools(api);
@@ -53,6 +52,7 @@ export async function registerAllFeishuTools(api: OpenClawPluginApi): Promise<vo
   registerFeishuCalendarTools(api);
   registerFeishuTaskTools(api);
   registerFeishuMessageTools(api);
+  registerFeishuMessageSearchTool(api);
   registerFeishuMinutesTools(api);
   // Gate knowledge-qa on backend scope availability (auto-detected, no config needed)
   const accounts = listEnabledFeishuAccounts(api.config);

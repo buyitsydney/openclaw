@@ -1,7 +1,7 @@
 # 飞书 Search 架构设计
 
-> 日期：2026-03-09（最后更新：2026-03-10 21:35 UTC+8）
-> 状态：**搜索与 Drive/Wiki 只读主链路可用，但暂不应按“零风险全量上线”对外宣称** · `feishu_drive` 根目录浏览 contract 已收敛为 `list_root` / `list_folder` 并在真实 session 中生效 · 搜索召回仍受飞书服务端索引延迟与漏召回影响 · 当前剩余风险主要在模型推理层可能把“列表可见”误判为“权限已验证”
+> 日期：2026-03-09（最后更新：2026-03-21）
+> 状态：**Phase 3 — 消息跨域搜索 + 统一搜索 Skill 架构设计中** · `feishu_drive` 根目录浏览 contract 已收敛为 `list_root` / `list_folder` 并在真实 session 中生效 · 搜索召回仍受飞书服务端索引延迟与漏召回影响 · 当前剩余风险主要在模型推理层可能把“列表可见”误判为“权限已验证”
 
 ---
 
@@ -616,3 +616,206 @@ data
 - [ ] 确认 Aily app_id 获取方式
 - [ ] 确认 tenant_token 认证方式（需要 Aily 应用关联后测试）
 - [ ] 评估知识源自动同步的延迟和覆盖范围
+
+---
+
+## Phase 3：消息跨域搜索 + 统一搜索架构（2026-03-21）
+
+> 状态：架构设计中
+> 来源：docker13 Her 实测发现 `search/v2/message` + `knowledge_qa search` 组合能覆盖 bot 不在的群和私聊
+
+### 3.1 发现：三层权限阶梯
+
+docker13 Her 实测验证了三种消息访问权限：
+
+| 层级      | 范围           | 搜索 |   读单条    | 拉全量历史  | 发消息 |
+| --------- | -------------- | :--: | :---------: | :---------: | :----: |
+| **第1层** | Bot 加入的群   |  ✅  |     ✅      |     ✅      |   ✅   |
+| **第2层** | Bot 没加入的群 |  ✅  |     ✅      | ❌ (231204) |   ❌   |
+| **第3层** | 别人的私聊     |  ✅  | ❌ (230013) |     ❌      |   ❌   |
+
+关键发现：
+
+- `POST /search/v2/message` 能搜索**用户视野全域**（包括 bot 不在的群、用户的私聊）
+- `GET /im/v1/messages/:id` 能读取 bot 不在的群的单条消息（第2层）
+- `knowledge_qa search(sources=["message"])` 直接返回消息内容片段，跨域覆盖最广
+
+### 3.2 现有搜索工具矩阵
+
+| 工具                         | 搜索方式            | 数据源                       | bot 不在的群 |  私聊  |    已实现     |
+| ---------------------------- | ------------------- | ---------------------------- | :----------: | :----: | :-----------: |
+| `feishu_search`              | 关键词              | Drive + Wiki                 |     N/A      |  N/A   |      ✅       |
+| `feishu_deep_search`         | 多组关键词          | Drive + Wiki + 妙记 + 群归档 |      ❌      |   ❌   |      ✅       |
+| `feishu_conversation_search` | 本地 grep           | 本地归档文件                 |      ❌      |   ❌   |      ✅       |
+| `feishu_group_history`       | 按时间全拉          | bot 加入的群                 |      ❌      |   ❌   |      ✅       |
+| `feishu_knowledge_qa search` | 语义向量            | 全域 8 种源                  |      ✅      |   ✅   | ✅ (部分用户) |
+| **`feishu_message_search`**  | **飞书 API 关键词** | **用户视野全域消息**         |    **✅**    | **✅** | **❌ 待实现** |
+
+### 3.3 缺失的工具：`feishu_message_search`
+
+#### API
+
+`POST /open-apis/search/v2/message`
+
+- 认证：`user_access_token`
+- Scope：`search:message`（已在 OAUTH_SCOPES 中，全员可用）
+- 返回：`message_id` 列表（需要二次调 `GET /im/v1/messages/:id` 读全文）
+
+#### 参数
+
+| 参数                      | 类型     | 说明                           |
+| ------------------------- | -------- | ------------------------------ |
+| `query`                   | string   | 搜索关键词（必填）             |
+| `from_ids`                | string[] | 发送者 open_id 列表            |
+| `chat_ids`                | string[] | 限定会话列表                   |
+| `message_type`            | string   | 消息类型（text/post/image 等） |
+| `chat_type`               | string   | p2p（私聊）/ group（群聊）     |
+| `start_time` / `end_time` | string   | 时间范围                       |
+
+#### 与 `knowledge_qa search` 的区别
+
+| 维度         | `feishu_message_search`                 | `knowledge_qa search(sources=["message"])` |
+| ------------ | --------------------------------------- | ------------------------------------------ |
+| 搜索方式     | 关键词精确匹配                          | 语义向量匹配（理解意图）                   |
+| 返回内容     | message_id 列表（需二次调 get_message） | **直接返回内容片段 + score**               |
+| 可用性       | **全员可用**（search:message scope）    | 仅开通知识问答的用户                       |
+| 按发送人搜   | ✅ `from_ids`                           | ❌ 不支持                                  |
+| 按消息类型搜 | ✅ `message_type`（text/post/image 等） | ❌ 不支持                                  |
+| 按群类型搜   | ✅ `chat_type`（p2p/group）             | ❌ 不区分                                  |
+| 多源覆盖     | ❌ 仅消息                               | ✅ 消息+文档+Wiki+妙记+评论+词典           |
+| 速度         | 1-2s                                    | 3-5s                                       |
+
+**两者互补，不是替代。各有独占场景：**
+
+| 场景                      | 更强的工具     | 为什么                                         |
+| ------------------------- | -------------- | ---------------------------------------------- |
+| "老杨对Her安全有什么担忧" | knowledge_qa   | 语义理解"担忧"≠关键词，且跨消息+文档+妙记      |
+| "面向her编程"             | knowledge_qa   | 能搜妙记听写全文（score 0.94），关键词搜搜不到 |
+| "找李博宇发的消息"        | message_search | `from_ids` 按人搜，knowledge_qa 不支持         |
+| "找群里的图片消息"        | message_search | `message_type=image`，knowledge_qa 不支持      |
+| "振华" （简单关键词）     | message_search | 更快（1s vs 3s），且全员可用                   |
+| "振华要求我做什么"        | knowledge_qa   | 语义理解"要求"，能找到没有这个词的内容         |
+| 文档+妙记+消息混合搜索    | knowledge_qa   | 多源融合，message_search 仅限消息              |
+| 没有知识问答权限的用户    | message_search | 唯一可用的跨域消息搜索                         |
+
+### 3.4 统一搜索 Skill 架构
+
+#### 问题：现有 5 个搜索相关 skill 太分散
+
+```
+feishu-chat-history-search  — 本地归档搜索
+feishu-group-transcript     — 群聊原文
+feishu-dm-transcript        — 私聊原文
+feishu-knowledge-search     — 知识问答（部分用户可用）
+feishu-minutes (搜索部分)   — 妙记搜索
+```
+
+Her 需要在 5 个 skill 之间自己判断用哪个，容易选错或遗漏。
+
+#### 方案：聚合为 1 个统一 `feishu-search` skill
+
+合并原则：
+
+- **按"你想找什么"分场景**，不按工具分
+- **有/无知识问答两条路径**（判断方法：看工具列表里有没有 `feishu_knowledge_qa`）
+- `feishu-minutes` 的 get/transcript 保留独立 skill（不是搜索，是精读）
+
+#### 场景路由表（按"你想找什么"选工具，不是固定先后）
+
+| 你想找什么                     | 首选工具                                      | 为什么是它               | 补充                                               |
+| ------------------------------ | --------------------------------------------- | ------------------------ | -------------------------------------------------- |
+| 语义模糊问题（"谁在担忧XX"）   | knowledge_qa search                           | 理解意图，不依赖关键词   | 无知识问答 → deep_search                           |
+| 按人找消息（"李博宇发了什么"） | message_search(from_ids)                      | 唯一支持按发送人搜       | —                                                  |
+| 跨源查找（文档+消息+妙记）     | knowledge_qa search（全源）                   | 8 种源一次覆盖           | 无知识问答 → feishu_search + message_search 分别搜 |
+| 简单关键词（"振华"、项目名）   | message_search                                | 更快（1s），全员可用     | —                                                  |
+| bot 不在的群动态               | knowledge_qa search 或 message_search         | 两者都跨域，看问法选择   | —                                                  |
+| 私聊说过什么                   | knowledge_qa search(sources=["message"])      | 直接返回内容片段         | 无知识问答 → message_search(chat_type="p2p")       |
+| 群里最近完整历史               | group_history                                 | 按时间全拉，不需要关键词 | 先 knowledge_qa 发现 → 再 group_history 精读       |
+| 文档/Wiki 内容                 | knowledge_qa search(sources=["wiki","space"]) | 语义搜索                 | 无知识问答 → feishu_search                         |
+| 会议讲了什么                   | knowledge_qa search(sources=["minutes"])      | 能搜妙记听写全文         | 无知识问答 → feishu_minutes search                 |
+| 找图片/文件类消息              | message_search(message_type=image)            | 唯一支持按消息类型搜     | —                                                  |
+
+**核心原则：看场景选工具，不是固定排优先级。**
+
+#### 两条路径（有/无知识问答）
+
+**有知识问答时**——两个跨域工具都可用，按场景选：
+
+- 语义/模糊/多源 → knowledge_qa search
+- 精准/按人/按类型 → message_search
+- 需要全量历史 → 先 knowledge_qa 发现关键群 → group_history 精读
+- 需要 AI 综合 → knowledge_qa ask（P2 兜底，20-60s）
+- 以上都不够 → deep_search（P3 最后手段）
+
+**无知识问答时**——只有 message_search 可跨域：
+
+- 消息搜索 → message_search（全员可用，跨域）
+- 文档/Wiki → feishu_search（关键词）
+- 全量群历史 → group_history
+- 以上都不够 → deep_search
+
+### 3.5 Skill 聚合后的 Her context 变化
+
+| 指标           | 现在（5 个搜索 skill） | 聚合后（1 个 skill） |
+| -------------- | ---------------------- | -------------------- |
+| Skill 数量     | 12 个                  | 8 个（-4）           |
+| 搜索相关 token | ~2000 tokens × 5       | ~1500 tokens × 1     |
+| Her 选择复杂度 | 5 选 1                 | 看场景表直接路由     |
+| 覆盖盲区       | bot 不在的群、私聊     | 零盲区               |
+
+### 3.6 晨报架构：先发现再精读（未来增强）
+
+#### 有知识问答时——发现优先
+
+```
+第1步: knowledge_qa search（3s，跨全域语义扫描）
+  → 搜 "@卜弋天"、关键项目名、"重要"、"紧急"
+  → 发现哪些群有重要动态（含 bot 不在的群！）
+  → 输出：5 个值得关注的群 + 每个群的关键片段
+
+第2步: group_history 精读（只拉第1步发现的重点群）
+  → bot 在的群：按 chat_id 拉完整历史
+  → bot 不在的群：用 message_search + get_message 补充
+
+第3步: 综合输出晨报
+```
+
+**优势**：不用扫 19 个群全量（节省 token），且覆盖 bot 不在的群。
+**对比旧方案**：旧方案先 group_history 全量扫 19 个群再用知识问答 → 重复 + 浪费。
+
+#### 无知识问答时——关键词扫描
+
+```
+第1步: message_search（1-2s，精准关键词跨域扫描）
+  → 搜 "@卜弋天"、项目名、人名
+  → 发现相关消息（含 bot 不在的群）
+
+第2步: group_history 扫 bot 在的重点群
+  → 根据第1步结果 + 已知活跃群拉历史
+
+第3步: 综合输出晨报
+```
+
+#### 覆盖率对比
+
+| 方案                                         | 覆盖范围             | token 消耗           |
+| -------------------------------------------- | -------------------- | -------------------- |
+| 旧：group_history 扫全部群                   | bot 加入的 19 个群   | 高（950 条消息全量） |
+| 新（有知识问答）：knowledge_qa 发现 → 精读   | **用户飞书视野全域** | 低（只精读关键群）   |
+| 新（无知识问答）：message_search 发现 → 精读 | **用户视野全域消息** | 中等                 |
+
+### 3.7 实施计划
+
+- [x] Phase 3.1：新建 `feishu_message_search` 工具 ✅ 2026-03-21
+  - [x] 封装 POST /search/v2/message（user_access_token, search:message scope, 全员可用）
+  - [x] 参数：query, from_ids, chat_ids, at_chatter_ids, chat_type, from_type, message_type, time range
+  - [x] user→tenant token fallback 读消息内容（复用 chat-history.ts 的 getTenantAccessToken）
+  - [x] tester2 压测：36 项测试，34 PASS，0 bug
+  - [x] 发现：message_type 过滤消息格式不是内容（已在 tool description 说明）
+  - [x] Her 评价："参数设计合理，过滤能力强，是目前最完整的消息搜索工具"
+- [ ] Phase 3.2：Skill 聚合 + 工具整合
+  - [ ] 合并 5 个搜索 skill → 1 个 `feishu-search` skill（有/无知识问答两条路径）
+  - [ ] 考虑合并 `conversation_search` 到 `message_search`（加 source=api|local|all 参数）
+  - [ ] 更新 Skill 加入 `message_search` 到搜索策略链
+- [ ] Phase 3.3：docker13 测试（knowledge_qa + message_search 组合验证）
+- [ ] Phase 3.4：灰度 → 全量
