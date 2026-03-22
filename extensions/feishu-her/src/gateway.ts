@@ -105,8 +105,9 @@ const MERGE_FORWARD_DISABLED_TEXT = "[merged forward disabled]";
 // ── Group mode resolution ─────────────────────────────────────────────────
 /**
  * Read per-group mode from {workspace}/group-modes/{chatId}.json.
- * Returns the mode string ("default", "auto-reply", "group")
- * or "default" if the file doesn't exist or is invalid.
+ * Returns the normalized mode string ("owner-at", "owner", "group-at", "group")
+ * or "owner-at" if the file doesn't exist or is invalid.
+ * Legacy names (default, auto-reply, at-reply, monitor, manager) are auto-mapped.
  */
 type GroupModeInfo = { mode: string; context?: string };
 
@@ -121,18 +122,25 @@ function readGroupMode(chatId: string): GroupModeInfo {
   if (!existsSync(filePath)) {
     filePath = join(dir, `feishu:${chatId}.json`);
     if (!existsSync(filePath)) {
-      return { mode: "default" };
+      return { mode: "owner-at" };
     }
   }
   try {
     const data = JSON.parse(readFileSync(filePath, "utf-8"));
-    const mode = typeof data?.mode === "string" && data.mode.trim() ? data.mode.trim() : "default";
-    // Legacy: treat "monitor" and "manager" as "group"
-    const normalizedMode = mode === "monitor" || mode === "manager" ? "group" : mode;
+    const mode = typeof data?.mode === "string" && data.mode.trim() ? data.mode.trim() : "owner-at";
+    // Normalize legacy names → new canonical names
+    const aliasMap: Record<string, string> = {
+      default: "owner-at",
+      "auto-reply": "owner",
+      "at-reply": "group-at",
+      monitor: "group",
+      manager: "group",
+    };
+    const normalizedMode = aliasMap[mode] ?? mode;
     const context = typeof data?.context === "string" ? data.context.trim() : undefined;
     return { mode: normalizedMode, context };
   } catch {
-    return { mode: "default" };
+    return { mode: "owner-at" };
   }
 }
 
@@ -1550,7 +1558,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   }
   let groupChatName: string | undefined;
   let currentGroupMentions: FeishuMention[] = [];
-  let currentGroupMode = "default";
+  let currentGroupMode = "owner-at";
   let currentGroupModeContext: string | undefined;
   const isCommand = cleanText.startsWith("/");
   const ACK_EMOJI = "Get";
@@ -1674,7 +1682,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     }
 
     if (currentGroupMode === "group") {
-      // Group mode: ALL messages enter agent EXCEPT this bot's own messages.
+      // 👥群: ALL messages enter agent EXCEPT this bot's own messages.
       // Opus decides whether to reply in group, private-chat owner, or stay silent.
       if (isSelfBot) {
         log?.info(`[${account.accountId}] group mode: self-bot msg, skipping`);
@@ -1688,38 +1696,38 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         `[${account.accountId}] group mode: ${isBotSender ? "bot" : "human"} msg from ${senderId} in ${chatId}, processing`,
       );
       // Fall through to agent processing
-    } else if (currentGroupMode === "auto-reply") {
-      // Auto-reply: only owner's messages, filter all bot messages.
+    } else if (currentGroupMode === "owner") {
+      // 🔒主人: only owner's messages, filter all bot messages.
       if (isBotSender) {
-        log?.info(`[${account.accountId}] auto-reply mode: bot msg, archived only`);
+        log?.info(`[${account.accountId}] owner mode: bot msg, archived only`);
         return;
       }
       const ownerIds = resolveGroupOwnerIds(account.config);
       const isOwner = ownerIds.length === 0 || ownerIds.includes(senderId);
       if (!isOwner) {
-        log?.info(`[${account.accountId}] auto-reply mode: non-owner ${senderId}, archived only`);
+        log?.info(`[${account.accountId}] owner mode: non-owner ${senderId}, archived only`);
         return;
       }
       log?.info(
-        `[${account.accountId}] auto-reply mode: owner ${senderId} in ${chatId}, processing`,
+        `[${account.accountId}] owner mode: owner ${senderId} in ${chatId}, processing`,
       );
       // Fall through to agent processing
-    } else if (currentGroupMode === "at-reply") {
-      // At-reply: anyone who @mentions the bot gets a response, no owner restriction.
+    } else if (currentGroupMode === "group-at") {
+      // 👥群@: anyone who @mentions the bot gets a response, no owner restriction.
       if (isBotSender) {
-        log?.info(`[${account.accountId}] at-reply mode: bot msg, archived only`);
+        log?.info(`[${account.accountId}] group-at mode: bot msg, archived only`);
         return;
       }
       if (!wasMentioned) {
-        log?.info(`[${account.accountId}] at-reply mode: not mentioned, archived only`);
+        log?.info(`[${account.accountId}] group-at mode: not mentioned, archived only`);
         return;
       }
       log?.info(
-        `[${account.accountId}] at-reply mode: ${senderId} @mentioned bot in ${chatId}, processing`,
+        `[${account.accountId}] group-at mode: ${senderId} @mentioned bot in ${chatId}, processing`,
       );
       // Fall through to agent processing
     } else {
-      // Default mode: require @mention + owner check.
+      // owner-at (default): require @mention + owner check.
       if (isBotSender) {
         log?.info(`[${account.accountId}] bot msg in group archived, skipping reply`);
         return;
@@ -2073,8 +2081,8 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         // Inject group mode info: hardcoded safety rules per mode + user context
         const ownerOpenId = resolveGroupOwnerIds(account.config)[0] ?? "";
         const modeHardcoded: Record<string, string> = {
-          "auto-reply": "只响应主人的消息",
-          "at-reply":
+          owner: "只响应主人的消息",
+          "group-at":
             "任何人@你都回复。注意：你使用主人的权限，搜索结果可能包含主人的私人信息，不要泄露",
           group: "自己判断群里回复还是私聊主人。不要在群里泄露主人的私聊内容",
         };
@@ -2447,7 +2455,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
   // Group chats: flush accumulated text as a single post message.
   if (isGroup && groupAccumulatedText) {
-    const footer = buildFeishuStatusFooter({ storePath, sessionKey: route.sessionKey, config });
+    const footer = buildFeishuStatusFooter({ storePath, sessionKey: route.sessionKey, config, groupMode: isGroup ? currentGroupMode : undefined });
     const finalGroupText = finalizeGroupedReplyText(groupAccumulatedText, footer);
     await deliverFeishuReply({
       payload: { text: finalGroupText, replyToId: groupAccumulatedReplyToId },
@@ -2476,7 +2484,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
   // Append status footer (model + context usage) to the card before closing.
   if (cardStream?.started && cardStreamFinalText) {
-    const footer = buildFeishuStatusFooter({ storePath, sessionKey: route.sessionKey, config });
+    const footer = buildFeishuStatusFooter({ storePath, sessionKey: route.sessionKey, config, groupMode: isGroup ? currentGroupMode : undefined });
     if (footer) {
       cardStreamFinalText += footer;
     }

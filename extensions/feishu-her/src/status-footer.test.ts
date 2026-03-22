@@ -28,14 +28,29 @@ describe("feishu status footer", () => {
       ),
     );
 
+    // Group chat with mode tag
     const footer = buildFeishuStatusFooter({
       storePath,
       sessionKey: "feishu:group:test",
       config: {},
+      groupMode: "owner-at",
     });
     expect(footer).toContain("Opus 4.6");
-    expect(footer).toContain("120k/200k (60%)");
-    expect(footer).toContain("3次压缩");
+    expect(footer).toContain("120k/200k");
+    expect(footer).toContain("🧹3");
+    expect(footer).toContain("🔒主人@");
+    // No percentage, no "次压缩"
+    expect(footer).not.toContain("%");
+    expect(footer).not.toContain("次压缩");
+
+    // DM: no mode tag
+    const dmFooter = buildFeishuStatusFooter({
+      storePath,
+      sessionKey: "feishu:group:test",
+      config: {},
+    });
+    expect(dmFooter).not.toContain("🔒");
+    expect(dmFooter).not.toContain("👥");
 
     let merged = "";
     merged = accumulateGroupedReplyText(merged, "第一段");
@@ -45,10 +60,8 @@ describe("feishu status footer", () => {
 
     const finalized = finalizeGroupedReplyText(merged, footer);
     expect(finalized).toBe(`第一段\n\n第二段\n\n第三段${footer}`);
-    expect(finalized.match(/次压缩/g)?.length ?? 0).toBe(1);
 
     const finalizedAgain = finalizeGroupedReplyText(finalized, footer);
     expect(finalizedAgain).toBe(finalized);
-    expect(finalizedAgain.match(/次压缩/g)?.length ?? 0).toBe(1);
   });
 });
