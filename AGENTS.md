@@ -230,6 +230,14 @@
 - **Multi-agent safety:** do **not** switch branches / check out a different branch unless explicitly requested.
 - **Multi-agent safety:** running multiple agents is OK as long as each agent has its own session.
 - **Multi-agent safety:** when you see unrecognized files, keep going; focus on your changes and commit only those.
+- **Multi-agent safety: worktree isolation rules** (CRITICAL — violations cause cross-agent corruption):
+  - **Never modify `.git/config`** — especially never set `core.bare=true`. All worktrees share the same `.git`, so one agent's config change breaks every other agent's git operations.
+  - **Only operate on your own directory.** If you're in a worktree (`/path/.claude/worktrees/agent-xxx/`), never read/write/build from the main repo directory or another agent's worktree. Vice versa.
+  - **`build-image.sh` must run from your directory.** It uses `$SCRIPT_DIR` to determine the build context. Running from the wrong directory builds the wrong branch's code silently.
+  - **Docker test images must use unique tags.** Each agent uses its own tag (e.g., `carher:feat-a-test`). Never overwrite `carher:local` — that's the production image for all 200 users.
+  - **Never checkout the same branch in two worktrees.** Git forbids this and will produce errors or silent corruption.
+  - **After creating a worktree**, verify `git -C <worktree-path> branch --show-current` before doing any work — confirm you're on the right branch.
+  - **Non-git files (users.csv, tokens, configs) are NOT in worktrees.** They live on the host filesystem. If your worktree needs them, symlink — don't copy (copies go stale).
 - Lint/format churn:
   - If staged+unstaged diffs are formatting-only, auto-resolve without asking.
   - If commit/push already requested, auto-stage and include formatting-only follow-ups in the same commit (or a tiny follow-up commit if needed), no extra confirmation.
