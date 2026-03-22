@@ -23,11 +23,22 @@ function formatTokenCompact(value?: number): string {
   return String(Math.round(value));
 }
 
-/** Build a concise status footer from the session store. */
+/** Mode label map for group chat footer display. */
+const MODE_LABELS: Record<string, string> = {
+  "owner-at": "🔒主人@",
+  owner: "🔒主人",
+  "group-at": "👥群@",
+  group: "👥群",
+};
+
+/** Build a concise 3-part status footer from the session store.
+ * Format: 🧠 Model · 📊 used/total [🧹N] [· modeTag]
+ * Mode tag only appears when groupMode is provided (i.e., in group chats). */
 export function buildFeishuStatusFooter(params: {
   storePath: string;
   sessionKey: string;
   config: OpenClawConfig;
+  groupMode?: string;
 }): string {
   try {
     const raw = readFileSync(params.storePath, "utf-8");
@@ -43,15 +54,19 @@ export function buildFeishuStatusFooter(params: {
     const modelLabel = shortenModelName(model);
     const totalLabel = formatTokenCompact(totalTokens);
     const ctxLabel = contextTokens ? formatTokenCompact(contextTokens) : "?";
-    const pct =
-      contextTokens && totalTokens ? Math.round((totalTokens / contextTokens) * 100) : null;
     const compactions = entry.compactionCount ?? 0;
 
-    const usageText =
-      pct !== null ? `${totalLabel}/${ctxLabel} (${pct}%)` : `${totalLabel}/${ctxLabel}`;
-    const warn = pct !== null && pct >= 70;
+    // Token usage: used/total + optional compaction count (hidden when 0)
+    const compactSuffix = compactions > 0 ? ` 🧹${compactions}` : "";
+    const usageText = `${totalLabel}/${ctxLabel}${compactSuffix}`;
+
+    // Mode tag: only in group chats
+    const modeTag = params.groupMode ? MODE_LABELS[params.groupMode] : undefined;
+    const modeSuffix = modeTag ? ` · ${modeTag}` : "";
+
+    const warn = contextTokens && totalTokens && totalTokens / contextTokens >= 0.7;
     const icon = warn ? "⚠️" : "🧠";
-    return `\n\n---\n${icon} **${modelLabel}** · 📊 ${usageText} · 🧹 ${compactions}次压缩`;
+    return `\n\n---\n${icon} ${modelLabel} · 📊 ${usageText}${modeSuffix}`;
   } catch {
     return "";
   }
