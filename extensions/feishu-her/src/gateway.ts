@@ -2453,9 +2453,12 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     await Promise.race([deliverGate, abortP, new Promise<void>((r) => setTimeout(r, 180_000))]);
   }
 
+  // Re-read group mode: skill may have changed it during this request
+  const finalGroupMode = isGroup ? readGroupMode(chatId).mode : undefined;
+
   // Group chats: flush accumulated text as a single post message.
   if (isGroup && groupAccumulatedText) {
-    const footer = buildFeishuStatusFooter({ storePath, sessionKey: route.sessionKey, config, groupMode: isGroup ? currentGroupMode : undefined });
+    const footer = buildFeishuStatusFooter({ storePath, sessionKey: route.sessionKey, config, groupMode: finalGroupMode });
     const finalGroupText = finalizeGroupedReplyText(groupAccumulatedText, footer);
     await deliverFeishuReply({
       payload: { text: finalGroupText, replyToId: groupAccumulatedReplyToId },
@@ -2484,7 +2487,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
   // Append status footer (model + context usage) to the card before closing.
   if (cardStream?.started && cardStreamFinalText) {
-    const footer = buildFeishuStatusFooter({ storePath, sessionKey: route.sessionKey, config, groupMode: isGroup ? currentGroupMode : undefined });
+    const footer = buildFeishuStatusFooter({ storePath, sessionKey: route.sessionKey, config, groupMode: finalGroupMode });
     if (footer) {
       cardStreamFinalText += footer;
     }
