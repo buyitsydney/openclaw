@@ -192,7 +192,11 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
     },
   },
   messaging: {
-    normalizeTarget: (raw: string) => raw.replace(/^(feishu|lark|fs):/i, "").trim(),
+    normalizeTarget: (raw: string) =>
+      raw
+        .replace(/^(feishu|lark|fs):/i, "")
+        .replace(/^(group|channel):/i, "")
+        .trim(),
     targetResolver: {
       looksLikeId: (raw: string) => {
         const trimmed = raw.replace(/^(feishu|lark|fs):/i, "").trim();
