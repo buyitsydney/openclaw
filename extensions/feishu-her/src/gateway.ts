@@ -970,6 +970,8 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
   let botPollLastTime = Math.floor(Date.now() / 1000);
   const deps: InboundDeps = { account, config, abortSignal, log, setStatus, core };
 
+  log?.info(`[${account.accountId}] [bot-poll] starting poller (interval=${BOT_POLL_INTERVAL_MS}ms)`);
+
   const botPollTimer = setInterval(async () => {
     try {
       // Find all groups with "group" mode enabled
@@ -978,21 +980,31 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
         process.env.CLAWDBOT_STATE_DIR?.trim() ||
         join(homedir(), ".openclaw");
       const modesDir = join(stateDir, "workspace", "group-modes");
-      if (!existsSync(modesDir)) return;
+      if (!existsSync(modesDir)) {
+        log?.info(`[${account.accountId}] [bot-poll] no group-modes dir, skipping`);
+        return;
+      }
 
       const files = readdirSync(modesDir).filter((f) => f.endsWith(".json"));
       const groupChatIds: string[] = [];
       for (const file of files) {
-        // Extract chat_id from filename (oc_xxx.json or feishu:oc_xxx.json)
         const chatId = file.replace(/\.json$/, "").replace(/^feishu:/, "");
         if (!chatId.startsWith("oc_")) continue;
         const mode = readGroupMode(chatId);
         if (mode.mode === "group") groupChatIds.push(chatId);
       }
-      if (groupChatIds.length === 0) return;
+      if (groupChatIds.length === 0) {
+        log?.info(`[${account.accountId}] [bot-poll] no groups in "group" mode, skipping`);
+        return;
+      }
+
+      log?.info(`[${account.accountId}] [bot-poll] polling ${groupChatIds.length} group(s): ${groupChatIds.map((id) => id.slice(-8)).join(", ")}`);
 
       const token = await getTenantAccessToken(account);
-      if (!token) return;
+      if (!token) {
+        log?.warn(`[${account.accountId}] [bot-poll] failed to get tenant token`);
+        return;
+      }
       const now = Math.floor(Date.now() / 1000);
 
       for (const chatId of groupChatIds) {
@@ -1012,9 +1024,12 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
               page_size: "50",
             },
           });
-          if (res.code !== 0 || !res.data?.items) continue;
+          const items = res.data?.items ?? [];
+          log?.info(`[${account.accountId}] [bot-poll] ${chatId.slice(-8)}: API code=${res.code} items=${items.length} window=${now - botPollLastTime}s`);
+          if (res.code !== 0 || items.length === 0) continue;
 
-          for (const item of res.data.items) {
+          let injected = 0;
+          for (const item of items) {
             const msg = item as Record<string, unknown>;
             const sender = msg.sender as Record<string, unknown> | undefined;
             if (!sender || sender.sender_type !== "app") continue;
@@ -1023,13 +1038,17 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
             // Skip self
             if (senderOpenId === account.botOpenId || senderOpenId === account.appId) continue;
 
+            const msgId = (msg.msg_id ?? msg.message_id ?? "") as string;
+            const msgType = (msg.msg_type ?? "text") as string;
+            log?.info(`[${account.accountId}] [bot-poll] injecting: msgId=${msgId} type=${msgType} sender=${senderOpenId}`);
+
             // Synthesize event data matching im.message.receive_v1 format
             const syntheticData = {
               message: {
-                message_id: msg.msg_id ?? msg.message_id ?? "",
+                message_id: msgId,
                 chat_id: chatId,
                 chat_type: "group",
-                message_type: msg.msg_type ?? "text",
+                message_type: msgType,
                 content: msg.body && (msg.body as Record<string, unknown>).content
                   ? (msg.body as Record<string, unknown>).content as string
                   : "{}",
@@ -1044,11 +1063,15 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
             };
             // trackMessageId in handleInboundMessage will dedup if already processed
             void handleInboundMessage(syntheticData, deps).catch((err) => {
-              log?.error(`[${account.accountId}] bot-poll handle error: ${String(err)}`);
+              log?.error(`[${account.accountId}] [bot-poll] handle error: ${String(err)}`);
             });
+            injected++;
+          }
+          if (injected > 0) {
+            log?.info(`[${account.accountId}] [bot-poll] ${chatId.slice(-8)}: injected ${injected} bot message(s) into agent pipeline`);
           }
         } catch (err) {
-          log?.warn(`[${account.accountId}] bot-poll error for ${chatId}: ${String(err)}`);
+          log?.warn(`[${account.accountId}] [bot-poll] error for ${chatId}: ${String(err)}`);
         }
       }
       botPollLastTime = now;
