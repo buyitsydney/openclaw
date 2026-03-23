@@ -188,6 +188,7 @@ async function createEventUser(
   description?: string,
   location?: string,
   attendeeIds?: string[],
+  roomIds?: string[],
   timezone?: string,
 ) {
   const tz = timezone ?? "Asia/Shanghai";
@@ -212,8 +213,8 @@ async function createEventUser(
   // oxlint-disable-next-line typescript/no-explicit-any
   const event = res.data?.event as any;
 
-  if (attendeeIds && attendeeIds.length > 0 && event?.event_id) {
-    await addAttendeesUser(userToken, calendarId, event.event_id, attendeeIds);
+  if ((attendeeIds?.length || roomIds?.length) && event?.event_id) {
+    await addAttendeesUser(userToken, calendarId, event.event_id, attendeeIds ?? [], roomIds);
   }
 
   return { event: formatEvent(event ?? {}) };
@@ -224,19 +225,51 @@ async function addAttendeesUser(
   calendarId: string,
   eventId: string,
   attendeeIds: string[],
+  roomIds?: string[],
 ) {
+  const attendees: { type: string; user_id?: string; room_id?: string }[] = attendeeIds.map(
+    (id) => ({ type: "user", user_id: id }),
+  );
+  if (roomIds) {
+    for (const rid of roomIds) {
+      attendees.push({ type: "resource", room_id: rid });
+    }
+  }
   const res = await callFeishuApiWithUserToken({
     method: "POST",
     endpoint: `/calendar/v4/calendars/${calendarId}/events/${eventId}/attendees`,
     userToken,
-    body: {
-      attendees: attendeeIds.map((id) => ({ type: "user", user_id: id })),
-      need_notification: true,
-    },
+    body: { attendees, need_notification: true },
     query: { user_id_type: "open_id" },
   });
   if (res.code !== 0) throw new Error(res.msg);
   return res.data;
+}
+
+/** List enterprise meeting rooms via tenant token. */
+async function listRooms(
+  client: Lark.Client,
+  pageSize?: number,
+  pageToken?: string,
+): Promise<unknown> {
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const res: any = await client.vc.room.list({ params: { page_size: pageSize ?? 50, ...(pageToken ? { page_token: pageToken } : {}) } });
+  if (res.code !== 0) throw new Error(res.msg ?? `vc.room.list failed: ${res.code}`);
+  return { rooms: (res.data?.rooms ?? []).map((r: any) => ({ room_id: r.room_id, name: r.name, capacity: r.capacity, building_name: r.room_config?.building_name })), has_more: res.data?.has_more, page_token: res.data?.page_token };
+}
+
+/** Check meeting room free/busy via tenant token. */
+async function checkRoomFreebusy(
+  client: Lark.Client,
+  roomId: string,
+  startTime: string,
+  endTime: string,
+): Promise<unknown> {
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const res: any = await client.calendar.freebusy.list({ data: { time_min: startTime, time_max: endTime, room_id: roomId } });
+  if (res.code !== 0) throw new Error(res.msg ?? `freebusy.list failed: ${res.code}`);
+  const busy = res.data?.freebusy_list ?? [];
+  return { room_id: roomId, is_free: busy.length === 0, busy_slots: busy };
 }
 
 async function removeAttendeesUser(
@@ -285,6 +318,7 @@ async function updateEventUser(
   location?: string,
   timezone?: string,
   attendeeIds?: string[],
+  roomIds?: string[],
 ) {
   const tz = timezone ?? "Asia/Shanghai";
   // oxlint-disable-next-line typescript/no-explicit-any
@@ -306,8 +340,8 @@ async function updateEventUser(
     if (res.code !== 0) throw new Error(res.msg);
   }
 
-  if (attendeeIds && attendeeIds.length > 0) {
-    await addAttendeesUser(userToken, calendarId, eventId, attendeeIds);
+  if (attendeeIds?.length || roomIds?.length) {
+    await addAttendeesUser(userToken, calendarId, eventId, attendeeIds ?? [], roomIds);
   }
 
   // Verify
@@ -363,6 +397,8 @@ const CALENDAR_ACTIONS = [
   "delete_event",
   "remove_attendees",
   "check_freebusy",
+  "list_rooms",
+  "check_room_freebusy",
 ] as const;
 
 const FeishuCalendarSchema = Type.Object({
@@ -378,7 +414,9 @@ const FeishuCalendarSchema = Type.Object({
       "update_event (modify existing event fields and/or add attendees), " +
       "delete_event (remove event), " +
       "remove_attendees (remove specific attendees from event by open_id), " +
-      "check_freebusy (check any user's busy/free time by open_id — no calendar sharing needed)",
+      "check_freebusy (check any user's busy/free time by open_id — no calendar sharing needed), " +
+      "list_rooms (list enterprise meeting rooms — no OAuth needed), " +
+      "check_room_freebusy (check meeting room availability by room_id — no OAuth needed)",
   }),
   calendar_id: Type.Optional(
     Type.String({
@@ -409,6 +447,17 @@ const FeishuCalendarSchema = Type.Object({
     Type.Array(Type.String(), {
       description:
         "Array of attendee open_ids (create_event / update_event / remove_attendees). Use feishu_directory to look up IDs.",
+    }),
+  ),
+  room_ids: Type.Optional(
+    Type.Array(Type.String(), {
+      description:
+        "Array of meeting room IDs (omm_xxx) to book when creating/updating events. Use list_rooms to find room IDs.",
+    }),
+  ),
+  room_id: Type.Optional(
+    Type.String({
+      description: "Single meeting room ID (omm_xxx) for check_room_freebusy.",
     }),
   ),
   user_open_id: Type.Optional(
@@ -447,15 +496,29 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
       label: "Feishu Calendar",
       description:
         "Feishu calendar operations using the user's own identity (OAuth). " +
-        "Can read the user's own calendar events, create/update/delete events, and manage attendees. " +
+        "Can read the user's own calendar events, create/update/delete events, manage attendees, " +
+        "list and book meeting rooms. " +
+        "Use list_rooms to find available rooms, check_room_freebusy to verify availability, " +
+        "then pass room_ids to create_event/update_event to book rooms. " +
         "Use check_freebusy to check any user's busy/free time by open_id (no OAuth needed). " +
-        "Requires calendar:calendar scope via OAuth. " +
         "Times use ISO 8601 format with timezone (e.g. 2026-02-25T14:00:00+08:00).",
       parameters: FeishuCalendarSchema,
       // oxlint-disable-next-line typescript/no-explicit-any
       async execute(_toolCallId: string, params: any) {
         try {
-          // check_freebusy works with tenant token — no user auth needed
+          // Tenant-token actions (no OAuth needed)
+          if (params.action === "list_rooms") {
+            const client = getClient();
+            return json(await listRooms(client, params.page_size, params.page_token));
+          }
+
+          if (params.action === "check_room_freebusy") {
+            if (!params.room_id || !params.start_time || !params.end_time)
+              return json({ error: "room_id, start_time, and end_time are required" });
+            const client = getClient();
+            return json(await checkRoomFreebusy(client, params.room_id, params.start_time, params.end_time));
+          }
+
           if (params.action === "check_freebusy") {
             if (!params.user_open_id || !params.start_time || !params.end_time)
               return json({ error: "user_open_id, start_time, and end_time are required" });
@@ -531,6 +594,7 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
                   params.description,
                   params.location,
                   params.attendee_ids,
+                  params.room_ids,
                   params.timezone,
                 ),
               );
@@ -551,6 +615,7 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
                   params.location,
                   params.timezone,
                   params.attendee_ids,
+                  params.room_ids,
                 ),
               );
             }
