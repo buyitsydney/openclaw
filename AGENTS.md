@@ -228,7 +228,7 @@
 - **Multi-agent safety:** when the user says "push", you may `git pull --rebase` to integrate latest changes (never discard other agents' work). When the user says "commit", scope to your changes only. When the user says "commit all", commit everything in grouped chunks.
 - **Multi-agent safety:** do **not** create/remove/modify `git worktree` checkouts (or edit `.worktrees/*`) unless explicitly requested.
 - **Worktree workflow:** when the user asks to create a worktree for a new feature, always ask which branch to base it on (do not default to current HEAD/`dev`). Use `EnterWorktree` to create the worktree, then inside it run `git reset --hard <base-branch>` to rebase onto the desired branch. Or equivalently: `git worktree add -b <new-branch> .claude/worktrees/<name> <base-branch>` from the main repo.
-- **Testing (feishu-her):** tester (carher-1, id=1) and tester2 (carher-101, id=101) both run **locally on the Mac**, not on remote servers. No SSH needed. Read docs carefully — "本地" means local.
+- **Testing (feishu-her):** tester (carher-101, id=101), tester2 (carher-102, id=102), and tester3 (carher-103, id=103) all run **locally on the Mac**, not on remote servers. No SSH needed. Read docs carefully — "本地" means local.
 - **Testing in worktree — MUST-DO before `start-user.sh`:** worktrees only contain git-tracked files. `docker/users.csv` and other gitignored configs are missing. Before building/starting any container from a worktree, symlink all required non-git files from the main repo:
   ```
   ln -s /path/to/main-repo/docker/users.csv <worktree>/docker/users.csv
@@ -247,7 +247,7 @@
   - **After creating a worktree**, verify `git -C <worktree-path> branch --show-current` before doing any work — confirm you're on the right branch.
   - **Non-git files (users.csv, tokens, configs) are NOT in worktrees.** They live on the host filesystem. If your worktree needs them, symlink — don't copy (copies go stale).
 - **Worktree workflow:** when the user asks to create a worktree for a new feature, always ask which branch to base it on (do not default to current HEAD/`dev`). Use `git worktree add -b <new-branch> .claude/worktrees/<name> <base-branch>` from the main repo.
-- **Testing (feishu-her):** tester (carher-1, id=1) and tester2 (carher-101, id=101) both run **locally on the Mac**, not on remote servers. No SSH needed. Read docs carefully — "本地" means local.
+- **Testing (feishu-her):** tester (carher-101, id=101), tester2 (carher-102, id=102), and tester3 (carher-103, id=103) all run **locally on the Mac**, not on remote servers. No SSH needed. Read docs carefully — "本地" means local.
 - **Testing in worktree — MUST-DO before `start-user.sh`:** worktrees only contain git-tracked files. `docker/users.csv` and other gitignored configs are missing. Before building/starting any container from a worktree, symlink all required non-git files from the main repo:
   ```
   ln -s /path/to/main-repo/docker/users.csv <worktree>/docker/users.csv

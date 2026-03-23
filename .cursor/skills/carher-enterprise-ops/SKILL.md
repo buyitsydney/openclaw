@@ -9,9 +9,10 @@ description: CarHer 企业 Docker 容器运维操作。Use when the user mention
 
 **Mac 本地**（`docker/users.csv`）：
 
-- `carher-1` = **测试容器**（卜弋天个人飞书 `cli_a9031535e3fa9cef`）→ 可随意实验
+- `carher-101` = **tester**（测试容器）→ 可随意实验
+- `carher-102` = **tester2**（测试容器）→ 可随意实验
+- `carher-103` = **tester3**（测试容器）→ 可随意实验
 - `carher-3` = **董事长**（`cli_a9054f702c789bd9`）→ 🚫 禁止操作
-- `carher-4` = 浏览器测试
 
 **服务器 S1**（10.68.13.186，CSV 在服务器本地）：
 
@@ -19,7 +20,7 @@ description: CarHer 企业 Docker 容器运维操作。Use when the user mention
 - `carher-12` = 测试容器（卜弋天）
 - `carher-13` = **卜弋天个人**（`cli_a917e5525178dbb3`）
 
-**关键区别**：Mac 的 docker1 是测试，服务器的 docker1 是董事长！ID 不同！
+**关键区别**：Mac 测试容器已迁移到 101-103 ID 段，服务器的 docker1 是董事长！
 
 ## 快速定位流程
 
@@ -47,7 +48,7 @@ sshpass -p 'PWD' ssh USER@IP "cat /Data/CarHer/docker/users.csv"
 
 CSV 格式：`id,姓名,模型,feishu_app_id,feishu_app_secret,feishu_owner_open_id,provider,备注,owner_allow_from`
 
-容器命名：`carher-{id}`（如 id=1 → `carher-1`）
+容器命名：`carher-{id}`（如 id=101 → `carher-101`）
 
 ### 3. 确认容器状态
 
