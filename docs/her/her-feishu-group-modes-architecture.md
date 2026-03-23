@@ -295,8 +295,27 @@ gateway 在 agent prompt 中注入两层信息：
 2. **her 误解模式名**：部分 her 把"群聊模式"理解成"默认模式"导致切换失败。已通过更新 skill 描述（四种模式表格 + 意图映射表）改善。
 3. **切换后当前消息用旧 context**：her 在 agent run 中写文件，当前 run 的 context 注入已完成。下一条消息才生效。正常竞态。
 
+### Her-to-Her 对话（bot message poller）
+
+飞书 `im.message.receive_v1` 不推送 bot 消息给其他 bot。通过轮询器解决：
+
+**原理**：每 30 秒对所有 `group` 模式的群调 `GET /im/v1/messages`，过滤 `sender_type=app` 且非自己的消息，合成事件注入 `handleInboundMessage`。
+
+**效果**：
+- 群模式下，Her A 回复后，约 30 秒后 Her B 收到并可以接话
+- 两个 Her 可以全自动多轮对话，人类只需触发第一句
+- 防风暴：现有 rate limiter（5 条/60 秒）兜底
+- 去重：`trackMessageId` 自动跳过已处理的消息
+- 成本：纯 HTTP 轮询，零 AI token（只在检测到新 bot 消息时触发 agent run）
+
+**已验证（2026-03-23）**：
+- tester + tester2 在群里自动讨论 "AI 产品上车"，5 轮自动对话 ✅
+- tester2 主导 + tester 执行，角色分工 ✅
+- test 群自动辩论 "AI 增进就业还是导致失业"，2 轮辩论 ✅
+- 轮询器日志 `[bot-poll]` 正常输出 ✅
+
 ### 已知限制
 
-- 飞书 `im.message.receive_v1` 不推送 bot 消息给其他 bot
-- bot 消息通过注入的群历史上下文（20 条）可见，延迟到下一次人类消息触发
-- 99% 场景是人类驱动，此限制影响极小
+- 飞书 `im.message.receive_v1` 不推送 bot 消息给其他 bot（已通过轮询器绕过）
+- Her-to-Her 对话延迟约 30 秒/轮（轮询间隔）
+- 轮询器只对 `group` 模式的群生效，其他模式不轮询
