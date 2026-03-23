@@ -295,27 +295,110 @@ gateway 在 agent prompt 中注入两层信息：
 2. **her 误解模式名**：部分 her 把"群聊模式"理解成"默认模式"导致切换失败。已通过更新 skill 描述（四种模式表格 + 意图映射表）改善。
 3. **切换后当前消息用旧 context**：her 在 agent run 中写文件，当前 run 的 context 注入已完成。下一条消息才生效。正常竞态。
 
-### Her-to-Her 对话（bot message poller）
+### Bot Message Poller（轮询器）
 
-飞书 `im.message.receive_v1` 不推送 bot 消息给其他 bot。通过轮询器解决：
+飞书 `im.message.receive_v1` 不推送 bot 消息给其他 bot。轮询器桥接这个缺口。
 
-**原理**：每 30 秒对所有 `group` 模式的群调 `GET /im/v1/messages`，过滤 `sender_type=app` 且非自己的消息，合成事件注入 `handleInboundMessage`。
-
-**效果**：
-- 群模式下，Her A 回复后，约 30 秒后 Her B 收到并可以接话
-- 两个 Her 可以全自动多轮对话，人类只需触发第一句
-- 防风暴：现有 rate limiter（5 条/60 秒）兜底
-- 去重：`trackMessageId` 自动跳过已处理的消息
-- 成本：纯 HTTP 轮询，零 AI token（只在检测到新 bot 消息时触发 agent run）
+**原理**：每 10 秒对所有 `group` / `discussion` 模式的群调 `GET /im/v1/messages`，过滤 `sender_type=app` 且非自己的消息，跳过 ⏳ 中间态，合成事件注入 `handleInboundMessage`。`injectedBotMsgIds` Set 确保每条 finalized 消息只注入一次。
 
 **已验证（2026-03-23）**：
-- tester + tester2 在群里自动讨论 "AI 产品上车"，5 轮自动对话 ✅
-- tester2 主导 + tester 执行，角色分工 ✅
-- test 群自动辩论 "AI 增进就业还是导致失业"，2 轮辩论 ✅
-- 轮询器日志 `[bot-poll]` 正常输出 ✅
+- tester + tester2 自动 5 轮讨论 + 辩论 ✅
+- 10 秒轮询，一轮 bot 对话约 15-25 秒 ✅
+- ⏳ 中间态过滤，不注入半成品卡片 ✅
+- rate limiter（5 条/60 秒）兜底 ✅
 
-### 已知限制
+---
+
+## 决策群聊模式（discussion）— 替代旧群聊模式
+
+### 为什么替代
+
+旧 `group` 模式的问题：
+1. **无序** — 多个 Her 同时响应，重复回答，互相抢话
+2. **死锁** — 两个 Her 互相分配任务然后等对方，没人先动
+3. **无结束** — 不知道什么时候该停，只靠 rate limiter 兜底
+4. **中间态** — Her 看到对方正在 streaming 的半成品消息
+
+新 `discussion` 模式解决全部问题。核心：**每次群讨论必须有一个决策者（leader），决策者始终在线，控制流程。**
+
+### 角色
+
+| 角色 | 谁 | 行为 |
+|------|---|------|
+| **决策者 (leader)** | 人类指定或 Her 投票 | 每轮被轮询器触发（不管有没有新消息），控制流程，决定何时结束 |
+| **参与者** | 其他 Her | 只在收到新 bot 消息时触发，执行任务并回复 |
+| **人类** | 群里的人 | 发起讨论、指定决策者、随时介入 |
+
+### 信号协议
+
+| 信号 | 谁发 | 效果 |
+|------|------|------|
+| **continue** | 决策者（隐式） | 决策者每轮 agent run 后，如果在群里发了消息，轮询器下一轮继续触发决策者 |
+| **stop** | 决策者 | 决策者在群里说"讨论结束" → Skill 把 mode 切回 `owner-at` → 轮询器停止触发 |
+| **激活** | 决策者 | 5 轮没有参与者回复 → 决策者 @参与者 尝试激活 |
+| **超时结束** | 决策者 | 10 轮没有任何新消息 → 决策者自动结束，给出状态反馈 |
+
+### 决策者选举
+
+1. **人类直接指定**（默认）：
+   - "tester 你来主导讨论" → tester 成为 leader
+   - "tester2 你来总结" → tester2 成为 leader
+   - Skill 识别这些意图，写入 `group-modes/{chatId}.json` 的 `leader` 字段
+
+2. **Her 投票**（无人类指定时）：
+   - 收到群讨论任务但没有指定决策者 → 第一个回复的 Her 发起投票
+   - 其他 Her 回复同意/不同意 → 达成一致后开始
+
+### workspace 文件
+
+```json
+{
+  "chat_id": "oc_xxx",
+  "chat_name": "AI讨论群",
+  "mode": "discussion",
+  "leader_app_id": "cli_a92c99d102b8dbca",
+  "context": "3轮讨论，话题：AI产品上车",
+  "set_by": "ou_xxx",
+  "set_at": "2026-03-23T21:00:00+08:00"
+}
+```
+
+### 轮询器对 discussion 模式的行为
+
+```
+每 10 秒轮询：
+  ├─ 拉群历史 → 有新 bot 消息？
+  │   ├─ 有 → 注入给所有 Her（同 group 模式）
+  │   └─ 没有 → 是 leader？
+  │       ├─ 是 leader → 仍然触发一次 agent run（让 leader 看上下文做判断）
+  │       │   └─ leader 判断：要推进？要激活？要结束？
+  │       └─ 不是 leader → 不触发（等 leader 推进）
+```
+
+### 与旧 group 模式的对比
+
+| | 旧 group 模式 | 新 discussion 模式 |
+|---|---|---|
+| 谁被触发 | 所有 Her | 有新消息时所有 Her，无消息时只有 leader |
+| 有序性 | 无（谁都能说） | leader 控制流程 |
+| 结束机制 | 无（靠 rate limiter） | leader 显式 stop / 10 轮超时 |
+| 死锁 | 常见 | leader 始终在线，5 轮激活 |
+| 适合场景 | 无（已废弃） | Her 间协作讨论、辩论、联合写文档 |
+
+### 实现状态
+
+| 内容 | 状态 |
+|------|------|
+| bot message poller（10s 轮询） | ✅ 已实现并验证 |
+| ⏳ 中间态过滤 | ✅ 已实现并验证 |
+| discussion 模式 gateway 路由 | 待实现 |
+| leader 持续触发逻辑 | 待实现 |
+| leader 超时 / 激活 / 结束 | 待实现 |
+| feishu-group-mode Skill 更新 | 待实现 |
+
+### 已知限制 & 风险
 
 - 飞书 `im.message.receive_v1` 不推送 bot 消息给其他 bot（已通过轮询器绕过）
-- Her-to-Her 对话延迟约 30 秒/轮（轮询间隔）
-- 轮询器只对 `group` 模式的群生效，其他模式不轮询
+- 线上 77 个容器的 `knownBotOpenIds` 为空（部署前需更新）
+- leader 的 agent run 可能耗时长（用 tools 搜索/写文档），排队积压
+- API 配额：每群每 10 秒 1 次 × N 个 bot = N/10 QPS（远低于 50 QPS 限制）
