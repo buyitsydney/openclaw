@@ -966,8 +966,9 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
   // chat history and inject other bots' messages into handleInboundMessage.
   // Cost: one HTTP call per group-mode group per interval, zero AI tokens.
   // Anti-storm: existing rate limiter (5 replies/60s) handles it.
-  const BOT_POLL_INTERVAL_MS = 30_000;
+  const BOT_POLL_INTERVAL_MS = 10_000;
   let botPollLastTime = Math.floor(Date.now() / 1000);
+  const injectedBotMsgIds = new Set<string>(); // dedup: only inject each finalized msg once
   const deps: InboundDeps = { account, config, abortSignal, log, setStatus, core };
 
   log?.info(`[${account.accountId}] [bot-poll] starting poller (interval=${BOT_POLL_INTERVAL_MS}ms)`);
@@ -1040,7 +1041,17 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
 
             const msgId = (msg.msg_id ?? msg.message_id ?? "") as string;
             const msgType = (msg.msg_type ?? "text") as string;
-            log?.info(`[${account.accountId}] [bot-poll] injecting: msgId=${msgId} type=${msgType} sender=${senderOpenId}`);
+            const bodyContent = msg.body && (msg.body as Record<string, unknown>).content
+              ? (msg.body as Record<string, unknown>).content as string
+              : "";
+
+            // Skip card stream messages still streaming (⏳) — will retry next poll
+            if (!bodyContent || bodyContent.includes('"⏳')) continue;
+            // Skip already-injected messages (finalized content won't change)
+            if (injectedBotMsgIds.has(msgId)) continue;
+            injectedBotMsgIds.add(msgId);
+
+            log?.info(`[${account.accountId}] [bot-poll] injecting: msgId=${msgId.slice(-12)} type=${msgType} sender=${senderOpenId}`);
 
             // Synthesize event data matching im.message.receive_v1 format
             const syntheticData = {
@@ -1049,9 +1060,7 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
                 chat_id: chatId,
                 chat_type: "group",
                 message_type: msgType,
-                content: msg.body && (msg.body as Record<string, unknown>).content
-                  ? (msg.body as Record<string, unknown>).content as string
-                  : "{}",
+                content: bodyContent,
                 create_time: msg.create_time ?? "",
                 parent_id: msg.parent_id ?? "",
                 mentions: msg.mentions ?? [],
