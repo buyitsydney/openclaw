@@ -6,7 +6,7 @@
  */
 
 import crypto from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { homedir } from "node:os";
 import { join, dirname, extname } from "node:path";
@@ -960,6 +960,103 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
   log?.info(`[${account.accountId}] Feishu WSClient connected`);
   setStatus({ connected: true, lastConnectedAt: Date.now() });
 
+  // ── Bot message poller ──────────────────────────────────────────────────
+  // Feishu im.message.receive_v1 does NOT push bot-sent messages to other bots.
+  // This poller bridges the gap: for groups in "group" mode, periodically pull
+  // chat history and inject other bots' messages into handleInboundMessage.
+  // Cost: one HTTP call per group-mode group per interval, zero AI tokens.
+  // Anti-storm: existing rate limiter (5 replies/60s) handles it.
+  const BOT_POLL_INTERVAL_MS = 30_000;
+  let botPollLastTime = Math.floor(Date.now() / 1000);
+  const deps: InboundDeps = { account, config, abortSignal, log, setStatus, core };
+
+  const botPollTimer = setInterval(async () => {
+    try {
+      // Find all groups with "group" mode enabled
+      const stateDir =
+        process.env.OPENCLAW_STATE_DIR?.trim() ||
+        process.env.CLAWDBOT_STATE_DIR?.trim() ||
+        join(homedir(), ".openclaw");
+      const modesDir = join(stateDir, "workspace", "group-modes");
+      if (!existsSync(modesDir)) return;
+
+      const files = readdirSync(modesDir).filter((f) => f.endsWith(".json"));
+      const groupChatIds: string[] = [];
+      for (const file of files) {
+        // Extract chat_id from filename (oc_xxx.json or feishu:oc_xxx.json)
+        const chatId = file.replace(/\.json$/, "").replace(/^feishu:/, "");
+        if (!chatId.startsWith("oc_")) continue;
+        const mode = readGroupMode(chatId);
+        if (mode.mode === "group") groupChatIds.push(chatId);
+      }
+      if (groupChatIds.length === 0) return;
+
+      const token = await getTenantAccessToken(account);
+      if (!token) return;
+      const now = Math.floor(Date.now() / 1000);
+
+      for (const chatId of groupChatIds) {
+        try {
+          const res = await callFeishuApiWithUserToken<{
+            items?: Array<Record<string, unknown>>;
+          }>({
+            method: "GET",
+            endpoint: "/im/v1/messages",
+            userToken: token,
+            query: {
+              container_id_type: "chat",
+              container_id: chatId,
+              start_time: String(botPollLastTime),
+              end_time: String(now),
+              sort_type: "ByCreateTimeAsc",
+              page_size: "50",
+            },
+          });
+          if (res.code !== 0 || !res.data?.items) continue;
+
+          for (const item of res.data.items) {
+            const msg = item as Record<string, unknown>;
+            const sender = msg.sender as Record<string, unknown> | undefined;
+            if (!sender || sender.sender_type !== "app") continue;
+            const senderIdObj = sender.sender_id as Record<string, unknown> | undefined;
+            const senderOpenId = (senderIdObj?.open_id as string) ?? "";
+            // Skip self
+            if (senderOpenId === account.botOpenId || senderOpenId === account.appId) continue;
+
+            // Synthesize event data matching im.message.receive_v1 format
+            const syntheticData = {
+              message: {
+                message_id: msg.msg_id ?? msg.message_id ?? "",
+                chat_id: chatId,
+                chat_type: "group",
+                message_type: msg.msg_type ?? "text",
+                content: msg.body && (msg.body as Record<string, unknown>).content
+                  ? (msg.body as Record<string, unknown>).content as string
+                  : "{}",
+                create_time: msg.create_time ?? "",
+                parent_id: msg.parent_id ?? "",
+                mentions: msg.mentions ?? [],
+              },
+              sender: {
+                sender_id: senderIdObj ?? {},
+                sender_type: "bot",
+              },
+            };
+            // trackMessageId in handleInboundMessage will dedup if already processed
+            void handleInboundMessage(syntheticData, deps).catch((err) => {
+              log?.error(`[${account.accountId}] bot-poll handle error: ${String(err)}`);
+            });
+          }
+        } catch (err) {
+          log?.warn(`[${account.accountId}] bot-poll error for ${chatId}: ${String(err)}`);
+        }
+      }
+      botPollLastTime = now;
+    } catch (err) {
+      log?.warn(`[${account.accountId}] bot-poll cycle error: ${String(err)}`);
+    }
+  }, BOT_POLL_INTERVAL_MS);
+
   // Block until abort signal fires (gateway shutting down).
   return new Promise<void>((resolve) => {
     if (abortSignal.aborted) {
@@ -969,6 +1066,7 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
     abortSignal.addEventListener(
       "abort",
       () => {
+        clearInterval(botPollTimer);
         log?.info(`[${account.accountId}] Feishu gateway stopping`);
         setStatus({ running: false, connected: false, lastStopAt: Date.now() });
         resolve();
