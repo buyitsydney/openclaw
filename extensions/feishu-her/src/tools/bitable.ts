@@ -301,6 +301,43 @@ async function listRecords(
   };
 }
 
+/** Coerce Number fields from string back to number (REST API returns strings for Number type). */
+function coerceRecordFields(
+  // oxlint-disable-next-line typescript/no-explicit-any
+  record: any,
+  numberFieldNames: Set<string>,
+  // oxlint-disable-next-line typescript/no-explicit-any
+): any {
+  if (!record?.fields || numberFieldNames.size === 0) return record;
+  const fields = { ...record.fields };
+  for (const name of numberFieldNames) {
+    if (typeof fields[name] === "string" && fields[name] !== "") {
+      const n = Number(fields[name]);
+      if (Number.isFinite(n)) fields[name] = n;
+    }
+  }
+  return { ...record, fields };
+}
+
+/** Get the set of Number field names for a table (for type coercion). */
+async function getNumberFieldNames(
+  userToken: string,
+  appToken: string,
+  tableId: string,
+): Promise<Set<string>> {
+  try {
+    const fields = await listFieldsByUser(userToken, appToken, tableId);
+    return new Set(
+      fields.fields
+        .filter((f: { type?: number }) => f.type === 2)
+        .map((f: { field_name?: string }) => f.field_name!)
+        .filter(Boolean),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
 async function listRecordsByUser(
   userToken: string,
   appToken: string,
@@ -308,18 +345,22 @@ async function listRecordsByUser(
   pageSize?: number,
   pageToken?: string,
 ) {
-  const res = await callBitableUserApi<BitableRecordListResponse>({
-    userToken,
-    method: "GET",
-    endpoint: `/bitable/v1/apps/${encodeURIComponent(appToken)}/tables/${encodeURIComponent(tableId)}/records`,
-    query: {
-      page_size: String(pageSize ?? 100),
-      ...(pageToken ? { page_token: pageToken } : {}),
-    },
-  });
+  const [res, numberFields] = await Promise.all([
+    callBitableUserApi<BitableRecordListResponse>({
+      userToken,
+      method: "GET",
+      endpoint: `/bitable/v1/apps/${encodeURIComponent(appToken)}/tables/${encodeURIComponent(tableId)}/records`,
+      query: {
+        page_size: String(pageSize ?? 100),
+        ...(pageToken ? { page_token: pageToken } : {}),
+      },
+    }),
+    getNumberFieldNames(userToken, appToken, tableId),
+  ]);
   if (!res.ok) throw new Error(res.msg);
+  const records = (res.data?.items ?? []).map((r) => coerceRecordFields(r, numberFields));
   return {
-    records: res.data?.items ?? [],
+    records,
     has_more: res.data?.has_more ?? false,
     page_token: res.data?.page_token,
     total: res.data?.total,
@@ -341,13 +382,16 @@ async function getRecordByUser(
   tableId: string,
   recordId: string,
 ) {
-  const res = await callBitableUserApi<BitableRecordGetResponse>({
-    userToken,
-    method: "GET",
-    endpoint: `/bitable/v1/apps/${encodeURIComponent(appToken)}/tables/${encodeURIComponent(tableId)}/records/${encodeURIComponent(recordId)}`,
-  });
+  const [res, numberFields] = await Promise.all([
+    callBitableUserApi<BitableRecordGetResponse>({
+      userToken,
+      method: "GET",
+      endpoint: `/bitable/v1/apps/${encodeURIComponent(appToken)}/tables/${encodeURIComponent(tableId)}/records/${encodeURIComponent(recordId)}`,
+    }),
+    getNumberFieldNames(userToken, appToken, tableId),
+  ]);
   if (!res.ok) throw new Error(res.msg);
-  return { record: res.data?.record };
+  return { record: coerceRecordFields(res.data?.record, numberFields) };
 }
 
 async function createRecord(
@@ -383,6 +427,168 @@ async function updateRecord(
   return { record: res.data?.record };
 }
 
+// Default field types created for new Bitable tables (to be cleaned up)
+const DEFAULT_CLEANUP_FIELD_TYPES = new Set([3, 5, 17]); // SingleSelect, DateTime, Attachment
+
+/** Clean up default placeholder rows and fields in a newly created Bitable table */
+async function cleanupNewBitable(
+  client: Lark.Client,
+  appToken: string,
+  tableId: string,
+  tableName: string,
+): Promise<{ cleanedRows: number; cleanedFields: number }> {
+  let cleanedRows = 0;
+  let cleanedFields = 0;
+
+  // Rename primary field to table name + delete default placeholder fields
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const fieldsRes: any = await client.bitable.appTableField.list({
+    path: { app_token: appToken, table_id: tableId },
+  });
+  if (fieldsRes.code === 0 && fieldsRes.data?.items) {
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const primaryField = fieldsRes.data.items.find((f: any) => f.is_primary);
+    if (primaryField?.field_id) {
+      try {
+        await client.bitable.appTableField.update({
+          path: { app_token: appToken, table_id: tableId, field_id: primaryField.field_id },
+          data: { field_name: tableName.length <= 20 ? tableName : "Name", type: 1 },
+        });
+        cleanedFields++;
+      } catch { /* non-critical */ }
+    }
+    // oxlint-disable-next-line typescript/no-explicit-any
+    for (const field of fieldsRes.data.items.filter((f: any) => !f.is_primary && DEFAULT_CLEANUP_FIELD_TYPES.has(f.type ?? 0))) {
+      if (field.field_id) {
+        try {
+          await client.bitable.appTableField.delete({
+            path: { app_token: appToken, table_id: tableId, field_id: field.field_id },
+          });
+          cleanedFields++;
+        } catch { /* non-critical */ }
+      }
+    }
+  }
+
+  // Delete empty placeholder rows
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const recordsRes: any = await client.bitable.appTableRecord.list({
+    path: { app_token: appToken, table_id: tableId },
+    params: { page_size: 100 },
+  });
+  if (recordsRes.code === 0 && recordsRes.data?.items) {
+    // Feishu placeholder rows have fields like { "多行文本": null } — all values null/empty
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const emptyIds = recordsRes.data.items
+      .filter((r: any) => {
+        if (!r.fields) return true;
+        const keys = Object.keys(r.fields);
+        if (keys.length === 0) return true;
+        return keys.every((k: string) => r.fields[k] == null || r.fields[k] === "");
+      })
+      .map((r: any) => r.record_id)
+      .filter(Boolean);
+    if (emptyIds.length > 0) {
+      try {
+        await client.bitable.appTableRecord.batchDelete({
+          path: { app_token: appToken, table_id: tableId },
+          data: { records: emptyIds },
+        });
+        cleanedRows = emptyIds.length;
+      } catch {
+        // Fallback: delete one by one
+        for (const id of emptyIds) {
+          try {
+            // oxlint-disable-next-line typescript/no-explicit-any
+            await (client.bitable.appTableRecord as any).delete({
+              path: { app_token: appToken, table_id: tableId, record_id: id },
+            });
+            cleanedRows++;
+          } catch { /* skip */ }
+        }
+      }
+    }
+  }
+
+  return { cleanedRows, cleanedFields };
+}
+
+async function createApp(client: Lark.Client, name: string, folderToken?: string) {
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const res: any = await client.bitable.app.create({
+    data: { name, ...(folderToken && { folder_token: folderToken }) },
+  });
+  if (res.code !== 0) throw new Error(res.msg);
+  const appToken = res.data?.app?.app_token;
+  if (!appToken) throw new Error("Failed to create Bitable: no app_token returned");
+
+  let tableId: string | undefined;
+  let cleanedRows = 0;
+  let cleanedFields = 0;
+  try {
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const tablesRes: any = await client.bitable.appTable.list({ path: { app_token: appToken } });
+    if (tablesRes.code === 0 && tablesRes.data?.items?.length > 0) {
+      tableId = tablesRes.data.items[0].table_id;
+      if (tableId) {
+        const cleanup = await cleanupNewBitable(client, appToken, tableId, name);
+        cleanedRows = cleanup.cleanedRows;
+        cleanedFields = cleanup.cleanedFields;
+      }
+    }
+  } catch { /* cleanup is non-critical */ }
+
+  return {
+    app_token: appToken,
+    table_id: tableId,
+    name: res.data?.app?.name,
+    url: res.data?.app?.url,
+    cleaned_placeholder_rows: cleanedRows,
+    cleaned_default_fields: cleanedFields,
+    hint: tableId
+      ? `Table created. Use app_token="${appToken}" and table_id="${tableId}" for other bitable actions.`
+      : "Table created. Use get_meta to get table_id and field details.",
+  };
+}
+
+async function createField(
+  client: Lark.Client,
+  appToken: string,
+  tableId: string,
+  fieldName: string,
+  fieldType: number,
+  property?: Record<string, unknown>,
+) {
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const res: any = await client.bitable.appTableField.create({
+    path: { app_token: appToken, table_id: tableId },
+    data: { field_name: fieldName, type: fieldType, ...(property && { property }) },
+  });
+  if (res.code !== 0) throw new Error(res.msg);
+  return {
+    field_id: res.data?.field?.field_id,
+    field_name: res.data?.field?.field_name,
+    type: res.data?.field?.type,
+    type_name: FIELD_TYPE_NAMES[res.data?.field?.type ?? 0] || `type_${res.data?.field?.type}`,
+  };
+}
+
+async function deleteRecords(
+  client: Lark.Client,
+  appToken: string,
+  tableId: string,
+  recordIds: string[],
+) {
+  if (recordIds.length === 0) throw new Error("No record IDs provided");
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const res: any = await client.bitable.appTableRecord.batchDelete({
+    path: { app_token: appToken, table_id: tableId },
+    data: { records: recordIds },
+  });
+  if (res.code !== 0) throw new Error(res.msg);
+  return { deleted: recordIds.length };
+}
+
 // ── Schemas ──
 
 const BITABLE_ACTIONS = [
@@ -392,6 +598,9 @@ const BITABLE_ACTIONS = [
   "get_record",
   "create_record",
   "update_record",
+  "delete_records",
+  "create_app",
+  "create_field",
 ] as const;
 
 const FeishuBitableSchema = Type.Object({
@@ -414,6 +623,11 @@ const FeishuBitableSchema = Type.Object({
   ),
   page_size: Type.Optional(Type.Number({ description: "Records per page 1-500 (default 100)" })),
   page_token: Type.Optional(Type.String({ description: "Pagination token" })),
+  record_ids: Type.Optional(Type.Array(Type.String(), { description: "Record IDs to delete (for delete_records)" })),
+  name: Type.Optional(Type.String({ description: "Name for create_app or field_name for create_field" })),
+  folder_token: Type.Optional(Type.String({ description: "Folder token to create app in (optional)" })),
+  field_type: Type.Optional(Type.Number({ description: "Field type number for create_field (1=Text, 2=Number, 3=SingleSelect, etc.)" })),
+  field_property: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "Field property config for create_field (e.g. select options)" })),
 });
 
 // ── Registration ──
@@ -430,7 +644,7 @@ export function registerFeishuBitableTools(api: OpenClawPluginApi) {
       name: "feishu_bitable",
       label: "Feishu Bitable",
       description:
-        "Feishu multi-dimensional table operations. Actions: get_meta, list_fields, list_records, get_record, create_record, update_record",
+        "Feishu multi-dimensional table operations. Actions: get_meta, list_fields, list_records, get_record, create_record, update_record, delete_records, create_app, create_field",
       parameters: FeishuBitableSchema,
       // oxlint-disable-next-line typescript/no-explicit-any
       async execute(_toolCallId: string, params: any) {
@@ -493,6 +707,23 @@ export function registerFeishuBitableTools(api: OpenClawPluginApi) {
                   params.table_id,
                   params.record_id,
                   params.fields,
+                ),
+              );
+            case "delete_records":
+              return json(
+                await deleteRecords(client, params.app_token, params.table_id, params.record_ids),
+              );
+            case "create_app":
+              return json(await createApp(client, params.name, params.folder_token));
+            case "create_field":
+              return json(
+                await createField(
+                  client,
+                  params.app_token,
+                  params.table_id,
+                  params.name,
+                  params.field_type,
+                  params.field_property,
                 ),
               );
             default:
