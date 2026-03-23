@@ -109,7 +109,7 @@ const MERGE_FORWARD_DISABLED_TEXT = "[merged forward disabled]";
  * or "owner-at" if the file doesn't exist or is invalid.
  * Legacy names (default, auto-reply, at-reply, monitor, manager) are auto-mapped.
  */
-type GroupModeInfo = { mode: string; context?: string };
+type GroupModeInfo = { mode: string; context?: string; leaderAppId?: string; leaderError?: string };
 
 function readGroupMode(chatId: string): GroupModeInfo {
   const stateDir =
@@ -128,17 +128,14 @@ function readGroupMode(chatId: string): GroupModeInfo {
   try {
     const data = JSON.parse(readFileSync(filePath, "utf-8"));
     const mode = typeof data?.mode === "string" && data.mode.trim() ? data.mode.trim() : "owner-at";
-    // Normalize legacy names → new canonical names
-    const aliasMap: Record<string, string> = {
-      default: "owner-at",
-      "auto-reply": "owner",
-      "at-reply": "group-at",
-      monitor: "group",
-      manager: "group",
-    };
-    const normalizedMode = aliasMap[mode] ?? mode;
     const context = typeof data?.context === "string" ? data.context.trim() : undefined;
-    return { mode: normalizedMode, context };
+    const rawLeader = typeof data?.leader_app_id === "string" ? data.leader_app_id.trim() : "";
+    const leaderAppId = rawLeader.startsWith("cli_") ? rawLeader : undefined;
+    // discussion mode requires leader_app_id — if missing/invalid, fall back to owner-at
+    if (mode === "discussion" && !leaderAppId) {
+      return { mode: "owner-at", context, leaderError: `invalid leader_app_id: "${rawLeader || "(missing)}"` };
+    }
+    return { mode, context, leaderAppId };
   } catch {
     return { mode: "owner-at" };
   }
@@ -149,6 +146,11 @@ const groupReplyTimestamps = new Map<string, number[]>();
 const RATE_LIMIT_WINDOW_MS = 60_000; // 60 seconds
 const RATE_LIMIT_MAX_REPLIES = 5;
 
+// Stricter per-group error cooldown: if an error reply was sent recently,
+// block further processing to prevent bot-to-bot error storm loops.
+const groupErrorCooldowns = new Map<string, number>(); // chatId → resume timestamp(ms)
+const GROUP_ERROR_COOLDOWN_MS = 120_000; // 2 minutes
+
 /** Record a reply sent by this bot in a group. */
 export function recordGroupReply(chatId: string): void {
   const now = Date.now();
@@ -157,9 +159,19 @@ export function recordGroupReply(chatId: string): void {
   groupReplyTimestamps.set(chatId, timestamps);
 }
 
+/** Record that an error reply was sent, triggering a cooldown for the group. */
+export function recordGroupErrorReply(chatId: string): void {
+  groupErrorCooldowns.set(chatId, Date.now() + GROUP_ERROR_COOLDOWN_MS);
+  recordGroupReply(chatId);
+}
+
 /** Check if this bot has exceeded the reply rate limit for a group. */
 function isRateLimited(chatId: string): boolean {
   const now = Date.now();
+  // Error cooldown takes precedence
+  const errorCooldownUntil = groupErrorCooldowns.get(chatId) ?? 0;
+  if (now < errorCooldownUntil) return true;
+
   const timestamps = groupReplyTimestamps.get(chatId);
   if (!timestamps) return false;
   // Prune old entries outside the window
@@ -965,16 +977,30 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
   // This poller bridges the gap: for groups in "group" mode, periodically pull
   // chat history and inject other bots' messages into handleInboundMessage.
   // Cost: one HTTP call per group-mode group per interval, zero AI tokens.
-  // Anti-storm: existing rate limiter (5 replies/60s) handles it.
+  // Anti-storm: existing rate limiter (5 replies/60s) + error-card filter + backoff.
   const BOT_POLL_INTERVAL_MS = 10_000;
+  const BOT_POLL_ERROR_BACKOFF_MS = 120_000; // pause polling 2min after agent errors
   let botPollLastTime = Math.floor(Date.now() / 1000);
+  let botPollBackoffUntil = 0; // timestamp(ms): skip polling until this time
   const injectedBotMsgIds = new Set<string>(); // dedup: only inject each finalized msg once
+  const INJECTED_IDS_MAX_SIZE = 500; // GC threshold to prevent memory leak
   const deps: InboundDeps = { account, config, abortSignal, log, setStatus, core };
 
   log?.info(`[${account.accountId}] [bot-poll] starting poller (interval=${BOT_POLL_INTERVAL_MS}ms)`);
 
+  // Patterns in bot cards that should never be re-injected into agent pipeline
+  const BOT_POLL_SKIP_PATTERNS = ["⚠️", "API rate limit", "rate_limit", "error occurred", "请稍后再试", "我是你的 AI 助手", "你好！"];
+  const LEADER_HEARTBEAT_INTERVAL_MS = 30_000; // leader heartbeat every 30s, not every poll
+  let lastLeaderHeartbeatTime = 0;
+
   const botPollTimer = setInterval(async () => {
     try {
+      // Backoff: skip polling if we recently saw agent errors
+      if (Date.now() < botPollBackoffUntil) {
+        log?.info(`[${account.accountId}] [bot-poll] backing off until ${new Date(botPollBackoffUntil).toISOString()}`);
+        return;
+      }
+
       // Find all groups with "group" mode enabled
       const stateDir =
         process.env.OPENCLAW_STATE_DIR?.trim() ||
@@ -987,19 +1013,18 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
       }
 
       const files = readdirSync(modesDir).filter((f) => f.endsWith(".json"));
-      const groupChatIds: string[] = [];
+      const pollTargets: Array<{ chatId: string; leaderAppId?: string }> = [];
       for (const file of files) {
         const chatId = file.replace(/\.json$/, "").replace(/^feishu:/, "");
         if (!chatId.startsWith("oc_")) continue;
         const mode = readGroupMode(chatId);
-        if (mode.mode === "group") groupChatIds.push(chatId);
+        if (mode.mode === "discussion") {
+          pollTargets.push({ chatId, leaderAppId: mode.leaderAppId });
+        }
       }
-      if (groupChatIds.length === 0) {
-        log?.info(`[${account.accountId}] [bot-poll] no groups in "group" mode, skipping`);
-        return;
-      }
+      if (pollTargets.length === 0) return;
 
-      log?.info(`[${account.accountId}] [bot-poll] polling ${groupChatIds.length} group(s): ${groupChatIds.map((id) => id.slice(-8)).join(", ")}`);
+      log?.info(`[${account.accountId}] [bot-poll] polling ${pollTargets.length} group(s): ${pollTargets.map((t) => t.chatId.slice(-8)).join(", ")}`);
 
       const token = await getTenantAccessToken(account);
       if (!token) {
@@ -1008,7 +1033,7 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
       }
       const now = Math.floor(Date.now() / 1000);
 
-      for (const chatId of groupChatIds) {
+      for (const { chatId, leaderAppId } of pollTargets) {
         try {
           const res = await callFeishuApiWithUserToken<{
             items?: Array<Record<string, unknown>>;
@@ -1026,64 +1051,110 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
             },
           });
           const items = res.data?.items ?? [];
-          log?.info(`[${account.accountId}] [bot-poll] ${chatId.slice(-8)}: API code=${res.code} items=${items.length} window=${now - botPollLastTime}s`);
-          if (res.code !== 0 || items.length === 0) continue;
+          if (res.code !== 0) continue;
 
-          let injected = 0;
+          // Scan all items, find the LATEST eligible bot message to inject (only 1).
+          // Agent sees full context via 20-message history injection — no need to
+          // trigger a separate agent run for every single bot message.
+          let latestEligible: { msg: Record<string, unknown>; msgId: string; msgType: string; bodyContent: string; senderOpenId: string; senderIdObj: Record<string, unknown> } | null = null;
+
           for (const item of items) {
             const msg = item as Record<string, unknown>;
             const sender = msg.sender as Record<string, unknown> | undefined;
             if (!sender || sender.sender_type !== "app") continue;
             const senderIdObj = sender.sender_id as Record<string, unknown> | undefined;
             const senderOpenId = (senderIdObj?.open_id as string) ?? "";
-            // Skip self
             if (senderOpenId === account.botOpenId || senderOpenId === account.appId) continue;
 
-            const msgId = (msg.msg_id ?? msg.message_id ?? "") as string;
+            const msgId = (msg.message_id ?? "") as string;
             const msgType = (msg.msg_type ?? "text") as string;
             const bodyContent = msg.body && (msg.body as Record<string, unknown>).content
               ? (msg.body as Record<string, unknown>).content as string
               : "";
 
-            // Skip card stream messages still streaming (⏳) — will retry next poll
             if (!bodyContent || bodyContent.includes('"⏳')) continue;
-            // Skip already-injected messages (finalized content won't change)
+            if (BOT_POLL_SKIP_PATTERNS.some((p) => bodyContent.includes(p))) {
+              injectedBotMsgIds.add(msgId);
+              continue;
+            }
             if (injectedBotMsgIds.has(msgId)) continue;
-            injectedBotMsgIds.add(msgId);
 
+            // Keep only the latest eligible message (items are sorted ByCreateTimeAsc)
+            latestEligible = { msg, msgId, msgType, bodyContent, senderOpenId, senderIdObj: senderIdObj ?? {} };
+          }
+
+          let injected = 0;
+          if (latestEligible) {
+            const { msgId, msgType, bodyContent, senderOpenId, senderIdObj } = latestEligible;
+            injectedBotMsgIds.add(msgId);
             log?.info(`[${account.accountId}] [bot-poll] injecting: msgId=${msgId.slice(-12)} type=${msgType} sender=${senderOpenId}`);
 
-            // Synthesize event data matching im.message.receive_v1 format
-            const syntheticData = {
+            void handleInboundMessage({
               message: {
                 message_id: msgId,
                 chat_id: chatId,
                 chat_type: "group",
                 message_type: msgType,
                 content: bodyContent,
-                create_time: msg.create_time ?? "",
-                parent_id: msg.parent_id ?? "",
-                mentions: msg.mentions ?? [],
+                create_time: latestEligible.msg.create_time ?? "",
+                parent_id: latestEligible.msg.parent_id ?? "",
+                mentions: latestEligible.msg.mentions ?? [],
               },
               sender: {
-                sender_id: senderIdObj ?? {},
+                sender_id: senderIdObj,
                 sender_type: "bot",
               },
-            };
-            // trackMessageId in handleInboundMessage will dedup if already processed
-            void handleInboundMessage(syntheticData, deps).catch((err) => {
+            }, deps).catch((err) => {
               log?.error(`[${account.accountId}] [bot-poll] handle error: ${String(err)}`);
+              botPollBackoffUntil = Date.now() + BOT_POLL_ERROR_BACKOFF_MS;
             });
-            injected++;
+            injected = 1;
           }
-          if (injected > 0) {
-            log?.info(`[${account.accountId}] [bot-poll] ${chatId.slice(-8)}: injected ${injected} bot message(s) into agent pipeline`);
+
+          // Discussion mode: leader heartbeat every 30s (not every poll cycle).
+          const isLeader = leaderAppId && leaderAppId === account.appId;
+          const nowMs = Date.now();
+          if (isLeader && injected === 0 && items.length === 0 && nowMs - lastLeaderHeartbeatTime >= LEADER_HEARTBEAT_INTERVAL_MS) {
+            lastLeaderHeartbeatTime = nowMs;
+            const heartbeatId = `heartbeat-${chatId}-${now}`;
+            log?.info(`[${account.accountId}] [bot-poll] ${chatId.slice(-8)}: leader heartbeat (30s, no new msgs)`);
+            void handleInboundMessage({
+              message: {
+                message_id: heartbeatId,
+                chat_id: chatId,
+                chat_type: "group",
+                message_type: "text",
+                content: JSON.stringify({ text: "[system: 讨论心跳 — 你是决策者，检查上下文判断是否需要推进讨论、激活参与者或结束]" }),
+                create_time: String(now * 1000),
+                parent_id: "",
+                mentions: [],
+              },
+              sender: {
+                sender_id: { open_id: "system" },
+                sender_type: "system",
+              },
+            }, deps).catch((err) => {
+              log?.error(`[${account.accountId}] [bot-poll] leader heartbeat error: ${String(err)}`);
+            });
           }
         } catch (err) {
           log?.warn(`[${account.accountId}] [bot-poll] error for ${chatId}: ${String(err)}`);
         }
       }
       botPollLastTime = now;
+
+      // GC: prevent dedup set from growing unbounded
+      if (injectedBotMsgIds.size > INJECTED_IDS_MAX_SIZE) {
+        const toDelete = injectedBotMsgIds.size - Math.floor(INJECTED_IDS_MAX_SIZE / 2);
+        const iter = injectedBotMsgIds.values();
+        for (let i = 0; i < toDelete; i++) iter.next();
+        // Keep only the newest half
+        const keep = new Set<string>();
+        for (const v of iter) keep.add(v);
+        injectedBotMsgIds.clear();
+        for (const v of keep) injectedBotMsgIds.add(v);
+        log?.info(`[${account.accountId}] [bot-poll] GC: pruned dedup set to ${injectedBotMsgIds.size}`);
+      }
     } catch (err) {
       log?.warn(`[${account.accountId}] bot-poll cycle error: ${String(err)}`);
     }
@@ -1800,6 +1871,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     const groupModeInfo = readGroupMode(chatId);
     currentGroupMode = groupModeInfo.mode;
     currentGroupModeContext = groupModeInfo.context;
+    if (groupModeInfo.leaderError) {
+      log?.warn(`[${account.accountId}] discussion mode rejected: ${groupModeInfo.leaderError} — falling back to owner-at. Her should rewrite group-modes file with valid leader_app_id (cli_xxx).`);
+    }
 
     // Slash commands (/new, /status, /reset, etc.) in group: only process if bot
     // was @mentioned. Without this, ALL bots in group/auto-reply mode would
@@ -1811,19 +1885,19 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       return;
     }
 
-    if (currentGroupMode === "group") {
-      // 👥群: ALL messages enter agent EXCEPT this bot's own messages.
-      // Opus decides whether to reply in group, private-chat owner, or stay silent.
+    if (currentGroupMode === "discussion") {
+      // 🗣️讨论: all messages enter agent (except self).
+      // Leader role is handled by the poller (always triggers leader even without new msgs).
       if (isSelfBot) {
-        log?.info(`[${account.accountId}] group mode: self-bot msg, skipping`);
+        log?.info(`[${account.accountId}] discussion mode: self-bot msg, skipping`);
         return;
       }
       if (isRateLimited(chatId)) {
-        log?.warn(`[${account.accountId}] group mode rate limited in ${chatId}, skipping`);
+        log?.warn(`[${account.accountId}] discussion mode rate limited in ${chatId}, skipping`);
         return;
       }
       log?.info(
-        `[${account.accountId}] group mode: ${isBotSender ? "bot" : "human"} msg from ${senderId} in ${chatId}, processing`,
+        `[${account.accountId}] discussion mode: ${isBotSender ? "bot" : "human"} msg from ${senderId} in ${chatId}, processing`,
       );
       // Fall through to agent processing
     } else if (currentGroupMode === "owner") {
@@ -2391,8 +2465,14 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     }
     // 3. Close streaming mode so "[生成中...]" clears.
     await cardStream.finalize(cardStreamFinalText);
-    // Record group reply for manager mode rate limiting
-    if (isGroup) recordGroupReply(chatId);
+    // Record group reply for rate limiting; trigger error cooldown if it was an error card
+    if (isGroup) {
+      if (cardStreamFinalText && /⚠️|API rate limit|rate_limit/.test(cardStreamFinalText)) {
+        recordGroupErrorReply(chatId);
+      } else {
+        recordGroupReply(chatId);
+      }
+    }
   };
 
   // Dispatch through the auto-reply pipeline and deliver response.
