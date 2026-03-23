@@ -1025,22 +1025,34 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
             },
           });
           const items = res.data?.items ?? [];
-          log?.info(`[${account.accountId}] [bot-poll] ${chatId.slice(-8)}: API code=${res.code} items=${items.length} window=${now - botPollLastTime}s`);
           if (res.code !== 0 || items.length === 0) continue;
+          log?.info(`[${account.accountId}] [bot-poll] ${chatId.slice(-8)}: ${items.length} message(s) in ${now - botPollLastTime}s window`);
 
           let injected = 0;
           for (const item of items) {
             const msg = item as Record<string, unknown>;
             const sender = msg.sender as Record<string, unknown> | undefined;
             if (!sender || sender.sender_type !== "app") continue;
-            const senderIdObj = sender.sender_id as Record<string, unknown> | undefined;
-            const senderOpenId = (senderIdObj?.open_id as string) ?? "";
-            // Skip self
-            if (senderOpenId === account.botOpenId || senderOpenId === account.appId) continue;
+            // API returns sender.id = app_id (cli_xxx), not nested sender_id.open_id
+            const senderAppId = (sender.id as string) ?? "";
+            if (!senderAppId || senderAppId === account.appId) continue; // skip self
 
-            const msgId = (msg.msg_id ?? msg.message_id ?? "") as string;
+            // Resolve app_id → bot open_id (ou_xxx) via knownBotOpenIds registry.
+            // This is critical: gateway uses open_id for sender name resolution,
+            // canonicalization, and isSelfBot checks. Using app_id would cause 400 errors.
+            let senderBotOpenId = "";
+            for (const [openId, mappedAppId] of Object.entries(account.knownBotOpenIds ?? {})) {
+              if (mappedAppId === senderAppId) { senderBotOpenId = openId; break; }
+            }
+            if (!senderBotOpenId) continue; // unknown bot, skip
+
+            const msgId = (msg.message_id ?? "") as string;
             const msgType = (msg.msg_type ?? "text") as string;
-            log?.info(`[${account.accountId}] [bot-poll] injecting: msgId=${msgId} type=${msgType} sender=${senderOpenId}`);
+            const bodyContent = msg.body && (msg.body as Record<string, unknown>).content
+              ? (msg.body as Record<string, unknown>).content as string
+              : "{}";
+
+            log?.info(`[${account.accountId}] [bot-poll] injecting: msgId=${msgId.slice(-12)} type=${msgType} from=${senderBotOpenId}`);
 
             // Synthesize event data matching im.message.receive_v1 format
             const syntheticData = {
@@ -1049,15 +1061,13 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
                 chat_id: chatId,
                 chat_type: "group",
                 message_type: msgType,
-                content: msg.body && (msg.body as Record<string, unknown>).content
-                  ? (msg.body as Record<string, unknown>).content as string
-                  : "{}",
+                content: bodyContent,
                 create_time: msg.create_time ?? "",
                 parent_id: msg.parent_id ?? "",
                 mentions: msg.mentions ?? [],
               },
               sender: {
-                sender_id: senderIdObj ?? {},
+                sender_id: { open_id: senderBotOpenId, app_id: senderAppId },
                 sender_type: "bot",
               },
             };
@@ -1617,7 +1627,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     `[${account.accountId}] inbound: chat=${chatId} from=${senderId} type=${chatType}${mediaPath ? (isAudioMedia ? " +audio" : " +image") : ""}`,
   );
   setStatus({ lastInboundAt: Date.now() });
-  const shouldCanonicalizeCurrentMessage = Boolean(
+  // Bot-polled messages have bot open_id as sender — Feishu message.get API
+  // would try to resolve it via user directory and fail with 400. Skip canonicalize.
+  const shouldCanonicalizeCurrentMessage = !isBotSender && Boolean(
     messageId &&
     (isGroup || parentId || (Array.isArray(message?.mentions) && message.mentions.length > 0)),
   );
@@ -1633,7 +1645,12 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     account,
   );
   let senderDisplayName: string | undefined;
-  try {
+  // Bot open_ids (ou_xxx for bots) are not in the user directory — contact.user.get
+  // returns 400. Use the name already resolved from knownBots config instead.
+  if (isBotSender && currentMessageActor.displayName) {
+    senderDisplayName = currentMessageActor.displayName;
+  }
+  if (!senderDisplayName) try {
     const nameResult = await resolveFeishuSenderName({ account, senderOpenId: senderId, log });
     senderDisplayName = nameResult.name;
     if (nameResult.permissionError) {
