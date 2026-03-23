@@ -255,7 +255,16 @@ async function listRooms(
   // oxlint-disable-next-line typescript/no-explicit-any
   const res: any = await client.vc.room.list({ params: { page_size: pageSize ?? 50, ...(pageToken ? { page_token: pageToken } : {}) } });
   if (res.code !== 0) throw new Error(res.msg ?? `vc.room.list failed: ${res.code}`);
-  return { rooms: (res.data?.rooms ?? []).map((r: any) => ({ room_id: r.room_id, name: r.name, capacity: r.capacity, building_name: r.room_config?.building_name })), has_more: res.data?.has_more, page_token: res.data?.page_token };
+  const allRooms = (res.data?.rooms ?? []).map((r: any) => ({
+    room_id: r.room_id,
+    name: r.name,
+    capacity: r.capacity,
+    description: r.description,
+    enabled: r.room_status?.status !== false,
+  }));
+  // Filter out disabled rooms (status=false means permanently disabled)
+  const activeRooms = allRooms.filter((r: any) => r.enabled);
+  return { rooms: activeRooms, has_more: res.data?.has_more, page_token: res.data?.page_token };
 }
 
 /** Check meeting room free/busy via tenant token. */
