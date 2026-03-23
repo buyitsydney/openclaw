@@ -653,6 +653,14 @@ console.log('opus contextWindow:', m?.contextWindow);
 | `update_event`       | 修改日程 + 追加参会人        | ✅ 已验证   |
 | `delete_event`       | 删除日程                     | ✅ 已验证   |
 | `check_freebusy`     | 查询任意同组织用户的忙闲     | ✅ 已验证   |
+| `list_rooms`         | 列出企业会议室（自动过滤禁用）| ✅ 已验证  |
+| `check_room_freebusy`| 查询会议室忙闲状态           | ✅ 已验证   |
+
+**会议室预定**：`create_event` 和 `update_event` 支持 `room_ids` 参数。飞书 API 要求两步：先创建事件，再通过 attendees API 以 `type: "resource"` 添加会议室。代码已封装为一步操作。
+
+**vchat**：`list_events` 和 `get_event` 返回 `vchat`（视频会议链接）和 `meeting_rooms` 字段。
+
+**已知行为**：事件用 user_access_token 创建时 organizer 是用户本人，飞书不会给 organizer 发日历通知。其他参会人正常收到通知。
 
 ### 已知限制（瑕疵）
 
