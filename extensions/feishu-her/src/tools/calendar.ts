@@ -50,6 +50,8 @@ function formatEvent(e: any) {
     recurrence: e.recurrence,
     reminders: e.reminders,
     app_link: e.app_link,
+    vchat: e.vchat,
+    meeting_rooms: e.meeting_rooms,
   };
 }
 
