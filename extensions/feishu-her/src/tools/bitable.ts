@@ -101,15 +101,17 @@ type UserBitableApiResult<TData> = {
 
 async function callBitableUserApi<TData>(params: {
   userToken: string;
-  method: "GET";
+  method: "GET" | "POST" | "PATCH" | "DELETE";
   endpoint: string;
   query?: Record<string, string>;
+  body?: Record<string, unknown>;
 }): Promise<UserBitableApiResult<TData>> {
   const result = await callFeishuApiWithUserToken<TData>({
     method: params.method,
     endpoint: params.endpoint,
     userToken: params.userToken,
     query: params.query,
+    body: params.body,
   });
   return {
     ok: result.code === 0,
@@ -301,6 +303,15 @@ async function listRecords(
   };
 }
 
+/** Normalize rich text arrays to plain strings (search API returns [{text:"...",type:"text"}] for Text fields). */
+// oxlint-disable-next-line typescript/no-explicit-any
+function normalizeRichText(value: any): any {
+  if (Array.isArray(value) && value.length > 0 && typeof value[0]?.text === "string" && value[0]?.type === "text") {
+    return value.map((s: { text: string }) => s.text).join("");
+  }
+  return value;
+}
+
 /** Coerce Number fields from string back to number (REST API returns strings for Number type). */
 function coerceRecordFields(
   // oxlint-disable-next-line typescript/no-explicit-any
@@ -308,12 +319,15 @@ function coerceRecordFields(
   numberFieldNames: Set<string>,
   // oxlint-disable-next-line typescript/no-explicit-any
 ): any {
-  if (!record?.fields || numberFieldNames.size === 0) return record;
+  if (!record?.fields) return record;
   const fields = { ...record.fields };
-  for (const name of numberFieldNames) {
-    if (typeof fields[name] === "string" && fields[name] !== "") {
-      const n = Number(fields[name]);
-      if (Number.isFinite(n)) fields[name] = n;
+  for (const key of Object.keys(fields)) {
+    // Normalize rich text arrays to plain strings
+    fields[key] = normalizeRichText(fields[key]);
+    // Coerce Number fields from string to number
+    if (numberFieldNames.has(key) && typeof fields[key] === "string" && fields[key] !== "") {
+      const n = Number(fields[key]);
+      if (Number.isFinite(n)) fields[key] = n;
     }
   }
   return { ...record, fields };
@@ -589,18 +603,146 @@ async function deleteRecords(
   return { deleted: recordIds.length };
 }
 
+async function searchRecordsByUser(
+  userToken: string,
+  appToken: string,
+  tableId: string,
+  // oxlint-disable-next-line typescript/no-explicit-any
+  opts: { filter?: any; sort?: string[]; pageSize?: number; pageToken?: string },
+) {
+  const numberFields = await getNumberFieldNames(userToken, appToken, tableId);
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const body: Record<string, any> = {};
+  // Filter: accept structured JSON object (Feishu native format)
+  // e.g. { conjunction: "and", conditions: [{ field_name: "Status", operator: "is", value: ["Done"] }] }
+  if (opts.filter) body.filter = typeof opts.filter === "string" ? JSON.parse(opts.filter) : opts.filter;
+  if (opts.sort?.length) {
+    body.sort = opts.sort.map((s) => {
+      const [field, order] = s.split(":");
+      return { field_name: field, desc: order === "desc" };
+    });
+  }
+  if (opts.pageSize) body.page_size = Math.min(opts.pageSize, 500);
+  if (opts.pageToken) body.page_token = opts.pageToken;
+  const res = await callBitableUserApi<BitableRecordListResponse>({
+    userToken,
+    method: "POST",
+    endpoint: `/bitable/v1/apps/${encodeURIComponent(appToken)}/tables/${encodeURIComponent(tableId)}/records/search`,
+    body,
+  });
+  if (!res.ok) throw new Error(res.msg);
+  const records = (res.data?.items ?? []).map((r) => coerceRecordFields(r, numberFields));
+  return {
+    records,
+    has_more: res.data?.has_more ?? false,
+    page_token: res.data?.page_token,
+    total: res.data?.total,
+  };
+}
+
+async function batchCreateRecords(
+  client: Lark.Client,
+  appToken: string,
+  tableId: string,
+  records: Array<{ fields: Record<string, unknown> }>,
+) {
+  if (records.length === 0) throw new Error("No records provided");
+  if (records.length > 500) throw new Error("Max 500 records per batch");
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const res: any = await client.bitable.appTableRecord.batchCreate({
+    path: { app_token: appToken, table_id: tableId },
+    // oxlint-disable-next-line typescript/no-explicit-any
+    data: { records: records as any },
+  });
+  if (res.code !== 0) throw new Error(res.msg);
+  return { records: res.data?.records ?? [], total: res.data?.records?.length ?? 0 };
+}
+
+async function batchUpdateRecords(
+  client: Lark.Client,
+  appToken: string,
+  tableId: string,
+  records: Array<{ record_id: string; fields: Record<string, unknown> }>,
+) {
+  if (records.length === 0) throw new Error("No records provided");
+  if (records.length > 500) throw new Error("Max 500 records per batch");
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const res: any = await client.bitable.appTableRecord.batchUpdate({
+    path: { app_token: appToken, table_id: tableId },
+    // oxlint-disable-next-line typescript/no-explicit-any
+    data: { records: records as any },
+  });
+  if (res.code !== 0) throw new Error(res.msg);
+  return { records: res.data?.records ?? [], total: res.data?.records?.length ?? 0 };
+}
+
+async function updateField(
+  client: Lark.Client,
+  appToken: string,
+  tableId: string,
+  fieldId: string,
+  fieldName?: string,
+  fieldType?: number,
+  property?: Record<string, unknown>,
+) {
+  // Auto-fill type and property from current field to avoid clearing options (Bug #7/#8)
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const currentRes: any = await client.bitable.appTableField.list({
+    path: { app_token: appToken, table_id: tableId },
+  });
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const currentField = currentRes.code === 0 ? currentRes.data?.items?.find((f: any) => f.field_id === fieldId) : null;
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const data: Record<string, any> = {};
+  data.field_name = fieldName ?? currentField?.field_name;
+  data.type = fieldType ?? currentField?.type;
+  // Preserve existing property (e.g. select options) if not explicitly overridden
+  data.property = property ?? currentField?.property;
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const res: any = await client.bitable.appTableField.update({
+    path: { app_token: appToken, table_id: tableId, field_id: fieldId },
+    data,
+  });
+  if (res.code !== 0) throw new Error(res.msg);
+  return {
+    field_id: res.data?.field?.field_id,
+    field_name: res.data?.field?.field_name,
+    type: res.data?.field?.type,
+    type_name: FIELD_TYPE_NAMES[res.data?.field?.type ?? 0] || `type_${res.data?.field?.type}`,
+  };
+}
+
+async function deleteField(
+  client: Lark.Client,
+  appToken: string,
+  tableId: string,
+  fieldId: string,
+) {
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const res: any = await client.bitable.appTableField.delete({
+    path: { app_token: appToken, table_id: tableId, field_id: fieldId },
+  });
+  if (res.code !== 0) throw new Error(res.msg);
+  return { deleted: true, field_id: fieldId };
+}
+
 // ── Schemas ──
 
 const BITABLE_ACTIONS = [
   "get_meta",
   "list_fields",
   "list_records",
+  "search_records",
   "get_record",
   "create_record",
+  "batch_create_records",
   "update_record",
+  "batch_update_records",
   "delete_records",
   "create_app",
   "create_field",
+  "update_field",
+  "delete_field",
 ] as const;
 
 const FeishuBitableSchema = Type.Object({
@@ -623,11 +765,15 @@ const FeishuBitableSchema = Type.Object({
   ),
   page_size: Type.Optional(Type.Number({ description: "Records per page 1-500 (default 100)" })),
   page_token: Type.Optional(Type.String({ description: "Pagination token" })),
-  record_ids: Type.Optional(Type.Array(Type.String(), { description: "Record IDs to delete (for delete_records)" })),
-  name: Type.Optional(Type.String({ description: "Name for create_app or field_name for create_field" })),
+  record_ids: Type.Optional(Type.Array(Type.String(), { description: "Record IDs for delete_records" })),
+  records: Type.Optional(Type.Array(Type.Any(), { description: "Array of {fields:{...}} for batch_create or {record_id,fields:{...}} for batch_update (max 500)" })),
+  name: Type.Optional(Type.String({ description: "Name for create_app, or field_name for create_field/update_field" })),
   folder_token: Type.Optional(Type.String({ description: "Folder token to create app in (optional)" })),
-  field_type: Type.Optional(Type.Number({ description: "Field type number for create_field (1=Text, 2=Number, 3=SingleSelect, etc.)" })),
-  field_property: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "Field property config for create_field (e.g. select options)" })),
+  field_id: Type.Optional(Type.String({ description: "Field ID for update_field/delete_field" })),
+  field_type: Type.Optional(Type.Number({ description: "Field type: 1=Text, 2=Number, 3=SingleSelect, 4=MultiSelect, 5=DateTime, 7=Checkbox, 11=User, 13=Phone, 15=URL, 17=Attachment, 22=Location, 1005=AutoNumber" })),
+  field_property: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "Field property config (e.g. select options)" })),
+  filter: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: 'Filter for search_records. Feishu structured format: { conjunction: "and", conditions: [{ field_name: "Status", operator: "is", value: ["Done"] }] }. Operators: is, isNot, contains, doesNotContain, isEmpty, isNotEmpty, isGreater, isLess, etc.' })),
+  sort: Type.Optional(Type.Array(Type.String(), { description: 'Sort for search_records. Array of "field_name:asc" or "field_name:desc"' })),
 });
 
 // ── Registration ──
@@ -644,7 +790,7 @@ export function registerFeishuBitableTools(api: OpenClawPluginApi) {
       name: "feishu_bitable",
       label: "Feishu Bitable",
       description:
-        "Feishu multi-dimensional table operations. Actions: get_meta, list_fields, list_records, get_record, create_record, update_record, delete_records, create_app, create_field",
+        "Feishu multi-dimensional table (bitable) full CRUD. Actions: get_meta, list_fields, list_records, search_records, get_record, create_record, batch_create_records, update_record, batch_update_records, delete_records, create_app, create_field, update_field, delete_field",
       parameters: FeishuBitableSchema,
       // oxlint-disable-next-line typescript/no-explicit-any
       async execute(_toolCallId: string, params: any) {
@@ -709,6 +855,26 @@ export function registerFeishuBitableTools(api: OpenClawPluginApi) {
                   params.fields,
                 ),
               );
+            case "search_records": {
+              const guard = await requireReadAccess();
+              if (!guard.ok) return guard.authResponse;
+              return json(
+                await searchRecordsByUser(guard.token.access_token, params.app_token, params.table_id, {
+                  filter: params.filter,
+                  sort: params.sort,
+                  pageSize: params.page_size,
+                  pageToken: params.page_token,
+                }),
+              );
+            }
+            case "batch_create_records":
+              return json(
+                await batchCreateRecords(client, params.app_token, params.table_id, params.records),
+              );
+            case "batch_update_records":
+              return json(
+                await batchUpdateRecords(client, params.app_token, params.table_id, params.records),
+              );
             case "delete_records":
               return json(
                 await deleteRecords(client, params.app_token, params.table_id, params.record_ids),
@@ -725,6 +891,22 @@ export function registerFeishuBitableTools(api: OpenClawPluginApi) {
                   params.field_type,
                   params.field_property,
                 ),
+              );
+            case "update_field":
+              return json(
+                await updateField(
+                  client,
+                  params.app_token,
+                  params.table_id,
+                  params.field_id,
+                  params.name,
+                  params.field_type,
+                  params.field_property,
+                ),
+              );
+            case "delete_field":
+              return json(
+                await deleteField(client, params.app_token, params.table_id, params.field_id),
               );
             default:
               return json({ error: `Unknown action: ${params.action}` });
