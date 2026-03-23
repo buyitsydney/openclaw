@@ -622,13 +622,16 @@ async function searchRecordsByUser(
       return { field_name: field, desc: order === "desc" };
     });
   }
-  if (opts.pageSize) body.page_size = Math.min(opts.pageSize, 500);
-  if (opts.pageToken) body.page_token = opts.pageToken;
+  // page_size and page_token go as query params, not body (Feishu search API requirement)
+  const query: Record<string, string> = {};
+  if (opts.pageSize) query.page_size = String(Math.min(opts.pageSize, 500));
+  if (opts.pageToken) query.page_token = opts.pageToken;
   const res = await callBitableUserApi<BitableRecordListResponse>({
     userToken,
     method: "POST",
     endpoint: `/bitable/v1/apps/${encodeURIComponent(appToken)}/tables/${encodeURIComponent(tableId)}/records/search`,
     body,
+    query: Object.keys(query).length > 0 ? query : undefined,
   });
   if (!res.ok) throw new Error(res.msg);
   const records = (res.data?.items ?? []).map((r) => coerceRecordFields(r, numberFields));
