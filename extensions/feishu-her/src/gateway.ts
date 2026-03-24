@@ -144,40 +144,47 @@ function readGroupMode(chatId: string): GroupModeInfo {
   }
 }
 
-// ── Group bot member cache (chatId → Set<open_id>) ────────────────────────
-const groupBotMemberCache = new Map<string, { openIds: Set<string>; ts: number }>();
-const GROUP_BOT_CACHE_TTL_MS = 5 * 60_000; // 5 min cache, refreshable via tool
-
-async function getGroupBotOpenIds(
+/** Extract bot open_ids from already-fetched group history messages (zero extra API calls).
+ * Scans senders + mentions to find known bots active in this group. */
+function extractGroupBotOpenIds(
+  // oxlint-disable-next-line typescript/no-explicit-any
+  messages: any[],
   account: ResolvedFeishuAccount,
-  chatId: string,
-): Promise<Set<string>> {
-  const cached = groupBotMemberCache.get(chatId);
-  if (cached && Date.now() - cached.ts < GROUP_BOT_CACHE_TTL_MS) return cached.openIds;
-  try {
-    const result = await callChatApi<{ items?: Array<{ member_id?: string; member_id_type?: string; name?: string }> }>({
-      account,
-      method: "GET",
-      endpoint: `/im/v1/chats/${chatId}/members`,
-      query: { member_id_type: "open_id", page_size: 100 },
-    });
-    const openIds = new Set<string>();
-    const knownOpenIds = account.knownBotOpenIds ?? {};
-    for (const item of result.data?.items ?? []) {
-      const id = item.member_id?.trim();
-      // Only include members that are known bots (exist in knownBotOpenIds)
-      if (id && id in knownOpenIds) openIds.add(id);
-    }
-    groupBotMemberCache.set(chatId, { openIds, ts: Date.now() });
-    return openIds;
-  } catch {
-    return new Set();
-  }
-}
+): Set<string> {
+  const knownBots = account.knownBots ?? {};
+  const knownOpenIds = account.knownBotOpenIds ?? {};
+  const result = new Set<string>();
 
-/** Force refresh group bot cache (called by feishu_bot_directory tool) */
-export function refreshGroupBotCache(chatId: string): void {
-  groupBotMemberCache.delete(chatId);
+  for (const m of messages) {
+    // Check sender: bot senders have sender_type === "bot"
+    if (m.sender_type === "bot") {
+      const senderId = m.sender_id?.trim();
+      if (senderId) {
+        // sender_id can be app_id (cli_xxx) or open_id (ou_xxx)
+        if (senderId.startsWith("ou_") && senderId in knownOpenIds) {
+          result.add(senderId);
+        } else if (senderId.startsWith("cli_") && senderId in knownBots) {
+          // Resolve app_id → open_id via reverse lookup
+          for (const [openId, appId] of Object.entries(knownOpenIds)) {
+            if (appId === senderId) { result.add(openId); break; }
+          }
+        }
+      }
+    }
+    // Check mentions: @bot references also reveal bots in the group
+    for (const mention of m.mentions ?? []) {
+      const id = mention.id?.trim();
+      if (!id) continue;
+      if (id.startsWith("cli_") && id in knownBots) {
+        for (const [openId, appId] of Object.entries(knownOpenIds)) {
+          if (appId === id) { result.add(openId); break; }
+        }
+      } else if (id.startsWith("ou_") && id in knownOpenIds) {
+        result.add(id);
+      }
+    }
+  }
+  return result;
 }
 
 // ── Manager mode rate limiter (sliding window) ───────────────────────────
@@ -2098,11 +2105,8 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // Uses tenant_access_token (no user OAuth needed) for the /im/v1/messages API.
   // Aligns with upstream's 20-message default (DEFAULT_MESSAGE_LIMIT).
   const GROUP_INJECT_LIMIT = 20;
-  // For group chats: fetch bot members to inject into [Bot Identity]
-  const groupBotOpenIds = isGroup ? await getGroupBotOpenIds(account, chatId) : undefined;
   let promptContextPrefix = buildFeishuBotIdentityBlock(account, {
     focusText: enrichedBody,
-    groupMemberOpenIds: groupBotOpenIds,
   });
   if (isGroup) {
     try {
@@ -2118,6 +2122,8 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       });
       if (result.messages.length > 0) {
         const chronological = [...result.messages].reverse();
+        // Extract active bots from history (zero extra API calls)
+        const groupBotOpenIds = extractGroupBotOpenIds(result.messages, account);
         const lines = chronological.map((m) => {
           return renderFeishuRecentContextLine({
             messageId: m.message_id,

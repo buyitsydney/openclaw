@@ -7,8 +7,7 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { stringEnum } from "openclaw/plugin-sdk";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
-import { refreshGroupBotCache } from "../gateway.js";
-import { callChatApi } from "./chat-api.js";
+import { getTenantAccessToken, fetchChatHistory } from "./chat-history.js";
 
 function json(data: unknown) {
   return {
@@ -34,26 +33,47 @@ function listAllBots(account: ResolvedFeishuAccount): BotEntry[] {
   return bots;
 }
 
+/** Detect bots active in a group by scanning recent message history.
+ * Feishu's member API excludes bots, so history is the only reliable source. */
 async function listGroupBots(
   account: ResolvedFeishuAccount,
   chatId: string,
 ): Promise<BotEntry[]> {
-  // Force refresh cache
-  refreshGroupBotCache(chatId);
-  const result = await callChatApi<{ items?: Array<{ member_id?: string; name?: string }> }>({
-    account,
-    method: "GET",
-    endpoint: `/im/v1/chats/${chatId}/members`,
-    query: { member_id_type: "open_id", page_size: 100 },
+  const token = await getTenantAccessToken(account);
+  const now = Date.now();
+  const result = await fetchChatHistory({
+    account, token, chatId,
+    startMs: now - 24 * 60 * 60 * 1000, // 24h window for broader coverage
+    endMs: now,
+    limit: 50,
   });
-  const knownOpenIds = account.knownBotOpenIds ?? {};
+
   const knownBots = account.knownBots ?? {};
+  const knownOpenIds = account.knownBotOpenIds ?? {};
+  const appIdToOpenId = new Map<string, string>();
+  for (const [openId, appId] of Object.entries(knownOpenIds)) {
+    appIdToOpenId.set(appId.trim(), openId.trim());
+  }
+
+  const seen = new Set<string>();
   const bots: BotEntry[] = [];
-  for (const item of result.data?.items ?? []) {
-    const openId = item.member_id?.trim();
-    if (!openId) continue;
-    const appId = knownOpenIds[openId];
-    if (appId) {
+  for (const m of result.messages) {
+    if (m.sender_type !== "bot") continue;
+    const senderId = m.sender_id?.trim();
+    if (!senderId || seen.has(senderId)) continue;
+
+    let appId: string | undefined;
+    let openId: string | undefined;
+    if (senderId.startsWith("cli_") && senderId in knownBots) {
+      appId = senderId;
+      openId = appIdToOpenId.get(senderId);
+    } else if (senderId.startsWith("ou_") && senderId in knownOpenIds) {
+      openId = senderId;
+      appId = knownOpenIds[senderId];
+    }
+    if (appId && !seen.has(appId)) {
+      seen.add(appId);
+      seen.add(senderId);
       bots.push({ name: knownBots[appId] ?? appId, appId, openId });
     }
   }
