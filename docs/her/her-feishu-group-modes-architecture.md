@@ -300,3 +300,37 @@ gateway 在 agent prompt 中注入两层信息：
 - 飞书 `im.message.receive_v1` 不推送 bot 消息给其他 bot
 - bot 消息通过注入的群历史上下文（20 条）可见，延迟到下一次人类消息触发
 - 99% 场景是人类驱动，此限制影响极小
+- 飞书 `/im/v1/chats/{chat_id}/members` API 不返回 bot 成员（平台限制，官方文档明确）
+
+---
+
+## Known Bots 架构设计
+
+### 问题
+
+群历史消息注入 context 时格式为 `Feishu message from tester2 (ou_xxx) at 15:00: 你好`。AI 需要知道 `ou_xxx` 是哪个 bot 才能理解消息来源和构造 @mention。200 个 bot 全量注入 prompt 会浪费 ~8K token。
+
+### 三层架构
+
+**第 0 层：从群历史消息自动提取活跃 bot（零额外 API 调用）**
+
+gateway 每次群消息处理时已获取 20 条群历史。扫描 `sender_type="app"` 的消息与 knownBots 交叉匹配，注入 `[Bot Identity]` 的"同群 bot"段。bot 在群里说一句话 → 下一条消息时所有 bot 自动识别它。
+
+**第 1 层：`feishu_bot_directory` tool（按需调用）**
+
+- `group_bots`：24h/50 条群历史扫描群内活跃 bot
+- `search`：按名字模糊搜索全部 bot
+- `list`：分页列表全部 bot（20/页）
+
+**第 2 层：knownBots config（静态注册表，不进 prompt）**
+
+`start-user.sh` 从 `users.csv` 自动生成全量 bot 映射，仅作内存查找表。
+
+### 现状（2026-03-24）
+
+| 项目 | 本地 Mac | 线上 S1（78 bot） |
+|---|---|---|
+| knownBots | ✅ 5 bot | ✅ 73-77 bot |
+| knownBotOpenIds | ✅ 5 bot | ❌ 全空（CSV 未填） |
+| 群历史 bot 检测 | ✅ 已实现验证 | 待部署 |
+| bot_directory tool | ✅ 已实现验证 | 待部署 |
