@@ -3,6 +3,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { stringEnum } from "openclaw/plugin-sdk";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import { callChatApi, makeLocalErrorResult, makeToolResult } from "./chat-api.js";
+import { getTenantAccessToken, fetchChatHistory } from "./chat-history.js";
 
 const MEMBER_ACTIONS = ["list", "add", "remove", "is_in_chat", "add_managers"] as const;
 const MEMBER_ID_TYPES = ["open_id", "user_id", "union_id", "app_id"] as const;
@@ -84,6 +85,16 @@ export function registerFeishuChatMemberTools(api: OpenClawPluginApi) {
                 page_token: params.page_token,
               },
             });
+            // Feishu API excludes bot members — append bots from group history
+            const botsInGroup = await detectGroupBots(account, params.chat_id);
+            if (botsInGroup.length > 0 || result.data) {
+              const data = result.data ?? {};
+              // oxlint-disable-next-line typescript/no-explicit-any
+              (data as any).bots_in_group = botsInGroup;
+              // oxlint-disable-next-line typescript/no-explicit-any
+              (data as any).bot_note =
+                "飞书 API 不返回 bot 成员。以上 bots_in_group 基于近 24h 群消息活跃记录，不一定齐全。用 feishu_bot_directory search 按名字搜索完整 bot 信息。";
+            }
             return makeToolResult(result);
           }
           case "add": {
@@ -140,4 +151,63 @@ export function registerFeishuChatMemberTools(api: OpenClawPluginApi) {
     { name: "feishu_chat_members" },
   );
   api.logger.info?.("feishu: registered feishu_chat_members tool");
+}
+
+/** Detect bots active in a group by scanning 24h message history. */
+async function detectGroupBots(
+  account: ResolvedFeishuAccount,
+  chatId: string,
+): Promise<Array<{ name: string; app_id: string; bot_open_id?: string; member_type: "bot" }>> {
+  try {
+    const token = await getTenantAccessToken(account);
+    const now = Date.now();
+    const result = await fetchChatHistory({
+      account,
+      token,
+      chatId,
+      startMs: now - 24 * 60 * 60 * 1000,
+      endMs: now,
+      limit: 50,
+    });
+    const knownBots = account.knownBots ?? {};
+    const knownOpenIds = account.knownBotOpenIds ?? {};
+    const appIdToOpenId = new Map<string, string>();
+    for (const [openId, appId] of Object.entries(knownOpenIds)) {
+      appIdToOpenId.set(appId.trim(), openId.trim());
+    }
+    const seen = new Set<string>();
+    const bots: Array<{ name: string; app_id: string; bot_open_id?: string; member_type: "bot" }> = [];
+    for (const m of result.messages) {
+      const isBot =
+        m.sender_actor_kind === "bot" || m.sender_type === "app" || m.sender_type === "bot";
+      if (!isBot) continue;
+      const senderId = m.sender_id?.trim();
+      if (!senderId || seen.has(senderId)) continue;
+      // sender_id is typically cli_xxx (app_id) for bots
+      if (senderId.startsWith("cli_") && senderId in knownBots && !seen.has(senderId)) {
+        seen.add(senderId);
+        bots.push({
+          name: knownBots[senderId],
+          app_id: senderId,
+          bot_open_id: appIdToOpenId.get(senderId),
+          member_type: "bot",
+        });
+      } else if (senderId.startsWith("ou_") && senderId in knownOpenIds) {
+        const appId = knownOpenIds[senderId];
+        if (!seen.has(appId)) {
+          seen.add(appId);
+          seen.add(senderId);
+          bots.push({
+            name: knownBots[appId] ?? appId,
+            app_id: appId,
+            bot_open_id: senderId,
+            member_type: "bot",
+          });
+        }
+      }
+    }
+    return bots;
+  } catch {
+    return [];
+  }
 }
