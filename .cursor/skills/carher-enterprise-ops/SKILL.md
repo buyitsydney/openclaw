@@ -245,12 +245,41 @@ scp docker/servers.txt cltx@IP:/Data/CarHer/docker/servers.txt
 
 每次添加新用户，严格按此清单：
 
-1. 服务器 CSV 添行（9 列，末尾逗号）→ `./start-user.sh --id=N`
-2. 验证容器 config：App ID/Secret、models providers、groups、gateway dangerously\* 配置
-3. 确认 WSClient connected
-4. 更新本地 Mac `docker/servers.txt` → scp 同步到所有服务器
-5. 通知 IT：配置长连接 → 添加事件 `im.message.receive_v1` → 第二次发布
-6. 用户首次对话后：从 session 日志提取 open_id → 更新 CSV → 重建（先检查活跃！）→ 验证 `dm.allowFrom`
+1. 服务器 CSV 添行（10 列）→ `./start-user.sh --id=N`
+2. 获取 bot open_id：用 `/bot/v3/info` API（参考下方脚本）→ 回填 CSV 第 10 列 `feishu_bot_open_id`
+3. **同步到所有服务器**的 CSV（S1/S2/S3 各有独立副本，缺一不可）
+4. 验证容器 config：App ID/Secret、models providers、groups、gateway dangerously\* 配置
+5. 确认 WSClient connected
+6. 更新本地 Mac `docker/servers.txt` → scp 同步到所有服务器
+7. 通知 IT：配置长连接 → 添加事件 `im.message.receive_v1` → 第二次发布
+8. 用户首次对话后：从 session 日志提取 open_id → 更新 CSV → 重建（先检查活跃！）→ 验证 `dm.allowFrom`
+
+**新 bot 加入后其他容器如何感知？**
+- 群消息历史检测：新 bot 在群里说话后，其他 bot 下一次处理群消息时自动从历史中发现它 ✅
+- knownBots config：旧容器的 knownBots 在启动时从 CSV 生成，新 bot 不在其中 → **旧容器需要逐批重启**才能在 knownBots 里看到新 bot
+- 未来优化：将 knownBots 改成运行时从共享文件读取，可实现零重启动态更新
+
+**批量获取 bot open_id 脚本（在任一服务器运行）：**
+```bash
+python3 -c '
+import csv, json, urllib.request
+with open("/Data/CarHer/docker/users.csv") as f:
+    for row in csv.reader(f):
+        if row[0].startswith("#") or not row[3].strip(): continue
+        app_id, app_secret = row[3].strip(), row[4].strip()
+        try:
+            data = json.dumps({"app_id": app_id, "app_secret": app_secret}).encode()
+            req = urllib.request.Request("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+                data=data, headers={"Content-Type": "application/json"})
+            token = json.load(urllib.request.urlopen(req))["tenant_access_token"]
+            req2 = urllib.request.Request("https://open.feishu.cn/open-apis/bot/v3/info",
+                headers={"Authorization": "Bearer " + token})
+            bot = json.load(urllib.request.urlopen(req2))["bot"]
+            print(f"{row[0]},{row[1]},{app_id},{bot[\"open_id\"]}")
+        except Exception as e:
+            print(f"{row[0]},{row[1]},{app_id},ERROR:{e}")
+'
+```
 
 ### 群聊 vs 单聊判断
 
