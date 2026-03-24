@@ -233,11 +233,13 @@ auto-reply 过滤所有 bot 消息，只响应各自主人。**零风暴风险�
 gateway 在 agent prompt 中注入两层信息：
 
 **不可编辑（hardcoded per mode）：**
+
 - auto-reply: "只响应主人的消息"
 - at-reply: "任何人@你都回复。注意：你使用主人的权限，搜索结果可能包含主人的私人信息，不要泄露"
 - group: "自己判断群里回复还是私聊主人。不要在群里泄露主人的私聊内容"
 
 **可编辑（用户通过 her 更新 context 字段）：**
+
 - 用户说"只关注股票" → context 写入 → 注入 `主人指示: 只关注股票`
 - 用户说"不用特别关注" → context 清空
 
@@ -249,43 +251,48 @@ gateway 在 agent prompt 中注入两层信息：
 
 ## 实现状态
 
-| 内容 | 状态 |
-|------|------|
-| gateway readGroupMode + auto-reply | ✅ |
-| at-reply 模式 | ✅ |
-| group 模式（isSelfBot + 熔断） | ✅ |
-| feishu-group-mode skill（四种模式） | ✅ |
-| context 字段注入 + hardcoded 安全规则 | ✅ |
-| block 重复回复 fix | ✅ |
-| 灰度部署 docker13/14/42/43/66 + docker1/2/4 | ✅ |
+| 内容                                        | 状态 |
+| ------------------------------------------- | ---- |
+| gateway readGroupMode + auto-reply          | ✅   |
+| at-reply 模式                               | ✅   |
+| group 模式（isSelfBot + 熔断）              | ✅   |
+| feishu-group-mode skill（四种模式）         | ✅   |
+| context 字段注入 + hardcoded 安全规则       | ✅   |
+| block 重复回复 fix                          | ✅   |
+| 灰度部署 docker13/14/42/43/66 + docker1/2/4 | ✅   |
 
 ### 测试记录（2026-03-21，本地 carher-1 tester + carher-101 tester2）
 
 **模式切换：**
+
 - default → auto-reply → at-reply → group → default 全流程 ✅
 - 自然语言切换（"自动回复"/"开放艾特"/"群聊模式"/"恢复默认"）✅
 - 写 group-modes 文件 + context 字段 ✅
 - 下一条消息立即生效 ✅
 
 **四种模式行为：**
+
 - default：主人 @才回复，非主人 @静默 ✅
 - auto-reply：主人不 @也触发，非主人不触发 ✅
 - at-reply：任何人 @都回复 ✅
 - group：所有人消息触发 agent，agent 自己判断回复方式 ✅
 
 **context 注入：**
+
 - hardcoded 安全规则正确注入（per mode 不同） ✅
 - 用户自定义 context 动态更新 ✅
 - 切换模式时 context 可保留或清空 ✅
 - agent 能看到注入的 mode + context + target 信息 ✅
 
 **安全：**
+
 - isSelfBot 过滤（自己发的消息不触发自己）✅
 - 滑动窗口熔断 ✅
 - 注入攻击防护 ✅
 - 非主人 auto-reply 不触发 ✅
 
 **搜索工具全面回归（R31）：**
+
 - tester: 6 个搜索工具全通过 ✅
 - tester2: 审计报告 2189 chars ✅
 
@@ -295,12 +302,32 @@ gateway 在 agent prompt 中注入两层信息：
 2. **her 误解模式名**：部分 her 把"群聊模式"理解成"默认模式"导致切换失败。已通过更新 skill 描述（四种模式表格 + 意图映射表）改善。
 3. **切换后当前消息用旧 context**：her 在 agent run 中写文件，当前 run 的 context 注入已完成。下一条消息才生效。正常竞态。
 
+### Discussion 模式现状（2026-03-24）
+
+**已完成：**
+
+- Redis 共享状态：leader 选举 + 参与者 Lease 注册（discussion-state.ts 独立模块）
+- set_discussion_leader tool：Her 可通过工具切换 leader，所有容器通过 Redis 立即同步
+- Self-message fix：bot-poll 正确识别自己的消息不再注入（修复 sender.id 匹配）
+- 启动 warmup：容器重启时标记已有消息为"已见"，不重复处理旧消息
+- isSyntheticMessage：heartbeat 合成消息跳过飞书 API 调用（ACK/card stream/sender resolve）
+- Context 注入区分 leader/participant 角色
+- Footer 显示讨论模式 + leader 👑 标识
+- 错误卡片循环防护（skip patterns + error cooldown）
+
+**待解决（Phase 2）：**
+
+1. **双发问题（最严重）**：讨论中每条 bot 消息 + heartbeat 都触发独立 agent run，session lane 串行处理导致 leader 连发多条回复。需要控制注入频率：一次只触发一条，等 agent run 完成后再触发下一条。
+2. **进入讨论模式不确定**：当前依赖 Her/Skill 触发写文件，不同 bot 可能不触发。需要代码级 @mention 自动切换。
+3. **自动退出**：讨论结束后残留 discussion 模式，需要超时自动退回 owner-at。
+4. **Heartbeat 占 session lane**：heartbeat 和正常消息竞争同一个 session lane，加剧双发。需要改为仅在真正沉寂时触发，且不与正常消息并发。
+
 ### 已知限制
 
 - 飞书 `im.message.receive_v1` 不推送 bot 消息给其他 bot
-- bot 消息通过注入的群历史上下文（20 条）可见，延迟到下一次人类消息触发
-- 99% 场景是人类驱动，此限制影响极小
+- bot 消息通过 bot-poll 轮询群历史注入（10s 间隔），延迟 10-20s
 - 飞书 `/im/v1/chats/{chat_id}/members` API 不返回 bot 成员（平台限制，官方文档明确）
+- OpenClaw session lane 串行处理消息，无法合并或取消排队中的 agent run
 
 ---
 
@@ -328,13 +355,13 @@ gateway 每次群消息处理时已获取 20 条群历史。扫描 `sender_type=
 
 ### 现状（2026-03-24）
 
-| 项目 | 本地 Mac | 线上灰度（docker13/14/75） | 线上全量（78 bot） |
-|---|---|---|---|
-| knownBots | ✅ 5 bot | ✅ 3 bot 互认 | ✅ 73-77 bot |
-| knownBotOpenIds | ✅ 5 bot | ✅ 3 bot 互认 | ❌ 待批量获取 |
-| 群历史 bot 检测 | ✅ | ✅ 灰度验证通过 | 待部署 |
-| bot_directory tool | ✅ | ✅ 灰度验证通过 | 待部署 |
-| chat_members 含 bot | ✅ | ✅ 灰度验证通过 | 待部署 |
+| 项目                | 本地 Mac | 线上灰度（docker13/14/75） | 线上全量（78 bot） |
+| ------------------- | -------- | -------------------------- | ------------------ |
+| knownBots           | ✅ 5 bot | ✅ 3 bot 互认              | ✅ 73-77 bot       |
+| knownBotOpenIds     | ✅ 5 bot | ✅ 3 bot 互认              | ❌ 待批量获取      |
+| 群历史 bot 检测     | ✅       | ✅ 灰度验证通过            | 待部署             |
+| bot_directory tool  | ✅       | ✅ 灰度验证通过            | 待部署             |
+| chat_members 含 bot | ✅       | ✅ 灰度验证通过            | 待部署             |
 
 ### 新 bot 加入流程
 
