@@ -133,7 +133,7 @@ function readGroupMode(chatId: string): GroupModeInfo {
     const leaderAppId = rawLeader.startsWith("cli_") ? rawLeader : undefined;
     // discussion mode requires leader_app_id — if missing/invalid, fall back to owner-at
     if (mode === "discussion" && !leaderAppId) {
-      return { mode: "owner-at", context, leaderError: `invalid leader_app_id: "${rawLeader || "(missing)}"` };
+      return { mode: "owner-at", context, leaderError: "invalid leader_app_id: " + (rawLeader || "(missing)") };
     }
     return { mode, context, leaderAppId };
   } catch {
@@ -252,7 +252,7 @@ function formatResetTime(unixStr: string | null): string {
   const diffMin = Math.round((d.getTime() - now) / 60000);
   const hh = d.getHours().toString().padStart(2, "0");
   const mm = d.getMinutes().toString().padStart(2, "0");
-  const md = `${d.getMonth() + 1}/${d.getDate()}`;
+  const md = String(d.getMonth() + 1) + "/" + String(d.getDate());
   const time = `${hh}:${mm}`;
   if (diffMin <= 0) return `${md} ${time}（已过）`;
   if (diffMin < 60) return `${time}（${diffMin}分钟后）`;
@@ -980,7 +980,6 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
   // Anti-storm: existing rate limiter (5 replies/60s) + error-card filter + backoff.
   const BOT_POLL_INTERVAL_MS = 10_000;
   const BOT_POLL_ERROR_BACKOFF_MS = 120_000; // pause polling 2min after agent errors
-  let botPollLastTime = Math.floor(Date.now() / 1000);
   let botPollBackoffUntil = 0; // timestamp(ms): skip polling until this time
   const injectedBotMsgIds = new Set<string>(); // dedup: only inject each finalized msg once
   const INJECTED_IDS_MAX_SIZE = 500; // GC threshold to prevent memory leak
@@ -989,9 +988,11 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
   log?.info(`[${account.accountId}] [bot-poll] starting poller (interval=${BOT_POLL_INTERVAL_MS}ms)`);
 
   // Patterns in bot cards that should never be re-injected into agent pipeline
-  const BOT_POLL_SKIP_PATTERNS = ["⚠️", "API rate limit", "rate_limit", "error occurred", "请稍后再试", "我是你的 AI 助手", "你好！"];
-  const LEADER_HEARTBEAT_INTERVAL_MS = 30_000; // leader heartbeat every 30s, not every poll
+  const BOT_POLL_SKIP_PATTERNS = ["⚠️", "API rate limit", "rate_limit", "error occurred", "请稍后再试", "我是你的 AI 助手", "你好！", "New session started", "Agent was aborted", "compacted"];
+  const LEADER_HEARTBEAT_INTERVAL_MS = 30_000;
+  const LEADER_HEARTBEAT_MAX_IDLE = 3; // stop heartbeat after 3 rounds (~90s) without new bot messages
   let lastLeaderHeartbeatTime = 0;
+  let leaderIdleRounds = 0; // reset to 0 when new bot message is injected
 
   const botPollTimer = setInterval(async () => {
     try {
@@ -1035,6 +1036,9 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
 
       for (const { chatId, leaderAppId } of pollTargets) {
         try {
+          // Pull latest 20 messages (no time window). Dedup via injectedBotMsgIds.
+          // This avoids the card-stream timing bug: create_time is set at card
+          // creation (⏳), not at finalize, so time-window polling misses finalized cards.
           const res = await callFeishuApiWithUserToken<{
             items?: Array<Record<string, unknown>>;
           }>({
@@ -1044,19 +1048,18 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
             query: {
               container_id_type: "chat",
               container_id: chatId,
-              start_time: String(botPollLastTime),
-              end_time: String(now),
-              sort_type: "ByCreateTimeAsc",
-              page_size: "50",
+              sort_type: "ByCreateTimeDesc",
+              page_size: "20",
             },
           });
           const items = res.data?.items ?? [];
           if (res.code !== 0) continue;
 
-          // Scan all items, find the LATEST eligible bot message to inject (only 1).
-          // Agent sees full context via 20-message history injection — no need to
-          // trigger a separate agent run for every single bot message.
-          let latestEligible: { msg: Record<string, unknown>; msgId: string; msgType: string; bodyContent: string; senderOpenId: string; senderIdObj: Record<string, unknown> } | null = null;
+          // Scan all items (sorted ByCreateTimeDesc = newest first).
+          // Mark all bot messages as seen. Only inject the NEWEST unseen one.
+          // Agent sees full context via 20-message history injection on each run —
+          // no need to replay old messages, just trigger one agent run with the latest.
+          let newestUnseen: { msg: Record<string, unknown>; msgId: string; msgType: string; bodyContent: string; senderOpenId: string; senderIdObj: Record<string, unknown> } | null = null;
 
           for (const item of items) {
             const msg = item as Record<string, unknown>;
@@ -1079,14 +1082,16 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
             }
             if (injectedBotMsgIds.has(msgId)) continue;
 
-            // Keep only the latest eligible message (items are sorted ByCreateTimeAsc)
-            latestEligible = { msg, msgId, msgType, bodyContent, senderOpenId, senderIdObj: senderIdObj ?? {} };
+            // First unseen = newest (items sorted desc). Take it, mark all others as seen.
+            if (!newestUnseen) {
+              newestUnseen = { msg, msgId, msgType, bodyContent, senderOpenId, senderIdObj: senderIdObj ?? {} };
+            }
+            injectedBotMsgIds.add(msgId); // mark ALL unseen as seen so they won't trigger next round
           }
 
           let injected = 0;
-          if (latestEligible) {
-            const { msgId, msgType, bodyContent, senderOpenId, senderIdObj } = latestEligible;
-            injectedBotMsgIds.add(msgId);
+          if (newestUnseen) {
+            const { msgId, msgType, bodyContent, senderOpenId, senderIdObj } = newestUnseen;
             log?.info(`[${account.accountId}] [bot-poll] injecting: msgId=${msgId.slice(-12)} type=${msgType} sender=${senderOpenId}`);
 
             void handleInboundMessage({
@@ -1096,9 +1101,9 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
                 chat_type: "group",
                 message_type: msgType,
                 content: bodyContent,
-                create_time: latestEligible.msg.create_time ?? "",
-                parent_id: latestEligible.msg.parent_id ?? "",
-                mentions: latestEligible.msg.mentions ?? [],
+                create_time: newestUnseen.msg.create_time ?? "",
+                parent_id: newestUnseen.msg.parent_id ?? "",
+                mentions: newestUnseen.msg.mentions ?? [],
               },
               sender: {
                 sender_id: senderIdObj,
@@ -1109,29 +1114,36 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
               botPollBackoffUntil = Date.now() + BOT_POLL_ERROR_BACKOFF_MS;
             });
             injected = 1;
+            leaderIdleRounds = 0; // new bot message → reset idle counter
           }
 
           // Discussion mode: leader heartbeat every 30s (not every poll cycle).
+          // Stops after LEADER_HEARTBEAT_MAX_IDLE rounds without new bot messages.
           const isLeader = leaderAppId && leaderAppId === account.appId;
           const nowMs = Date.now();
-          if (isLeader && injected === 0 && items.length === 0 && nowMs - lastLeaderHeartbeatTime >= LEADER_HEARTBEAT_INTERVAL_MS) {
+          if (isLeader && injected === 0 && nowMs - lastLeaderHeartbeatTime >= LEADER_HEARTBEAT_INTERVAL_MS) {
+            leaderIdleRounds++;
+            if (leaderIdleRounds > LEADER_HEARTBEAT_MAX_IDLE) {
+              log?.info(`[${account.accountId}] [bot-poll] ${chatId.slice(-8)}: leader heartbeat stopped (${LEADER_HEARTBEAT_MAX_IDLE} idle rounds)`);
+              continue; // skip heartbeat, but keep polling (new bot msg will reset counter)
+            }
             lastLeaderHeartbeatTime = nowMs;
             const heartbeatId = `heartbeat-${chatId}-${now}`;
-            log?.info(`[${account.accountId}] [bot-poll] ${chatId.slice(-8)}: leader heartbeat (30s, no new msgs)`);
+            log?.info(`[${account.accountId}] [bot-poll] ${chatId.slice(-8)}: leader heartbeat ${leaderIdleRounds}/${LEADER_HEARTBEAT_MAX_IDLE}`);
             void handleInboundMessage({
               message: {
                 message_id: heartbeatId,
                 chat_id: chatId,
                 chat_type: "group",
                 message_type: "text",
-                content: JSON.stringify({ text: "[system: 讨论心跳 — 你是决策者，检查上下文判断是否需要推进讨论、激活参与者或结束]" }),
+                content: JSON.stringify({ text: "[讨论心跳] 你是决策者。检查群里最新上下文，判断：推进讨论？激活参与者？还是结束？" }),
                 create_time: String(now * 1000),
                 parent_id: "",
                 mentions: [],
               },
               sender: {
-                sender_id: { open_id: "system" },
-                sender_type: "system",
+                sender_id: { open_id: "heartbeat" },
+                sender_type: "heartbeat",
               },
             }, deps).catch((err) => {
               log?.error(`[${account.accountId}] [bot-poll] leader heartbeat error: ${String(err)}`);
@@ -1141,8 +1153,6 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
           log?.warn(`[${account.accountId}] [bot-poll] error for ${chatId}: ${String(err)}`);
         }
       }
-      botPollLastTime = now;
-
       // GC: prevent dedup set from growing unbounded
       if (injectedBotMsgIds.size > INJECTED_IDS_MAX_SIZE) {
         const toDelete = injectedBotMsgIds.size - Math.floor(INJECTED_IDS_MAX_SIZE / 2);
@@ -1411,6 +1421,13 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   const sender = data.sender;
 
   if (!message || !sender) return;
+
+  // Leader heartbeat: synthetic message from poller. Skip all API calls
+  // (no sender resolve, no canonicalize, no ACK reaction). Just mark as
+  // bot sender so discussion mode routing lets it through.
+  if (sender.sender_type === "heartbeat") {
+    sender.sender_type = "bot";
+  }
 
   const messageId: string = message.message_id ?? "";
   const chatId: string = message.chat_id ?? "";
@@ -1887,13 +1904,10 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
     if (currentGroupMode === "discussion") {
       // 🗣️讨论: all messages enter agent (except self).
-      // Leader role is handled by the poller (always triggers leader even without new msgs).
+      // No rate limit — discussion mode has its own protections:
+      // only-inject-newest-1, heartbeat-3-round-cap, error-backoff, skip-patterns.
       if (isSelfBot) {
         log?.info(`[${account.accountId}] discussion mode: self-bot msg, skipping`);
-        return;
-      }
-      if (isRateLimited(chatId)) {
-        log?.warn(`[${account.accountId}] discussion mode rate limited in ${chatId}, skipping`);
         return;
       }
       log?.info(
@@ -2288,9 +2302,16 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           owner: "只响应主人的消息",
           "group-at":
             "任何人@你都回复。注意：你使用主人的权限，搜索结果可能包含主人的私人信息，不要泄露",
-          group: "自己判断群里回复还是私聊主人。不要在群里泄露主人的私聊内容",
         };
-        const hardcodedRule = modeHardcoded[currentGroupMode];
+        // Discussion mode: inject leader/participant role into context
+        const groupModeInfo = readGroupMode(chatId);
+        const isDiscussionLeader = groupModeInfo.mode === "discussion" && groupModeInfo.leaderAppId === account.appId;
+        const discussionRule = currentGroupMode === "discussion"
+          ? (isDiscussionLeader
+            ? "讨论模式 — 你是决策者(leader)。你必须主动推进讨论：分配任务、推进轮次、汇总结论。不要沉默等待。如果参与者没回复，@他们激活"
+            : "讨论模式 — 你是参与者。收到任务立即行动并在群里回复结果。不要分配任务给其他 Her，等决策者安排。不要抢话")
+          : undefined;
+        const hardcodedRule = discussionRule ?? modeHardcoded[currentGroupMode];
         const groupModeBlock = hardcodedRule
           ? `[群聊模式: ${currentGroupMode} — ${hardcodedRule}` +
             (currentGroupModeContext ? `\n主人指示: ${currentGroupModeContext}` : "") +

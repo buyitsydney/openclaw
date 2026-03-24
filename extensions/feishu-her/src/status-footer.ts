@@ -28,7 +28,7 @@ const MODE_LABELS: Record<string, string> = {
   "owner-at": "🔒主人@",
   owner: "🔒主人",
   "group-at": "👥群@",
-  group: "👥群",
+  discussion: "🗣️讨论",
 };
 
 /** Build a concise 3-part status footer from the session store.
