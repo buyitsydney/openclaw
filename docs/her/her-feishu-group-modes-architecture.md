@@ -328,9 +328,19 @@ gateway 每次群消息处理时已获取 20 条群历史。扫描 `sender_type=
 
 ### 现状（2026-03-24）
 
-| 项目 | 本地 Mac | 线上 S1（78 bot） |
-|---|---|---|
-| knownBots | ✅ 5 bot | ✅ 73-77 bot |
-| knownBotOpenIds | ✅ 5 bot | ❌ 全空（CSV 未填） |
-| 群历史 bot 检测 | ✅ 已实现验证 | 待部署 |
-| bot_directory tool | ✅ 已实现验证 | 待部署 |
+| 项目 | 本地 Mac | 线上灰度（docker13/14/75） | 线上全量（78 bot） |
+|---|---|---|---|
+| knownBots | ✅ 5 bot | ✅ 3 bot 互认 | ✅ 73-77 bot |
+| knownBotOpenIds | ✅ 5 bot | ✅ 3 bot 互认 | ❌ 待批量获取 |
+| 群历史 bot 检测 | ✅ | ✅ 灰度验证通过 | 待部署 |
+| bot_directory tool | ✅ | ✅ 灰度验证通过 | 待部署 |
+| chat_members 含 bot | ✅ | ✅ 灰度验证通过 | 待部署 |
+
+### 新 bot 加入流程
+
+1. CSV 添行（10 列，含 feishu_bot_open_id）→ 同步到所有服务器
+2. 新 bot 容器启动
+3. 新 bot 在群里说话 → 其他 bot 自动通过群历史发现它（零 API 调用）
+4. **但**：旧容器的 knownBots config 缺少新 bot → 历史扫描到 sender_id 但 knownBots 里没有 → 无法匹配名字和 open_id
+5. **当前限制**：需要逐批重启旧容器让 knownBots 更新
+6. **未来优化**：knownBots 改成运行时从共享文件读取，实现零重启动态更新
