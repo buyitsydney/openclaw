@@ -144,6 +144,42 @@ function readGroupMode(chatId: string): GroupModeInfo {
   }
 }
 
+// ── Group bot member cache (chatId → Set<open_id>) ────────────────────────
+const groupBotMemberCache = new Map<string, { openIds: Set<string>; ts: number }>();
+const GROUP_BOT_CACHE_TTL_MS = 5 * 60_000; // 5 min cache, refreshable via tool
+
+async function getGroupBotOpenIds(
+  account: ResolvedFeishuAccount,
+  chatId: string,
+): Promise<Set<string>> {
+  const cached = groupBotMemberCache.get(chatId);
+  if (cached && Date.now() - cached.ts < GROUP_BOT_CACHE_TTL_MS) return cached.openIds;
+  try {
+    const result = await callChatApi<{ items?: Array<{ member_id?: string; member_id_type?: string; name?: string }> }>({
+      account,
+      method: "GET",
+      endpoint: `/im/v1/chats/${chatId}/members`,
+      query: { member_id_type: "open_id", page_size: 100 },
+    });
+    const openIds = new Set<string>();
+    const knownOpenIds = account.knownBotOpenIds ?? {};
+    for (const item of result.data?.items ?? []) {
+      const id = item.member_id?.trim();
+      // Only include members that are known bots (exist in knownBotOpenIds)
+      if (id && id in knownOpenIds) openIds.add(id);
+    }
+    groupBotMemberCache.set(chatId, { openIds, ts: Date.now() });
+    return openIds;
+  } catch {
+    return new Set();
+  }
+}
+
+/** Force refresh group bot cache (called by feishu_bot_directory tool) */
+export function refreshGroupBotCache(chatId: string): void {
+  groupBotMemberCache.delete(chatId);
+}
+
 // ── Manager mode rate limiter (sliding window) ───────────────────────────
 const groupReplyTimestamps = new Map<string, number[]>();
 const RATE_LIMIT_WINDOW_MS = 60_000; // 60 seconds
@@ -1060,6 +1096,8 @@ function listKnownBotPromptTargets(
 type FeishuBotIdentityPromptOptions = {
   focusText?: string;
   maxOtherBots?: number;
+  /** open_ids of group members — bots matching these are always included */
+  groupMemberOpenIds?: Set<string>;
 };
 
 function normalizeFeishuBotPromptFocus(text?: string): string {
@@ -1089,12 +1127,24 @@ function selectFeishuBotPromptTargets(
   const [selfBot, ...otherBots] = listKnownBotPromptTargets(account);
   const normalizedFocus = normalizeFeishuBotPromptFocus(options?.focusText);
   const maxOtherBots = Math.max(0, options?.maxOtherBots ?? 8);
-  const focusedBots = normalizedFocus
-    ? otherBots.filter((bot) => matchesFeishuBotPromptFocus(bot, normalizedFocus))
+  const groupMembers = options?.groupMemberOpenIds;
+
+  // Priority 1: bots that are members of the current group (always included)
+  const groupBots = groupMembers
+    ? otherBots.filter((bot) => bot.openId && groupMembers.has(bot.openId))
     : [];
+  // Priority 2: bots mentioned in focusText (up to remaining slots)
+  const remainingSlots = Math.max(0, maxOtherBots - groupBots.length);
+  const groupBotIds = new Set(groupBots.map((b) => b.appId));
+  const focusedBots = normalizedFocus
+    ? otherBots
+        .filter((bot) => !groupBotIds.has(bot.appId) && matchesFeishuBotPromptFocus(bot, normalizedFocus))
+        .slice(0, remainingSlots)
+    : [];
+
   return selfBot
-    ? [selfBot, ...focusedBots.slice(0, maxOtherBots)]
-    : focusedBots.slice(0, maxOtherBots);
+    ? [selfBot, ...groupBots, ...focusedBots]
+    : [...groupBots, ...focusedBots];
 }
 
 export function buildFeishuBotIdentityBlock(
@@ -1102,6 +1152,7 @@ export function buildFeishuBotIdentityBlock(
   options?: FeishuBotIdentityPromptOptions,
 ): string {
   const lines: string[] = ["[Bot Identity]"];
+  const groupMembers = options?.groupMemberOpenIds;
   const [selfBot, ...otherBots] = selectFeishuBotPromptTargets(account, options);
   if (selfBot) {
     lines.push(
@@ -1109,11 +1160,28 @@ export function buildFeishuBotIdentityBlock(
     );
   }
   if (otherBots.length > 0) {
-    lines.push("系统中的其他 bot:");
-    for (const bot of otherBots) {
-      lines.push(
-        `- ${bot.name} (app_id=${bot.appId}${bot.openId ? `, bot_open_id=${bot.openId}` : ""})`,
-      );
+    // Split into group bots and context-mentioned bots for clarity
+    const groupBots = groupMembers
+      ? otherBots.filter((b) => b.openId && groupMembers.has(b.openId))
+      : [];
+    const otherContextBots = otherBots.filter(
+      (b) => !groupBots.includes(b),
+    );
+    if (groupBots.length > 0) {
+      lines.push("同群 bot:");
+      for (const bot of groupBots) {
+        lines.push(
+          `- ${bot.name} (app_id=${bot.appId}${bot.openId ? `, bot_open_id=${bot.openId}` : ""})`,
+        );
+      }
+    }
+    if (otherContextBots.length > 0) {
+      lines.push("上下文提到的其他 bot:");
+      for (const bot of otherContextBots) {
+        lines.push(
+          `- ${bot.name} (app_id=${bot.appId}${bot.openId ? `, bot_open_id=${bot.openId}` : ""})`,
+        );
+      }
     }
   }
   lines.push('规则: app_id 只用于稳定识别 bot 身份，不可直接填进 <at user_id="...">。');
@@ -1123,6 +1191,9 @@ export function buildFeishuBotIdentityBlock(
   lines.push(
     "消息里的 sender/mentions 可能出现 app_id 或 open_id；识别 bot 看 app_id，真正构造 @ 看 open_id。",
   );
+  if (!groupMembers) {
+    lines.push("要 @mention 不在本群的 bot，用 feishu_bot_directory tool 搜索。");
+  }
   lines.push("[End Bot Identity]", "");
   return lines.join("\n");
 }
@@ -2027,8 +2098,11 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // Uses tenant_access_token (no user OAuth needed) for the /im/v1/messages API.
   // Aligns with upstream's 20-message default (DEFAULT_MESSAGE_LIMIT).
   const GROUP_INJECT_LIMIT = 20;
+  // For group chats: fetch bot members to inject into [Bot Identity]
+  const groupBotOpenIds = isGroup ? await getGroupBotOpenIds(account, chatId) : undefined;
   let promptContextPrefix = buildFeishuBotIdentityBlock(account, {
     focusText: enrichedBody,
+    groupMemberOpenIds: groupBotOpenIds,
   });
   if (isGroup) {
     try {
@@ -2076,6 +2150,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         });
         const botIdentityBlock = buildFeishuBotIdentityBlock(account, {
           focusText: promptFocusText,
+          groupMemberOpenIds: groupBotOpenIds,
         });
 
         // Inject group mode info: hardcoded safety rules per mode + user context
