@@ -22,6 +22,8 @@ description: CarHer 企业 Docker 容器运维操作。Use when the user mention
 
 **关键区别**：Mac 测试容器已迁移到 101-103 ID 段，服务器的 docker1 是董事长！
 
+**跨服务器 bot open_id 同步铁律**：`feishu_bot_open_id`（CSV 第 10 列）必须在 **所有服务器的 CSV** 上同步。S1/S2/S3 各有独立 CSV 副本。如果只在 S1 更新了 bot A 的 open_id，S2/S3 上的容器就无法识别 bot A。批量获取 open_id 后，必须同步到所有 3 台服务器的 CSV。
+
 ## 快速定位流程
 
 ### 1. 找到服务器和密码
