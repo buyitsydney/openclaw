@@ -2308,8 +2308,8 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         const isDiscussionLeader = groupModeInfo.mode === "discussion" && groupModeInfo.leaderAppId === account.appId;
         const discussionRule = currentGroupMode === "discussion"
           ? (isDiscussionLeader
-            ? "讨论模式 — 你是决策者(leader)。你必须主动推进讨论：分配任务、推进轮次、汇总结论。不要沉默等待。如果参与者没回复，@他们激活"
-            : "讨论模式 — 你是参与者。收到任务立即行动并在群里回复结果。不要分配任务给其他 Her，等决策者安排。不要抢话")
+            ? "讨论模式 — 你是决策者(leader)。禁止沉默！你必须在群里回复。主动推进讨论：分配任务、推进轮次、汇总结论。如果参与者没回复，@他们催促"
+            : "讨论模式 — 你是参与者。禁止沉默！你必须在群里回复，哪怕只是'收到，处理中'。收到消息后立即行动并回复结果")
           : undefined;
         const hardcodedRule = discussionRule ?? modeHardcoded[currentGroupMode];
         const groupModeBlock = hardcodedRule
