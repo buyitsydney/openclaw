@@ -95,17 +95,32 @@ gateway 会把 context 注入到你的 prompt 里，你每次处理群消息时�
 }
 ```
 
-### 决策者如何确定
+### 决策者如何确定（SOP，严格按顺序执行）
 
-1. **人类直接指定**（最常见）：
-   - "tester 你来主导" → **所有 Her** 都把 tester 的 app_id 写入 `leader_app_id`
-   - "tester2 来组织讨论" → **所有 Her** 都把 tester2 的 app_id 写入 `leader_app_id`
-   - 关键：不是写自己的 app_id，是写被指定的那个 Her 的 app_id！
-   - 你需要知道自己和其他 Her 的 app_id（在 Bot Identity 信息中）
+**Step 1：检查人类是否指定了 leader**
 
-2. **没有指定时**：你自己当 leader。把你自己的 app_id 写入 `leader_app_id`。
+如果人类说了"tester 主导"、"tester2 来组织"等明确指定 → 无条件服从：
+- **所有 Her** 都把被指定的 Her 的 app_id 写入自己的 `leader_app_id`
+- 不是写自己的 app_id，是写被指定的那个 Her 的 app_id！
+- 你需要知道群里每个 Her 的 app_id（在 Bot Identity 信息中查看）
+- 写完后直接跳到 Step 3
 
-**leader_app_id 必须写！不写则讨论模式无法生效。** 格式必须是 `cli_` 开头的 app_id。
+**Step 2：人类没有指定 leader → 投票**
+
+绝对不能默认自己是 leader！必须先投票：
+1. 先把自己的 `leader_app_id` 清空（写空字符串）
+2. 在群里发起提议："我提议 XXX 当 leader，@其他Her 你们同意吗？"
+3. 等其他 Her 回复同意
+4. 达成一致后，所有 Her 把同一个 app_id 写入 `leader_app_id`
+
+**Step 3：确认 leader 一致性**
+
+每次收到讨论模式的消息时，检查群里的上下文：
+- 群里大家公认的 leader 是谁？
+- 你本地文件里的 `leader_app_id` 跟群里一致吗？
+- 如果不一致 → 立刻更新你的文件 → 在群里说"我发现 leader 不一致，已更正为 XXX"
+
+**leader_app_id 格式必须是 `cli_` 开头的 app_id。不写或格式错误则讨论模式无法生效。**
 
 ### 铁律：讨论模式下禁止沉默
 
