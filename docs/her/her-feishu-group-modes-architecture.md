@@ -315,12 +315,17 @@ gateway 在 agent prompt 中注入两层信息：
 - Footer 显示讨论模式 + leader 👑 标识
 - 错误卡片循环防护（skip patterns + error cooldown）
 
-**待解决（Phase 2）：**
+**Phase 2 已完成：**
 
-1. **双发问题（最严重）**：讨论中每条 bot 消息 + heartbeat 都触发独立 agent run，session lane 串行处理导致 leader 连发多条回复。需要控制注入频率：一次只触发一条，等 agent run 完成后再触发下一条。
-2. **进入讨论模式不确定**：当前依赖 Her/Skill 触发写文件，不同 bot 可能不触发。需要代码级 @mention 自动切换。
-3. **自动退出**：讨论结束后残留 discussion 模式，需要超时自动退回 owner-at。
-4. **Heartbeat 占 session lane**：heartbeat 和正常消息竞争同一个 session lane，加剧双发。需要改为仅在真正沉寂时触发，且不与正常消息并发。
+- **@mention turn-taking**：bot-poll 只注入 @mention 了本 bot 的消息。未被 @mention 的消息只作为 20 条群历史上下文，不触发 agent run。解决了双发问题（经典 stop-and-wait 协议）。
+- **卡片 @mention 解析**：interactive 卡片的 @mention 不在顶层 mentions 数组，而在 body content 的 `{"tag":"at"}` 元素中。bot-poll 同时检查顶层 mentions 和 body content 匹配 appId/botName。
+- **Heartbeat 兜底**：当 leader 30s 未被 @mention 时，heartbeat 唤醒 leader 检查上下文并催促参与者。已验证：tester2 忘记 @tester → heartbeat 触发 → leader 催促 → 讨论继续。
+
+**待解决（Phase 3）：**
+
+1. **进入讨论模式不确定**：当前依赖 Her/Skill 触发写文件，不同 bot 可能不触发。需要代码级 @mention 自动切换。
+2. **自动退出**：讨论结束后残留 discussion 模式，需要超时自动退回 owner-at。discussion-state.ts 已有 shouldAutoExit 逻辑，gateway 端未接入。
+3. **人类消息双触发**：人类不 @mention 的消息通过 WebSocket 同时推送给所有 discussion 模式的 bot，全部处理。需要只让 leader 处理未 @mention 的人类消息。
 
 ### 已知限制
 
