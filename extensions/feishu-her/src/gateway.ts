@@ -131,10 +131,8 @@ function readGroupMode(chatId: string): GroupModeInfo {
     const context = typeof data?.context === "string" ? data.context.trim() : undefined;
     const rawLeader = typeof data?.leader_app_id === "string" ? data.leader_app_id.trim() : "";
     const leaderAppId = rawLeader.startsWith("cli_") ? rawLeader : undefined;
-    // discussion mode requires leader_app_id — if missing/invalid, fall back to owner-at
-    if (mode === "discussion" && !leaderAppId) {
-      return { mode: "owner-at", context, leaderError: "invalid leader_app_id: " + (rawLeader || "(missing)") };
-    }
+    // discussion mode without leader = voting phase. Stay in discussion mode
+    // so poller keeps working. No heartbeat until leader is set.
     return { mode, context, leaderAppId };
   } catch {
     return { mode: "owner-at" };
@@ -2309,7 +2307,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         // Local file may be stale/conflicting. Let Her determine leader from
         // group chat context (20 recent messages). Only inject the rules.
         const discussionRule = currentGroupMode === "discussion"
-          ? "讨论模式。禁止沉默！你必须在群里回复。从群聊上下文判断谁是 leader：如果人类指定了就服从，没指定就投票。如果你是 leader 就主动推进讨论，如果你是参与者就执行任务并回复"
+          ? "讨论模式。被@或被点名时必须回复，不要对每条消息都回复。从群聊上下文判断谁是 leader：如果人类指定了就服从，没指定就投票。leader 主动推进讨论，参与者被点名时执行并回复"
           : undefined;
         const hardcodedRule = discussionRule ?? modeHardcoded[currentGroupMode];
         const groupModeBlock = hardcodedRule
