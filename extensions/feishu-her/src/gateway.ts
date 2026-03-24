@@ -2307,7 +2307,12 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         // Local file may be stale/conflicting. Let Her determine leader from
         // group chat context (20 recent messages). Only inject the rules.
         const discussionRule = currentGroupMode === "discussion"
-          ? "讨论模式。被@或被点名时必须回复，不要对每条消息都回复。从群聊上下文判断谁是 leader：如果人类指定了就服从，没指定就投票。leader 主动推进讨论，参与者被点名时执行并回复"
+          ? "讨论模式。你和其他 Her 在同一个群里协作。"
+            + "技术机制：你们无法实时收到对方消息，系统每 10 秒轮询群历史，检测到新 bot 消息才触发你。"
+            + "你回复后对方约 10 秒后被触发。如果你的回复没有 @具体的 Her，所有 Her 都会被触发导致混乱。"
+            + "所以：分配任务时必须 @具体的 Her，被 @的 Her 回复，没被 @的不要回复。"
+            + "leader 负责推进节奏和 @分配任务。从群聊上下文判断谁是 leader（人类指定的就服从，没指定就投票选出）。"
+            + "如果 30 秒没有新消息，系统会唤醒 leader 检查是否需要推进或催促。"
           : undefined;
         const hardcodedRule = discussionRule ?? modeHardcoded[currentGroupMode];
         const groupModeBlock = hardcodedRule
