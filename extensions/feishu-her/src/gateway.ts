@@ -1198,6 +1198,30 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
 
           let injected = 0;
           if (newestUnseen) {
+            // Turn-taking: only inject if this bot is @mentioned in the message.
+            // For text messages: check msg.mentions array.
+            // For interactive cards: parse {"tag":"at","user_id":"..."} from body content.
+            const topMentions = (newestUnseen.msg.mentions ?? []) as Array<Record<string, unknown>>;
+            const isMentionedTop = topMentions.some(
+              (m) => m.id === account.appId || m.id === account.botOpenId,
+            );
+            let isMentionedInBody = false;
+            if (!isMentionedTop && newestUnseen.bodyContent) {
+              const appIdPattern = account.appId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+              const botNamePattern = account.name?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") ?? "";
+              isMentionedInBody =
+                new RegExp(appIdPattern).test(newestUnseen.bodyContent) ||
+                (botNamePattern !== "" &&
+                  new RegExp(`@${botNamePattern}`, "i").test(newestUnseen.bodyContent));
+            }
+            if (!isMentionedTop && !isMentionedInBody) {
+              log?.info(
+                `[${account.accountId}] [bot-poll] skipping (not @mentioned): msgId=${newestUnseen.msgId.slice(-12)}`,
+              );
+              newestUnseen = null;
+            }
+          }
+          if (newestUnseen) {
             const { msgId, msgType, bodyContent, senderOpenId, senderIdObj } = newestUnseen;
             log?.info(
               `[${account.accountId}] [bot-poll] injecting: msgId=${msgId.slice(-12)} type=${msgType} sender=${senderOpenId}`,
