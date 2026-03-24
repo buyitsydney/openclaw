@@ -81,6 +81,13 @@ gateway 会把 context 注入到你的 prompt 里，你每次处理群消息时�
 
 ### 进入讨论模式
 
+**每次进入讨论模式，必须先清空旧文件再写新文件！** 这是强制要求：
+1. 先删除 `{workspace}/group-modes/{chat_id}.json`（或写入空 `{}`）
+2. 然后按下面的 SOP 确定 leader
+3. 最后写入完整的新文件
+
+这确保不会残留上一轮的 leader 信息。
+
 写文件时必须包含 `leader_app_id`：
 
 ```json
