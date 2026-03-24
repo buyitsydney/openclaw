@@ -321,11 +321,20 @@ gateway 在 agent prompt 中注入两层信息：
 - **卡片 @mention 解析**：interactive 卡片的 @mention 不在顶层 mentions 数组，而在 body content 的 `{"tag":"at"}` 元素中。bot-poll 同时检查顶层 mentions 和 body content 匹配 appId/botName。
 - **Heartbeat 兜底**：当 leader 30s 未被 @mention 时，heartbeat 唤醒 leader 检查上下文并催促参与者。已验证：tester2 忘记 @tester → heartbeat 触发 → leader 催促 → 讨论继续。
 
+**Phase 2 已验证但有缺陷的尝试：**
+
+- @mention turn-taking（bot-poll 只注入被 @mention 的消息）：方向正确但飞书 card stream v1-patch 消息的 msg.mentions 永远为空（因为创建时是"⏳"占位，patch 不更新 mentions 元数据），导致检测不可靠
+- Redis last_bot_speaker turn-taking（bot 发完消息后记录，bot-poll 跳过 last_speaker==me）：逻辑正确但 recordBotSpoke 在 session lane 末尾执行，如果对方的 agent run 被 heartbeat 堵住导致 recordBotSpoke 没执行，Redis 不更新 → 死锁
+- 两种方案的共同问题：heartbeat 在 agent run 进行中时仍然触发，占用 session lane，加剧堵塞
+
 **待解决（Phase 3）：**
 
-1. **进入讨论模式不确定**：当前依赖 Her/Skill 触发写文件，不同 bot 可能不触发。需要代码级 @mention 自动切换。
-2. **自动退出**：讨论结束后残留 discussion 模式，需要超时自动退回 owner-at。discussion-state.ts 已有 shouldAutoExit 逻辑，gateway 端未接入。
-3. **人类消息双触发**：人类不 @mention 的消息通过 WebSocket 同时推送给所有 discussion 模式的 bot，全部处理。需要只让 leader 处理未 @mention 的人类消息。
+1. **双发问题**：需要可靠的 turn-taking 机制。方向：Redis last_bot_speaker 是对的，但 recordBotSpoke 的时机需要改到消息实际发送到飞书后（outbound 层），而不是 handleInboundMessage 末尾
+2. **Heartbeat 堵 session lane**：heartbeat 不应该在有 agent run 进行中时触发。需要检查 isActive 状态或用 Redis 标记"正在处理中"
+3. **进入讨论模式不确定**：当前依赖 Her/Skill 触发写文件，不同 bot 可能不触发
+4. **自动退出**：讨论结束后残留 discussion 模式
+5. **人类消息双触发**：人类不 @mention 的消息通过 WebSocket 同时推送给所有 discussion 模式的 bot
+6. **飞书 card stream v1-patch 的 mentions 为空**：需要查飞书官方 API 文档确认，或改用其他检测方式
 
 ### 已知限制
 
