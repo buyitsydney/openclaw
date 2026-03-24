@@ -32,13 +32,14 @@ const MODE_LABELS: Record<string, string> = {
 };
 
 /** Build a concise 3-part status footer from the session store.
- * Format: 🧠 Model · 📊 used/total [🧹N] [· modeTag]
+ * Format: 🧠 Model · 📊 used/total [🧹N] [· modeTag[👑]]
  * Mode tag only appears when groupMode is provided (i.e., in group chats). */
 export function buildFeishuStatusFooter(params: {
   storePath: string;
   sessionKey: string;
   config: OpenClawConfig;
   groupMode?: string;
+  isDiscussionLeader?: boolean;
 }): string {
   try {
     const raw = readFileSync(params.storePath, "utf-8");
@@ -60,9 +61,10 @@ export function buildFeishuStatusFooter(params: {
     const compactSuffix = compactions > 0 ? ` 🧹${compactions}` : "";
     const usageText = `${totalLabel}/${ctxLabel}${compactSuffix}`;
 
-    // Mode tag: only in group chats
+    // Mode tag: only in group chats; crown icon for discussion leader
     const modeTag = params.groupMode ? MODE_LABELS[params.groupMode] : undefined;
-    const modeSuffix = modeTag ? ` · ${modeTag}` : "";
+    const leaderBadge = params.groupMode === "discussion" && params.isDiscussionLeader ? "👑" : "";
+    const modeSuffix = modeTag ? ` · ${modeTag}${leaderBadge}` : "";
 
     const warn = contextTokens && totalTokens && totalTokens / contextTokens >= 0.7;
     const icon = warn ? "⚠️" : "🧠";

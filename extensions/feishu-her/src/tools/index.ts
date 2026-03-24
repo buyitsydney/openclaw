@@ -19,6 +19,7 @@ import { registerFeishuChatTopNoticeTools } from "./chat-top-notice.js";
 import { registerFeishuChatTools } from "./chat.js";
 import { registerFeishuDeepSearchTool } from "./deep-search.js";
 import { registerFeishuDirectoryTools } from "./directory.js";
+import { registerDiscussionLeaderTool } from "./discussion-leader.js";
 import { registerFeishuDocTools } from "./docx.js";
 import { registerFeishuDriveTools } from "./drive.js";
 import { registerFeishuKnowledgeQATool, KNOWLEDGE_QA_REQUIRED_SCOPE } from "./knowledge-qa.js";
@@ -54,6 +55,7 @@ export async function registerAllFeishuTools(api: OpenClawPluginApi): Promise<vo
   registerFeishuMessageTools(api);
   registerFeishuMessageSearchTool(api);
   registerFeishuMinutesTools(api);
+  registerDiscussionLeaderTool(api);
   // Gate knowledge-qa on backend scope availability (auto-detected, no config needed)
   const accounts = listEnabledFeishuAccounts(api.config);
   if (accounts.length > 0) {

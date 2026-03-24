@@ -25,6 +25,14 @@ import { normalizeReasoningLevel } from "../../../src/auto-reply/thinking.js";
 import { readSessionStoreJson5 } from "../../../src/infra/state-migrations.fs.js";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { resolveGroupOwnerIds } from "./accounts.js";
+import {
+  initDiscussionState,
+  discussionTick,
+  getDiscussionLeader,
+  getDiscussionParticipants,
+  shutdownDiscussionState,
+  setDiscussionLeader,
+} from "./discussion-state.ts";
 import { buildDriveFileContextFromText } from "./drive-file-read.js";
 import {
   applyFeishuKnownBotDisplayName,
@@ -109,7 +117,7 @@ const MERGE_FORWARD_DISABLED_TEXT = "[merged forward disabled]";
  * or "owner-at" if the file doesn't exist or is invalid.
  * Legacy names (default, auto-reply, at-reply, monitor, manager) are auto-mapped.
  */
-type GroupModeInfo = { mode: string; context?: string; leaderAppId?: string; leaderError?: string };
+type GroupModeInfo = { mode: string; context?: string };
 
 function readGroupMode(chatId: string): GroupModeInfo {
   const stateDir =
@@ -117,7 +125,6 @@ function readGroupMode(chatId: string): GroupModeInfo {
     process.env.CLAWDBOT_STATE_DIR?.trim() ||
     join(homedir(), ".openclaw");
   const dir = join(stateDir, "workspace", "group-modes");
-  // Support both "oc_xxx.json" and "feishu:oc_xxx.json" (her may write either format)
   let filePath = join(dir, `${chatId}.json`);
   if (!existsSync(filePath)) {
     filePath = join(dir, `feishu:${chatId}.json`);
@@ -128,12 +135,16 @@ function readGroupMode(chatId: string): GroupModeInfo {
   try {
     const data = JSON.parse(readFileSync(filePath, "utf-8"));
     const mode = typeof data?.mode === "string" && data.mode.trim() ? data.mode.trim() : "owner-at";
+    const aliasMap: Record<string, string> = {
+      default: "owner-at",
+      "auto-reply": "owner",
+      "at-reply": "group-at",
+      monitor: "group",
+      manager: "group",
+    };
+    const normalizedMode = aliasMap[mode] ?? mode;
     const context = typeof data?.context === "string" ? data.context.trim() : undefined;
-    const rawLeader = typeof data?.leader_app_id === "string" ? data.leader_app_id.trim() : "";
-    const leaderAppId = rawLeader.startsWith("cli_") ? rawLeader : undefined;
-    // discussion mode without leader = voting phase. Stay in discussion mode
-    // so poller keeps working. No heartbeat until leader is set.
-    return { mode, context, leaderAppId };
+    return { mode: normalizedMode, context };
   } catch {
     return { mode: "owner-at" };
   }
@@ -970,6 +981,9 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
   log?.info(`[${account.accountId}] Feishu WSClient connected`);
   setStatus({ connected: true, lastConnectedAt: Date.now() });
 
+  // ── Discussion state (Redis shared leader election) ────────────────────
+  initDiscussionState({ redisUrl: process.env.REDIS_URL, log });
+
   // ── Bot message poller ──────────────────────────────────────────────────
   // Feishu im.message.receive_v1 does NOT push bot-sent messages to other bots.
   // This poller bridges the gap: for groups in "group" mode, periodically pull
@@ -983,10 +997,68 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
   const INJECTED_IDS_MAX_SIZE = 500; // GC threshold to prevent memory leak
   const deps: InboundDeps = { account, config, abortSignal, log, setStatus, core };
 
-  log?.info(`[${account.accountId}] [bot-poll] starting poller (interval=${BOT_POLL_INTERVAL_MS}ms)`);
+  log?.info(
+    `[${account.accountId}] [bot-poll] starting poller (interval=${BOT_POLL_INTERVAL_MS}ms)`,
+  );
+
+  // Warmup: mark all existing bot messages as "seen" so we don't re-process
+  // stale messages from previous sessions on container restart.
+  try {
+    const warmupToken = await getTenantAccessToken(account);
+    if (warmupToken) {
+      const stateDir =
+        process.env.OPENCLAW_STATE_DIR?.trim() ||
+        process.env.CLAWDBOT_STATE_DIR?.trim() ||
+        join(homedir(), ".openclaw");
+      const modesDir = join(stateDir, "workspace", "group-modes");
+      if (existsSync(modesDir)) {
+        for (const file of readdirSync(modesDir).filter((f) => f.endsWith(".json"))) {
+          const chatId = file.replace(/\.json$/, "").replace(/^feishu:/, "");
+          if (!chatId.startsWith("oc_")) continue;
+          const mode = readGroupMode(chatId);
+          if (mode.mode !== "discussion") continue;
+          const res = await callFeishuApiWithUserToken<{ items?: Array<Record<string, unknown>> }>({
+            method: "GET",
+            endpoint: "/im/v1/messages",
+            userToken: warmupToken,
+            query: {
+              container_id_type: "chat",
+              container_id: chatId,
+              sort_type: "ByCreateTimeDesc",
+              page_size: "20",
+            },
+          });
+          for (const item of res.data?.items ?? []) {
+            const msgId = ((item as Record<string, unknown>).message_id ?? "") as string;
+            if (msgId) injectedBotMsgIds.add(msgId);
+          }
+        }
+        log?.info(
+          `[${account.accountId}] [bot-poll] warmup: marked ${injectedBotMsgIds.size} existing messages as seen`,
+        );
+      }
+    }
+  } catch (err) {
+    log?.warn(
+      `[${account.accountId}] [bot-poll] warmup failed (non-fatal): ${String(err).slice(0, 100)}`,
+    );
+  }
 
   // Patterns in bot cards that should never be re-injected into agent pipeline
-  const BOT_POLL_SKIP_PATTERNS = ["⚠️", "API rate limit", "rate_limit", "error occurred", "请稍后再试", "我是你的 AI 助手", "你好！", "New session started", "Agent was aborted", "compacted"];
+  const BOT_POLL_SKIP_PATTERNS = [
+    "⚠️",
+    "API rate limit",
+    "rate_limit",
+    "error occurred",
+    "Cannot read propert",
+    "TypeError",
+    "请稍后再试",
+    "我是你的 AI 助手",
+    "你好！",
+    "New session started",
+    "Agent was aborted",
+    "compacted",
+  ];
   const LEADER_HEARTBEAT_INTERVAL_MS = 30_000;
   const LEADER_HEARTBEAT_MAX_IDLE = 3; // stop heartbeat after 3 rounds (~90s) without new bot messages
   let lastLeaderHeartbeatTime = 0;
@@ -996,7 +1068,9 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
     try {
       // Backoff: skip polling if we recently saw agent errors
       if (Date.now() < botPollBackoffUntil) {
-        log?.info(`[${account.accountId}] [bot-poll] backing off until ${new Date(botPollBackoffUntil).toISOString()}`);
+        log?.info(
+          `[${account.accountId}] [bot-poll] backing off until ${new Date(botPollBackoffUntil).toISOString()}`,
+        );
         return;
       }
 
@@ -1012,18 +1086,37 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
       }
 
       const files = readdirSync(modesDir).filter((f) => f.endsWith(".json"));
-      const pollTargets: Array<{ chatId: string; leaderAppId?: string }> = [];
+      const pollTargets: Array<{
+        chatId: string;
+        isLeader: boolean;
+        leader: string | null;
+        participants: string[];
+      }> = [];
       for (const file of files) {
         const chatId = file.replace(/\.json$/, "").replace(/^feishu:/, "");
         if (!chatId.startsWith("oc_")) continue;
         const mode = readGroupMode(chatId);
-        if (mode.mode === "discussion") {
-          pollTargets.push({ chatId, leaderAppId: mode.leaderAppId });
+        const isDiscussion = mode.mode === "discussion";
+        // discussionTick handles: register/unregister self, prune expired, elect leader
+        const tick = await discussionTick({
+          chatId,
+          myAppId: account.appId,
+          isDiscussionMode: isDiscussion,
+        });
+        if (isDiscussion) {
+          pollTargets.push({
+            chatId,
+            isLeader: tick.isLeader,
+            leader: tick.leader,
+            participants: tick.participants,
+          });
         }
       }
       if (pollTargets.length === 0) return;
 
-      log?.info(`[${account.accountId}] [bot-poll] polling ${pollTargets.length} group(s): ${pollTargets.map((t) => t.chatId.slice(-8)).join(", ")}`);
+      log?.info(
+        `[${account.accountId}] [bot-poll] polling ${pollTargets.length} group(s): ${pollTargets.map((t) => t.chatId.slice(-8)).join(", ")}`,
+      );
 
       const token = await getTenantAccessToken(account);
       if (!token) {
@@ -1032,7 +1125,7 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
       }
       const now = Math.floor(Date.now() / 1000);
 
-      for (const { chatId, leaderAppId } of pollTargets) {
+      for (const { chatId, isLeader, leader, participants } of pollTargets) {
         try {
           // Pull latest 20 messages (no time window). Dedup via injectedBotMsgIds.
           // This avoids the card-stream timing bug: create_time is set at card
@@ -1057,21 +1150,30 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
           // Mark all bot messages as seen. Only inject the NEWEST unseen one.
           // Agent sees full context via 20-message history injection on each run —
           // no need to replay old messages, just trigger one agent run with the latest.
-          let newestUnseen: { msg: Record<string, unknown>; msgId: string; msgType: string; bodyContent: string; senderOpenId: string; senderIdObj: Record<string, unknown> } | null = null;
+          let newestUnseen: {
+            msg: Record<string, unknown>;
+            msgId: string;
+            msgType: string;
+            bodyContent: string;
+            senderOpenId: string;
+            senderIdObj: Record<string, unknown>;
+          } | null = null;
 
           for (const item of items) {
             const msg = item as Record<string, unknown>;
             const sender = msg.sender as Record<string, unknown> | undefined;
             if (!sender || sender.sender_type !== "app") continue;
+            // REST API uses sender.id (flat), WebSocket uses sender.sender_id.open_id (nested)
             const senderIdObj = sender.sender_id as Record<string, unknown> | undefined;
-            const senderOpenId = (senderIdObj?.open_id as string) ?? "";
+            const senderOpenId = (senderIdObj?.open_id as string) || (sender.id as string) || "";
             if (senderOpenId === account.botOpenId || senderOpenId === account.appId) continue;
 
             const msgId = (msg.message_id ?? "") as string;
             const msgType = (msg.msg_type ?? "text") as string;
-            const bodyContent = msg.body && (msg.body as Record<string, unknown>).content
-              ? (msg.body as Record<string, unknown>).content as string
-              : "";
+            const bodyContent =
+              msg.body && (msg.body as Record<string, unknown>).content
+                ? ((msg.body as Record<string, unknown>).content as string)
+                : "";
 
             if (!bodyContent || bodyContent.includes('"⏳')) continue;
             if (BOT_POLL_SKIP_PATTERNS.some((p) => bodyContent.includes(p))) {
@@ -1082,7 +1184,14 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
 
             // First unseen = newest (items sorted desc). Take it, mark all others as seen.
             if (!newestUnseen) {
-              newestUnseen = { msg, msgId, msgType, bodyContent, senderOpenId, senderIdObj: senderIdObj ?? {} };
+              newestUnseen = {
+                msg,
+                msgId,
+                msgType,
+                bodyContent,
+                senderOpenId,
+                senderIdObj: senderIdObj ?? {},
+              };
             }
             injectedBotMsgIds.add(msgId); // mark ALL unseen as seen so they won't trigger next round
           }
@@ -1090,61 +1199,81 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
           let injected = 0;
           if (newestUnseen) {
             const { msgId, msgType, bodyContent, senderOpenId, senderIdObj } = newestUnseen;
-            log?.info(`[${account.accountId}] [bot-poll] injecting: msgId=${msgId.slice(-12)} type=${msgType} sender=${senderOpenId}`);
+            log?.info(
+              `[${account.accountId}] [bot-poll] injecting: msgId=${msgId.slice(-12)} type=${msgType} sender=${senderOpenId}`,
+            );
 
-            void handleInboundMessage({
-              message: {
-                message_id: msgId,
-                chat_id: chatId,
-                chat_type: "group",
-                message_type: msgType,
-                content: bodyContent,
-                create_time: newestUnseen.msg.create_time ?? "",
-                parent_id: newestUnseen.msg.parent_id ?? "",
-                mentions: newestUnseen.msg.mentions ?? [],
+            void handleInboundMessage(
+              {
+                message: {
+                  message_id: msgId,
+                  chat_id: chatId,
+                  chat_type: "group",
+                  message_type: msgType,
+                  content: bodyContent,
+                  create_time: newestUnseen.msg.create_time ?? "",
+                  parent_id: newestUnseen.msg.parent_id ?? "",
+                  mentions: newestUnseen.msg.mentions ?? [],
+                },
+                sender: {
+                  sender_id: senderIdObj,
+                  sender_type: "bot",
+                },
               },
-              sender: {
-                sender_id: senderIdObj,
-                sender_type: "bot",
-              },
-            }, deps).catch((err) => {
+              deps,
+            ).catch((err) => {
               log?.error(`[${account.accountId}] [bot-poll] handle error: ${String(err)}`);
               botPollBackoffUntil = Date.now() + BOT_POLL_ERROR_BACKOFF_MS;
             });
             injected = 1;
-            leaderIdleRounds = 0; // new bot message → reset idle counter
+            leaderIdleRounds = 0;
+            lastLeaderHeartbeatTime = Date.now();
           }
 
-          // Discussion mode: leader heartbeat every 30s (not every poll cycle).
-          // Stops after LEADER_HEARTBEAT_MAX_IDLE rounds without new bot messages.
-          const isLeader = leaderAppId && leaderAppId === account.appId;
+          // Leader heartbeat: if no new bot messages for 30s, poke the leader
+          // with a synthetic message to check if discussion needs pushing.
           const nowMs = Date.now();
-          if (isLeader && injected === 0 && nowMs - lastLeaderHeartbeatTime >= LEADER_HEARTBEAT_INTERVAL_MS) {
+          if (
+            isLeader &&
+            injected === 0 &&
+            nowMs - lastLeaderHeartbeatTime >= LEADER_HEARTBEAT_INTERVAL_MS
+          ) {
             leaderIdleRounds++;
             if (leaderIdleRounds > LEADER_HEARTBEAT_MAX_IDLE) {
-              log?.info(`[${account.accountId}] [bot-poll] ${chatId.slice(-8)}: leader heartbeat stopped (${LEADER_HEARTBEAT_MAX_IDLE} idle rounds)`);
-              continue; // skip heartbeat, but keep polling (new bot msg will reset counter)
+              log?.info(
+                `[${account.accountId}] [bot-poll] ${chatId.slice(-8)}: leader heartbeat stopped (${LEADER_HEARTBEAT_MAX_IDLE} idle rounds)`,
+              );
+              continue;
             }
             lastLeaderHeartbeatTime = nowMs;
             const heartbeatId = `heartbeat-${chatId}-${now}`;
-            log?.info(`[${account.accountId}] [bot-poll] ${chatId.slice(-8)}: leader heartbeat ${leaderIdleRounds}/${LEADER_HEARTBEAT_MAX_IDLE}`);
-            void handleInboundMessage({
-              message: {
-                message_id: heartbeatId,
-                chat_id: chatId,
-                chat_type: "group",
-                message_type: "text",
-                content: JSON.stringify({ text: "[讨论心跳] 你是决策者。检查群里最新上下文，判断：推进讨论？激活参与者？还是结束？" }),
-                create_time: String(now * 1000),
-                parent_id: "",
-                mentions: [],
+            log?.info(
+              `[${account.accountId}] [bot-poll] ${chatId.slice(-8)}: leader heartbeat ${leaderIdleRounds}/${LEADER_HEARTBEAT_MAX_IDLE}`,
+            );
+            void handleInboundMessage(
+              {
+                message: {
+                  message_id: heartbeatId,
+                  chat_id: chatId,
+                  chat_type: "group",
+                  message_type: "text",
+                  content: JSON.stringify({
+                    text: "[讨论心跳] 你是决策者。检查群里最新上下文，判断：推进讨论？激活参与者？还是结束？",
+                  }),
+                  create_time: String(now * 1000),
+                  parent_id: "",
+                  mentions: [],
+                },
+                sender: {
+                  sender_id: { open_id: "heartbeat" },
+                  sender_type: "heartbeat",
+                },
               },
-              sender: {
-                sender_id: { open_id: "heartbeat" },
-                sender_type: "heartbeat",
-              },
-            }, deps).catch((err) => {
-              log?.error(`[${account.accountId}] [bot-poll] leader heartbeat error: ${String(err)}`);
+              deps,
+            ).catch((err) => {
+              log?.error(
+                `[${account.accountId}] [bot-poll] leader heartbeat error: ${String(err)}`,
+              );
             });
           }
         } catch (err) {
@@ -1161,7 +1290,9 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
         for (const v of iter) keep.add(v);
         injectedBotMsgIds.clear();
         for (const v of keep) injectedBotMsgIds.add(v);
-        log?.info(`[${account.accountId}] [bot-poll] GC: pruned dedup set to ${injectedBotMsgIds.size}`);
+        log?.info(
+          `[${account.accountId}] [bot-poll] GC: pruned dedup set to ${injectedBotMsgIds.size}`,
+        );
       }
     } catch (err) {
       log?.warn(`[${account.accountId}] bot-poll cycle error: ${String(err)}`);
@@ -1176,8 +1307,21 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
     }
     abortSignal.addEventListener(
       "abort",
-      () => {
+      async () => {
         clearInterval(botPollTimer);
+        // Best-effort: unregister from all discussion groups in Redis
+        const stateDir =
+          process.env.OPENCLAW_STATE_DIR?.trim() ||
+          process.env.CLAWDBOT_STATE_DIR?.trim() ||
+          join(homedir(), ".openclaw");
+        const modesDir = join(stateDir, "workspace", "group-modes");
+        if (existsSync(modesDir)) {
+          const chatIds = readdirSync(modesDir)
+            .filter((f) => f.endsWith(".json"))
+            .map((f) => f.replace(/\.json$/, "").replace(/^feishu:/, ""))
+            .filter((id) => id.startsWith("oc_"));
+          await shutdownDiscussionState(account.appId, chatIds).catch(() => {});
+        }
         log?.info(`[${account.accountId}] Feishu gateway stopping`);
         setStatus({ running: false, connected: false, lastStopAt: Date.now() });
         resolve();
@@ -1420,10 +1564,10 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
   if (!message || !sender) return;
 
-  // Leader heartbeat: synthetic message from poller. Skip all API calls
-  // (no sender resolve, no canonicalize, no ACK reaction). Just mark as
-  // bot sender so discussion mode routing lets it through.
-  if (sender.sender_type === "heartbeat") {
+  // Leader heartbeat: synthetic message from poller. Mark as bot sender
+  // and set flag to skip all Feishu API calls (ACK, card stream, sender resolve).
+  const isSyntheticMessage = sender.sender_type === "heartbeat";
+  if (isSyntheticMessage) {
     sender.sender_type = "bot";
   }
 
@@ -1717,7 +1861,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     (isGroup || parentId || (Array.isArray(message?.mentions) && message.mentions.length > 0)),
   );
   const canonicalCurrentMessage =
-    shouldCanonicalizeCurrentMessage && messageId
+    shouldCanonicalizeCurrentMessage && messageId && !isSyntheticMessage
       ? await fetchCanonicalMessageItem({ account, messageId, log })
       : null;
   let currentMessageMentionsResolved = parseFeishuMentions(
@@ -1728,25 +1872,28 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     account,
   );
   let senderDisplayName: string | undefined;
-  try {
-    const nameResult = await resolveFeishuSenderName({ account, senderOpenId: senderId, log });
-    senderDisplayName = nameResult.name;
-    if (nameResult.permissionError) {
-      const cooldownKey = account.appId ?? "default";
-      const lastNotified = permissionErrorNotifiedAt.get(cooldownKey) ?? 0;
-      if (Date.now() - lastNotified > PERMISSION_ERROR_COOLDOWN_MS) {
-        permissionErrorNotifiedAt.set(cooldownKey, Date.now());
-        log?.error(
-          `[${account.accountId}] Feishu permission error (sender name): ${nameResult.permissionError.message}` +
-            (nameResult.permissionError.grantUrl
-              ? ` Grant: ${nameResult.permissionError.grantUrl}`
-              : ""),
-        );
+  if (isSyntheticMessage) {
+    senderDisplayName = "system-heartbeat";
+  } else
+    try {
+      const nameResult = await resolveFeishuSenderName({ account, senderOpenId: senderId, log });
+      senderDisplayName = nameResult.name;
+      if (nameResult.permissionError) {
+        const cooldownKey = account.appId ?? "default";
+        const lastNotified = permissionErrorNotifiedAt.get(cooldownKey) ?? 0;
+        if (Date.now() - lastNotified > PERMISSION_ERROR_COOLDOWN_MS) {
+          permissionErrorNotifiedAt.set(cooldownKey, Date.now());
+          log?.error(
+            `[${account.accountId}] Feishu permission error (sender name): ${nameResult.permissionError.message}` +
+              (nameResult.permissionError.grantUrl
+                ? ` Grant: ${nameResult.permissionError.grantUrl}`
+                : ""),
+          );
+        }
       }
+    } catch {
+      // Best-effort — continue without display name.
     }
-  } catch {
-    // Best-effort — continue without display name.
-  }
   if (senderDisplayName) {
     currentMessageActor = {
       ...currentMessageActor,
@@ -1780,7 +1927,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   const ACK_EMOJI = "Get";
   let ackReactionId: string | null = null;
   const addAckReaction = async () => {
-    if (isCommand) return;
+    if (isSyntheticMessage || isCommand) return;
     if (ackReactionId) return;
     try {
       ackReactionId = await addFeishuReaction({ account, messageId, emoji: ACK_EMOJI });
@@ -1882,13 +2029,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     );
 
     // Read per-group mode + optional context from workspace file (per-message, no restart).
-    // Hoisted so context injection can use them outside the isGroup block.
     const groupModeInfo = readGroupMode(chatId);
     currentGroupMode = groupModeInfo.mode;
     currentGroupModeContext = groupModeInfo.context;
-    if (groupModeInfo.leaderError) {
-      log?.warn(`[${account.accountId}] discussion mode rejected: ${groupModeInfo.leaderError} — falling back to owner-at. Her should rewrite group-modes file with valid leader_app_id (cli_xxx).`);
-    }
 
     // Slash commands (/new, /status, /reset, etc.) in group: only process if bot
     // was @mentioned. Without this, ALL bots in group/auto-reply mode would
@@ -1901,9 +2044,6 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     }
 
     if (currentGroupMode === "discussion") {
-      // 🗣️讨论: all messages enter agent (except self).
-      // No rate limit — discussion mode has its own protections:
-      // only-inject-newest-1, heartbeat-3-round-cap, error-backoff, skip-patterns.
       if (isSelfBot) {
         log?.info(`[${account.accountId}] discussion mode: self-bot msg, skipping`);
         return;
@@ -1924,9 +2064,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         log?.info(`[${account.accountId}] owner mode: non-owner ${senderId}, archived only`);
         return;
       }
-      log?.info(
-        `[${account.accountId}] owner mode: owner ${senderId} in ${chatId}, processing`,
-      );
+      log?.info(`[${account.accountId}] owner mode: owner ${senderId} in ${chatId}, processing`);
       // Fall through to agent processing
     } else if (currentGroupMode === "group-at") {
       // 👥群@: anyone who @mentions the bot gets a response, no owner restriction.
@@ -2301,19 +2439,38 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           "group-at":
             "任何人@你都回复。注意：你使用主人的权限，搜索结果可能包含主人的私人信息，不要泄露",
         };
-        // Discussion mode: inject leader/participant role into context
-        const groupModeInfo = readGroupMode(chatId);
-        // Discussion mode: do NOT tell Her who is leader from local file.
-        // Local file may be stale/conflicting. Let Her determine leader from
-        // group chat context (20 recent messages). Only inject the rules.
-        const discussionRule = currentGroupMode === "discussion"
-          ? "讨论模式。你和其他 Her 在同一个群里协作。"
-            + "技术机制：你们无法实时收到对方消息，系统每 10 秒轮询群历史，检测到新 bot 消息才触发你。"
-            + "你回复后对方约 10 秒后被触发。如果你的回复没有 @具体的 Her，所有 Her 都会被触发导致混乱。"
-            + "所以：分配任务时必须 @具体的 Her，被 @的 Her 回复，没被 @的不要回复。"
-            + "leader 负责推进节奏和 @分配任务。从群聊上下文判断谁是 leader（人类指定的就服从，没指定就投票选出）。"
-            + "如果 30 秒没有新消息，系统会唤醒 leader 检查是否需要推进或催促。"
-          : undefined;
+        // Discussion mode: read leader + participants from Redis, inject role-specific rules.
+        let discussionRule: string | undefined;
+        if (currentGroupMode === "discussion") {
+          const dLeader = await getDiscussionLeader(chatId);
+          const dParticipants = await getDiscussionParticipants(chatId);
+          const amLeader = dLeader === account.appId;
+          const resolveNameFromKnown = (appId: string): string =>
+            (account.knownBots as Record<string, string>)?.[appId] ?? appId.slice(-8);
+          const leaderName = dLeader ? resolveNameFromKnown(dLeader) : "未选出";
+          const participantNames = dParticipants.map((id) => resolveNameFromKnown(id)).join(", ");
+
+          const commonMechanism =
+            "技术机制：你们无法实时收到对方消息，系统每 10 秒轮询群历史，检测到新 bot 消息才触发你。" +
+            "你回复后对方约 10 秒后被触发。如果你的回复没有 @具体的 Her，所有 Her 都会被触发导致混乱。" +
+            "所以：分配任务时必须 @具体的 Her，被 @的 Her 回复，没被 @的不要回复。";
+
+          if (amLeader) {
+            discussionRule =
+              `讨论模式。你是本次讨论的主导者（leader）。当前参与者：${participantNames}。` +
+              `你负责推进讨论节奏、@分配发言、控制轮次。其他 bot 等你 @才发言。` +
+              commonMechanism +
+              `如果 30 秒没有新消息，系统会唤醒你检查是否需要推进或催促。` +
+              `如果人类通过 set_discussion_leader 工具指定了新的主导者，你自动变为参与者。`;
+          } else {
+            discussionRule =
+              `讨论模式。你是参与者。当前主导者是 ${leaderName}。当前参与者：${participantNames}。` +
+              `等主导者 @你时发言，被 @时给出你的观点。不要主动推进讨论节奏。` +
+              commonMechanism +
+              `如果人类明确指定你为新主导者（说"你来主导/你负责/你当leader"），使用 set_discussion_leader 工具更新主导者。` +
+              `人类只是提问（"你觉得呢/你怎么看"）不算指定主导者，不要调用工具。`;
+          }
+        }
         const hardcodedRule = discussionRule ?? modeHardcoded[currentGroupMode];
         const groupModeBlock = hardcodedRule
           ? `[群聊模式: ${currentGroupMode} — ${hardcodedRule}` +
@@ -2411,7 +2568,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // onReplyStart: create the card stream when the AI actually starts processing
   // (after session lane queuing — never fires for queued messages).
   const startCardStream = async () => {
-    if (!sharedCardStreamingEnabled || cardStream) return;
+    if (isSyntheticMessage || !sharedCardStreamingEnabled || cardStream) return;
     try {
       cardStream = await createFeishuCardStream({
         account,
@@ -2491,7 +2648,12 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     await cardStream.finalize(cardStreamFinalText);
     // Record group reply for rate limiting; trigger error cooldown if it was an error card
     if (isGroup) {
-      if (cardStreamFinalText && /⚠️|API rate limit|rate_limit/.test(cardStreamFinalText)) {
+      if (
+        cardStreamFinalText &&
+        /⚠️|API rate limit|rate_limit|Cannot read propert|TypeError|Error:/.test(
+          cardStreamFinalText,
+        )
+      ) {
         recordGroupErrorReply(chatId);
       } else {
         recordGroupReply(chatId);
@@ -2689,10 +2851,20 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
   // Re-read group mode: skill may have changed it during this request
   const finalGroupMode = isGroup ? readGroupMode(chatId).mode : undefined;
+  const finalIsDiscussionLeader =
+    finalGroupMode === "discussion"
+      ? (await getDiscussionLeader(chatId)) === account.appId
+      : undefined;
 
   // Group chats: flush accumulated text as a single post message.
   if (isGroup && groupAccumulatedText) {
-    const footer = buildFeishuStatusFooter({ storePath, sessionKey: route.sessionKey, config, groupMode: finalGroupMode });
+    const footer = buildFeishuStatusFooter({
+      storePath,
+      sessionKey: route.sessionKey,
+      config,
+      groupMode: finalGroupMode,
+      isDiscussionLeader: finalIsDiscussionLeader,
+    });
     const finalGroupText = finalizeGroupedReplyText(groupAccumulatedText, footer);
     await deliverFeishuReply({
       payload: { text: finalGroupText, replyToId: groupAccumulatedReplyToId },
@@ -2721,7 +2893,13 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
   // Append status footer (model + context usage) to the card before closing.
   if (cardStream?.started && cardStreamFinalText) {
-    const footer = buildFeishuStatusFooter({ storePath, sessionKey: route.sessionKey, config, groupMode: finalGroupMode });
+    const footer = buildFeishuStatusFooter({
+      storePath,
+      sessionKey: route.sessionKey,
+      config,
+      groupMode: finalGroupMode,
+      isDiscussionLeader: finalIsDiscussionLeader,
+    });
     if (footer) {
       cardStreamFinalText += footer;
     }
