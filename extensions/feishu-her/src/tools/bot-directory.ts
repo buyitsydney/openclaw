@@ -58,7 +58,8 @@ async function listGroupBots(
   const seen = new Set<string>();
   const bots: BotEntry[] = [];
   for (const m of result.messages) {
-    if (m.sender_type !== "bot") continue;
+    const isBot = m.sender_actor_kind === "bot" || m.sender_type === "app" || m.sender_type === "bot";
+    if (!isBot) continue;
     const senderId = m.sender_id?.trim();
     if (!senderId || seen.has(senderId)) continue;
 

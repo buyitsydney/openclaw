@@ -156,8 +156,9 @@ function extractGroupBotOpenIds(
   const result = new Set<string>();
 
   for (const m of messages) {
-    // Check sender: bot senders have sender_type === "bot"
-    if (m.sender_type === "bot") {
+    // sender_actor_kind is normalized ("bot"), sender_type is raw ("app" or "bot")
+    const isBot = m.sender_actor_kind === "bot" || m.sender_type === "app" || m.sender_type === "bot";
+    if (isBot) {
       const senderId = m.sender_id?.trim();
       if (senderId) {
         // sender_id can be app_id (cli_xxx) or open_id (ou_xxx)
