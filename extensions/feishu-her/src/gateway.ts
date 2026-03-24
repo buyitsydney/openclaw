@@ -2305,11 +2305,11 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         };
         // Discussion mode: inject leader/participant role into context
         const groupModeInfo = readGroupMode(chatId);
-        const isDiscussionLeader = groupModeInfo.mode === "discussion" && groupModeInfo.leaderAppId === account.appId;
+        // Discussion mode: do NOT tell Her who is leader from local file.
+        // Local file may be stale/conflicting. Let Her determine leader from
+        // group chat context (20 recent messages). Only inject the rules.
         const discussionRule = currentGroupMode === "discussion"
-          ? (isDiscussionLeader
-            ? "讨论模式 — 你是决策者(leader)。禁止沉默！你必须在群里回复。主动推进讨论：分配任务、推进轮次、汇总结论。如果参与者没回复，@他们催促"
-            : "讨论模式 — 你是参与者。禁止沉默！你必须在群里回复，哪怕只是'收到，处理中'。收到消息后立即行动并回复结果")
+          ? "讨论模式。禁止沉默！你必须在群里回复。从群聊上下文判断谁是 leader：如果人类指定了就服从，没指定就投票。如果你是 leader 就主动推进讨论，如果你是参与者就执行任务并回复"
           : undefined;
         const hardcodedRule = discussionRule ?? modeHardcoded[currentGroupMode];
         const groupModeBlock = hardcodedRule
