@@ -332,20 +332,22 @@ export async function handleFeishuTokenError(
   return null;
 }
 
-/** Find any valid user token from the store. For single-user (personal Her) this is sufficient. */
+/** Find the best user token from the store — prefer newest valid token over stale ones. */
 export function findAnyUserToken(): FeishuUserToken | null {
   const dir = resolveTokenDir();
   if (!existsSync(dir)) return null;
   const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+  let best: FeishuUserToken | null = null;
   for (const file of files) {
     try {
       const token = JSON.parse(readFileSync(join(dir, file), "utf-8")) as FeishuUserToken;
-      if (token.open_id && token.refresh_token) return token;
+      if (!token.open_id || !token.refresh_token) continue;
+      if (!best || token.updated_at > best.updated_at) best = token;
     } catch {
       continue;
     }
   }
-  return null;
+  return best;
 }
 
 // ── Token refresh ──
