@@ -404,9 +404,9 @@ ingress:
 
 Docker 多用户:
 - [ ] ./start-docker.sh 镜像构建成功
-- [ ] ./start-user.sh --id=1 启动成功
-- [ ] docker logs carher-1 无 error/fatal
-- [ ] docker logs carher-1 显示 "Feishu WSClient connected"（如有飞书配置）
+- [ ] ./start-user.sh --id=101 启动成功
+- [ ] docker logs carher-101 无 error/fatal
+- [ ] docker logs carher-101 显示 "Feishu WSClient connected"（如有飞书配置）
 - [ ] 用户之间数据完全隔离
 ```
 
@@ -442,11 +442,11 @@ gcloud auth application-default login
 
 ```bash
 # 查看日志
-docker logs carher-1
+docker logs carher-101
 
 # 常见原因：
 # 1. Docker Desktop 没启动
-# 2. 镜像没构建（先运行 ./start-docker.sh）
+# 2. 镜像没构建（先运行 ./build-image.sh）
 # 3. 端口被占用（lsof -i :29001）
 ```
 

@@ -150,6 +150,57 @@ function readGroupMode(chatId: string): GroupModeInfo {
   }
 }
 
+/** Extract bot open_ids from already-fetched group history messages (zero extra API calls).
+ * Scans senders + mentions to find known bots active in this group. */
+function extractGroupBotOpenIds(
+  // oxlint-disable-next-line typescript/no-explicit-any
+  messages: any[],
+  account: ResolvedFeishuAccount,
+): Set<string> {
+  const knownBots = account.knownBots ?? {};
+  const knownOpenIds = account.knownBotOpenIds ?? {};
+  const result = new Set<string>();
+
+  for (const m of messages) {
+    // sender_actor_kind is normalized ("bot"), sender_type is raw ("app" or "bot")
+    const isBot =
+      m.sender_actor_kind === "bot" || m.sender_type === "app" || m.sender_type === "bot";
+    if (isBot) {
+      const senderId = m.sender_id?.trim();
+      if (senderId) {
+        // sender_id can be app_id (cli_xxx) or open_id (ou_xxx)
+        if (senderId.startsWith("ou_") && senderId in knownOpenIds) {
+          result.add(senderId);
+        } else if (senderId.startsWith("cli_") && senderId in knownBots) {
+          // Resolve app_id → open_id via reverse lookup
+          for (const [openId, appId] of Object.entries(knownOpenIds)) {
+            if (appId === senderId) {
+              result.add(openId);
+              break;
+            }
+          }
+        }
+      }
+    }
+    // Check mentions: @bot references also reveal bots in the group
+    for (const mention of m.mentions ?? []) {
+      const id = mention.id?.trim();
+      if (!id) continue;
+      if (id.startsWith("cli_") && id in knownBots) {
+        for (const [openId, appId] of Object.entries(knownOpenIds)) {
+          if (appId === id) {
+            result.add(openId);
+            break;
+          }
+        }
+      } else if (id.startsWith("ou_") && id in knownOpenIds) {
+        result.add(id);
+      }
+    }
+  }
+  return result;
+}
+
 // ── Manager mode rate limiter (sliding window) ───────────────────────────
 const groupReplyTimestamps = new Map<string, number[]>();
 const RATE_LIMIT_WINDOW_MS = 60_000; // 60 seconds
@@ -1442,6 +1493,8 @@ function listKnownBotPromptTargets(
 type FeishuBotIdentityPromptOptions = {
   focusText?: string;
   maxOtherBots?: number;
+  /** open_ids of group members — bots matching these are always included */
+  groupMemberOpenIds?: Set<string>;
 };
 
 function normalizeFeishuBotPromptFocus(text?: string): string {
@@ -1471,12 +1524,24 @@ function selectFeishuBotPromptTargets(
   const [selfBot, ...otherBots] = listKnownBotPromptTargets(account);
   const normalizedFocus = normalizeFeishuBotPromptFocus(options?.focusText);
   const maxOtherBots = Math.max(0, options?.maxOtherBots ?? 8);
-  const focusedBots = normalizedFocus
-    ? otherBots.filter((bot) => matchesFeishuBotPromptFocus(bot, normalizedFocus))
+  const groupMembers = options?.groupMemberOpenIds;
+
+  // Priority 1: bots that are members of the current group (always included)
+  const groupBots = groupMembers
+    ? otherBots.filter((bot) => bot.openId && groupMembers.has(bot.openId))
     : [];
-  return selfBot
-    ? [selfBot, ...focusedBots.slice(0, maxOtherBots)]
-    : focusedBots.slice(0, maxOtherBots);
+  // Priority 2: bots mentioned in focusText (up to remaining slots)
+  const remainingSlots = Math.max(0, maxOtherBots - groupBots.length);
+  const groupBotIds = new Set(groupBots.map((b) => b.appId));
+  const focusedBots = normalizedFocus
+    ? otherBots
+        .filter(
+          (bot) => !groupBotIds.has(bot.appId) && matchesFeishuBotPromptFocus(bot, normalizedFocus),
+        )
+        .slice(0, remainingSlots)
+    : [];
+
+  return selfBot ? [selfBot, ...groupBots, ...focusedBots] : [...groupBots, ...focusedBots];
 }
 
 export function buildFeishuBotIdentityBlock(
@@ -1484,6 +1549,7 @@ export function buildFeishuBotIdentityBlock(
   options?: FeishuBotIdentityPromptOptions,
 ): string {
   const lines: string[] = ["[Bot Identity]"];
+  const groupMembers = options?.groupMemberOpenIds;
   const [selfBot, ...otherBots] = selectFeishuBotPromptTargets(account, options);
   if (selfBot) {
     lines.push(
@@ -1491,11 +1557,26 @@ export function buildFeishuBotIdentityBlock(
     );
   }
   if (otherBots.length > 0) {
-    lines.push("系统中的其他 bot:");
-    for (const bot of otherBots) {
-      lines.push(
-        `- ${bot.name} (app_id=${bot.appId}${bot.openId ? `, bot_open_id=${bot.openId}` : ""})`,
-      );
+    // Split into group bots and context-mentioned bots for clarity
+    const groupBots = groupMembers
+      ? otherBots.filter((b) => b.openId && groupMembers.has(b.openId))
+      : [];
+    const otherContextBots = otherBots.filter((b) => !groupBots.includes(b));
+    if (groupBots.length > 0) {
+      lines.push("同群 bot:");
+      for (const bot of groupBots) {
+        lines.push(
+          `- ${bot.name} (app_id=${bot.appId}${bot.openId ? `, bot_open_id=${bot.openId}` : ""})`,
+        );
+      }
+    }
+    if (otherContextBots.length > 0) {
+      lines.push("上下文提到的其他 bot:");
+      for (const bot of otherContextBots) {
+        lines.push(
+          `- ${bot.name} (app_id=${bot.appId}${bot.openId ? `, bot_open_id=${bot.openId}` : ""})`,
+        );
+      }
     }
   }
   lines.push('规则: app_id 只用于稳定识别 bot 身份，不可直接填进 <at user_id="...">。');
@@ -1505,6 +1586,9 @@ export function buildFeishuBotIdentityBlock(
   lines.push(
     "消息里的 sender/mentions 可能出现 app_id 或 open_id；识别 bot 看 app_id，真正构造 @ 看 open_id。",
   );
+  if (!groupMembers) {
+    lines.push("要 @mention 不在本群的 bot，用 feishu_bot_directory tool 搜索。");
+  }
   lines.push("[End Bot Identity]", "");
   return lines.join("\n");
 }
@@ -2427,6 +2511,8 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       });
       if (result.messages.length > 0) {
         const chronological = [...result.messages].reverse();
+        // Extract active bots from history (zero extra API calls)
+        const groupBotOpenIds = extractGroupBotOpenIds(result.messages, account);
         const lines = chronological.map((m) => {
           return renderFeishuRecentContextLine({
             messageId: m.message_id,
@@ -2459,6 +2545,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         });
         const botIdentityBlock = buildFeishuBotIdentityBlock(account, {
           focusText: promptFocusText,
+          groupMemberOpenIds: groupBotOpenIds,
         });
 
         // Inject group mode info: hardcoded safety rules per mode + user context

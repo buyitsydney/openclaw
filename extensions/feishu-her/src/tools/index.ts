@@ -7,6 +7,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { listEnabledFeishuAccounts } from "../accounts.js";
 import { fetchBackendUserScopes } from "../oauth.js";
 import { registerFeishuBitableTools } from "./bitable.js";
+import { registerFeishuBotDirectoryTool } from "./bot-directory.js";
 import { registerFeishuCalendarTools } from "./calendar.js";
 import { registerFeishuChatCapabilityTool } from "./chat-capability.js";
 import { registerFeishuChatControlTools } from "./chat-controls.js";
@@ -56,6 +57,7 @@ export async function registerAllFeishuTools(api: OpenClawPluginApi): Promise<vo
   registerFeishuMessageSearchTool(api);
   registerFeishuMinutesTools(api);
   registerDiscussionLeaderTool(api);
+  registerFeishuBotDirectoryTool(api);
   // Gate knowledge-qa on backend scope availability (auto-detected, no config needed)
   const accounts = listEnabledFeishuAccounts(api.config);
   if (accounts.length > 0) {

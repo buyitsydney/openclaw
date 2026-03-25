@@ -9,9 +9,10 @@ description: CarHer 企业 Docker 容器运维操作。Use when the user mention
 
 **Mac 本地**（`docker/users.csv`）：
 
-- `carher-1` = **测试容器**（卜弋天个人飞书 `cli_a9031535e3fa9cef`）→ 可随意实验
+- `carher-101` = **tester**（测试容器）→ 可随意实验
+- `carher-102` = **tester2**（测试容器）→ 可随意实验
+- `carher-103` = **tester3**（测试容器）→ 可随意实验
 - `carher-3` = **董事长**（`cli_a9054f702c789bd9`）→ 🚫 禁止操作
-- `carher-4` = 浏览器测试
 
 **服务器 S1**（10.68.13.186，CSV 在服务器本地）：
 
@@ -19,7 +20,9 @@ description: CarHer 企业 Docker 容器运维操作。Use when the user mention
 - `carher-12` = 测试容器（卜弋天）
 - `carher-13` = **卜弋天个人**（`cli_a917e5525178dbb3`）
 
-**关键区别**：Mac 的 docker1 是测试，服务器的 docker1 是董事长！ID 不同！
+**关键区别**：Mac 测试容器已迁移到 101-103 ID 段，服务器的 docker1 是董事长！
+
+**跨服务器 bot open_id 同步铁律**：`feishu_bot_open_id`（CSV 第 10 列）必须在 **所有服务器的 CSV** 上同步。S1/S2/S3 各有独立 CSV 副本。如果只在 S1 更新了 bot A 的 open_id，S2/S3 上的容器就无法识别 bot A。批量获取 open_id 后，必须同步到所有 3 台服务器的 CSV。
 
 ## 快速定位流程
 
@@ -47,7 +50,7 @@ sshpass -p 'PWD' ssh USER@IP "cat /Data/CarHer/docker/users.csv"
 
 CSV 格式：`id,姓名,模型,feishu_app_id,feishu_app_secret,feishu_owner_open_id,provider,备注,owner_allow_from`
 
-容器命名：`carher-{id}`（如 id=1 → `carher-1`）
+容器命名：`carher-{id}`（如 id=101 → `carher-101`）
 
 ### 3. 确认容器状态
 
@@ -83,14 +86,15 @@ sshpass -p 'PWD' ssh USER@IP "docker exec carher-N cat /tmp/openclaw/openclaw-\$
 
 构建和部署是**两个独立步骤**，由不同脚本负责：
 
-| 脚本 | 职责 | 关键参数 |
-|------|------|---------|
+| 脚本             | 职责             | 关键参数                                              |
+| ---------------- | ---------------- | ----------------------------------------------------- |
 | `build-image.sh` | 构建 Docker 镜像 | `--tag=NAME`, `--branch=BRANCH`, `--force`, `--check` |
-| `start-user.sh` | 启动/管理容器 | `--image=NAME`（默认 `carher:local`） |
+| `start-user.sh`  | 启动/管理容器    | `--image=NAME`（默认 `carher:local`）                 |
 
 **`start-user.sh` 永远不构建镜像。** 如果镜像不存在，会报错并提示运行 `build-image.sh`。
 
 同一台服务器的所有容器**共享同一个 `carher:local` 镜像**，所以：
+
 - `build-image.sh` 构建一次，所有容器复用
 - **实验隔离**：`build-image.sh --branch=feature/xxx --tag=carher:xxx` 构建实验镜像，`start-user.sh --id=N --image=carher:xxx` 只让指定容器用实验镜像，不影响其他容器
 
@@ -242,12 +246,43 @@ scp docker/servers.txt cltx@IP:/Data/CarHer/docker/servers.txt
 
 每次添加新用户，严格按此清单：
 
-1. 服务器 CSV 添行（9 列，末尾逗号）→ `./start-user.sh --id=N`
-2. 验证容器 config：App ID/Secret、models providers、groups、gateway dangerously\* 配置
-3. 确认 WSClient connected
-4. 更新本地 Mac `docker/servers.txt` → scp 同步到所有服务器
-5. 通知 IT：配置长连接 → 添加事件 `im.message.receive_v1` → 第二次发布
-6. 用户首次对话后：从 session 日志提取 open_id → 更新 CSV → 重建（先检查活跃！）→ 验证 `dm.allowFrom`
+1. 服务器 CSV 添行（10 列）→ `./start-user.sh --id=N`
+2. 获取 bot open_id：用 `/bot/v3/info` API（参考下方脚本）→ 回填 CSV 第 10 列 `feishu_bot_open_id`
+3. **同步到所有服务器**的 CSV（S1/S2/S3 各有独立副本，缺一不可）
+4. 验证容器 config：App ID/Secret、models providers、groups、gateway dangerously\* 配置
+5. 确认 WSClient connected
+6. 更新本地 Mac `docker/servers.txt` → scp 同步到所有服务器
+7. 通知 IT：配置长连接 → 添加事件 `im.message.receive_v1` → 第二次发布
+8. 用户首次对话后：从 session 日志提取 open_id → 更新 CSV → 重建（先检查活跃！）→ 验证 `dm.allowFrom`
+
+**新 bot 加入后其他容器如何感知？**
+
+- 群消息历史检测：新 bot 在群里说话后，其他 bot 下一次处理群消息时自动从历史中发现它 ✅
+- knownBots config：旧容器的 knownBots 在启动时从 CSV 生成，新 bot 不在其中 → **旧容器需要逐批重启**才能在 knownBots 里看到新 bot
+- 未来优化：将 knownBots 改成运行时从共享文件读取，可实现零重启动态更新
+
+**批量获取 bot open_id 脚本（在任一服务器运行）：**
+
+```bash
+python3 -c '
+import csv, json, urllib.request
+with open("/Data/CarHer/docker/users.csv") as f:
+    for row in csv.reader(f):
+        if row[0].startswith("#") or not row[3].strip(): continue
+        app_id, app_secret = row[3].strip(), row[4].strip()
+        try:
+            data = json.dumps({"app_id": app_id, "app_secret": app_secret}).encode()
+            req = urllib.request.Request("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+                data=data, headers={"Content-Type": "application/json"})
+            token = json.load(urllib.request.urlopen(req))["tenant_access_token"]
+            req2 = urllib.request.Request("https://open.feishu.cn/open-apis/bot/v3/info",
+                headers={"Authorization": "Bearer " + token})
+            bot = json.load(urllib.request.urlopen(req2))["bot"]
+            print(f"{row[0]},{row[1]},{app_id},{bot[\"open_id\"]}")
+        except Exception as e:
+            print(f"{row[0]},{row[1]},{app_id},ERROR:{e}")
+'
+```
 
 ### 群聊 vs 单聊判断
 
