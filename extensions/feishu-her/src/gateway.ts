@@ -125,12 +125,16 @@ const MERGE_FORWARD_DISABLED_TEXT = "[merged forward disabled]";
  */
 type GroupModeInfo = { mode: string; context?: string };
 
-function readGroupMode(chatId: string): GroupModeInfo {
+function resolveGroupModesDir(): string {
   const stateDir =
     process.env.OPENCLAW_STATE_DIR?.trim() ||
     process.env.CLAWDBOT_STATE_DIR?.trim() ||
     join(homedir(), ".openclaw");
-  const dir = join(stateDir, "workspace", "group-modes");
+  return join(stateDir, "workspace", "group-modes");
+}
+
+function readGroupMode(chatId: string): GroupModeInfo {
+  const dir = resolveGroupModesDir();
   let filePath = join(dir, `${chatId}.json`);
   if (!existsSync(filePath)) {
     filePath = join(dir, `feishu:${chatId}.json`);
@@ -154,6 +158,20 @@ function readGroupMode(chatId: string): GroupModeInfo {
   } catch {
     return { mode: "owner-at" };
   }
+}
+
+function writeGroupMode(chatId: string, mode: string): void {
+  const dir = resolveGroupModesDir();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const filePath = join(dir, `${chatId}.json`);
+  try {
+    let data: Record<string, unknown> = {};
+    if (existsSync(filePath)) {
+      data = JSON.parse(readFileSync(filePath, "utf-8"));
+    }
+    data.mode = mode;
+    writeFileSync(filePath, JSON.stringify(data, null, 2));
+  } catch {}
 }
 
 /** Extract bot open_ids from already-fetched group history messages (zero extra API calls).
@@ -1014,11 +1032,18 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
 
   log?.info(`[${account.accountId}] connecting Feishu WSClient...`);
 
+  // Track last real message processing time per chat (for heartbeat suppression)
+  const lastRealProcessedAt = new Map<string, number>();
+
   const eventDispatcher = new Lark.EventDispatcher({}).register({
     "im.message.receive_v1": async (data) => {
       // Return immediately so the SDK sends the ACK frame within milliseconds.
       // Without this, Feishu's ~3-5s ACK timeout expires before the AI finishes
       // processing (6-27s observed), causing Feishu to retry at +15s/+5m/+1h/+6h.
+      const chatId = data?.message?.chat_id;
+      if (chatId && data?.message?.chat_type === "group") {
+        lastRealProcessedAt.set(chatId, Date.now());
+      }
       void handleInboundMessage(data, { account, config, abortSignal, log, setStatus, core }).catch(
         (err) => {
           log?.error(`[${account.accountId}] error handling message: ${String(err)}`);
@@ -1072,7 +1097,58 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
   // Per-group leader heartbeat state
   const heartbeatState = new Map<string, { idleRounds: number; lastTime: number }>();
   const LEADER_HEARTBEAT_INTERVAL_MS = 30_000;
+
+  // Broadcast debounce: buffer per chat, only inject the latest message after a short window.
+  // Matches the old polling design: "only inject the NEWEST unseen one; agent sees full
+  // context via 20-message history injection on each run."
+  const BROADCAST_DEBOUNCE_MS = 3_000;
+  const broadcastBuffer = new Map<string, { latest: BotBroadcastMessage; timer: ReturnType<typeof setTimeout> }>();
+
   const LEADER_HEARTBEAT_MAX_IDLE = 3;
+
+  // Flush a debounced broadcast: inject only the latest buffered message for a chat.
+  // All earlier messages in the window are visible via 20-message history injection.
+  const flushBroadcastBuffer = (chatId: string) => {
+    const entry = broadcastBuffer.get(chatId);
+    if (!entry) return;
+    broadcastBuffer.delete(chatId);
+    const msg = entry.latest;
+
+    log?.info(
+      `[${account.accountId}] [broadcast] injecting (debounced): msgId=${msg.msgId.slice(-12)} from=${msg.senderAppId} in ${chatId.slice(-8)}`,
+    );
+
+    const hb = heartbeatState.get(chatId);
+    if (hb) {
+      hb.idleRounds = 0;
+      hb.lastTime = Date.now();
+    }
+
+    lastRealProcessedAt.set(chatId, Date.now());
+    void recordDiscussionActivity(chatId);
+    void handleInboundMessage(
+      {
+        message: {
+          message_id: msg.msgId,
+          chat_id: msg.chatId,
+          chat_type: "group",
+          message_type: msg.msgType,
+          content: msg.content,
+          create_time: String(msg.createTime),
+          parent_id: msg.parentId ?? "",
+          mentions: msg.mentions ?? [],
+        },
+        sender: {
+          sender_id: { open_id: msg.senderOpenId },
+          sender_type: "bot",
+        },
+      },
+      deps,
+    ).catch((err) => {
+      log?.error(`[${account.accountId}] [broadcast] handle error: ${String(err)}`);
+      broadcastBackoffUntil = Date.now() + BROADCAST_ERROR_BACKOFF_MS;
+    });
+  };
 
   subscribeBotMessages(account.appId, (msg: BotBroadcastMessage) => {
     log?.info(
@@ -1125,39 +1201,16 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
     }
 
     log?.info(
-      `[${account.accountId}] [broadcast] injecting: msgId=${msg.msgId.slice(-12)} from=${msg.senderAppId} in ${msg.chatId.slice(-8)}`,
+      `[${account.accountId}] [broadcast] buffered: msgId=${msg.msgId.slice(-12)} chat=${msg.chatId.slice(-8)}`,
     );
 
-    // Reset leader heartbeat idle counter on new bot message
-    const hb = heartbeatState.get(msg.chatId);
-    if (hb) {
-      hb.idleRounds = 0;
-      hb.lastTime = Date.now();
+    // Debounce: buffer per chat, only inject the latest after BROADCAST_DEBOUNCE_MS.
+    const existing = broadcastBuffer.get(msg.chatId);
+    if (existing) {
+      clearTimeout(existing.timer);
     }
-
-    void recordDiscussionActivity(msg.chatId);
-    void handleInboundMessage(
-      {
-        message: {
-          message_id: msg.msgId,
-          chat_id: msg.chatId,
-          chat_type: "group",
-          message_type: msg.msgType,
-          content: msg.content,
-          create_time: String(msg.createTime),
-          parent_id: msg.parentId ?? "",
-          mentions: msg.mentions ?? [],
-        },
-        sender: {
-          sender_id: { open_id: msg.senderOpenId },
-          sender_type: "bot",
-        },
-      },
-      deps,
-    ).catch((err) => {
-      log?.error(`[${account.accountId}] [broadcast] handle error: ${String(err)}`);
-      broadcastBackoffUntil = Date.now() + BROADCAST_ERROR_BACKOFF_MS;
-    });
+    const timer = setTimeout(() => flushBroadcastBuffer(msg.chatId), BROADCAST_DEBOUNCE_MS);
+    broadcastBuffer.set(msg.chatId, { latest: msg, timer });
 
     // GC dedup set
     if (injectedBroadcastIds.size > INJECTED_IDS_MAX) {
@@ -1197,14 +1250,34 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
           isDiscussionMode: isDiscussion,
         });
 
+        if (isDiscussion && tick.shouldAutoExit) {
+          log?.info(
+            `[${account.accountId}] [broadcast] ${chatId.slice(-8)}: auto-exit → group-at`,
+          );
+          writeGroupMode(chatId, "group-at");
+          await cleanupDiscussionGroup(chatId);
+          heartbeatState.delete(chatId);
+          lastRealProcessedAt.delete(chatId);
+          const buf = broadcastBuffer.get(chatId);
+          if (buf) {
+            clearTimeout(buf.timer);
+            broadcastBuffer.delete(chatId);
+          }
+          continue;
+        }
+
         if (!isDiscussion || !tick.isLeader) continue;
 
-        // Leader heartbeat: poke the agent when no bot messages arrive for a while
+        // Leader heartbeat: poke the agent when no bot messages arrive for a while.
+        // Skip if a real message was processed recently (avoids queue noise during active discussion).
+        const HEARTBEAT_SUPPRESS_MS = 60_000;
+        const lastReal = lastRealProcessedAt.get(chatId) ?? 0;
         if (!heartbeatState.has(chatId)) {
           heartbeatState.set(chatId, { idleRounds: 0, lastTime: Date.now() });
         }
         const hb = heartbeatState.get(chatId)!;
         const nowMs = Date.now();
+        if (nowMs - lastReal < HEARTBEAT_SUPPRESS_MS) continue;
         if (nowMs - hb.lastTime < LEADER_HEARTBEAT_INTERVAL_MS) continue;
         hb.idleRounds++;
         if (hb.idleRounds > LEADER_HEARTBEAT_MAX_IDLE) continue;
@@ -1252,6 +1325,8 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
       "abort",
       async () => {
         clearInterval(discussionTickTimer);
+        for (const [, buf] of broadcastBuffer) clearTimeout(buf.timer);
+        broadcastBuffer.clear();
         await shutdownBroadcast().catch(() => {});
         const stateDir =
           process.env.OPENCLAW_STATE_DIR?.trim() ||
