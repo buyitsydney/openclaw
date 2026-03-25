@@ -670,14 +670,23 @@ fi
 
 INSTANCE_ID="carher-${USER_ID}-$(date +%Y%m%d%H%M%S)"
 
+# Ensure carher-net Docker network exists for Redis shared state
+docker network create carher-net 2>/dev/null || true
+# Ensure carher-redis is running (discussion mode leader election)
+docker start carher-redis 2>/dev/null || \
+  docker run -d --name carher-redis --network carher-net --restart unless-stopped \
+    -v carher-redis-data:/data redis:7-alpine redis-server --appendonly yes 2>/dev/null || true
+
 docker run -d \
   --name "$CONTAINER_NAME" \
   --init \
   --restart unless-stopped \
   --memory=2g \
+  --network carher-net \
   -e HOME=/data \
   -e OPENCLAW_INSTANCE_ID="${INSTANCE_ID}" \
   -e NODE_OPTIONS=--max-old-space-size=1536 \
+  -e REDIS_URL=redis://carher-redis:6379 \
   "${ENV_ARGS[@]}" \
   -e GOOGLE_APPLICATION_CREDENTIALS=/gcloud/application_default_credentials.json \
   ${WEBCHAT_URL:+-e WEBCHAT_URL="$WEBCHAT_URL"} \
