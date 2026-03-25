@@ -670,12 +670,16 @@ fi
 
 INSTANCE_ID="carher-${USER_ID}-$(date +%Y%m%d%H%M%S)"
 
-# Ensure carher-net Docker network exists for Redis shared state
-docker network create carher-net 2>/dev/null || true
-# Ensure carher-redis is running (discussion mode leader election)
-docker start carher-redis 2>/dev/null || \
-  docker run -d --name carher-redis --network carher-net --restart unless-stopped \
-    -v carher-redis-data:/data redis:7-alpine redis-server --appendonly yes 2>/dev/null || true
+# Redis for discussion mode leader election.
+# server.env can set REDIS_URL (e.g. redis://10.68.13.186:6379 for cross-server).
+# If not set, auto-provision a local Redis container.
+if [ -z "$REDIS_URL" ]; then
+  docker network create carher-net 2>/dev/null || true
+  docker start carher-redis 2>/dev/null || \
+    docker run -d --name carher-redis --network carher-net --restart unless-stopped \
+      -v carher-redis-data:/data redis:7-alpine redis-server --appendonly yes 2>/dev/null || true
+  REDIS_URL="redis://carher-redis:6379"
+fi
 
 docker run -d \
   --name "$CONTAINER_NAME" \
@@ -686,7 +690,8 @@ docker run -d \
   -e HOME=/data \
   -e OPENCLAW_INSTANCE_ID="${INSTANCE_ID}" \
   -e NODE_OPTIONS=--max-old-space-size=1536 \
-  -e REDIS_URL=redis://carher-redis:6379 \
+  -e TZ=Asia/Shanghai \
+  ${REDIS_URL:+-e REDIS_URL="$REDIS_URL"} \
   "${ENV_ARGS[@]}" \
   -e GOOGLE_APPLICATION_CREDENTIALS=/gcloud/application_default_credentials.json \
   ${WEBCHAT_URL:+-e WEBCHAT_URL="$WEBCHAT_URL"} \
