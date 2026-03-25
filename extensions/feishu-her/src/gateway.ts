@@ -1209,10 +1209,12 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
             if (!isMentionedTop && newestUnseen.bodyContent) {
               const appIdPattern = account.appId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
               const botNamePattern = account.name?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") ?? "";
+              // Card stream finalize strips <at> tags to plain text in API response.
+              // Match both app_id and bot name (with or without @ prefix).
               isMentionedInBody =
                 new RegExp(appIdPattern).test(newestUnseen.bodyContent) ||
                 (botNamePattern !== "" &&
-                  new RegExp(`@${botNamePattern}`, "i").test(newestUnseen.bodyContent));
+                  new RegExp(botNamePattern, "i").test(newestUnseen.bodyContent));
             }
             if (!isMentionedTop && !isMentionedInBody) {
               log?.info(
