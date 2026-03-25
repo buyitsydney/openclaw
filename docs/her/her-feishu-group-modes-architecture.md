@@ -233,11 +233,13 @@ auto-reply 过滤所有 bot 消息，只响应各自主人。**零风暴风险�
 gateway 在 agent prompt 中注入两层信息：
 
 **不可编辑（hardcoded per mode）：**
+
 - auto-reply: "只响应主人的消息"
 - at-reply: "任何人@你都回复。注意：你使用主人的权限，搜索结果可能包含主人的私人信息，不要泄露"
 - group: "自己判断群里回复还是私聊主人。不要在群里泄露主人的私聊内容"
 
 **可编辑（用户通过 her 更新 context 字段）：**
+
 - 用户说"只关注股票" → context 写入 → 注入 `主人指示: 只关注股票`
 - 用户说"不用特别关注" → context 清空
 
@@ -249,43 +251,48 @@ gateway 在 agent prompt 中注入两层信息：
 
 ## 实现状态
 
-| 内容 | 状态 |
-|------|------|
-| gateway readGroupMode + auto-reply | ✅ |
-| at-reply 模式 | ✅ |
-| group 模式（isSelfBot + 熔断） | ✅ |
-| feishu-group-mode skill（四种模式） | ✅ |
-| context 字段注入 + hardcoded 安全规则 | ✅ |
-| block 重复回复 fix | ✅ |
-| 灰度部署 docker13/14/42/43/66 + docker1/2/4 | ✅ |
+| 内容                                        | 状态 |
+| ------------------------------------------- | ---- |
+| gateway readGroupMode + auto-reply          | ✅   |
+| at-reply 模式                               | ✅   |
+| group 模式（isSelfBot + 熔断）              | ✅   |
+| feishu-group-mode skill（四种模式）         | ✅   |
+| context 字段注入 + hardcoded 安全规则       | ✅   |
+| block 重复回复 fix                          | ✅   |
+| 灰度部署 docker13/14/42/43/66 + docker1/2/4 | ✅   |
 
 ### 测试记录（2026-03-21，本地 carher-1 tester + carher-101 tester2）
 
 **模式切换：**
+
 - default → auto-reply → at-reply → group → default 全流程 ✅
 - 自然语言切换（"自动回复"/"开放艾特"/"群聊模式"/"恢复默认"）✅
 - 写 group-modes 文件 + context 字段 ✅
 - 下一条消息立即生效 ✅
 
 **四种模式行为：**
+
 - default：主人 @才回复，非主人 @静默 ✅
 - auto-reply：主人不 @也触发，非主人不触发 ✅
 - at-reply：任何人 @都回复 ✅
 - group：所有人消息触发 agent，agent 自己判断回复方式 ✅
 
 **context 注入：**
+
 - hardcoded 安全规则正确注入（per mode 不同） ✅
 - 用户自定义 context 动态更新 ✅
 - 切换模式时 context 可保留或清空 ✅
 - agent 能看到注入的 mode + context + target 信息 ✅
 
 **安全：**
+
 - isSelfBot 过滤（自己发的消息不触发自己）✅
 - 滑动窗口熔断 ✅
 - 注入攻击防护 ✅
 - 非主人 auto-reply 不触发 ✅
 
 **搜索工具全面回归（R31）：**
+
 - tester: 6 个搜索工具全通过 ✅
 - tester2: 审计报告 2189 chars ✅
 
@@ -299,102 +306,123 @@ gateway 在 agent prompt 中注入两层信息：
 
 飞书 `im.message.receive_v1` 不推送 bot 消息给其他 bot。轮询器桥接这个缺口。
 
-**原理**：每 10 秒对所有 `group` / `discussion` 模式的群调 `GET /im/v1/messages`，过滤 `sender_type=app` 且非自己的消息，跳过 ⏳ 中间态，合成事件注入 `handleInboundMessage`。`injectedBotMsgIds` Set 确保每条 finalized 消息只注入一次。
+**原理**：每 10 秒对所有 `discussion` 模式的群调 `GET /im/v1/messages`（拉最近 20 条，无时间窗口），过滤 `sender_type=app` 且非自己的消息，跳过 ⏳ 中间态和系统消息。
 
-**已验证（2026-03-23）**：
-- tester + tester2 自动 5 轮讨论 + 辩论 ✅
-- 10 秒轮询，一轮 bot 对话约 15-25 秒 ✅
-- ⏳ 中间态过滤，不注入半成品卡片 ✅
-- rate limiter（5 条/60 秒）兜底 ✅
+**三层有序控制**：
+
+1. **@mention turn-taking（代码层面）**：轮询器检查消息内容是否 @自己。被 @的 bot 才注入触发 agent run，没被 @的跳过（零 token）。这是有序对话的根本保证——一次只有一个 bot 被触发。
+2. **Leader heartbeat（代码层面）**：leader 每 30 秒被唤醒一次检查是否需要推进。3 轮（~90 秒）无新消息后自动停止。有新消息后自动恢复。
+3. **Opus 智能判断（Skill + context 注入）**：context 注入向 Opus 解释轮询机制，Opus 理解后自然会 @具体的 Her 分配任务，而不是泛泛发言触发所有 bot。
+
+**去重**：`injectedBotMsgIds` Set 确保每条 finalized 消息只注入一次。@mention 检查失败时（消息未 finalize，内容为空）不标记为 seen，下次轮询重新检查。
+
+**防风暴**：
+
+- 每轮只注入最新 1 条 bot 消息
+- `BOT_POLL_SKIP_PATTERNS` 过滤错误卡片、welcome 消息、系统消息
+- Error backoff 2 分钟
+- Discussion 模式不检查 rate limit（有自己的控制机制）
 
 ---
 
-## 决策群聊模式（discussion）— 替代旧群聊模式
+## 讨论模式（discussion）— 替代旧群聊模式
 
-### 为什么替代
+旧 `group` 模式已废弃。`discussion` 模式通过 @mention turn-taking + Redis leader 选举 + heartbeat 实现有序的 Her 间协作。
 
-旧 `group` 模式的问题：
-1. **无序** — 多个 Her 同时响应，重复回答，互相抢话
-2. **死锁** — 两个 Her 互相分配任务然后等对方，没人先动
-3. **无结束** — 不知道什么时候该停，只靠 rate limiter 兜底
-4. **中间态** — Her 看到对方正在 streaming 的半成品消息
+### 核心机制
 
-新 `discussion` 模式解决全部问题。核心：**每次群讨论必须有一个决策者（leader），决策者始终在线，控制流程。**
+```
+人类："tester 主导，讨论 XXX" → 两个 bot 都收到（飞书 WebSocket）
 
-### 角色
+tester（leader）开场 @tester2 分配任务
+  ↓ 10 秒后轮询器拉到
+tester2 看到 @自己 → 注入 → agent run → 回复 @tester
+  ↓ 10 秒后轮询器拉到
+tester 看到 @自己 → 注入 → agent run → 推进下一轮 @tester2
+  ↓
+... 循环直到 leader 宣布结论
 
-| 角色 | 谁 | 行为 |
-|------|---|------|
-| **决策者 (leader)** | 人类指定或 Her 投票 | 每轮被轮询器触发（不管有没有新消息），控制流程，决定何时结束 |
-| **参与者** | 其他 Her | 只在收到新 bot 消息时触发，执行任务并回复 |
-| **人类** | 群里的人 | 发起讨论、指定决策者、随时介入 |
+没人 @ → 没人被触发 → 零 token
+leader 30 秒无消息 → heartbeat 唤醒 → leader 检查是否需要催促
+3 轮 heartbeat 无效 → 自动停止 → 对话自然结束
+```
 
-### 信号协议
+### Leader 选举（Redis 共享状态）
 
-| 信号 | 谁发 | 效果 |
-|------|------|------|
-| **continue** | 决策者（隐式） | 决策者每轮 agent run 后，如果在群里发了消息，轮询器下一轮继续触发决策者 |
-| **stop** | 决策者 | 决策者在群里说"讨论结束" → Skill 把 mode 切回 `owner-at` → 轮询器停止触发 |
-| **激活** | 决策者 | 5 轮没有参与者回复 → 决策者 @参与者 尝试激活 |
-| **超时结束** | 决策者 | 10 轮没有任何新消息 → 决策者自动结束，给出状态反馈 |
+Leader 不由 Her 写文件决定（workspace 隔离导致冲突）。通过 Redis 管理：
 
-### 决策者选举
+- **系统默认**：进入讨论模式后，appId 最小的参与 bot 自动成为 leader
+- **人类指定**：Her 调 `set_discussion_leader` 工具更新 Redis
+- **参与者租约**：每个 bot 每 10 秒向 Redis ZADD 自己的 appId，30 秒不续约视为离线
+- **自动重选**：当前 leader 离线 → 从活跃参与者中选 appId 最小的
 
-1. **人类直接指定**（默认）：
-   - "tester 你来主导讨论" → tester 成为 leader
-   - "tester2 你来总结" → tester2 成为 leader
-   - Skill 识别这些意图，写入 `group-modes/{chatId}.json` 的 `leader` 字段
+Redis key：
 
-2. **Her 投票**（无人类指定时）：
-   - 收到群讨论任务但没有指定决策者 → 第一个回复的 Her 发起投票
-   - 其他 Her 回复同意/不同意 → 达成一致后开始
+```
+discussion:{chatId}:participants  — Sorted Set（score=epoch, member=appId）
+discussion:{chatId}:leader        — String（appId）
+discussion:{chatId}:last_activity — String（epoch）
+```
+
+无 Redis 时降级为文件模式（单机可用，跨容器不保证一致）。
 
 ### workspace 文件
 
 ```json
 {
   "chat_id": "oc_xxx",
-  "chat_name": "AI讨论群",
+  "chat_name": "群名",
   "mode": "discussion",
-  "leader_app_id": "cli_a92c99d102b8dbca",
-  "context": "3轮讨论，话题：AI产品上车",
+  "context": "3轮讨论，话题：XXX",
   "set_by": "ou_xxx",
-  "set_at": "2026-03-23T21:00:00+08:00"
+  "set_at": "ISO时间"
 }
 ```
 
-### 轮询器对 discussion 模式的行为
+**禁止写 `leader_app_id`**。leader 由 Redis 管理。
 
-```
-每 10 秒轮询：
-  ├─ 拉群历史 → 有新 bot 消息？
-  │   ├─ 有 → 注入给所有 Her（同 group 模式）
-  │   └─ 没有 → 是 leader？
-  │       ├─ 是 leader → 仍然触发一次 agent run（让 leader 看上下文做判断）
-  │       │   └─ leader 判断：要推进？要激活？要结束？
-  │       └─ 不是 leader → 不触发（等 leader 推进）
-```
+### context 注入
 
-### 与旧 group 模式的对比
+不告诉 Her "你是 leader/参与者"的角色指令。告诉 Her 技术机制：
 
-| | 旧 group 模式 | 新 discussion 模式 |
-|---|---|---|
-| 谁被触发 | 所有 Her | 有新消息时所有 Her，无消息时只有 leader |
-| 有序性 | 无（谁都能说） | leader 控制流程 |
-| 结束机制 | 无（靠 rate limiter） | leader 显式 stop / 10 轮超时 |
-| 死锁 | 常见 | leader 始终在线，5 轮激活 |
-| 适合场景 | 无（已废弃） | Her 间协作讨论、辩论、联合写文档 |
+> "讨论模式。你和其他 Her 无法实时收到对方消息，系统每 10 秒轮询。
+> 你回复后对方约 10 秒后被触发。如果你的回复没有 @具体的 Her，
+> 所有 Her 都会被触发导致混乱。所以分配任务时必须 @具体的 Her。
+> leader 负责推进节奏。30 秒没有新消息系统会唤醒 leader 检查状态。"
 
-### 实现状态
+Opus 理解机制后自然做出正确判断，无需逐条规则。
 
-| 内容 | 状态 |
-|------|------|
-| bot message poller（10s 轮询） | ✅ 已实现并验证 |
-| ⏳ 中间态过滤 | ✅ 已实现并验证 |
-| discussion 模式 gateway 路由 | 待实现 |
-| leader 持续触发逻辑 | 待实现 |
-| leader 超时 / 激活 / 结束 | 待实现 |
-| feishu-group-mode Skill 更新 | 待实现 |
+### 实现状态（2026-03-25）
+
+| 内容                                       | 状态            |
+| ------------------------------------------ | --------------- |
+| bot message poller（10s 轮询，无时间窗口） | ✅ 已实现并验证 |
+| @mention turn-taking                       | ✅ 已实现并验证 |
+| ⏳ 中间态过滤 + 未 finalize 重试           | ✅ 已实现并验证 |
+| discussion 模式 gateway 路由               | ✅ 已实现并验证 |
+| Redis leader 选举 + 参与者租约             | ✅ 已实现并验证 |
+| leader heartbeat（30s，3 轮上限）          | ✅ 已实现并验证 |
+| set_discussion_leader 工具                 | ✅ 已实现并验证 |
+| context 注入（机制解释，非规则）           | ✅ 已实现并验证 |
+| BOT_POLL_SKIP_PATTERNS 防风暴              | ✅ 已实现并验证 |
+| error backoff 2 分钟                       | ✅ 已实现并验证 |
+| injectedBotMsgIds GC（500 上限）           | ✅ 已实现       |
+
+### 已验证场景（2026-03-25）
+
+- tester(leader) + tester2 有序 3 轮讨论 ✅
+- @mention 过滤：未被 @的 bot 不触发（零 token）✅
+- 未 finalize 消息重试：skip → skip → finalize 后 inject ✅
+- heartbeat 3 轮停止 + 新消息恢复 ✅
+- Redis leader 选举 + set_discussion_leader 工具 ✅
+- 人类插话不打断讨论 ✅
+- 对话自然结束后零 token 消耗 ✅
+
+### 已知限制
+
+- 线上 77 个容器的 `knownBotOpenIds` 为空（部署前需更新）
+- leader agent run 可能耗时 30-60 秒（用 tools 搜索/写文档），heartbeat 窗口可能不够
+- API 配额：每群每 10 秒 1 次 × N 个 bot = N/10 QPS（远低于 50 QPS 限制）
 
 ### 已知限制 & 风险
 
