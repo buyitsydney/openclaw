@@ -1075,15 +1075,33 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
   const LEADER_HEARTBEAT_MAX_IDLE = 3;
 
   subscribeBotMessages(account.appId, (msg: BotBroadcastMessage) => {
-    if (Date.now() < broadcastBackoffUntil) return;
-    if (injectedBroadcastIds.has(msg.msgId)) return;
+    log?.info(
+      `[${account.accountId}] [broadcast] received: msgId=${msg.msgId.slice(-12)} from=${msg.senderAppId.slice(-8)} chat=${msg.chatId.slice(-8)}`,
+    );
+    if (Date.now() < broadcastBackoffUntil) {
+      log?.info(`[${account.accountId}] [broadcast] dropped (backoff): msgId=${msg.msgId.slice(-12)}`);
+      return;
+    }
+    if (injectedBroadcastIds.has(msg.msgId)) {
+      log?.info(`[${account.accountId}] [broadcast] dropped (dedup): msgId=${msg.msgId.slice(-12)}`);
+      return;
+    }
     injectedBroadcastIds.add(msg.msgId);
 
     const mode = readGroupMode(msg.chatId);
-    if (mode.mode !== "discussion") return;
+    if (mode.mode !== "discussion") {
+      log?.info(`[${account.accountId}] [broadcast] dropped (mode=${mode.mode}): msgId=${msg.msgId.slice(-12)}`);
+      return;
+    }
 
-    if (msg.content.includes('"⏳')) return;
-    if (BROADCAST_SKIP_PATTERNS.some((p) => msg.content.includes(p))) return;
+    if (msg.content.includes('"⏳')) {
+      log?.info(`[${account.accountId}] [broadcast] dropped (streaming): msgId=${msg.msgId.slice(-12)}`);
+      return;
+    }
+    if (BROADCAST_SKIP_PATTERNS.some((p) => msg.content.includes(p))) {
+      log?.info(`[${account.accountId}] [broadcast] dropped (skip-pattern): msgId=${msg.msgId.slice(-12)}`);
+      return;
+    }
 
     // Turn-taking: only inject if this bot is @mentioned
     const mentions = msg.mentions ?? [];
