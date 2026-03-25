@@ -1218,6 +1218,9 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
               log?.info(
                 `[${account.accountId}] [bot-poll] skipping (not @mentioned): msgId=${newestUnseen.msgId.slice(-12)}`,
               );
+              // Remove from seen set — message may not be finalized yet.
+              // Next poll will re-check after card stream finalize adds the @mention content.
+              injectedBotMsgIds.delete(newestUnseen.msgId);
               newestUnseen = null;
             }
           }
