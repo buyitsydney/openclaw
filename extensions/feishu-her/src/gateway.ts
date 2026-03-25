@@ -27,11 +27,17 @@ import type { ResolvedFeishuAccount } from "./accounts.js";
 import { resolveGroupOwnerIds } from "./accounts.js";
 import {
   initDiscussionState,
+  initBroadcast,
   discussionTick,
+  publishBotMessage,
+  subscribeBotMessages,
+  shutdownBroadcast,
   getDiscussionLeader,
   getDiscussionParticipants,
   shutdownDiscussionState,
   setDiscussionLeader,
+  recordDiscussionActivity,
+  type BotBroadcastMessage,
 } from "./discussion-state.ts";
 import { buildDriveFileContextFromText } from "./drive-file-read.js";
 import {
@@ -1035,68 +1041,20 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
   // ── Discussion state (Redis shared leader election) ────────────────────
   initDiscussionState({ redisUrl: process.env.REDIS_URL, log });
 
-  // ── Bot message poller ──────────────────────────────────────────────────
+  // ── Bot-to-bot broadcast via Redis pub/sub ────────────────────────────
   // Feishu im.message.receive_v1 does NOT push bot-sent messages to other bots.
-  // This poller bridges the gap: for groups in "group" mode, periodically pull
-  // chat history and inject other bots' messages into handleInboundMessage.
-  // Cost: one HTTP call per group-mode group per interval, zero AI tokens.
-  // Anti-storm: existing rate limiter (5 replies/60s) + error-card filter + backoff.
-  const BOT_POLL_INTERVAL_MS = 10_000;
-  const BOT_POLL_ERROR_BACKOFF_MS = 120_000; // pause polling 2min after agent errors
-  let botPollBackoffUntil = 0; // timestamp(ms): skip polling until this time
-  const injectedBotMsgIds = new Set<string>(); // dedup: only inject each finalized msg once
-  const INJECTED_IDS_MAX_SIZE = 500; // GC threshold to prevent memory leak
+  // Instead of polling the Feishu API every 10s, each bot PUBLISHes its own
+  // sent messages to Redis. Other bots SUBSCRIBE and receive them in <100ms.
+  // Zero Feishu API calls for inter-bot communication.
+  initBroadcast({ redisUrl: process.env.REDIS_URL });
+
   const deps: InboundDeps = { account, config, abortSignal, log, setStatus, core };
+  const BROADCAST_ERROR_BACKOFF_MS = 120_000;
+  let broadcastBackoffUntil = 0;
+  const injectedBroadcastIds = new Set<string>();
+  const INJECTED_IDS_MAX = 500;
 
-  log?.info(
-    `[${account.accountId}] [bot-poll] starting poller (interval=${BOT_POLL_INTERVAL_MS}ms)`,
-  );
-
-  // Warmup: mark all existing bot messages as "seen" so we don't re-process
-  // stale messages from previous sessions on container restart.
-  try {
-    const warmupToken = await getTenantAccessToken(account);
-    if (warmupToken) {
-      const stateDir =
-        process.env.OPENCLAW_STATE_DIR?.trim() ||
-        process.env.CLAWDBOT_STATE_DIR?.trim() ||
-        join(homedir(), ".openclaw");
-      const modesDir = join(stateDir, "workspace", "group-modes");
-      if (existsSync(modesDir)) {
-        for (const file of readdirSync(modesDir).filter((f) => f.endsWith(".json"))) {
-          const chatId = file.replace(/\.json$/, "").replace(/^feishu:/, "");
-          if (!chatId.startsWith("oc_")) continue;
-          const mode = readGroupMode(chatId);
-          if (mode.mode !== "discussion") continue;
-          const res = await callFeishuApiWithUserToken<{ items?: Array<Record<string, unknown>> }>({
-            method: "GET",
-            endpoint: "/im/v1/messages",
-            userToken: warmupToken,
-            query: {
-              container_id_type: "chat",
-              container_id: chatId,
-              sort_type: "ByCreateTimeDesc",
-              page_size: "20",
-            },
-          });
-          for (const item of res.data?.items ?? []) {
-            const msgId = ((item as Record<string, unknown>).message_id ?? "") as string;
-            if (msgId) injectedBotMsgIds.add(msgId);
-          }
-        }
-        log?.info(
-          `[${account.accountId}] [bot-poll] warmup: marked ${injectedBotMsgIds.size} existing messages as seen`,
-        );
-      }
-    }
-  } catch (err) {
-    log?.warn(
-      `[${account.accountId}] [bot-poll] warmup failed (non-fatal): ${String(err).slice(0, 100)}`,
-    );
-  }
-
-  // Patterns in bot cards that should never be re-injected into agent pipeline
-  const BOT_POLL_SKIP_PATTERNS = [
+  const BROADCAST_SKIP_PATTERNS = [
     "⚠️",
     "API rate limit",
     "rate_limit",
@@ -1110,274 +1068,161 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
     "Agent was aborted",
     "compacted",
   ];
+
+  // Per-group leader heartbeat state
+  const heartbeatState = new Map<string, { idleRounds: number; lastTime: number }>();
   const LEADER_HEARTBEAT_INTERVAL_MS = 30_000;
-  const LEADER_HEARTBEAT_MAX_IDLE = 3; // stop heartbeat after 3 rounds (~90s) without new bot messages
-  let lastLeaderHeartbeatTime = 0;
-  let leaderIdleRounds = 0; // reset to 0 when new bot message is injected
+  const LEADER_HEARTBEAT_MAX_IDLE = 3;
 
-  const botPollTimer = setInterval(async () => {
+  subscribeBotMessages(account.appId, (msg: BotBroadcastMessage) => {
+    if (Date.now() < broadcastBackoffUntil) return;
+    if (injectedBroadcastIds.has(msg.msgId)) return;
+    injectedBroadcastIds.add(msg.msgId);
+
+    const mode = readGroupMode(msg.chatId);
+    if (mode.mode !== "discussion") return;
+
+    if (msg.content.includes('"⏳')) return;
+    if (BROADCAST_SKIP_PATTERNS.some((p) => msg.content.includes(p))) return;
+
+    // Turn-taking: only inject if this bot is @mentioned
+    const mentions = msg.mentions ?? [];
+    const isMentionedTop = mentions.some(
+      (m) => m.id === account.appId || m.id === account.botOpenId,
+    );
+    let isMentionedInBody = false;
+    if (!isMentionedTop && msg.content) {
+      const appIdPattern = account.appId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const botNamePattern = account.name?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") ?? "";
+      isMentionedInBody =
+        new RegExp(appIdPattern).test(msg.content) ||
+        (botNamePattern !== "" && new RegExp(botNamePattern, "i").test(msg.content));
+    }
+    if (!isMentionedTop && !isMentionedInBody) {
+      log?.info(
+        `[${account.accountId}] [broadcast] skipping (not @mentioned): msgId=${msg.msgId.slice(-12)}`,
+      );
+      injectedBroadcastIds.delete(msg.msgId);
+      return;
+    }
+
+    log?.info(
+      `[${account.accountId}] [broadcast] injecting: msgId=${msg.msgId.slice(-12)} from=${msg.senderAppId} in ${msg.chatId.slice(-8)}`,
+    );
+
+    // Reset leader heartbeat idle counter on new bot message
+    const hb = heartbeatState.get(msg.chatId);
+    if (hb) {
+      hb.idleRounds = 0;
+      hb.lastTime = Date.now();
+    }
+
+    void recordDiscussionActivity(msg.chatId);
+    void handleInboundMessage(
+      {
+        message: {
+          message_id: msg.msgId,
+          chat_id: msg.chatId,
+          chat_type: "group",
+          message_type: msg.msgType,
+          content: msg.content,
+          create_time: String(msg.createTime),
+          parent_id: msg.parentId ?? "",
+          mentions: msg.mentions ?? [],
+        },
+        sender: {
+          sender_id: { open_id: msg.senderOpenId },
+          sender_type: "bot",
+        },
+      },
+      deps,
+    ).catch((err) => {
+      log?.error(`[${account.accountId}] [broadcast] handle error: ${String(err)}`);
+      broadcastBackoffUntil = Date.now() + BROADCAST_ERROR_BACKOFF_MS;
+    });
+
+    // GC dedup set
+    if (injectedBroadcastIds.size > INJECTED_IDS_MAX) {
+      const toDelete = injectedBroadcastIds.size - Math.floor(INJECTED_IDS_MAX / 2);
+      const iter = injectedBroadcastIds.values();
+      for (let i = 0; i < toDelete; i++) iter.next();
+      const keep = new Set<string>();
+      for (const v of iter) keep.add(v);
+      injectedBroadcastIds.clear();
+      for (const v of keep) injectedBroadcastIds.add(v);
+    }
+  });
+
+  log?.info(`[${account.accountId}] [broadcast] subscriber active, zero-API bot-to-bot messaging`);
+
+  // ── Discussion tick timer (leader election + heartbeat, no API calls) ──
+  const TICK_INTERVAL_MS = 10_000;
+  const discussionTickTimer = setInterval(async () => {
     try {
-      // Backoff: skip polling if we recently saw agent errors
-      if (Date.now() < botPollBackoffUntil) {
-        log?.info(
-          `[${account.accountId}] [bot-poll] backing off until ${new Date(botPollBackoffUntil).toISOString()}`,
-        );
-        return;
-      }
-
-      // Find all groups with "group" mode enabled
       const stateDir =
         process.env.OPENCLAW_STATE_DIR?.trim() ||
         process.env.CLAWDBOT_STATE_DIR?.trim() ||
         join(homedir(), ".openclaw");
       const modesDir = join(stateDir, "workspace", "group-modes");
-      if (!existsSync(modesDir)) {
-        log?.info(`[${account.accountId}] [bot-poll] no group-modes dir, skipping`);
-        return;
-      }
+      if (!existsSync(modesDir)) return;
 
       const files = readdirSync(modesDir).filter((f) => f.endsWith(".json"));
-      const pollTargets: Array<{
-        chatId: string;
-        isLeader: boolean;
-        leader: string | null;
-        participants: string[];
-      }> = [];
       for (const file of files) {
         const chatId = file.replace(/\.json$/, "").replace(/^feishu:/, "");
         if (!chatId.startsWith("oc_")) continue;
         const mode = readGroupMode(chatId);
         const isDiscussion = mode.mode === "discussion";
-        // discussionTick handles: register/unregister self, prune expired, elect leader
+
         const tick = await discussionTick({
           chatId,
           myAppId: account.appId,
           isDiscussionMode: isDiscussion,
         });
-        if (isDiscussion) {
-          pollTargets.push({
-            chatId,
-            isLeader: tick.isLeader,
-            leader: tick.leader,
-            participants: tick.participants,
-          });
+
+        if (!isDiscussion || !tick.isLeader) continue;
+
+        // Leader heartbeat: poke the agent when no bot messages arrive for a while
+        if (!heartbeatState.has(chatId)) {
+          heartbeatState.set(chatId, { idleRounds: 0, lastTime: Date.now() });
         }
-      }
-      if (pollTargets.length === 0) return;
-
-      log?.info(
-        `[${account.accountId}] [bot-poll] polling ${pollTargets.length} group(s): ${pollTargets.map((t) => t.chatId.slice(-8)).join(", ")}`,
-      );
-
-      const token = await getTenantAccessToken(account);
-      if (!token) {
-        log?.warn(`[${account.accountId}] [bot-poll] failed to get tenant token`);
-        return;
-      }
-      const now = Math.floor(Date.now() / 1000);
-
-      for (const { chatId, isLeader, leader, participants } of pollTargets) {
-        try {
-          // Pull latest 20 messages (no time window). Dedup via injectedBotMsgIds.
-          // This avoids the card-stream timing bug: create_time is set at card
-          // creation (⏳), not at finalize, so time-window polling misses finalized cards.
-          const res = await callFeishuApiWithUserToken<{
-            items?: Array<Record<string, unknown>>;
-          }>({
-            method: "GET",
-            endpoint: "/im/v1/messages",
-            userToken: token,
-            query: {
-              container_id_type: "chat",
-              container_id: chatId,
-              sort_type: "ByCreateTimeDesc",
-              page_size: "20",
-            },
-          });
-          const items = res.data?.items ?? [];
-          if (res.code !== 0) continue;
-
-          // Scan all items (sorted ByCreateTimeDesc = newest first).
-          // Mark all bot messages as seen. Only inject the NEWEST unseen one.
-          // Agent sees full context via 20-message history injection on each run —
-          // no need to replay old messages, just trigger one agent run with the latest.
-          let newestUnseen: {
-            msg: Record<string, unknown>;
-            msgId: string;
-            msgType: string;
-            bodyContent: string;
-            senderOpenId: string;
-            senderIdObj: Record<string, unknown>;
-          } | null = null;
-
-          for (const item of items) {
-            const msg = item as Record<string, unknown>;
-            const sender = msg.sender as Record<string, unknown> | undefined;
-            if (!sender || sender.sender_type !== "app") continue;
-            // REST API uses sender.id (flat), WebSocket uses sender.sender_id.open_id (nested)
-            const senderIdObj = sender.sender_id as Record<string, unknown> | undefined;
-            const senderOpenId = (senderIdObj?.open_id as string) || (sender.id as string) || "";
-            if (senderOpenId === account.botOpenId || senderOpenId === account.appId) continue;
-
-            const msgId = (msg.message_id ?? "") as string;
-            const msgType = (msg.msg_type ?? "text") as string;
-            const bodyContent =
-              msg.body && (msg.body as Record<string, unknown>).content
-                ? ((msg.body as Record<string, unknown>).content as string)
-                : "";
-
-            if (!bodyContent || bodyContent.includes('"⏳')) continue;
-            if (BOT_POLL_SKIP_PATTERNS.some((p) => bodyContent.includes(p))) {
-              injectedBotMsgIds.add(msgId);
-              continue;
-            }
-            if (injectedBotMsgIds.has(msgId)) continue;
-
-            // First unseen = newest (items sorted desc). Take it, mark all others as seen.
-            if (!newestUnseen) {
-              newestUnseen = {
-                msg,
-                msgId,
-                msgType,
-                bodyContent,
-                senderOpenId,
-                senderIdObj: senderIdObj ?? {},
-              };
-            }
-            injectedBotMsgIds.add(msgId); // mark ALL unseen as seen so they won't trigger next round
-          }
-
-          let injected = 0;
-          if (newestUnseen) {
-            // Turn-taking: only inject if this bot is @mentioned in the message.
-            // For text messages: check msg.mentions array.
-            // For interactive cards: parse {"tag":"at","user_id":"..."} from body content.
-            const topMentions = (newestUnseen.msg.mentions ?? []) as Array<Record<string, unknown>>;
-            const isMentionedTop = topMentions.some(
-              (m) => m.id === account.appId || m.id === account.botOpenId,
-            );
-            let isMentionedInBody = false;
-            if (!isMentionedTop && newestUnseen.bodyContent) {
-              const appIdPattern = account.appId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-              const botNamePattern = account.name?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") ?? "";
-              // Card stream finalize strips <at> tags to plain text in API response.
-              // Match both app_id and bot name (with or without @ prefix).
-              isMentionedInBody =
-                new RegExp(appIdPattern).test(newestUnseen.bodyContent) ||
-                (botNamePattern !== "" &&
-                  new RegExp(botNamePattern, "i").test(newestUnseen.bodyContent));
-            }
-            if (!isMentionedTop && !isMentionedInBody) {
-              log?.info(
-                `[${account.accountId}] [bot-poll] skipping (not @mentioned): msgId=${newestUnseen.msgId.slice(-12)}`,
-              );
-              // Remove from seen set — message may not be finalized yet.
-              // Next poll will re-check after card stream finalize adds the @mention content.
-              injectedBotMsgIds.delete(newestUnseen.msgId);
-              newestUnseen = null;
-            }
-          }
-          if (newestUnseen) {
-            const { msgId, msgType, bodyContent, senderOpenId, senderIdObj } = newestUnseen;
-            log?.info(
-              `[${account.accountId}] [bot-poll] injecting: msgId=${msgId.slice(-12)} type=${msgType} sender=${senderOpenId}`,
-            );
-
-            void handleInboundMessage(
-              {
-                message: {
-                  message_id: msgId,
-                  chat_id: chatId,
-                  chat_type: "group",
-                  message_type: msgType,
-                  content: bodyContent,
-                  create_time: newestUnseen.msg.create_time ?? "",
-                  parent_id: newestUnseen.msg.parent_id ?? "",
-                  mentions: newestUnseen.msg.mentions ?? [],
-                },
-                sender: {
-                  sender_id: senderIdObj,
-                  sender_type: "bot",
-                },
-              },
-              deps,
-            ).catch((err) => {
-              log?.error(`[${account.accountId}] [bot-poll] handle error: ${String(err)}`);
-              botPollBackoffUntil = Date.now() + BOT_POLL_ERROR_BACKOFF_MS;
-            });
-            injected = 1;
-            leaderIdleRounds = 0;
-            lastLeaderHeartbeatTime = Date.now();
-          }
-
-          // Leader heartbeat: if no new bot messages for 30s, poke the leader
-          // with a synthetic message to check if discussion needs pushing.
-          const nowMs = Date.now();
-          if (
-            isLeader &&
-            injected === 0 &&
-            nowMs - lastLeaderHeartbeatTime >= LEADER_HEARTBEAT_INTERVAL_MS
-          ) {
-            leaderIdleRounds++;
-            if (leaderIdleRounds > LEADER_HEARTBEAT_MAX_IDLE) {
-              log?.info(
-                `[${account.accountId}] [bot-poll] ${chatId.slice(-8)}: leader heartbeat stopped (${LEADER_HEARTBEAT_MAX_IDLE} idle rounds)`,
-              );
-              continue;
-            }
-            lastLeaderHeartbeatTime = nowMs;
-            const heartbeatId = `heartbeat-${chatId}-${now}`;
-            log?.info(
-              `[${account.accountId}] [bot-poll] ${chatId.slice(-8)}: leader heartbeat ${leaderIdleRounds}/${LEADER_HEARTBEAT_MAX_IDLE}`,
-            );
-            void handleInboundMessage(
-              {
-                message: {
-                  message_id: heartbeatId,
-                  chat_id: chatId,
-                  chat_type: "group",
-                  message_type: "text",
-                  content: JSON.stringify({
-                    text: "[讨论心跳] 你是决策者。检查群里最新上下文，判断：推进讨论？激活参与者？还是结束？",
-                  }),
-                  create_time: String(now * 1000),
-                  parent_id: "",
-                  mentions: [],
-                },
-                sender: {
-                  sender_id: { open_id: "heartbeat" },
-                  sender_type: "heartbeat",
-                },
-              },
-              deps,
-            ).catch((err) => {
-              log?.error(
-                `[${account.accountId}] [bot-poll] leader heartbeat error: ${String(err)}`,
-              );
-            });
-          }
-        } catch (err) {
-          log?.warn(`[${account.accountId}] [bot-poll] error for ${chatId}: ${String(err)}`);
-        }
-      }
-      // GC: prevent dedup set from growing unbounded
-      if (injectedBotMsgIds.size > INJECTED_IDS_MAX_SIZE) {
-        const toDelete = injectedBotMsgIds.size - Math.floor(INJECTED_IDS_MAX_SIZE / 2);
-        const iter = injectedBotMsgIds.values();
-        for (let i = 0; i < toDelete; i++) iter.next();
-        // Keep only the newest half
-        const keep = new Set<string>();
-        for (const v of iter) keep.add(v);
-        injectedBotMsgIds.clear();
-        for (const v of keep) injectedBotMsgIds.add(v);
+        const hb = heartbeatState.get(chatId)!;
+        const nowMs = Date.now();
+        if (nowMs - hb.lastTime < LEADER_HEARTBEAT_INTERVAL_MS) continue;
+        hb.idleRounds++;
+        if (hb.idleRounds > LEADER_HEARTBEAT_MAX_IDLE) continue;
+        hb.lastTime = nowMs;
+        const now = Math.floor(nowMs / 1000);
         log?.info(
-          `[${account.accountId}] [bot-poll] GC: pruned dedup set to ${injectedBotMsgIds.size}`,
+          `[${account.accountId}] [broadcast] ${chatId.slice(-8)}: leader heartbeat ${hb.idleRounds}/${LEADER_HEARTBEAT_MAX_IDLE}`,
         );
+        void handleInboundMessage(
+          {
+            message: {
+              message_id: `heartbeat-${chatId}-${now}`,
+              chat_id: chatId,
+              chat_type: "group",
+              message_type: "text",
+              content: JSON.stringify({
+                text: "[讨论心跳] 你是决策者。检查群里最新上下文，判断：推进讨论？激活参与者？还是结束？",
+              }),
+              create_time: String(nowMs),
+              parent_id: "",
+              mentions: [],
+            },
+            sender: {
+              sender_id: { open_id: "heartbeat" },
+              sender_type: "heartbeat",
+            },
+          },
+          deps,
+        ).catch((err) => {
+          log?.error(`[${account.accountId}] [broadcast] leader heartbeat error: ${String(err)}`);
+        });
       }
     } catch (err) {
-      log?.warn(`[${account.accountId}] bot-poll cycle error: ${String(err)}`);
+      log?.warn(`[${account.accountId}] discussion tick error: ${String(err)}`);
     }
-  }, BOT_POLL_INTERVAL_MS);
+  }, TICK_INTERVAL_MS);
 
   // Block until abort signal fires (gateway shutting down).
   return new Promise<void>((resolve) => {
@@ -1388,8 +1233,8 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
     abortSignal.addEventListener(
       "abort",
       async () => {
-        clearInterval(botPollTimer);
-        // Best-effort: unregister from all discussion groups in Redis
+        clearInterval(discussionTickTimer);
+        await shutdownBroadcast().catch(() => {});
         const stateDir =
           process.env.OPENCLAW_STATE_DIR?.trim() ||
           process.env.CLAWDBOT_STATE_DIR?.trim() ||
@@ -3053,6 +2898,21 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         `[${account.accountId}] archived bot card stream msg ${cardStream.messageId} in ${chatId}`,
       );
     }
+
+    // Broadcast to other bots via Redis pub/sub (discussion mode only)
+    if (isGroup && readGroupMode(chatId).mode === "discussion") {
+      void publishBotMessage({
+        msgId: cardStream.messageId,
+        chatId,
+        senderAppId: account.appId,
+        senderOpenId: account.botOpenId ?? account.appId,
+        senderName: account.name ?? account.accountId,
+        content: cardStreamFinalText,
+        msgType: "interactive",
+        createTime: Date.now(),
+        mentions: cardStream.message?.mentions as Array<Record<string, unknown>> | undefined,
+      });
+    }
   }
 }
 
@@ -3275,6 +3135,20 @@ async function deliverFeishuReply(params: {
             textParts: buildFeishuTextPayload(chunks[ci]),
             reply: resolveReplyRef(sentMessage),
           });
+
+          // Broadcast to other bots via Redis pub/sub (discussion mode only)
+          if (isGroup && readGroupMode(chatId).mode === "discussion") {
+            void publishBotMessage({
+              msgId: sentMessage.messageId,
+              chatId,
+              senderAppId: account.appId,
+              senderOpenId: account.botOpenId ?? account.appId,
+              senderName: account.name ?? account.accountId,
+              content: chunks[ci],
+              msgType: "post",
+              createTime: Date.now(),
+            });
+          }
         }
         setStatus({ lastOutboundAt: Date.now() });
       } catch (err) {

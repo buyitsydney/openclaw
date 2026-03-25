@@ -8,6 +8,10 @@
  *   discussion:{chatId}:participants  Sorted Set  (score=epoch-seconds, member=appId)
  *   discussion:{chatId}:leader        String      (appId)
  *
+ * Bot-to-bot broadcast via Redis pub/sub:
+ *   Channel: bot-msg:{chatId}  — published when a bot sends a message to a group.
+ *   Subscribers receive other bots' messages in <100ms (replaces 10s API polling).
+ *
  * Participant Lease: each bot ZADDs itself every tick (10s).
  * Members with score older than LEASE_TTL_S are considered dead and pruned.
  * Leader is auto-elected from active participants (smallest appId).
@@ -23,6 +27,19 @@ export interface DiscussionTickResult {
   isLeader: boolean;
   participants: string[];
   shouldAutoExit: boolean; // true if 5min inactivity → caller should write mode=owner-at
+}
+
+export interface BotBroadcastMessage {
+  msgId: string;
+  chatId: string;
+  senderAppId: string;
+  senderOpenId: string;
+  senderName: string;
+  content: string;
+  msgType: string;
+  createTime: number;
+  parentId?: string;
+  mentions?: Array<Record<string, unknown>>;
 }
 
 interface DiscussionStateOpts {
@@ -246,6 +263,84 @@ export async function shutdownDiscussionState(myAppId: string, chatIds: string[]
     stateLog?.info(`[discussion-state] shutdown: unregistered from ${chatIds.length} group(s)`);
   } catch {
     // best-effort cleanup
+  }
+}
+
+// ── Redis broadcast (pub/sub for bot-to-bot messaging) ──────────────────────
+// Pub/sub needs a dedicated connection (subscriber can't run regular commands).
+// PUBLISH uses the existing `redis` connection; SUBSCRIBE uses `subscriber`.
+
+const BROADCAST_CHANNEL = "bot-msg";
+
+let subscriber: Redis | null = null;
+let subscriberReady = false;
+
+export function initBroadcast(opts: { redisUrl?: string } = {}): void {
+  const url = opts.redisUrl ?? process.env.REDIS_URL;
+  if (!url || subscriber) return;
+  subscriber = new Redis(url, {
+    maxRetriesPerRequest: null,
+    lazyConnect: false,
+    retryStrategy: (times) => Math.min(times * 500, 5000),
+  });
+  subscriber.on("connect", () => {
+    subscriberReady = true;
+    stateLog?.info("[discussion-broadcast] subscriber Redis connected");
+  });
+  subscriber.on("error", (err) => {
+    subscriberReady = false;
+    stateLog?.warn(`[discussion-broadcast] subscriber error: ${String(err).slice(0, 120)}`);
+  });
+  subscriber.on("close", () => {
+    subscriberReady = false;
+  });
+}
+
+/** Publish a bot message so other bots in the same group discover it instantly. */
+export async function publishBotMessage(msg: BotBroadcastMessage): Promise<void> {
+  if (!isRedisAvailable()) return;
+  try {
+    const channel = `${BROADCAST_CHANNEL}:${msg.chatId}`;
+    await redis!.publish(channel, JSON.stringify(msg));
+    stateLog?.info(
+      `[discussion-broadcast] published msgId=${msg.msgId.slice(-12)} to ${msg.chatId.slice(-8)}`,
+    );
+  } catch (err) {
+    stateLog?.warn(`[discussion-broadcast] publish error: ${String(err).slice(0, 120)}`);
+  }
+}
+
+/**
+ * Subscribe to bot messages from all groups.
+ * `callback` fires for every message NOT sent by `myAppId`.
+ */
+export function subscribeBotMessages(
+  myAppId: string,
+  callback: (msg: BotBroadcastMessage) => void,
+): void {
+  if (!subscriber) return;
+  subscriber.psubscribe(`${BROADCAST_CHANNEL}:*`).catch((err) => {
+    stateLog?.warn(`[discussion-broadcast] psubscribe error: ${String(err).slice(0, 120)}`);
+  });
+  subscriber.on("pmessage", (_pattern: string, _channel: string, data: string) => {
+    try {
+      const msg = JSON.parse(data) as BotBroadcastMessage;
+      if (msg.senderAppId === myAppId) return;
+      callback(msg);
+    } catch (err) {
+      stateLog?.warn(`[discussion-broadcast] message parse error: ${String(err).slice(0, 120)}`);
+    }
+  });
+}
+
+export async function shutdownBroadcast(): Promise<void> {
+  if (subscriber) {
+    try {
+      await subscriber.punsubscribe();
+      subscriber.disconnect();
+    } catch {}
+    subscriber = null;
+    subscriberReady = false;
   }
 }
 
