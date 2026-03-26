@@ -2863,19 +2863,10 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     `[${account.accountId}] dispatch returned: deliverFired=${deliverFired} cardStreamFinalText=${cardStreamFinalText.length} cardStreamLastPartial=${cardStreamLastPartial.length}`,
   );
 
-  // For lane-queued messages the dispatch may return before deliver fires.
-  // Wait (with short safety timeout) so cleanup doesn't race ahead of delivery.
-  // Original 180s timeout blocked broadcast queue for 3 minutes when AI used
-  // the message tool (deliver never fires, tool counts not tracked by dispatcher).
-  // 5s is sufficient for the deliver race condition; anything longer means
-  // the AI responded via tools or the response was filtered.
-  if (!deliverFired) {
-    const abortP = new Promise<void>((resolve) => {
-      if (abortSignal.aborted) return resolve();
-      abortSignal.addEventListener("abort", () => resolve(), { once: true });
-    });
-    await Promise.race([deliverGate, abortP, new Promise<void>((r) => setTimeout(r, 5_000))]);
-  }
+  // dispatch already awaits the full AI turn. Resolve gate immediately so
+  // broadcastActive clears promptly. No timeout needed — the race condition
+  // the original 180s wait guarded against doesn't occur when dispatch is awaited.
+  resolveDeliverGate?.();
 
   // Re-read group mode: skill may have changed it during this request
   const finalGroupMode = isGroup ? readGroupMode(chatId).mode : undefined;
