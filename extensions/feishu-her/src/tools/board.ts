@@ -269,8 +269,8 @@ export function registerFeishuBoardTools(api: OpenClawPluginApi): void {
         "Create and draw on Feishu whiteboards (画板). " +
         "Use 'create' to insert a new whiteboard into a document, then use create_nodes/create_diagram to draw. " +
         "Supports flowcharts, mind maps, architecture diagrams via node creation or Mermaid/PlantUML code. " +
-        "IMPORTANT: connector start/end_node_id must use server-returned IDs (e.g. 'o1:3'). " +
-        "Create shapes first, get IDs from response, then create connectors in a second call. " +
+        "You can mix shapes and connectors in one call — connectors are auto-split and linked. " +
+        "Use client-side 'id' on shapes so connectors can reference them via start/end_node_id. " +
         "Nodes are append-only (no update/delete via API).",
       parameters: BoardSchema,
       // oxlint-disable-next-line typescript/no-explicit-any
@@ -334,26 +334,88 @@ export function registerFeishuBoardTools(api: OpenClawPluginApi): void {
                 return json({ error: "Maximum 3000 nodes per request" });
               }
 
-              const nodes = rawNodes.map(transformNode);
-              // oxlint-disable-next-line typescript/no-explicit-any
-              const res = (await client.board.v1.whiteboardNode.create({
-                path: { whiteboard_id: whiteboardId },
-                data: { nodes },
-                ...(params.client_token && {
-                  params: { client_token: params.client_token },
-                }),
-                // oxlint-disable-next-line typescript/no-explicit-any
-              })) as any;
+              const transformed = rawNodes.map(transformNode);
 
-              if (res.code !== 0) {
-                return json({
-                  error: `create_nodes failed: code=${res.code} msg=${res.msg}`,
-                });
+              // Auto-split: connectors with attached_object references can't be in
+              // the same batch as the shapes they reference (Feishu 4003101 "doc is
+              // applying"). Send non-connectors first, wait, then send connectors
+              // with client IDs replaced by server-returned IDs.
+              const nonConnectors = transformed.filter((n: NodeInput) => n.type !== "connector");
+              const connectors = transformed.filter((n: NodeInput) => n.type === "connector");
+              const hasConnectorsWithRefs = connectors.some(
+                (c: NodeInput) =>
+                  c.connector?.start?.attached_object?.id || c.connector?.end?.attached_object?.id,
+              );
+
+              const allIds: string[] = [];
+
+              if (nonConnectors.length > 0) {
+                // oxlint-disable-next-line typescript/no-explicit-any
+                const res = (await client.board.v1.whiteboardNode.create({
+                  path: { whiteboard_id: whiteboardId },
+                  data: { nodes: nonConnectors },
+                  ...(params.client_token && {
+                    params: { client_token: params.client_token },
+                  }),
+                  // oxlint-disable-next-line typescript/no-explicit-any
+                })) as any;
+                if (res.code !== 0) {
+                  return json({
+                    error: `create_nodes (shapes) failed: code=${res.code} msg=${res.msg}`,
+                  });
+                }
+                allIds.push(...(res.data?.ids ?? []));
               }
+
+              if (connectors.length > 0) {
+                // If connectors reference shapes from this batch, replace client IDs
+                // with server-returned IDs and wait for server to apply.
+                if (hasConnectorsWithRefs && nonConnectors.length > 0) {
+                  // Build client-ID → server-ID mapping from raw input order
+                  const idMap = new Map<string, string>();
+                  let serverIdx = 0;
+                  for (const raw of rawNodes) {
+                    if (raw.type === "connector") continue;
+                    if (raw.id && allIds[serverIdx]) {
+                      idMap.set(raw.id, allIds[serverIdx]);
+                    }
+                    serverIdx++;
+                  }
+
+                  // Replace client IDs in connector attached_objects
+                  for (const c of connectors) {
+                    const startId = c.connector?.start?.attached_object?.id;
+                    const endId = c.connector?.end?.attached_object?.id;
+                    if (startId && idMap.has(startId)) {
+                      c.connector.start.attached_object.id = idMap.get(startId);
+                    }
+                    if (endId && idMap.has(endId)) {
+                      c.connector.end.attached_object.id = idMap.get(endId);
+                    }
+                  }
+
+                  // Wait for server to apply the shapes (~1s)
+                  await new Promise((r) => setTimeout(r, 1000));
+                }
+
+                // oxlint-disable-next-line typescript/no-explicit-any
+                const res = (await client.board.v1.whiteboardNode.create({
+                  path: { whiteboard_id: whiteboardId },
+                  data: { nodes: connectors },
+                  // oxlint-disable-next-line typescript/no-explicit-any
+                })) as any;
+                if (res.code !== 0) {
+                  return json({
+                    error: `create_nodes (connectors) failed: code=${res.code} msg=${res.msg}`,
+                    shapes_created: allIds,
+                  });
+                }
+                allIds.push(...(res.data?.ids ?? []));
+              }
+
               return json({
                 ok: true,
-                created_ids: res.data?.ids ?? [],
-                client_token: res.data?.client_token,
+                created_ids: allIds,
               });
             }
 

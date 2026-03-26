@@ -134,11 +134,11 @@ describe("feishu_board tool", () => {
     expect((result.details as any).error).toContain("doc_token is required");
   });
 
-  it("create_nodes transforms and sends nodes to SDK", async () => {
-    const createMock = vi.fn(async () => ({
-      code: 0,
-      data: { ids: ["node_1", "node_2"] },
-    }));
+  it("create_nodes auto-splits shapes and connectors into two calls", async () => {
+    const createMock = vi
+      .fn()
+      .mockResolvedValueOnce({ code: 0, data: { ids: ["o1:1"] } }) // shapes call
+      .mockResolvedValueOnce({ code: 0, data: { ids: ["c1:1"] } }); // connectors call
     getFeishuClientMock.mockReturnValue({
       board: {
         v1: {
@@ -157,6 +157,7 @@ describe("feishu_board tool", () => {
       whiteboard_id: "wb_abc",
       nodes: [
         {
+          id: "my_shape",
           type: "composite_shape",
           shape_type: "round_rect",
           x: 100,
@@ -168,37 +169,37 @@ describe("feishu_board tool", () => {
         },
         {
           type: "connector",
-          start_node_id: "node_1",
-          end_node_id: "node_2",
+          start_node_id: "my_shape",
+          end_node_id: "ext_node",
           end_arrow: "triangle_arrow",
         },
       ],
     });
 
-    expect(createMock).toHaveBeenCalledOnce();
-    const payload = createMock.mock.calls[0][0];
-    expect(payload.path.whiteboard_id).toBe("wb_abc");
-    expect(payload.data.nodes).toHaveLength(2);
+    // Two API calls: shapes first, then connectors
+    expect(createMock).toHaveBeenCalledTimes(2);
 
-    // Check shape node transformation
-    const shapeNode = payload.data.nodes[0];
-    expect(shapeNode.type).toBe("composite_shape");
-    expect(shapeNode.composite_shape).toEqual({ type: "round_rect" });
-    expect(shapeNode.text).toEqual({ text: "Start" });
-    expect(shapeNode.style).toEqual({ fill_color: "#4CAF50" });
-    expect(shapeNode.x).toBe(100);
+    // First call: only shapes
+    const shapesPayload = createMock.mock.calls[0][0];
+    expect(shapesPayload.data.nodes).toHaveLength(1);
+    expect(shapesPayload.data.nodes[0].type).toBe("composite_shape");
+    expect(shapesPayload.data.nodes[0].composite_shape).toEqual({ type: "round_rect" });
+    expect(shapesPayload.data.nodes[0].text).toEqual({ text: "Start" });
+    expect(shapesPayload.data.nodes[0].style).toEqual({ fill_color: "#4CAF50" });
 
-    // Check connector node transformation
-    const connNode = payload.data.nodes[1];
-    expect(connNode.type).toBe("connector");
-    expect(connNode.connector.start.attached_object.id).toBe("node_1");
-    expect(connNode.connector.end.attached_object.id).toBe("node_2");
-    expect(connNode.connector.end.arrow_style).toBe("triangle_arrow");
+    // Second call: connectors with client ID replaced by server ID
+    const connPayload = createMock.mock.calls[1][0];
+    expect(connPayload.data.nodes).toHaveLength(1);
+    const conn = connPayload.data.nodes[0];
+    expect(conn.type).toBe("connector");
+    expect(conn.connector.start.attached_object.id).toBe("o1:1"); // replaced!
+    expect(conn.connector.end.attached_object.id).toBe("ext_node"); // external, unchanged
+    expect(conn.connector.end.arrow_style).toBe("triangle_arrow");
 
     // oxlint-disable-next-line typescript/no-explicit-any
     const details = result.details as any;
     expect(details.ok).toBe(true);
-    expect(details.created_ids).toEqual(["node_1", "node_2"]);
+    expect(details.created_ids).toEqual(["o1:1", "c1:1"]);
   });
 
   it("create_nodes rejects empty array", async () => {
