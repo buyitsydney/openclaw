@@ -418,6 +418,51 @@ Opus 理解机制后自然做出正确判断，无需逐条规则。
 - 人类插话不打断讨论 ✅
 - 对话自然结束后零 token 消耗 ✅
 
+### 状态补充（2026-03-26：discussion routing checkpoint）
+
+**这轮新确认的结论必须和 2026-03-25 的“机制已跑通”分开看。**
+
+本轮已经修住 3 条最容易把讨论模式带偏的链路：
+
+1. **bot -> bot broadcast 只认显式 mention 元数据**
+   - 不再根据正文里的 bot 名字或 `app_id` 做模糊唤醒
+   - 只有 `mentions[]` 里显式出现当前 bot 的 `app_id` 或 `botOpenId`，才允许 inject
+
+2. **未被点名的 bot broadcast 不再白跑 agent**
+   - discussion 模式下，`isBotSender && !wasMentioned` 的消息现在只 archive，不再进入 `processing`
+   - 这条修复直接消除了此前那种“日志里 `wasMentioned=false`，却还继续跑 agent / 占 session lane”的行为
+
+3. **leader 切换后不再额外公开 handoff**
+   - `set_discussion_leader` 工具结果里新增 `instruction`
+   - leader 切换完成后，当前 leader 必须立即结束本轮，不再额外发一条“我交接给谁了”的公开消息
+
+**本轮闭环验证已确认通过**：
+
+- 正文里只是提到某个 bot 名字、但没有显式 `<at>` 的 broadcast，不会再误唤醒该 bot
+- `wasMentioned=false` 的 bot broadcast 不会再进入 agent processing
+- 被显式点名的 peer bot 仍能正常 inject、排队、接棒，不影响 turn-taking 主链路
+
+**但这轮也明确暴露了 3 个残留问题（尚未修）**：
+
+1. **human ingress 仍然是“全员 processing”**
+   - 当前 discussion 模式里，人类消息进入后，所有 bot 仍会进入 `processing`
+   - 即使人类只点名一个 bot，其他 bot 也会跑到 prompt 层，再靠 prompt / self-control 决定是否闭嘴
+   - 这意味着当前 discussion 仍然不是“严格的点名路由”，而是“bot broadcast 严格点名 + human ingress 全员感知”的混合形态
+
+2. **auto-exit 只清 Redis，不会真正让讨论态休眠**
+   - 当前 auto-exit 行为是 `cleanupDiscussionGroup()`：删除 Redis 的 `participants` / `leader` / `last_activity`
+   - 但本地 `group-modes/{chatId}.json` 仍保持 `"discussion"`
+   - 结果是：下一个还活着的 bot 再跑 tick 时，会重新注册自己、重新选 leader、再次 heartbeat，形成“僵尸讨论”
+
+3. **leader tool 仍缺“真实参与者校验”**
+   - 如果 prompt 上下文里混入未知短 id / phantom participant，模型可能把一个不存在或未注册的 `app_id` 传给 `set_discussion_leader`
+   - Redis 当前会直接接受这个 leader 值，缺少“必须属于当前真实参与者集合”的硬校验
+
+**所以 2026-03-26 这个 checkpoint 的正确分层是**：
+
+- **已修住**：显式 mention broadcast gating、未点名 bot broadcast 跳过 agent、leader 切换后不再额外公开 handoff
+- **仍待修**：human ingress 的严格点名路由、auto-exit 僵尸讨论、leader 目标的真实参与者校验
+
 ### 已知限制
 
 - 线上 77 个容器的 `knownBotOpenIds` 为空（部署前需更新）

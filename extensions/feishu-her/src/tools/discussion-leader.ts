@@ -47,6 +47,8 @@ export function registerDiscussionLeaderTool(api: OpenClawPluginApi) {
         chat_id,
         leader: leader_app_id,
         participants,
+        instruction:
+          "Leader 已切换完成。不要再发送任何群消息确认这次切换，也不要公开交接；立即结束本轮，让新的 leader 自己开场。",
       });
     },
   });
