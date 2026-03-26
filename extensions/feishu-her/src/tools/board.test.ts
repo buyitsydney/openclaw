@@ -66,6 +66,74 @@ describe("feishu_board tool", () => {
     expect(tool.description).toContain("whiteboard");
   });
 
+  it("create inserts board block into document and returns whiteboard_id", async () => {
+    const createChildrenMock = vi.fn(async () => ({
+      code: 0,
+      data: {
+        children: [
+          {
+            block_id: "doxcn_board_block",
+            block_type: 43,
+            board: { token: "wb_new_123", align: 1 },
+            parent_id: "doc_abc",
+          },
+        ],
+      },
+    }));
+    getFeishuClientMock.mockReturnValue({
+      docx: { documentBlockChildren: { create: createChildrenMock } },
+      board: {
+        v1: {
+          whiteboardNode: { create: vi.fn(), createPlantuml: vi.fn(), list: vi.fn() },
+          whiteboard: { theme: vi.fn() },
+        },
+      },
+    });
+
+    const { api, registerTool } = createApi();
+    registerFeishuBoardTools(api);
+    const tool = getTool(registerTool);
+
+    const result = await tool.execute("call_create", {
+      action: "create",
+      doc_token: "doc_abc",
+    });
+
+    expect(createChildrenMock).toHaveBeenCalledOnce();
+    const payload = createChildrenMock.mock.calls[0][0];
+    expect(payload.path.document_id).toBe("doc_abc");
+    expect(payload.data.children[0].block_type).toBe(43);
+
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const details = result.details as any;
+    expect(details.ok).toBe(true);
+    expect(details.whiteboard_id).toBe("wb_new_123");
+    expect(details.block_id).toBe("doxcn_board_block");
+  });
+
+  it("create rejects missing doc_token", async () => {
+    getFeishuClientMock.mockReturnValue({
+      docx: { documentBlockChildren: { create: vi.fn() } },
+      board: {
+        v1: {
+          whiteboardNode: { create: vi.fn(), createPlantuml: vi.fn(), list: vi.fn() },
+          whiteboard: { theme: vi.fn() },
+        },
+      },
+    });
+
+    const { api, registerTool } = createApi();
+    registerFeishuBoardTools(api);
+    const tool = getTool(registerTool);
+
+    const result = await tool.execute("call_create_no_doc", {
+      action: "create",
+    });
+
+    // oxlint-disable-next-line typescript/no-explicit-any
+    expect((result.details as any).error).toContain("doc_token is required");
+  });
+
   it("create_nodes transforms and sends nodes to SDK", async () => {
     const createMock = vi.fn(async () => ({
       code: 0,

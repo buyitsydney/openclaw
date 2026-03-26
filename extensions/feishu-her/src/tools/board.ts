@@ -4,8 +4,8 @@
  *
  * Limitations (Feishu platform):
  *  - No update/delete API — nodes are append-only via API.
- *  - No whiteboard creation API — boards are created as doc blocks (block_type=43).
  *  - Max 3000 nodes per create call.
+ *  - Whiteboard creation: insert block_type=43 into a docx document via documentBlockChildren.create.
  */
 
 import { Type } from "@sinclair/typebox";
@@ -23,7 +23,13 @@ function json(data: unknown) {
 
 // ── Actions ────────────────────────────────────────────────────────────────
 
-const BOARD_ACTIONS = ["create_nodes", "create_diagram", "list_nodes", "get_theme"] as const;
+const BOARD_ACTIONS = [
+  "create",
+  "create_nodes",
+  "create_diagram",
+  "list_nodes",
+  "get_theme",
+] as const;
 
 // ── Shape subtypes (most common; full list in SDK types) ───────────────────
 
@@ -78,11 +84,18 @@ const ARROW_STYLES = [
 const BoardSchema = Type.Object({
   action: stringEnum([...BOARD_ACTIONS], {
     description:
-      "Operation: create_nodes (shapes/connectors/text), create_diagram (Mermaid/PlantUML code), list_nodes, get_theme",
+      "Operation: create (insert new whiteboard into a document), create_nodes (shapes/connectors/text), create_diagram (Mermaid/PlantUML code), list_nodes, get_theme",
   }),
-  whiteboard_id: Type.String({
-    description: "Whiteboard token (from doc block_type=43 board.token, or whiteboard URL)",
-  }),
+  whiteboard_id: Type.Optional(
+    Type.String({
+      description: "Whiteboard token (required for all actions except create)",
+    }),
+  ),
+  doc_token: Type.Optional(
+    Type.String({
+      description: "Document ID to insert a new whiteboard into (for create action)",
+    }),
+  ),
 
   // create_nodes: array of node definitions
   nodes: Type.Optional(
@@ -231,22 +244,62 @@ export function registerFeishuBoardTools(api: OpenClawPluginApi): void {
       name: "feishu_board",
       label: "Feishu Board",
       description:
-        "Create shapes, connectors, text, and diagrams on a Feishu whiteboard (画板). " +
+        "Create and draw on Feishu whiteboards (画板). " +
+        "Use 'create' to insert a new whiteboard into a document, then use create_nodes/create_diagram to draw. " +
         "Supports flowcharts, mind maps, architecture diagrams via node creation or Mermaid/PlantUML code. " +
-        "Note: API is append-only (no update/delete). Boards must already exist in a document.",
+        "Note: nodes are append-only (no update/delete via API).",
       parameters: BoardSchema,
       // oxlint-disable-next-line typescript/no-explicit-any
       async execute(_toolCallId: string, params: any) {
         const action: string = params.action;
-        const whiteboardId: string = params.whiteboard_id?.trim();
-        if (!whiteboardId) {
-          return json({ error: "whiteboard_id is required" });
-        }
-
+        const whiteboardId: string = params.whiteboard_id?.trim() ?? "";
         const client = getFeishuClient(firstAccount);
+
+        // create action doesn't need whiteboard_id; all others do
+        if (action !== "create" && !whiteboardId) {
+          return json({ error: "whiteboard_id is required for this action" });
+        }
 
         try {
           switch (action) {
+            // ── create (insert board block into document) ─────────────
+            case "create": {
+              const docToken = params.doc_token?.trim();
+              if (!docToken) {
+                return json({ error: "doc_token is required for create action" });
+              }
+
+              // Insert block_type=43 (board) into the document
+              // oxlint-disable-next-line typescript/no-explicit-any
+              const res = (await client.docx.documentBlockChildren.create({
+                path: { document_id: docToken, block_id: docToken },
+                data: {
+                  children: [{ block_type: 43, board: {} } as never],
+                },
+                // oxlint-disable-next-line typescript/no-explicit-any
+              })) as any;
+
+              if (res.code !== 0) {
+                return json({
+                  error: `create board failed: code=${res.code} msg=${res.msg}`,
+                });
+              }
+
+              // Extract whiteboard_id from the created block
+              const boardBlock = res.data?.children?.find(
+                // oxlint-disable-next-line typescript/no-explicit-any
+                (b: any) => b.block_type === 43,
+              );
+              const wbId =
+                boardBlock?.board?.token ?? boardBlock?.board?.board_token ?? boardBlock?.block_id;
+              return json({
+                ok: true,
+                whiteboard_id: wbId,
+                block_id: boardBlock?.block_id,
+                doc_token: docToken,
+              });
+            }
+
             // ── create_nodes ──────────────────────────────────────────
             case "create_nodes": {
               const rawNodes = params.nodes;
