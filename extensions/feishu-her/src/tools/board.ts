@@ -267,10 +267,12 @@ export function registerFeishuBoardTools(api: OpenClawPluginApi): void {
       label: "Feishu Board",
       description:
         "Create and draw on Feishu whiteboards (画板). " +
-        "Use 'create' to insert a new whiteboard into a document, then use create_nodes/create_diagram to draw. " +
-        "Supports flowcharts, mind maps, architecture diagrams via node creation or Mermaid/PlantUML code. " +
-        "You can mix shapes and connectors in one call — connectors are auto-split and linked. " +
-        "Use client-side 'id' on shapes so connectors can reference them via start/end_node_id. " +
+        "Use 'create' to insert a new whiteboard into a document, then draw on it. " +
+        "PREFER create_diagram (Mermaid/PlantUML) for flowcharts, sequence diagrams, class diagrams, ER diagrams — " +
+        "Feishu auto-layouts these perfectly. AI just writes Mermaid code, no coordinate math needed. " +
+        "Use create_nodes ONLY for simple shapes (2-5 nodes), custom colors/styles, mind maps, or SVG — " +
+        "AI must manually calculate x/y coordinates, so complex diagrams will have messy layouts. " +
+        "Connectors in create_nodes are auto-split: shapes created first, then connectors linked by server IDs. " +
         "Nodes are append-only (no update/delete via API).",
       parameters: BoardSchema,
       // oxlint-disable-next-line typescript/no-explicit-any
