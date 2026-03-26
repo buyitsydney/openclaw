@@ -232,6 +232,22 @@ function transformNode(n: NodeInput) {
   return node;
 }
 
+/** Extract a human-readable error message from Lark SDK exceptions.
+ *  The SDK throws [AxiosError, {code, msg, error}] arrays on HTTP 4xx. */
+function extractLarkErrorDetail(err: unknown): string | undefined {
+  if (Array.isArray(err)) {
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const detail = err.find((e: any) => e && typeof e === "object" && "code" in e && "msg" in e);
+    if (detail) {
+      const errObj = detail.error;
+      const fieldErrors =
+        errObj && typeof errObj === "object" ? JSON.stringify(errObj).slice(0, 300) : undefined;
+      return `Feishu API error: code=${detail.code} msg=${detail.msg}${fieldErrors ? ` detail=${fieldErrors}` : ""}`;
+    }
+  }
+  return undefined;
+}
+
 // ── Registration ──────────────────────────────────────────────────────────
 
 export function registerFeishuBoardTools(api: OpenClawPluginApi): void {
@@ -419,8 +435,10 @@ export function registerFeishuBoardTools(api: OpenClawPluginApi): void {
               return json({ error: `Unknown action: ${action}` });
           }
         } catch (err) {
+          // Lark SDK throws [AxiosError, {code, msg, error}] on HTTP 4xx
+          const larkDetail = extractLarkErrorDetail(err);
           return json({
-            error: err instanceof Error ? err.message : String(err),
+            error: larkDetail ?? (err instanceof Error ? err.message : String(err)),
           });
         }
       },
