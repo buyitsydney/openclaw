@@ -302,59 +302,80 @@ gateway 在 agent prompt 中注入两层信息：
 2. **her 误解模式名**：部分 her 把"群聊模式"理解成"默认模式"导致切换失败。已通过更新 skill 描述（四种模式表格 + 意图映射表）改善。
 3. **切换后当前消息用旧 context**：her 在 agent run 中写文件，当前 run 的 context 注入已完成。下一条消息才生效。正常竞态。
 
-### Bot Message Poller（轮询器）
+### Bot Message Broadcast（Redis 广播）
 
-飞书 `im.message.receive_v1` 不推送 bot 消息给其他 bot。轮询器桥接这个缺口。
+飞书 `im.message.receive_v1` 不推送 bot 消息给其他 bot。当前 `discussion` 模式不再依赖 10 秒轮询发现 bot 消息，而是发送侧在**真正发出最终群消息后**同步发布 Redis broadcast。
 
-**原理**：每 10 秒对所有 `discussion` 模式的群调 `GET /im/v1/messages`（拉最近 20 条，无时间窗口），过滤 `sender_type=app` 且非自己的消息，跳过 ⏳ 中间态和系统消息。
+**原理**：
+
+1. bot A 向群里发出最终正文
+2. bot A 同时 publish 一份 `{chatId, msgId, senderAppId, content, mentions[]}`
+3. 其他 bot 订阅 Redis，几乎实时收到
+4. 接收侧只看**显式 mention 元数据**决定是否 inject；没被点名就只 archive，不进 agent
+
+**关键区别**：
+
+- 最近群消息仍会补充进上下文，帮助 AI 理解现场
+- 但“是否被唤醒”不再靠轮询猜测，也不靠正文里模糊匹配 bot 名字
+- 只有显式 `@` 才算真正交接这一轮
 
 **三层有序控制**：
 
-1. **@mention turn-taking（代码层面）**：轮询器检查消息内容是否 @自己。被 @的 bot 才注入触发 agent run，没被 @的跳过（零 token）。这是有序对话的根本保证——一次只有一个 bot 被触发。
-2. **Leader heartbeat（代码层面）**：leader 每 30 秒被唤醒一次检查是否需要推进。3 轮（~90 秒）无新消息后自动停止。有新消息后自动恢复。
-3. **Opus 智能判断（Skill + context 注入）**：context 注入向 Opus 解释轮询机制，Opus 理解后自然会 @具体的 Her 分配任务，而不是泛泛发言触发所有 bot。
-
-**去重**：`injectedBotMsgIds` Set 确保每条 finalized 消息只注入一次。@mention 检查失败时（消息未 finalize，内容为空）不标记为 seen，下次轮询重新检查。
+1. **显式 mention gating（代码层）**
+   - human → bot：人类消息只有显式 `@` 到当前 bot，才进入 `processing`
+   - bot → bot：Redis broadcast 只有 `mentions[]` 显式包含当前 bot，才允许 inject
+2. **active / idle 运行态（Redis 状态）**
+   - discussion 房间有 `active` / `idle` 两种运行态
+   - `idle` 时不注册参与者、不选 leader、不主动唤醒任何模型
+3. **leader 选举（Redis 共享状态）**
+   - 只有 active 房间才维护 `participants` / `leader` / `last_activity`
+   - explicit turn 被接受后，才会 `activateDiscussionGroup()` 重新激活
 
 **防风暴**：
 
-- 每轮只注入最新 1 条 bot 消息
-- `BOT_POLL_SKIP_PATTERNS` 过滤错误卡片、welcome 消息、系统消息
-- Error backoff 2 分钟
-- Discussion 模式不检查 rate limit（有自己的控制机制）
+- 自己发的消息不会再次唤醒自己
+- 未被点名的人类消息 / bot broadcast 都只 archive
+- auto-exit 后进入 idle，discussion 模式仍保留，但不再偷偷跑模型
 
 ---
 
-## 讨论模式（discussion）— 替代旧群聊模式
+## 讨论模式（discussion）— 严格显式点名路由
 
-旧 `group` 模式已废弃。`discussion` 模式通过 @mention turn-taking + Redis leader 选举 + heartbeat 实现有序的 Her 间协作。
+旧 `group` 模式已废弃。当前 `discussion` 模式是“**群里保留讨论态，但只有显式 `@` 才真正唤醒目标 bot**”。
 
 ### 核心机制
 
 ```
-人类："tester 主导，讨论 XXX" → 两个 bot 都收到（飞书 WebSocket）
-
-tester（leader）开场 @tester2 分配任务
-  ↓ 10 秒后轮询器拉到
-tester2 看到 @自己 → 注入 → agent run → 回复 @tester
-  ↓ 10 秒后轮询器拉到
-tester 看到 @自己 → 注入 → agent run → 推进下一轮 @tester2
+人类：@tester3 你主导讨论 XXX
   ↓
-... 循环直到 leader 宣布结论
+tester3 被显式 @ → activateDiscussionGroup() → 进入 active → 成为 / 保持 leader
+  ↓
+tester3 开场，并显式 @tester 分配 R1
+  ↓
+Redis broadcast 几乎实时送达 tester
+  ↓
+tester 看到 mentions[] 里有自己 → inject → processing → 回复并显式 @tester3
+  ↓
+tester3 被显式 @ → processing → 推进下一轮
+  ↓
+... 循环直到 leader 总结
 
-没人 @ → 没人被触发 → 零 token
-leader 30 秒无消息 → heartbeat 唤醒 → leader 检查是否需要催促
-3 轮 heartbeat 无效 → 自动停止 → 对话自然结束
+没人显式 @ → 只 archive，不唤醒 → 零额外 token
+5 分钟没有被接受的新一轮 → auto-exit → markDiscussionIdle()
+  ↓
+discussion 模式文件保持不变，但运行态进入 idle
+  ↓
+下一次有人显式 @ 任一 bot → 重新 activate → 讨论恢复
 ```
 
 ### Leader 选举（Redis 共享状态）
 
-Leader 不由 Her 写文件决定（workspace 隔离导致冲突）。通过 Redis 管理：
+Leader 不由 workspace 文件持久化决定，而是通过 Redis 维护共享运行态：
 
-- **系统默认**：进入讨论模式后，appId 最小的参与 bot 自动成为 leader
+- **系统默认**：active 房间里，按 `appId` 排序取最小者为 leader
 - **人类指定**：Her 调 `set_discussion_leader` 工具更新 Redis
-- **参与者租约**：每个 bot 每 10 秒向 Redis ZADD 自己的 appId，30 秒不续约视为离线
-- **自动重选**：当前 leader 离线 → 从活跃参与者中选 appId 最小的
+- **参与者租约**：active 房间中，每个 bot 每 10 秒续约一次；30 秒不续约视为离线
+- **自动重选**：当前 leader 离线或失效后，从活跃参与者中重新选举
 
 Redis key：
 
@@ -362,9 +383,8 @@ Redis key：
 discussion:{chatId}:participants  — Sorted Set（score=epoch, member=appId）
 discussion:{chatId}:leader        — String（appId）
 discussion:{chatId}:last_activity — String（epoch）
+discussion:{chatId}:state         — String（active | idle）
 ```
-
-无 Redis 时降级为文件模式（单机可用，跨容器不保证一致）。
 
 ### workspace 文件
 
@@ -379,99 +399,77 @@ discussion:{chatId}:last_activity — String（epoch）
 }
 ```
 
-**禁止写 `leader_app_id`**。leader 由 Redis 管理。
+**禁止写 `leader_app_id`**。leader 和运行态都由 Redis 管理。
 
 ### context 注入
 
-不告诉 Her "你是 leader/参与者"的角色指令。告诉 Her 技术机制：
+当前注入给 Her 的不是“硬控制脚本”，而是技术事实：
 
-> "讨论模式。你和其他 Her 无法实时收到对方消息，系统每 10 秒轮询。
-> 你回复后对方约 10 秒后被触发。如果你的回复没有 @具体的 Her，
-> 所有 Her 都会被触发导致混乱。所以分配任务时必须 @具体的 Her。
-> leader 负责推进节奏。30 秒没有新消息系统会唤醒 leader 检查状态。"
+> "讨论模式。bot 之间通过 Redis 广播几乎实时看到彼此消息，但只有显式 `@` 才代表真正唤醒。没有显式点到你时不要发群消息。系统空闲时不会主动唤醒你。"
 
-Opus 理解机制后自然做出正确判断，无需逐条规则。
+leader / participant 的差异仍会被注入，但重点已经从“轮询 + heartbeat”切换成“显式点名交接”。
 
-### 实现状态（2026-03-25）
+### 实现状态（2026-03-26 当前 worktree）
 
-| 内容                                       | 状态            |
-| ------------------------------------------ | --------------- |
-| bot message poller（10s 轮询，无时间窗口） | ✅ 已实现并验证 |
-| @mention turn-taking                       | ✅ 已实现并验证 |
-| ⏳ 中间态过滤 + 未 finalize 重试           | ✅ 已实现并验证 |
-| discussion 模式 gateway 路由               | ✅ 已实现并验证 |
-| Redis leader 选举 + 参与者租约             | ✅ 已实现并验证 |
-| leader heartbeat（30s，3 轮上限）          | ✅ 已实现并验证 |
-| set_discussion_leader 工具                 | ✅ 已实现并验证 |
-| context 注入（机制解释，非规则）           | ✅ 已实现并验证 |
-| BOT_POLL_SKIP_PATTERNS 防风暴              | ✅ 已实现并验证 |
-| error backoff 2 分钟                       | ✅ 已实现并验证 |
-| injectedBotMsgIds GC（500 上限）           | ✅ 已实现       |
+| 内容                                           | 状态            |
+| ---------------------------------------------- | --------------- |
+| bot -> bot broadcast 只认显式 mention 元数据   | ✅ 已实现并验证 |
+| human -> bot 只在显式 `@` 时进入 processing    | ✅ 已实现并验证 |
+| discussion active / idle 运行态                | ✅ 已实现并验证 |
+| auto-exit 进入 idle（mode 不切回 group-at）    | ✅ 已实现并验证 |
+| idle 时不再 heartbeat / 不再主动唤醒模型       | ✅ 已实现并验证 |
+| set_discussion_leader 切换后禁止额外公开交接   | ✅ 已实现并验证 |
+| 技术机制 skill 文案更新（解释显式 `@` 的原因） | ✅ 已实现并验证 |
+| mention routing / idle 相关回归测试            | ✅ 已实现并验证 |
 
-### 已验证场景（2026-03-25）
+### 已验证场景（2026-03-26，本地 tester101/102/103）
 
-- tester(leader) + tester2 有序 3 轮讨论 ✅
-- @mention 过滤：未被 @的 bot 不触发（零 token）✅
-- 未 finalize 消息重试：skip → skip → finalize 后 inject ✅
-- heartbeat 3 轮停止 + 新消息恢复 ✅
-- Redis leader 选举 + set_discussion_leader 工具 ✅
-- 人类插话不打断讨论 ✅
-- 对话自然结束后零 token 消耗 ✅
+- human 显式 `@` 单个 bot，只唤醒目标 bot ✅
+- bot 显式 `@` peer bot，只 inject 被点名者 ✅
+- 未被点名的人类消息 / bot 消息只 archive，不白跑 agent ✅
+- auto-exit 后 discussion 保持，但运行态进入 idle ✅
+- idle 房间不会靠 heartbeat 再次偷跑模型 ✅
+- 下一次显式 `@` 能重新激活 discussion ✅
 
-### 状态补充（2026-03-26：discussion routing checkpoint）
+### 状态补充（2026-03-26：strict mention + idle checkpoint）
 
-**这轮新确认的结论必须和 2026-03-25 的“机制已跑通”分开看。**
+**这轮已经修住的，是“路由层确定性”；还没修完的，是“用户体感稳定性”。**
 
-本轮已经修住 3 条最容易把讨论模式带偏的链路：
+已完成：
 
-1. **bot -> bot broadcast 只认显式 mention 元数据**
-   - 不再根据正文里的 bot 名字或 `app_id` 做模糊唤醒
-   - 只有 `mentions[]` 里显式出现当前 bot 的 `app_id` 或 `botOpenId`，才允许 inject
+1. **strict explicit @ routing**
+   - human / bot 两条入口现在都只认显式 `@`
+   - 未被点名的消息统一 archive only，不再进入 agent
 
-2. **未被点名的 bot broadcast 不再白跑 agent**
-   - discussion 模式下，`isBotSender && !wasMentioned` 的消息现在只 archive，不再进入 `processing`
-   - 这条修复直接消除了此前那种“日志里 `wasMentioned=false`，却还继续跑 agent / 占 session lane”的行为
+2. **discussion auto-exit 改为 idle**
+   - 5 分钟无活动后只把 Redis 运行态切成 `idle`
+   - 不再把群模式切回别的模式，连续讨论体验保留
 
-3. **leader 切换后不再额外公开 handoff**
-   - `set_discussion_leader` 工具结果里新增 `instruction`
-   - leader 切换完成后，当前 leader 必须立即结束本轮，不再额外发一条“我交接给谁了”的公开消息
+3. **移除 heartbeat 模型唤醒**
+   - tick 现在只做 leader 选举、租约维护、idle 同步
+   - 不再有“30 秒唤醒 leader 看看要不要说话”的隐性 token 消耗
 
-**本轮闭环验证已确认通过**：
+4. **leader handoff 更干净**
+   - 切 leader 后，旧 leader 本轮直接结束
+   - 不再额外往群里发一条公开 handoff
 
-- 正文里只是提到某个 bot 名字、但没有显式 `<at>` 的 broadcast，不会再误唤醒该 bot
-- `wasMentioned=false` 的 bot broadcast 不会再进入 agent processing
-- 被显式点名的 peer bot 仍能正常 inject、排队、接棒，不影响 turn-taking 主链路
+**但本轮本地测试也明确暴露了两个尚未修复的上线阻塞点**：
 
-**但这轮也明确暴露了 3 个残留问题（尚未修）**：
+1. **silent turn / ghost card**
+   - 显式 `@` 成功进入 processing 后，模型仍可能最终不给可见正文
+   - 这时会出现占位卡被清理的现象，用户体感像“发了一条又撤回”
 
-1. **human ingress 仍然是“全员 processing”**
-   - 当前 discussion 模式里，人类消息进入后，所有 bot 仍会进入 `processing`
-   - 即使人类只点名一个 bot，其他 bot 也会跑到 prompt 层，再靠 prompt / self-control 决定是否闭嘴
-   - 这意味着当前 discussion 仍然不是“严格的点名路由”，而是“bot broadcast 严格点名 + human ingress 全员感知”的混合形态
+2. **体感延迟仍偏高**
+   - 单轮从被点名到最终可见正文，常见仍在 20 到 33 秒
+   - 如果目标 bot 当时已有 session lane 在跑，还会再叠加数秒到十几秒排队
 
-2. **auto-exit 只清 Redis，不会真正让讨论态休眠**
-   - 当前 auto-exit 行为是 `cleanupDiscussionGroup()`：删除 Redis 的 `participants` / `leader` / `last_activity`
-   - 但本地 `group-modes/{chatId}.json` 仍保持 `"discussion"`
-   - 结果是：下一个还活着的 bot 再跑 tick 时，会重新注册自己、重新选 leader、再次 heartbeat，形成“僵尸讨论”
+**上线判断（截至 2026-03-26 晚）**：
 
-3. **leader tool 仍缺“真实参与者校验”**
-   - 如果 prompt 上下文里混入未知短 id / phantom participant，模型可能把一个不存在或未注册的 `app_id` 传给 `set_discussion_leader`
-   - Redis 当前会直接接受这个 leader 值，缺少“必须属于当前真实参与者集合”的硬校验
-
-**所以 2026-03-26 这个 checkpoint 的正确分层是**：
-
-- **已修住**：显式 mention broadcast gating、未点名 bot broadcast 跳过 agent、leader 切换后不再额外公开 handoff
-- **仍待修**：human ingress 的严格点名路由、auto-exit 僵尸讨论、leader 目标的真实参与者校验
-
-### 已知限制
-
-- 线上 77 个容器的 `knownBotOpenIds` 为空（部署前需更新）
-- leader agent run 可能耗时 30-60 秒（用 tools 搜索/写文档），heartbeat 窗口可能不够
-- API 配额：每群每 10 秒 1 次 × N 个 bot = N/10 QPS（远低于 50 QPS 限制）
+- 适合：测试群灰度、继续打闭环
+- 不适合：直接当作稳定版正式上线
 
 ### 已知限制 & 风险
 
-- 飞书 `im.message.receive_v1` 不推送 bot 消息给其他 bot（已通过轮询器绕过）
-- 线上 77 个容器的 `knownBotOpenIds` 为空（部署前需更新）
-- leader 的 agent run 可能耗时长（用 tools 搜索/写文档），排队积压
-- API 配额：每群每 10 秒 1 次 × N 个 bot = N/10 QPS（远低于 50 QPS 限制）
+- 飞书仍然不会把 bot 消息直接推给其他 bot；discussion 依赖 Redis 广播链路
+- 只要一个 turn 被真正接受，就仍然会消耗一整轮模型推理；strict routing 解决的是“误唤醒”，不是“零成本对话”
+- 当前主要用户态风险不是硬死锁，而是**静默回合**和**高延迟误判成卡死**

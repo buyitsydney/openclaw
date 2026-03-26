@@ -1,4 +1,8 @@
 import { describe, expect, it } from "vitest";
+import {
+  normalizeDiscussionRuntimeState,
+  shouldRegisterDiscussionParticipant,
+} from "./discussion-state.js";
 import { shouldInjectDiscussionBroadcast, shouldProcessDiscussionMessage } from "./gateway.js";
 
 describe("feishu gateway discussion routing", () => {
@@ -45,7 +49,7 @@ describe("feishu gateway discussion routing", () => {
     ).toBe(false);
   });
 
-  it("skips unmentioned bot traffic but keeps leader heartbeat", () => {
+  it("only processes explicitly mentioned discussion turns", () => {
     expect(
       shouldProcessDiscussionMessage({
         isBotSender: true,
@@ -71,7 +75,7 @@ describe("feishu gateway discussion routing", () => {
         isSyntheticMessage: true,
         wasMentioned: false,
       }),
-    ).toBe(true);
+    ).toBe(false);
 
     expect(
       shouldProcessDiscussionMessage({
@@ -89,6 +93,41 @@ describe("feishu gateway discussion routing", () => {
         isSyntheticMessage: false,
         wasMentioned: false,
       }),
+    ).toBe(false);
+
+    expect(
+      shouldProcessDiscussionMessage({
+        isBotSender: false,
+        isSelfBot: false,
+        isSyntheticMessage: false,
+        wasMentioned: true,
+      }),
     ).toBe(true);
+  });
+
+  it("stops registering participants once discussion enters idle", () => {
+    expect(normalizeDiscussionRuntimeState(null)).toBe("active");
+    expect(normalizeDiscussionRuntimeState("idle")).toBe("idle");
+
+    expect(
+      shouldRegisterDiscussionParticipant({
+        isDiscussionMode: true,
+        runtimeState: "active",
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldRegisterDiscussionParticipant({
+        isDiscussionMode: true,
+        runtimeState: "idle",
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldRegisterDiscussionParticipant({
+        isDiscussionMode: false,
+        runtimeState: "active",
+      }),
+    ).toBe(false);
   });
 });

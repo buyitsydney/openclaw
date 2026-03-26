@@ -36,8 +36,8 @@ import {
   getDiscussionParticipants,
   shutdownDiscussionState,
   setDiscussionLeader,
-  recordDiscussionActivity,
-  cleanupDiscussionGroup,
+  activateDiscussionGroup,
+  markDiscussionIdle,
   type BotBroadcastMessage,
 } from "./discussion-state.ts";
 import { buildDriveFileContextFromText } from "./drive-file-read.js";
@@ -978,19 +978,11 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
 
   log?.info(`[${account.accountId}] connecting Feishu WSClient...`);
 
-  // Track last real message processing time per chat (for heartbeat suppression)
-  const lastRealProcessedAt = new Map<string, number>();
-
   const eventDispatcher = new Lark.EventDispatcher({}).register({
     "im.message.receive_v1": async (data) => {
       // Return immediately so the SDK sends the ACK frame within milliseconds.
       // Without this, Feishu's ~3-5s ACK timeout expires before the AI finishes
       // processing (6-27s observed), causing Feishu to retry at +15s/+5m/+1h/+6h.
-      const chatId = data?.message?.chat_id;
-      if (chatId && data?.message?.chat_type === "group") {
-        lastRealProcessedAt.set(chatId, Date.now());
-        void recordDiscussionActivity(chatId);
-      }
       void handleInboundMessage(data, { account, config, abortSignal, log, setStatus, core }).catch(
         (err) => {
           log?.error(`[${account.accountId}] error handling message: ${String(err)}`);
@@ -1040,34 +1032,16 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
     "compacted",
   ];
 
-  // Per-group leader heartbeat state
-  const heartbeatState = new Map<string, { idleRounds: number; lastTime: number }>();
-  const LEADER_HEARTBEAT_INTERVAL_MS = 30_000;
-
-  // deferredHeartbeat + activeDispatchChats live at module level (see before handleInboundMessage)
-  // so both startFeishuGateway and handleInboundMessage can access them.
-
   // Collect pattern: first @mentioned broadcast injects immediately; subsequent
   // ones buffer (keep latest only). When processing finishes, drain the pending
   // message. AI sees all intermediate messages via 20-message history injection.
   const broadcastActive = new Map<string, Promise<void>>();
   const broadcastPending = new Map<string, BotBroadcastMessage>();
 
-  const LEADER_HEARTBEAT_MAX_IDLE = 3;
-
   const injectBroadcastMessage = (msg: BotBroadcastMessage) => {
     log?.info(
       `[${account.accountId}] [broadcast] injecting: msgId=${msg.msgId.slice(-12)} from=${msg.senderAppId} in ${msg.chatId.slice(-8)}`,
     );
-
-    const hb = heartbeatState.get(msg.chatId);
-    if (hb) {
-      hb.idleRounds = 0;
-      hb.lastTime = Date.now();
-    }
-
-    lastRealProcessedAt.set(msg.chatId, Date.now());
-    void recordDiscussionActivity(msg.chatId);
 
     const p = handleInboundMessage(
       {
@@ -1183,7 +1157,7 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
 
   log?.info(`[${account.accountId}] [broadcast] subscriber active, zero-API bot-to-bot messaging`);
 
-  // ── Discussion tick timer (leader election + heartbeat, no API calls) ──
+  // ── Discussion tick timer (leader election + idle state sync, zero model wakeups) ──
   const TICK_INTERVAL_MS = 10_000;
   const discussionTickTimer = setInterval(async () => {
     try {
@@ -1209,81 +1183,11 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
 
         if (isDiscussion && tick.shouldAutoExit) {
           log?.info(
-            `[${account.accountId}] [broadcast] ${chatId.slice(-8)}: auto-exit cleanup (mode unchanged)`,
+            `[${account.accountId}] [broadcast] ${chatId.slice(-8)}: auto-exit -> idle (mode unchanged)`,
           );
-          await cleanupDiscussionGroup(chatId);
-          heartbeatState.delete(chatId);
-          deferredHeartbeat.delete(chatId);
-          lastRealProcessedAt.delete(chatId);
+          await markDiscussionIdle(chatId);
           broadcastPending.delete(chatId);
           continue;
-        }
-
-        if (!isDiscussion || !tick.isLeader) continue;
-
-        // Leader heartbeat: poke the agent when no bot messages arrive for a while.
-        // Skip if a broadcast is actively being processed (avoid competing with real AI work).
-        if (broadcastActive.has(chatId)) continue;
-        // Skip if a real message was processed recently (avoids queue noise during active discussion).
-        const HEARTBEAT_SUPPRESS_MS = 60_000;
-        const lastReal = lastRealProcessedAt.get(chatId) ?? 0;
-        if (!heartbeatState.has(chatId)) {
-          heartbeatState.set(chatId, { idleRounds: 0, lastTime: Date.now() });
-        }
-        const hb = heartbeatState.get(chatId)!;
-        const nowMs = Date.now();
-        if (nowMs - lastReal < HEARTBEAT_SUPPRESS_MS) continue;
-        if (nowMs - hb.lastTime < LEADER_HEARTBEAT_INTERVAL_MS) continue;
-        hb.idleRounds++;
-        if (hb.idleRounds > LEADER_HEARTBEAT_MAX_IDLE) continue;
-        hb.lastTime = nowMs;
-        const now = Math.floor(nowMs / 1000);
-
-        const heartbeatPrompt =
-          "[讨论心跳] 你是决策者。检查群里最新上下文，判断：推进讨论？激活参与者？还是结束？";
-
-        // Check if a deferred heartbeat is already pending and ripe for true-idle dispatch.
-        const existing = deferredHeartbeat.get(chatId);
-        if (existing && nowMs - existing.deferredAt >= DEFERRED_HEARTBEAT_TRUE_IDLE_MS) {
-          // True idle: no real message consumed the deferred heartbeat for 60s.
-          // Only dispatch if no active dispatch is competing for the session lane.
-          if (activeDispatchChats.has(chatId) || broadcastActive.has(chatId)) {
-            log?.info(
-              `[${account.accountId}] [broadcast] ${chatId.slice(-8)}: heartbeat ${hb.idleRounds}/${LEADER_HEARTBEAT_MAX_IDLE} deferred (lane busy)`,
-            );
-            continue;
-          }
-          deferredHeartbeat.delete(chatId);
-          log?.info(
-            `[${account.accountId}] [broadcast] ${chatId.slice(-8)}: heartbeat ${hb.idleRounds}/${LEADER_HEARTBEAT_MAX_IDLE} true-idle dispatch`,
-          );
-          void handleInboundMessage(
-            {
-              message: {
-                message_id: `heartbeat-${chatId}-${now}`,
-                chat_id: chatId,
-                chat_type: "group",
-                message_type: "text",
-                content: JSON.stringify({ text: heartbeatPrompt }),
-                create_time: String(nowMs),
-                parent_id: "",
-                mentions: [],
-              },
-              sender: {
-                sender_id: { open_id: "heartbeat" },
-                sender_type: "heartbeat",
-              },
-            },
-            deps,
-          ).catch((err) => {
-            log?.error(`[${account.accountId}] [broadcast] leader heartbeat error: ${String(err)}`);
-          });
-        } else if (!existing) {
-          // First deferral: store prompt, will be merged into next real message's context.
-          deferredHeartbeat.set(chatId, { prompt: heartbeatPrompt, deferredAt: nowMs });
-          log?.info(
-            `[${account.accountId}] [broadcast] ${chatId.slice(-8)}: heartbeat ${hb.idleRounds}/${LEADER_HEARTBEAT_MAX_IDLE} deferred`,
-          );
         }
       }
     } catch (err) {
@@ -1370,9 +1274,8 @@ export function shouldProcessDiscussionMessage(params: {
   wasMentioned: boolean;
 }): boolean {
   if (params.isSelfBot) return false;
-  if (params.isSyntheticMessage) return true;
-  if (params.isBotSender && !params.wasMentioned) return false;
-  return true;
+  if (params.isSyntheticMessage) return false;
+  return params.wasMentioned;
 }
 
 type FeishuBotIdentityPromptAccount = Pick<
@@ -1613,15 +1516,6 @@ export function buildFeishuInboundIdentity(params: {
     groupResolution: buildFeishuGroupSessionMetaResolution(params.chatId, params.isGroup),
   };
 }
-
-// Deferred heartbeat: prompt stored here instead of dispatching immediately.
-// Consumed by the next real message's handleInboundMessage, merged into context.
-// Falls back to real dispatch only after TRUE_IDLE threshold with no active dispatch.
-const deferredHeartbeat = new Map<string, { prompt: string; deferredAt: number }>();
-const DEFERRED_HEARTBEAT_TRUE_IDLE_MS = 60_000;
-
-// Track active dispatches per chat so heartbeats can check lane availability.
-const activeDispatchChats = new Set<string>();
 
 // Bot name→openId registry for @mention rendering in discussion mode.
 // Populated from sender resolution in handleInboundMessage.
@@ -2135,25 +2029,27 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     }
 
     if (currentGroupMode === "discussion") {
-      if (
-        !shouldProcessDiscussionMessage({
-          isBotSender,
-          isSelfBot,
-          isSyntheticMessage,
-          wasMentioned,
-        })
-      ) {
-        if (isSelfBot) {
+      const shouldProcessDiscussion = shouldProcessDiscussionMessage({
+        isBotSender,
+        isSelfBot,
+        isSyntheticMessage,
+        wasMentioned,
+      });
+      if (!shouldProcessDiscussion) {
+        if (isSyntheticMessage) {
+          log?.info(`[${account.accountId}] discussion mode: synthetic heartbeat suppressed`);
+        } else if (isSelfBot) {
           log?.info(`[${account.accountId}] discussion mode: self-bot msg, skipping`);
         } else {
           log?.info(
-            `[${account.accountId}] discussion mode: bot msg without @mention, archived only`,
+            `[${account.accountId}] discussion mode: ${isBotSender ? "bot" : "human"} msg without explicit @mention, archived only`,
           );
         }
         return;
       }
+      await activateDiscussionGroup(chatId, account.appId);
       log?.info(
-        `[${account.accountId}] discussion mode: ${isBotSender ? "bot" : "human"} msg from ${senderId} in ${chatId}, processing`,
+        `[${account.accountId}] discussion mode: ${isBotSender ? "bot" : "human"} msg from ${senderId} in ${chatId}, explicitly @mentioned -> processing`,
       );
       // Fall through to agent processing
     } else if (currentGroupMode === "owner") {
@@ -2560,23 +2456,22 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
           const commonMechanism =
             "技术机制：bot 之间通过 Redis 广播几乎实时收到彼此消息；系统只会额外补充最近群消息作为上下文，不靠 10 秒轮询来决定是否触发你。" +
-            "只有被明确 @到、被明确点名、或被 leader 明确交接任务的 bot 才应该接话。没有被点到时不要发群消息。";
+            "只有被显式 @到、或被人类明确指定接任 leader 的 bot 才应该接话。没有显式点到时不要发群消息。系统不会在空闲时主动唤醒你。";
 
           if (amLeader) {
             discussionRule =
               `讨论模式。你是本次讨论的主导者（leader）。当前参与者：${participantNames}。` +
               `你负责推进讨论节奏、@分配发言、控制轮次。其他 bot 等你 @才发言。` +
-              `人类抛出新话题后，由你先开场；不要先发“收到/准备好了/进入讨论模式”之类的确认语，第一条可见消息必须直接推进讨论。` +
+              `只有当人类显式 @到你，或人类明确指定你接任 leader 时，你才开场或推进讨论。不要先发“收到/准备好了/进入讨论模式”之类的确认语，第一条可见消息必须直接推进讨论。` +
               `如果人类明确指定另一个 bot 接任 leader，你只调用 set_discussion_leader 工具完成移交，然后本轮立即结束；不要再发公开交接消息，让新 leader 自己开场。` +
               `群里发言时严禁调用 message(action=send, ...)、feishu_message 或任何手动发群消息工具；直接输出你要发到群里的正文，系统会自动发送。` +
               commonMechanism +
-              `如果 30 秒没有新消息，系统会唤醒你检查是否需要推进或催促。` +
               `如果人类通过 set_discussion_leader 工具指定了新的主导者，你自动变为参与者。`;
           } else {
             discussionRule =
               `讨论模式。你是参与者。当前主导者是 ${leaderName}。当前参与者：${participantNames}。` +
               `默认保持沉默。等主导者 @你时发言，被 @时给出你的观点。不要主动推进讨论节奏。` +
-              `如果当前输入直接来自人类，而人类没有明确只点你发言，也没有明确指定你接任 leader，则本轮必须闭嘴：不要发送任何群消息，不要发“收到/准备好了/进入讨论模式/我先补充一句”这类确认语。` +
+              `如果当前输入直接来自人类，而人类没有显式 @你，也没有明确指定你接任 leader，则本轮必须闭嘴：不要发送任何群消息，不要发“收到/准备好了/进入讨论模式/我先补充一句”这类确认语。` +
               `群里发言时严禁调用 message(action=send, ...)、feishu_message 或任何手动发群消息工具；直接输出你要发到群里的正文，系统会自动发送。` +
               commonMechanism +
               `如果人类明确指定你为新主导者（说"你来主导/你负责/你当leader"），使用 set_discussion_leader 工具更新主导者。` +
@@ -2585,12 +2480,12 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
           const discussionTurnRule = amLeader
             ? !isBotSender
-              ? "[讨论模式当轮规则]\n当前输入直接来自人类。由你负责本轮开场、点名或总结；如果人类明确指定了别的 bot 当 leader，则只切 leader 并立即结束本轮。不要发送任何纯确认语，第一条群消息必须直接推进讨论。\n"
+              ? "[讨论模式当轮规则]\n当前输入直接来自人类，且人类显式 @了你。由你负责本轮开场、点名或总结；如果人类明确指定了别的 bot 当 leader，则只切 leader 并立即结束本轮。不要发送任何纯确认语，第一条群消息必须直接推进讨论。\n"
               : "[讨论模式当轮规则]\n当前输入来自其他 bot。只有在对方明确向你汇报、向你提问、或把推进权交给你时，你才接续推进；不要发送纯确认语。\n"
             : !isBotSender
-              ? currentBotWasMentioned && currentGroupMentions.length === 1
-                ? "[讨论模式当轮规则]\n当前输入直接来自人类，且人类只点了你一个 bot。只有在你被明确点名发言，或被明确指定接任 leader 时，才可以回复；否则仍然保持沉默。\n"
-                : "[讨论模式当轮规则]\n当前输入直接来自人类。你是参与者，本轮默认保持沉默；只有在人类明确指定你接任 leader 时，你才可以调用 set_discussion_leader 并直接开场。除此之外不要发送任何群消息，也不要发“收到/准备好了/进入讨论模式”等确认语。\n"
+              ? currentBotWasMentioned
+                ? "[讨论模式当轮规则]\n当前输入直接来自人类，且人类显式 @了你。你可以直接回答；如果人类还明确指定你接任 leader，则先调用 set_discussion_leader 再继续。不要发送任何纯确认语。\n"
+                : "[讨论模式当轮规则]\n当前输入直接来自人类，但人类没有显式 @你。你必须保持沉默，不要发送任何群消息，也不要发“收到/准备好了/进入讨论模式”等确认语。\n"
               : "[讨论模式当轮规则]\n当前输入来自其他 bot。只有当对方明确 @你、明确点名你回答、或明确把接力交给你时，你才回复；否则保持沉默，不要发送确认语。\n";
           currentReplyRule = `${discussionTurnRule}\n${currentReplyRule}`;
         }
@@ -2822,86 +2717,101 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     resolveDeliverGate = r;
   });
 
-  // Consume deferred heartbeat: merge prompt into this message's context so the AI
-  // handles the heartbeat question in the same dispatch — zero extra lane occupancy.
-  if (isGroup && !isSyntheticMessage) {
-    const pending = deferredHeartbeat.get(chatId);
-    if (pending) {
-      deferredHeartbeat.delete(chatId);
-      const hbNote = `\n\n[系统提示 - 讨论心跳] ${pending.prompt}`;
-      if (ctxPayload.BodyForAgent) {
-        ctxPayload.BodyForAgent += hbNote;
-      } else {
-        ctxPayload.Body += hbNote;
-      }
-      log?.info(`[${account.accountId}] consumed deferred heartbeat for ${chatId.slice(-8)}`);
-    }
-  }
-
-  activeDispatchChats.add(chatId);
   let dispatchResult: Awaited<
     ReturnType<typeof core.channel.reply.dispatchReplyWithBufferedBlockDispatcher>
   >;
-  try {
-    dispatchResult = await core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
-      ctx: ctxPayload,
-      cfg: config,
-      dispatcherOptions: {
-        deliver: async (payload, info) => {
-          if (!deliverFired) {
-            deliverFired = true;
-            // Lazily ensure card stream + ACK exist for lane-queued messages
-            // whose onReplyStart may have fired before the lane wait (and whose
-            // handler cleanup already ran the first time dispatch returned).
-            await Promise.all([addAckReaction(), startCardStream()]);
+  dispatchResult = await core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+    ctx: ctxPayload,
+    cfg: config,
+    dispatcherOptions: {
+      deliver: async (payload, info) => {
+        if (!deliverFired) {
+          deliverFired = true;
+          // Lazily ensure card stream + ACK exist for lane-queued messages
+          // whose onReplyStart may have fired before the lane wait (and whose
+          // handler cleanup already ran the first time dispatch returned).
+          await Promise.all([addAckReaction(), startCardStream()]);
+        }
+        // Filter already-delivered media (same pattern as filterMessagingToolDuplicates for text).
+        const rawMediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
+        const mediaUrls = rawMediaUrls.filter((u) => !sentMediaUrls.has(u));
+        for (const u of mediaUrls) sentMediaUrls.add(u);
+        const hasMedia = mediaUrls.length > 0;
+        const skippedMedia = rawMediaUrls.length - mediaUrls.length;
+
+        log?.info(
+          `[${account.accountId}] deliver: kind=${info.kind} hasText=${!!payload.text} textLen=${payload.text?.length ?? 0} hasMedia=${hasMedia}${skippedMedia > 0 ? ` (skipped ${skippedMedia} duplicate media)` : ""}`,
+        );
+
+        const isReasoningPayload =
+          payload.isReasoning === true ||
+          (typeof payload.text === "string" &&
+            info.kind === "block" &&
+            payload.text.trimStart().startsWith("Reasoning:"));
+
+        // Group chats: skip "block" deliveries — accumulate text and wait for "final".
+        // Without this, block+final each create a separate card stream → duplicate messages.
+        if (isGroup && info.kind === "block" && payload.text && !isReasoningPayload) {
+          groupAccumulatedText = accumulateGroupedReplyText(groupAccumulatedText, payload.text);
+          log?.info(
+            `[${account.accountId}] deliver: group block accumulated (${groupAccumulatedText.length} chars), waiting for final`,
+          );
+          return;
+        }
+
+        // Group chats without card stream: accumulate text and send as a single
+        // message after the full turn completes, avoiding fragmented bubbles.
+        if (isGroup && !cardStream?.started && payload.text && !isReasoningPayload) {
+          const payloadReplyToId =
+            typeof payload.replyToId === "string" ? payload.replyToId.trim() : "";
+          if (payloadReplyToId && !groupAccumulatedReplyToId) {
+            groupAccumulatedReplyToId = payloadReplyToId;
           }
-          // Filter already-delivered media (same pattern as filterMessagingToolDuplicates for text).
-          const rawMediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
-          const mediaUrls = rawMediaUrls.filter((u) => !sentMediaUrls.has(u));
-          for (const u of mediaUrls) sentMediaUrls.add(u);
-          const hasMedia = mediaUrls.length > 0;
-          const skippedMedia = rawMediaUrls.length - mediaUrls.length;
+          groupAccumulatedText = accumulateGroupedReplyText(groupAccumulatedText, payload.text);
+          log?.info(
+            `[${account.accountId}] deliver: group text accumulated (${groupAccumulatedText.length} chars total)`,
+          );
+          setStatus({ lastOutboundAt: Date.now() });
+          if (hasMedia) {
+            await deliverFeishuReply({
+              payload: { mediaUrls, replyToId: payloadReplyToId || undefined },
+              account,
+              chatId,
+              isGroup,
+              replyToMessageId: messageId,
+              log,
+              setStatus,
+              config,
+              core,
+            });
+          }
+          if (info.kind === "final") resolveDeliverGate?.();
+          return;
+        }
+
+        if (cardStream?.started && payload.text) {
+          const isVerboseTool = info.kind === "tool";
 
           log?.info(
-            `[${account.accountId}] deliver: kind=${info.kind} hasText=${!!payload.text} textLen=${payload.text?.length ?? 0} hasMedia=${hasMedia}${skippedMedia > 0 ? ` (skipped ${skippedMedia} duplicate media)` : ""}`,
+            `[${account.accountId}] deliver: card-stream check: kind=${info.kind} isReasoning=${isReasoningPayload} isVerbose=${isVerboseTool} textPrefix="${payload.text.slice(0, 60).replace(/\n/g, "\\n")}"`,
           );
 
-          const isReasoningPayload =
-            payload.isReasoning === true ||
-            (typeof payload.text === "string" &&
-              info.kind === "block" &&
-              payload.text.trimStart().startsWith("Reasoning:"));
-
-          // Group chats: skip "block" deliveries — accumulate text and wait for "final".
-          // Without this, block+final each create a separate card stream → duplicate messages.
-          if (isGroup && info.kind === "block" && payload.text && !isReasoningPayload) {
-            groupAccumulatedText = accumulateGroupedReplyText(groupAccumulatedText, payload.text);
+          if (!isReasoningPayload && !isVerboseTool) {
+            cardStreamFinalText = cardStreamFinalText
+              ? cardStreamFinalText + "\n\n" + payload.text
+              : payload.text;
             log?.info(
-              `[${account.accountId}] deliver: group block accumulated (${groupAccumulatedText.length} chars), waiting for final`,
-            );
-            return;
-          }
-
-          // Group chats without card stream: accumulate text and send as a single
-          // message after the full turn completes, avoiding fragmented bubbles.
-          if (isGroup && !cardStream?.started && payload.text && !isReasoningPayload) {
-            const payloadReplyToId =
-              typeof payload.replyToId === "string" ? payload.replyToId.trim() : "";
-            if (payloadReplyToId && !groupAccumulatedReplyToId) {
-              groupAccumulatedReplyToId = payloadReplyToId;
-            }
-            groupAccumulatedText = accumulateGroupedReplyText(groupAccumulatedText, payload.text);
-            log?.info(
-              `[${account.accountId}] deliver: group text accumulated (${groupAccumulatedText.length} chars total)`,
+              `[${account.accountId}] deliver: text accumulated for finalize (${cardStreamFinalText.length} chars total)`,
             );
             setStatus({ lastOutboundAt: Date.now() });
+
             if (hasMedia) {
               await deliverFeishuReply({
-                payload: { mediaUrls, replyToId: payloadReplyToId || undefined },
+                payload: { mediaUrls, replyToId: payload.replyToId },
                 account,
                 chatId,
                 isGroup,
-                replyToMessageId: messageId,
+                replyToMessageId: isGroup && !isSyntheticMessage ? messageId : undefined,
                 log,
                 setStatus,
                 config,
@@ -2912,99 +2822,63 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
             return;
           }
 
-          if (cardStream?.started && payload.text) {
-            const isVerboseTool = info.kind === "tool";
+          log?.info(
+            `[${account.accountId}] deliver: bypassing card accumulation for ${isReasoningPayload ? "reasoning" : "verbose tool"} (kind=${info.kind})`,
+          );
+        }
 
-            log?.info(
-              `[${account.accountId}] deliver: card-stream check: kind=${info.kind} isReasoning=${isReasoningPayload} isVerbose=${isVerboseTool} textPrefix="${payload.text.slice(0, 60).replace(/\n/g, "\\n")}"`,
-            );
+        // Card stream not active, group text not accumulating, or no text — deliver normally.
+        await deliverFeishuReply({
+          payload: {
+            ...payload,
+            mediaUrls: hasMedia ? mediaUrls : undefined,
+            mediaUrl: undefined,
+          },
+          account,
+          chatId,
+          isGroup,
+          replyToMessageId: isGroup && !isSyntheticMessage ? messageId : undefined,
+          log,
+          setStatus,
+          config,
+          core,
+        });
 
-            if (!isReasoningPayload && !isVerboseTool) {
-              cardStreamFinalText = cardStreamFinalText
-                ? cardStreamFinalText + "\n\n" + payload.text
-                : payload.text;
-              log?.info(
-                `[${account.accountId}] deliver: text accumulated for finalize (${cardStreamFinalText.length} chars total)`,
-              );
-              setStatus({ lastOutboundAt: Date.now() });
-
-              if (hasMedia) {
-                await deliverFeishuReply({
-                  payload: { mediaUrls, replyToId: payload.replyToId },
-                  account,
-                  chatId,
-                  isGroup,
-                  replyToMessageId: isGroup && !isSyntheticMessage ? messageId : undefined,
-                  log,
-                  setStatus,
-                  config,
-                  core,
-                });
-              }
-              if (info.kind === "final") resolveDeliverGate?.();
-              return;
-            }
-
-            log?.info(
-              `[${account.accountId}] deliver: bypassing card accumulation for ${isReasoningPayload ? "reasoning" : "verbose tool"} (kind=${info.kind})`,
-            );
-          }
-
-          // Card stream not active, group text not accumulating, or no text — deliver normally.
-          await deliverFeishuReply({
-            payload: {
-              ...payload,
-              mediaUrls: hasMedia ? mediaUrls : undefined,
-              mediaUrl: undefined,
-            },
-            account,
-            chatId,
-            isGroup,
-            replyToMessageId: isGroup && !isSyntheticMessage ? messageId : undefined,
-            log,
-            setStatus,
-            config,
-            core,
-          });
-
-          if (info.kind === "final") resolveDeliverGate?.();
-        },
-        onSkip: (_payload, { kind, reason }) => {
-          log?.info(`[${account.accountId}] dispatch skip: kind=${kind} reason=${reason}`);
-          if (kind === "final") resolveDeliverGate?.();
-        },
-        onError: (err, info) => {
-          log?.error(`[${account.accountId}] Feishu ${info.kind} reply failed: ${String(err)}`);
-        },
-        onReplyStart: async () => {
-          // Fire ACK reaction and card stream in parallel when AI starts processing.
-          await Promise.all([addAckReaction(), startCardStream()]);
-        },
+        if (info.kind === "final") resolveDeliverGate?.();
       },
-      replyOptions: {
-        // Disable block streaming when card stream is active (non-command messages).
-        // For reasoning=on we intentionally skip shared-card typewriter updates so
-        // the final reasoning payload can stay ahead of the final answer.
-        disableBlockStreaming: !isCommand,
-        onPartialReply: sharedCardStreamingEnabled
-          ? (payload) => updateCardStream(payload.text)
+      onSkip: (_payload, { kind, reason }) => {
+        log?.info(`[${account.accountId}] dispatch skip: kind=${kind} reason=${reason}`);
+        if (kind === "final") resolveDeliverGate?.();
+      },
+      onError: (err, info) => {
+        log?.error(`[${account.accountId}] Feishu ${info.kind} reply failed: ${String(err)}`);
+      },
+      onReplyStart: async () => {
+        // Fire ACK reaction and card stream in parallel when AI starts processing.
+        await Promise.all([addAckReaction(), startCardStream()]);
+      },
+    },
+    replyOptions: {
+      // Disable block streaming when card stream is active (non-command messages).
+      // For reasoning=on we intentionally skip shared-card typewriter updates so
+      // the final reasoning payload can stay ahead of the final answer.
+      disableBlockStreaming: !isCommand,
+      onPartialReply: sharedCardStreamingEnabled
+        ? (payload) => updateCardStream(payload.text)
+        : undefined,
+      onReasoningStream:
+        sharedCardStreamingEnabled && effectiveReasoningMode === "stream"
+          ? (payload) => updateReasoningCardStream(payload.text)
           : undefined,
-        onReasoningStream:
-          sharedCardStreamingEnabled && effectiveReasoningMode === "stream"
-            ? (payload) => updateReasoningCardStream(payload.text)
-            : undefined,
-        onReasoningEnd:
-          sharedCardStreamingEnabled && effectiveReasoningMode === "stream"
-            ? () => {
-                // Shared-card reasoning preview is transient only; the next answer
-                // partial or final payload naturally replaces it.
-              }
-            : undefined,
-      },
-    });
-  } finally {
-    activeDispatchChats.delete(chatId);
-  }
+      onReasoningEnd:
+        sharedCardStreamingEnabled && effectiveReasoningMode === "stream"
+          ? () => {
+              // Shared-card reasoning preview is transient only; the next answer
+              // partial or final payload naturally replaces it.
+            }
+          : undefined,
+    },
+  });
 
   log?.info(
     `[${account.accountId}] dispatch returned: deliverFired=${deliverFired} cardStreamFinalText=${cardStreamFinalText.length} cardStreamLastPartial=${cardStreamLastPartial.length}`,

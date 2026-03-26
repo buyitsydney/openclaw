@@ -26,7 +26,8 @@ export interface DiscussionTickResult {
   leader: string | null;
   isLeader: boolean;
   participants: string[];
-  shouldAutoExit: boolean; // true if 5min inactivity → caller should write mode=owner-at
+  shouldAutoExit: boolean;
+  isIdle: boolean;
 }
 
 export interface BotBroadcastMessage {
@@ -52,6 +53,7 @@ interface DiscussionStateOpts {
 const LEASE_TTL_S = 30; // participant considered dead after 30s without renewal
 const AUTO_EXIT_MS = 5 * 60 * 1000; // 5 minutes of inactivity → auto-exit discussion
 const KEY_PREFIX = "discussion";
+export type DiscussionRuntimeState = "active" | "idle";
 
 function participantsKey(chatId: string): string {
   return `${KEY_PREFIX}:${chatId}:participants`;
@@ -61,6 +63,43 @@ function leaderKey(chatId: string): string {
 }
 function lastActivityKey(chatId: string): string {
   return `${KEY_PREFIX}:${chatId}:last_activity`;
+}
+function runtimeStateKey(chatId: string): string {
+  return `${KEY_PREFIX}:${chatId}:state`;
+}
+
+export function normalizeDiscussionRuntimeState(value: string | null): DiscussionRuntimeState {
+  return value === "idle" ? "idle" : "active";
+}
+
+export function shouldRegisterDiscussionParticipant(params: {
+  isDiscussionMode: boolean;
+  runtimeState: DiscussionRuntimeState;
+}): boolean {
+  return params.isDiscussionMode && params.runtimeState === "active";
+}
+
+async function electDiscussionLeader(
+  chatId: string,
+  participants: string[],
+): Promise<string | null> {
+  const lKey = leaderKey(chatId);
+  let currentLeader = await redis!.get(lKey);
+  if (!currentLeader || !participants.includes(currentLeader)) {
+    if (participants.length > 0) {
+      const sorted = [...participants].sort();
+      const newLeader = sorted[0]!;
+      await redis!.set(lKey, newLeader);
+      stateLog?.info(
+        `[discussion-state] ${chatId.slice(-8)}: elected leader=${newLeader.slice(-8)} from ${participants.length} participants`,
+      );
+      currentLeader = newLeader;
+    } else {
+      await redis!.del(lKey);
+      currentLeader = null;
+    }
+  }
+  return currentLeader;
 }
 
 // ── Redis connection (singleton) ─────────────────────────────────────────────
@@ -116,16 +155,32 @@ export async function discussionTick(params: {
     return fallbackResult(myAppId, isDiscussionMode);
   }
 
-  const now = Math.floor(Date.now() / 1000);
-  const pKey = participantsKey(chatId);
-  const lKey = leaderKey(chatId);
-
   try {
+    const now = Math.floor(Date.now() / 1000);
+    const pKey = participantsKey(chatId);
+    const runtimeState = isDiscussionMode
+      ? normalizeDiscussionRuntimeState(await redis!.get(runtimeStateKey(chatId)))
+      : "active";
+
+    if (!isDiscussionMode) {
+      await redis!.del(runtimeStateKey(chatId));
+    }
+
     // 1. Register or unregister self
-    if (isDiscussionMode) {
+    if (shouldRegisterDiscussionParticipant({ isDiscussionMode, runtimeState })) {
       await redis!.zadd(pKey, now, myAppId);
     } else {
       await redis!.zrem(pKey, myAppId);
+    }
+
+    if (runtimeState === "idle") {
+      return {
+        leader: null,
+        isLeader: false,
+        participants: [],
+        shouldAutoExit: false,
+        isIdle: true,
+      };
     }
 
     // 2. Prune expired participants (score < now - LEASE_TTL_S)
@@ -135,22 +190,7 @@ export async function discussionTick(params: {
     const participants = await redis!.zrangebyscore(pKey, now - LEASE_TTL_S, "+inf");
 
     // 4. Elect leader if needed
-    let currentLeader = await redis!.get(lKey);
-    if (!currentLeader || !participants.includes(currentLeader)) {
-      if (participants.length > 0) {
-        const sorted = [...participants].sort();
-        const newLeader = sorted[0]!;
-        await redis!.set(lKey, newLeader);
-        stateLog?.info(
-          `[discussion-state] ${chatId.slice(-8)}: elected leader=${newLeader.slice(-8)} from ${participants.length} participants`,
-        );
-        currentLeader = newLeader;
-      } else {
-        // No participants → clear leader
-        await redis!.del(lKey);
-        currentLeader = null;
-      }
-    }
+    const currentLeader = await electDiscussionLeader(chatId, participants);
 
     // 5. Check auto-exit: if no activity for 5 minutes
     let shouldAutoExit = false;
@@ -176,6 +216,7 @@ export async function discussionTick(params: {
       isLeader: currentLeader === myAppId,
       participants,
       shouldAutoExit,
+      isIdle: false,
     };
   } catch (err) {
     stateLog?.warn(`[discussion-state] tick error: ${String(err).slice(0, 200)}`);
@@ -183,8 +224,38 @@ export async function discussionTick(params: {
   }
 }
 
+export async function activateDiscussionGroup(
+  chatId: string,
+  myAppId: string,
+): Promise<DiscussionTickResult | null> {
+  if (!isRedisAvailable() || !myAppId.trim()) return null;
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const pKey = participantsKey(chatId);
+    await redis!.set(runtimeStateKey(chatId), "active");
+    await redis!.zadd(pKey, now, myAppId);
+    await redis!.zremrangebyscore(pKey, "-inf", now - LEASE_TTL_S);
+    const participants = await redis!.zrangebyscore(pKey, now - LEASE_TTL_S, "+inf");
+    const leader = await electDiscussionLeader(chatId, participants);
+    await redis!.set(lastActivityKey(chatId), String(now));
+    stateLog?.info(
+      `[discussion-state] ${chatId.slice(-8)}: activated by ${myAppId.slice(-8)} (leader=${leader?.slice(-8) ?? "none"}, participants=${participants.length})`,
+    );
+    return {
+      leader,
+      isLeader: leader === myAppId,
+      participants,
+      shouldAutoExit: false,
+      isIdle: false,
+    };
+  } catch (err) {
+    stateLog?.warn(`[discussion-state] activate error: ${String(err).slice(0, 200)}`);
+    return null;
+  }
+}
+
 /**
- * Record discussion activity (called when a bot message is injected or human message processed).
+ * Record discussion activity after an explicitly routed discussion turn is accepted.
  * Resets the auto-exit timer.
  */
 export async function recordDiscussionActivity(chatId: string): Promise<void> {
@@ -195,14 +266,25 @@ export async function recordDiscussionActivity(chatId: string): Promise<void> {
 }
 
 /**
- * Clean up all Redis state for a group (called on auto-exit).
+ * Transition a discussion room into idle without changing the persisted group mode.
  */
-export async function cleanupDiscussionGroup(chatId: string): Promise<void> {
+export async function markDiscussionIdle(chatId: string): Promise<void> {
   if (!isRedisAvailable()) return;
   try {
-    await redis!.del(participantsKey(chatId), leaderKey(chatId), lastActivityKey(chatId));
-    stateLog?.info(`[discussion-state] ${chatId.slice(-8)}: cleaned up (auto-exit)`);
+    await redis!
+      .multi()
+      .set(runtimeStateKey(chatId), "idle")
+      .del(participantsKey(chatId), leaderKey(chatId), lastActivityKey(chatId))
+      .exec();
+    stateLog?.info(`[discussion-state] ${chatId.slice(-8)}: entered idle`);
   } catch {}
+}
+
+/**
+ * Backward-compatible alias used by older call sites and tests.
+ */
+export async function cleanupDiscussionGroup(chatId: string): Promise<void> {
+  await markDiscussionIdle(chatId);
 }
 
 /**
@@ -348,7 +430,19 @@ export async function shutdownBroadcast(): Promise<void> {
 
 function fallbackResult(myAppId: string, isDiscussionMode: boolean): DiscussionTickResult {
   if (!isDiscussionMode) {
-    return { leader: null, isLeader: false, participants: [], shouldAutoExit: false };
+    return {
+      leader: null,
+      isLeader: false,
+      participants: [],
+      shouldAutoExit: false,
+      isIdle: false,
+    };
   }
-  return { leader: myAppId, isLeader: true, participants: [myAppId], shouldAutoExit: false };
+  return {
+    leader: myAppId,
+    isLeader: true,
+    participants: [myAppId],
+    shouldAutoExit: false,
+    isIdle: false,
+  };
 }
