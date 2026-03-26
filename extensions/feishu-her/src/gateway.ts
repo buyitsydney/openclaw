@@ -1002,6 +1002,7 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
       const chatId = data?.message?.chat_id;
       if (chatId && data?.message?.chat_type === "group") {
         lastRealProcessedAt.set(chatId, Date.now());
+        void recordDiscussionActivity(chatId);
       }
       void handleInboundMessage(data, { account, config, abortSignal, log, setStatus, core }).catch(
         (err) => {
@@ -1056,6 +1057,9 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
   // Per-group leader heartbeat state
   const heartbeatState = new Map<string, { idleRounds: number; lastTime: number }>();
   const LEADER_HEARTBEAT_INTERVAL_MS = 30_000;
+
+  // deferredHeartbeat + activeDispatchChats live at module level (see before handleInboundMessage)
+  // so both startFeishuGateway and handleInboundMessage can access them.
 
   // Collect pattern: first @mentioned broadcast injects immediately; subsequent
   // ones buffer (keep latest only). When processing finishes, drain the pending
@@ -1220,6 +1224,7 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
           writeGroupMode(chatId, "group-at");
           await cleanupDiscussionGroup(chatId);
           heartbeatState.delete(chatId);
+          deferredHeartbeat.delete(chatId);
           lastRealProcessedAt.delete(chatId);
           broadcastPending.delete(chatId);
           continue;
@@ -1244,32 +1249,53 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
         if (hb.idleRounds > LEADER_HEARTBEAT_MAX_IDLE) continue;
         hb.lastTime = nowMs;
         const now = Math.floor(nowMs / 1000);
-        log?.info(
-          `[${account.accountId}] [broadcast] ${chatId.slice(-8)}: leader heartbeat ${hb.idleRounds}/${LEADER_HEARTBEAT_MAX_IDLE}`,
-        );
-        void handleInboundMessage(
-          {
-            message: {
-              message_id: `heartbeat-${chatId}-${now}`,
-              chat_id: chatId,
-              chat_type: "group",
-              message_type: "text",
-              content: JSON.stringify({
-                text: "[讨论心跳] 你是决策者。检查群里最新上下文，判断：推进讨论？激活参与者？还是结束？",
-              }),
-              create_time: String(nowMs),
-              parent_id: "",
-              mentions: [],
+
+        const heartbeatPrompt =
+          "[讨论心跳] 你是决策者。检查群里最新上下文，判断：推进讨论？激活参与者？还是结束？";
+
+        // Check if a deferred heartbeat is already pending and ripe for true-idle dispatch.
+        const existing = deferredHeartbeat.get(chatId);
+        if (existing && nowMs - existing.deferredAt >= DEFERRED_HEARTBEAT_TRUE_IDLE_MS) {
+          // True idle: no real message consumed the deferred heartbeat for 60s.
+          // Only dispatch if no active dispatch is competing for the session lane.
+          if (activeDispatchChats.has(chatId) || broadcastActive.has(chatId)) {
+            log?.info(
+              `[${account.accountId}] [broadcast] ${chatId.slice(-8)}: heartbeat ${hb.idleRounds}/${LEADER_HEARTBEAT_MAX_IDLE} deferred (lane busy)`,
+            );
+            continue;
+          }
+          deferredHeartbeat.delete(chatId);
+          log?.info(
+            `[${account.accountId}] [broadcast] ${chatId.slice(-8)}: heartbeat ${hb.idleRounds}/${LEADER_HEARTBEAT_MAX_IDLE} true-idle dispatch`,
+          );
+          void handleInboundMessage(
+            {
+              message: {
+                message_id: `heartbeat-${chatId}-${now}`,
+                chat_id: chatId,
+                chat_type: "group",
+                message_type: "text",
+                content: JSON.stringify({ text: heartbeatPrompt }),
+                create_time: String(nowMs),
+                parent_id: "",
+                mentions: [],
+              },
+              sender: {
+                sender_id: { open_id: "heartbeat" },
+                sender_type: "heartbeat",
+              },
             },
-            sender: {
-              sender_id: { open_id: "heartbeat" },
-              sender_type: "heartbeat",
-            },
-          },
-          deps,
-        ).catch((err) => {
-          log?.error(`[${account.accountId}] [broadcast] leader heartbeat error: ${String(err)}`);
-        });
+            deps,
+          ).catch((err) => {
+            log?.error(`[${account.accountId}] [broadcast] leader heartbeat error: ${String(err)}`);
+          });
+        } else if (!existing) {
+          // First deferral: store prompt, will be merged into next real message's context.
+          deferredHeartbeat.set(chatId, { prompt: heartbeatPrompt, deferredAt: nowMs });
+          log?.info(
+            `[${account.accountId}] [broadcast] ${chatId.slice(-8)}: heartbeat ${hb.idleRounds}/${LEADER_HEARTBEAT_MAX_IDLE} deferred`,
+          );
+        }
       }
     } catch (err) {
       log?.warn(`[${account.accountId}] discussion tick error: ${String(err)}`);
@@ -1566,6 +1592,15 @@ export function buildFeishuInboundIdentity(params: {
     groupResolution: buildFeishuGroupSessionMetaResolution(params.chatId, params.isGroup),
   };
 }
+
+// Deferred heartbeat: prompt stored here instead of dispatching immediately.
+// Consumed by the next real message's handleInboundMessage, merged into context.
+// Falls back to real dispatch only after TRUE_IDLE threshold with no active dispatch.
+const deferredHeartbeat = new Map<string, { prompt: string; deferredAt: number }>();
+const DEFERRED_HEARTBEAT_TRUE_IDLE_MS = 60_000;
+
+// Track active dispatches per chat so heartbeats can check lane availability.
+const activeDispatchChats = new Set<string>();
 
 // oxlint-disable-next-line typescript/no-explicit-any
 async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void> {
@@ -2585,12 +2620,12 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // onReplyStart: create the card stream when the AI actually starts processing
   // (after session lane queuing — never fires for queued messages).
   const startCardStream = async () => {
-    if (isSyntheticMessage || !sharedCardStreamingEnabled || cardStream) return;
+    if (isSyntheticMessage || isBotSender || !sharedCardStreamingEnabled || cardStream) return;
     try {
       cardStream = await createFeishuCardStream({
         account,
         chatId,
-        replyToMessageId: isBotSender ? undefined : messageId,
+        replyToMessageId: messageId,
         version: account.config.cardStreamVersion ?? "v1",
         log: (msg) => log?.info(`[${account.accountId}] ${msg}`),
         warn: (msg) => log?.error(`[${account.accountId}] ${msg}`),
@@ -2703,7 +2738,28 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     resolveDeliverGate = r;
   });
 
-  const dispatchResult = await core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+  // Consume deferred heartbeat: merge prompt into this message's context so the AI
+  // handles the heartbeat question in the same dispatch — zero extra lane occupancy.
+  if (isGroup && !isSyntheticMessage) {
+    const pending = deferredHeartbeat.get(chatId);
+    if (pending) {
+      deferredHeartbeat.delete(chatId);
+      const hbNote = `\n\n[系统提示 - 讨论心跳] ${pending.prompt}`;
+      if (ctxPayload.BodyForAgent) {
+        ctxPayload.BodyForAgent += hbNote;
+      } else {
+        ctxPayload.Body += hbNote;
+      }
+      log?.info(
+        `[${account.accountId}] consumed deferred heartbeat for ${chatId.slice(-8)}`,
+      );
+    }
+  }
+
+  activeDispatchChats.add(chatId);
+  let dispatchResult: Awaited<ReturnType<typeof core.channel.reply.dispatchReplyWithBufferedBlockDispatcher>>;
+  try {
+  dispatchResult = await core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
     ctx: ctxPayload,
     cfg: config,
     dispatcherOptions: {
@@ -2858,6 +2914,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           : undefined,
     },
   });
+  } finally {
+    activeDispatchChats.delete(chatId);
+  }
 
   log?.info(
     `[${account.accountId}] dispatch returned: deliverFired=${deliverFired} cardStreamFinalText=${cardStreamFinalText.length} cardStreamLastPartial=${cardStreamLastPartial.length}`,
