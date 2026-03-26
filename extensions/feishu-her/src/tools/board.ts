@@ -60,13 +60,13 @@ const NODE_TYPES = [
   "composite_shape",
   "text_shape",
   "connector",
-  "sticky_note",
   "image",
   "svg",
   "group",
   "table",
   "section",
   "mind_map",
+  // sticky_note excluded: Feishu API rejects all sticky_note creation via bot (requires user_id)
 ] as const;
 
 const CONNECTOR_SHAPES = ["straight", "polyline", "curve", "right_angled_polyline"] as const;
@@ -180,8 +180,8 @@ function transformNode(n: NodeInput) {
     ...(n.z_index != null && { z_index: n.z_index }),
   };
 
-  // Text properties → nested text object
-  if (n.text) {
+  // Text properties → nested text object (connector rejects text — Feishu error 4005062)
+  if (n.text && n.type !== "connector") {
     node.text = {
       text: n.text,
       ...(n.font_size && { font_size: n.font_size }),
