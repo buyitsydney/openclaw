@@ -31,12 +31,13 @@
 
 ### Medium
 
-| Issue                                            | Detail                                                          | Workaround                              |
-| ------------------------------------------------ | --------------------------------------------------------------- | --------------------------------------- |
-| connector rejects text                           | Error 4005062 "caption arg error" when text is set on connector | Tool auto-strips text from connectors   |
-| table not supported                              | block_type=table creation fails via Board API                   | Use docx table tools instead            |
-| list_nodes no pagination                         | Large whiteboards may hit response size limits                  | Tool truncates to 100 nodes in response |
-| Inconsistent error codes for missing whiteboards | list_nodes → 500, get_theme → 400                               | N/A                                     |
+| Issue                                            | Detail                                                                                           | Workaround                                  |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------ | ------------------------------------------- |
+| connector requires server IDs                    | start/end_node_id must be server-returned IDs (e.g. "o1:3"), not client-side IDs from same batch | Create shapes first, connect in second call |
+| connector text via captions only                 | Top-level text field rejected; must use connector.captions                                       | Tool auto-routes text to captions           |
+| table not supported                              | block_type=table creation fails via Board API                                                    | Use docx table tools instead                |
+| list_nodes no pagination                         | Large whiteboards may hit response size limits                                                   | Tool truncates to 100 nodes in response     |
+| Inconsistent error codes for missing whiteboards | list_nodes → 500, get_theme → 400                                                                | N/A                                         |
 
 ### Minor
 

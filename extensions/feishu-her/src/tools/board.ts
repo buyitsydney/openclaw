@@ -180,7 +180,8 @@ function transformNode(n: NodeInput) {
     ...(n.z_index != null && { z_index: n.z_index }),
   };
 
-  // Text properties → nested text object (connector rejects text — Feishu error 4005062)
+  // Text properties → nested text object
+  // For connectors, text goes into connector.captions instead of top-level text
   if (n.text && n.type !== "connector") {
     node.text = {
       text: n.text,
@@ -204,7 +205,8 @@ function transformNode(n: NodeInput) {
     node.composite_shape = { type: n.shape_type };
   }
 
-  // Connector
+  // Connector — start/end_node_id must be server-returned IDs (e.g. "o1:3"),
+  // NOT client-side IDs from the same batch. Create shapes first, get IDs, then connect.
   if (n.type === "connector") {
     node.connector = {
       ...(n.connector_shape && { shape: n.connector_shape }),
@@ -216,6 +218,10 @@ function transformNode(n: NodeInput) {
         ...(n.end_node_id && { attached_object: { id: n.end_node_id, snap_to: "auto" } }),
         arrow_style: n.end_arrow ?? "line_arrow",
       },
+      // Connector text goes into captions, not top-level text
+      ...(n.text && {
+        captions: { data: [{ text: n.text }] },
+      }),
     };
   }
 
@@ -263,7 +269,9 @@ export function registerFeishuBoardTools(api: OpenClawPluginApi): void {
         "Create and draw on Feishu whiteboards (画板). " +
         "Use 'create' to insert a new whiteboard into a document, then use create_nodes/create_diagram to draw. " +
         "Supports flowcharts, mind maps, architecture diagrams via node creation or Mermaid/PlantUML code. " +
-        "Note: nodes are append-only (no update/delete via API).",
+        "IMPORTANT: connector start/end_node_id must use server-returned IDs (e.g. 'o1:3'). " +
+        "Create shapes first, get IDs from response, then create connectors in a second call. " +
+        "Nodes are append-only (no update/delete via API).",
       parameters: BoardSchema,
       // oxlint-disable-next-line typescript/no-explicit-any
       async execute(_toolCallId: string, params: any) {
