@@ -39,7 +39,10 @@ import {
   removeFeishuReaction,
   deleteFeishuMessage,
 } from "./outbound.js";
+import { publishBotMessage } from "./discussion-state.ts";
+import { extractFeishuAtTextMentions } from "./mention-text.js";
 import { getFeishuRuntime } from "./runtime.js";
+import { readGroupMode } from "./group-mode.js";
 import { recordSentMessage } from "./sent-message-log.js";
 
 const meta = {
@@ -305,6 +308,26 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
           textParts: buildFeishuTextPayload(text),
           ...(reply && { reply }),
         });
+
+        // Broadcast to other bots via Redis (discussion mode, group chats only).
+        // This captures messages sent by the AI's `message` tool, which bypasses
+        // the gateway.ts deliver callback where the other publishBotMessage lives.
+        if (to.startsWith("oc_") && readGroupMode(to).mode === "discussion") {
+          const mentions = extractFeishuAtTextMentions(text);
+          void publishBotMessage({
+            msgId: sentMessage.messageId,
+            chatId: to,
+            senderAppId: account.appId,
+            senderOpenId: account.botOpenId ?? account.appId,
+            senderName: account.name ?? account.accountId,
+            content: text,
+            msgType: "post",
+            createTime: Date.now(),
+            mentions: mentions.length > 0
+              ? mentions.map((m) => ({ key: m.key, id: m.id, name: m.name }))
+              : undefined,
+          });
+        }
       }
       return { channel: "feishu", messageId: sentMessage?.messageId ?? "" };
     },

@@ -37,6 +37,7 @@ import {
   shutdownDiscussionState,
   setDiscussionLeader,
   recordDiscussionActivity,
+  cleanupDiscussionGroup,
   type BotBroadcastMessage,
 } from "./discussion-state.ts";
 import { buildDriveFileContextFromText } from "./drive-file-read.js";
@@ -68,7 +69,7 @@ import {
   loadArchiveEntries,
   normalizeArchiveEntry,
 } from "./group-archive.js";
-import { formatFeishuAtText } from "./mention-text.js";
+import { formatFeishuAtText, extractFeishuAtTextMentions } from "./mention-text.js";
 import {
   expandFetchedMessageItem,
   expandMergeForwardMessage,
@@ -116,49 +117,7 @@ import { fetchChatHistory, getTenantAccessToken } from "./tools/chat-history.js"
 
 const MERGE_FORWARD_DISABLED_TEXT = "[merged forward disabled]";
 
-// ── Group mode resolution ─────────────────────────────────────────────────
-/**
- * Read per-group mode from {workspace}/group-modes/{chatId}.json.
- * Returns the normalized mode string ("owner-at", "owner", "group-at", "group")
- * or "owner-at" if the file doesn't exist or is invalid.
- * Legacy names (default, auto-reply, at-reply, monitor, manager) are auto-mapped.
- */
-type GroupModeInfo = { mode: string; context?: string };
-
-function resolveGroupModesDir(): string {
-  const stateDir =
-    process.env.OPENCLAW_STATE_DIR?.trim() ||
-    process.env.CLAWDBOT_STATE_DIR?.trim() ||
-    join(homedir(), ".openclaw");
-  return join(stateDir, "workspace", "group-modes");
-}
-
-function readGroupMode(chatId: string): GroupModeInfo {
-  const dir = resolveGroupModesDir();
-  let filePath = join(dir, `${chatId}.json`);
-  if (!existsSync(filePath)) {
-    filePath = join(dir, `feishu:${chatId}.json`);
-    if (!existsSync(filePath)) {
-      return { mode: "owner-at" };
-    }
-  }
-  try {
-    const data = JSON.parse(readFileSync(filePath, "utf-8"));
-    const mode = typeof data?.mode === "string" && data.mode.trim() ? data.mode.trim() : "owner-at";
-    const aliasMap: Record<string, string> = {
-      default: "owner-at",
-      "auto-reply": "owner",
-      "at-reply": "group-at",
-      monitor: "group",
-      manager: "group",
-    };
-    const normalizedMode = aliasMap[mode] ?? mode;
-    const context = typeof data?.context === "string" ? data.context.trim() : undefined;
-    return { mode: normalizedMode, context };
-  } catch {
-    return { mode: "owner-at" };
-  }
-}
+import { readGroupMode, resolveGroupModesDir } from "./group-mode.js";
 
 function writeGroupMode(chatId: string, mode: string): void {
   const dir = resolveGroupModesDir();
@@ -1098,35 +1057,29 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
   const heartbeatState = new Map<string, { idleRounds: number; lastTime: number }>();
   const LEADER_HEARTBEAT_INTERVAL_MS = 30_000;
 
-  // Broadcast debounce: buffer per chat, only inject the latest message after a short window.
-  // Matches the old polling design: "only inject the NEWEST unseen one; agent sees full
-  // context via 20-message history injection on each run."
-  const BROADCAST_DEBOUNCE_MS = 3_000;
-  const broadcastBuffer = new Map<string, { latest: BotBroadcastMessage; timer: ReturnType<typeof setTimeout> }>();
+  // Collect pattern: first @mentioned broadcast injects immediately; subsequent
+  // ones buffer (keep latest only). When processing finishes, drain the pending
+  // message. AI sees all intermediate messages via 20-message history injection.
+  const broadcastActive = new Map<string, Promise<void>>();
+  const broadcastPending = new Map<string, BotBroadcastMessage>();
 
   const LEADER_HEARTBEAT_MAX_IDLE = 3;
 
-  // Flush a debounced broadcast: inject only the latest buffered message for a chat.
-  // All earlier messages in the window are visible via 20-message history injection.
-  const flushBroadcastBuffer = (chatId: string) => {
-    const entry = broadcastBuffer.get(chatId);
-    if (!entry) return;
-    broadcastBuffer.delete(chatId);
-    const msg = entry.latest;
-
+  const injectBroadcastMessage = (msg: BotBroadcastMessage) => {
     log?.info(
-      `[${account.accountId}] [broadcast] injecting (debounced): msgId=${msg.msgId.slice(-12)} from=${msg.senderAppId} in ${chatId.slice(-8)}`,
+      `[${account.accountId}] [broadcast] injecting: msgId=${msg.msgId.slice(-12)} from=${msg.senderAppId} in ${msg.chatId.slice(-8)}`,
     );
 
-    const hb = heartbeatState.get(chatId);
+    const hb = heartbeatState.get(msg.chatId);
     if (hb) {
       hb.idleRounds = 0;
       hb.lastTime = Date.now();
     }
 
-    lastRealProcessedAt.set(chatId, Date.now());
-    void recordDiscussionActivity(chatId);
-    void handleInboundMessage(
+    lastRealProcessedAt.set(msg.chatId, Date.now());
+    void recordDiscussionActivity(msg.chatId);
+
+    const p = handleInboundMessage(
       {
         message: {
           message_id: msg.msgId,
@@ -1141,13 +1094,25 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
         sender: {
           sender_id: { open_id: msg.senderOpenId },
           sender_type: "bot",
+          _broadcastSenderName: msg.senderName,
         },
       },
       deps,
-    ).catch((err) => {
-      log?.error(`[${account.accountId}] [broadcast] handle error: ${String(err)}`);
-      broadcastBackoffUntil = Date.now() + BROADCAST_ERROR_BACKOFF_MS;
-    });
+    )
+      .catch((err) => {
+        log?.error(`[${account.accountId}] [broadcast] handle error: ${String(err)}`);
+        broadcastBackoffUntil = Date.now() + BROADCAST_ERROR_BACKOFF_MS;
+      })
+      .finally(() => {
+        broadcastActive.delete(msg.chatId);
+        const next = broadcastPending.get(msg.chatId);
+        if (next) {
+          broadcastPending.delete(msg.chatId);
+          injectBroadcastMessage(next);
+        }
+      });
+
+    broadcastActive.set(msg.chatId, p);
   };
 
   subscribeBotMessages(account.appId, (msg: BotBroadcastMessage) => {
@@ -1194,23 +1159,21 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
     }
     if (!isMentionedTop && !isMentionedInBody) {
       log?.info(
-        `[${account.accountId}] [broadcast] skipping (not @mentioned): msgId=${msg.msgId.slice(-12)}`,
+        `[${account.accountId}] [broadcast] skipping (not @mentioned): msgId=${msg.msgId.slice(-12)} name=${account.name} content=${msg.content?.slice(0, 100)}`,
       );
       injectedBroadcastIds.delete(msg.msgId);
       return;
     }
 
-    log?.info(
-      `[${account.accountId}] [broadcast] buffered: msgId=${msg.msgId.slice(-12)} chat=${msg.chatId.slice(-8)}`,
-    );
-
-    // Debounce: buffer per chat, only inject the latest after BROADCAST_DEBOUNCE_MS.
-    const existing = broadcastBuffer.get(msg.chatId);
-    if (existing) {
-      clearTimeout(existing.timer);
+    // Collect pattern: if already processing for this chat, buffer (keep latest).
+    if (broadcastActive.has(msg.chatId)) {
+      log?.info(
+        `[${account.accountId}] [broadcast] queued (processing active): msgId=${msg.msgId.slice(-12)} chat=${msg.chatId.slice(-8)}`,
+      );
+      broadcastPending.set(msg.chatId, msg);
+    } else {
+      injectBroadcastMessage(msg);
     }
-    const timer = setTimeout(() => flushBroadcastBuffer(msg.chatId), BROADCAST_DEBOUNCE_MS);
-    broadcastBuffer.set(msg.chatId, { latest: msg, timer });
 
     // GC dedup set
     if (injectedBroadcastIds.size > INJECTED_IDS_MAX) {
@@ -1258,17 +1221,15 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
           await cleanupDiscussionGroup(chatId);
           heartbeatState.delete(chatId);
           lastRealProcessedAt.delete(chatId);
-          const buf = broadcastBuffer.get(chatId);
-          if (buf) {
-            clearTimeout(buf.timer);
-            broadcastBuffer.delete(chatId);
-          }
+          broadcastPending.delete(chatId);
           continue;
         }
 
         if (!isDiscussion || !tick.isLeader) continue;
 
         // Leader heartbeat: poke the agent when no bot messages arrive for a while.
+        // Skip if a broadcast is actively being processed (avoid competing with real AI work).
+        if (broadcastActive.has(chatId)) continue;
         // Skip if a real message was processed recently (avoids queue noise during active discussion).
         const HEARTBEAT_SUPPRESS_MS = 60_000;
         const lastReal = lastRealProcessedAt.get(chatId) ?? 0;
@@ -1325,8 +1286,7 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
       "abort",
       async () => {
         clearInterval(discussionTickTimer);
-        for (const [, buf] of broadcastBuffer) clearTimeout(buf.timer);
-        broadcastBuffer.clear();
+        broadcastPending.clear();
         await shutdownBroadcast().catch(() => {});
         const stateDir =
           process.env.OPENCLAW_STATE_DIR?.trim() ||
@@ -1912,7 +1872,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     (isGroup || parentId || (Array.isArray(message?.mentions) && message.mentions.length > 0)),
   );
   const canonicalCurrentMessage =
-    shouldCanonicalizeCurrentMessage && messageId && !isSyntheticMessage
+    shouldCanonicalizeCurrentMessage && messageId && !isSyntheticMessage && !isBotSender
       ? await fetchCanonicalMessageItem({ account, messageId, log })
       : null;
   let currentMessageMentionsResolved = parseFeishuMentions(
@@ -1925,6 +1885,8 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   let senderDisplayName: string | undefined;
   if (isSyntheticMessage) {
     senderDisplayName = "system-heartbeat";
+  } else if (isBotSender && sender._broadcastSenderName) {
+    senderDisplayName = sender._broadcastSenderName;
   } else
     try {
       const nameResult = await resolveFeishuSenderName({ account, senderOpenId: senderId, log });
@@ -1978,7 +1940,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   const ACK_EMOJI = "Get";
   let ackReactionId: string | null = null;
   const addAckReaction = async () => {
-    if (isSyntheticMessage || isCommand) return;
+    if (isSyntheticMessage || isBotSender || isCommand) return;
     if (ackReactionId) return;
     try {
       ackReactionId = await addFeishuReaction({ account, messageId, emoji: ACK_EMOJI });
@@ -2061,7 +2023,8 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     if (
       Array.isArray(message?.mentions) &&
       message.mentions.length > 0 &&
-      !canonicalCurrentMessage
+      !canonicalCurrentMessage &&
+      !isBotSender
     ) {
       log?.error(
         `[${account.accountId}] skipping group mention routing for ${messageId} because canonical message data is unavailable`,
@@ -2627,7 +2590,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       cardStream = await createFeishuCardStream({
         account,
         chatId,
-        replyToMessageId: messageId,
+        replyToMessageId: isBotSender ? undefined : messageId,
         version: account.config.cardStreamVersion ?? "v1",
         log: (msg) => log?.info(`[${account.accountId}] ${msg}`),
         warn: (msg) => log?.error(`[${account.accountId}] ${msg}`),
@@ -2740,7 +2703,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     resolveDeliverGate = r;
   });
 
-  await core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+  const dispatchResult = await core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
     ctx: ctxPayload,
     cfg: config,
     dispatcherOptions: {
@@ -2831,7 +2794,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
                 account,
                 chatId,
                 isGroup,
-                replyToMessageId: isGroup ? messageId : undefined,
+                replyToMessageId: isGroup && !isSyntheticMessage ? messageId : undefined,
                 log,
                 setStatus,
                 config,
@@ -2853,7 +2816,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           account,
           chatId,
           isGroup,
-          replyToMessageId: isGroup ? messageId : undefined,
+          replyToMessageId: isGroup && !isSyntheticMessage ? messageId : undefined,
           log,
           setStatus,
           config,
@@ -2861,6 +2824,10 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         });
 
         if (info.kind === "final") resolveDeliverGate?.();
+      },
+      onSkip: (_payload, { kind, reason }) => {
+        log?.info(`[${account.accountId}] dispatch skip: kind=${kind} reason=${reason}`);
+        if (kind === "final") resolveDeliverGate?.();
       },
       onError: (err, info) => {
         log?.error(`[${account.accountId}] Feishu ${info.kind} reply failed: ${String(err)}`);
@@ -2892,15 +2859,22 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     },
   });
 
+  log?.info(
+    `[${account.accountId}] dispatch returned: deliverFired=${deliverFired} cardStreamFinalText=${cardStreamFinalText.length} cardStreamLastPartial=${cardStreamLastPartial.length}`,
+  );
+
   // For lane-queued messages the dispatch may return before deliver fires.
-  // Wait (with safety timeout) so cleanup doesn't race ahead of delivery.
-  // Also bail out immediately when the gateway is shutting down (abort).
+  // Wait (with short safety timeout) so cleanup doesn't race ahead of delivery.
+  // Original 180s timeout blocked broadcast queue for 3 minutes when AI used
+  // the message tool (deliver never fires, tool counts not tracked by dispatcher).
+  // 5s is sufficient for the deliver race condition; anything longer means
+  // the AI responded via tools or the response was filtered.
   if (!deliverFired) {
     const abortP = new Promise<void>((resolve) => {
       if (abortSignal.aborted) return resolve();
       abortSignal.addEventListener("abort", () => resolve(), { once: true });
     });
-    await Promise.race([deliverGate, abortP, new Promise<void>((r) => setTimeout(r, 180_000))]);
+    await Promise.race([deliverGate, abortP, new Promise<void>((r) => setTimeout(r, 5_000))]);
   }
 
   // Re-read group mode: skill may have changed it during this request
@@ -2925,7 +2899,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       account,
       chatId,
       isGroup,
-      replyToMessageId: messageId,
+      replyToMessageId: isSyntheticMessage ? undefined : messageId,
       log,
       setStatus,
       config,
@@ -2934,16 +2908,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     // Record group reply for manager mode rate limiting
     if (isGroup) recordGroupReply(chatId);
   }
-  // Fallback: if deliver() never fired (timeout, error, or tool-only response),
-  // reconstruct final text from the streaming partials that onPartialReply accumulated.
-  if (cardStream?.started && !cardStreamFinalText && (cardStreamPrefix || cardStreamLastPartial)) {
-    cardStreamFinalText = cardStreamPrefix
-      ? cardStreamPrefix + "\n\n" + cardStreamLastPartial
-      : cardStreamLastPartial;
-    log?.info(
-      `[${account.accountId}] cardStreamFinalText reconstructed from streaming partials (${cardStreamFinalText.length} chars)`,
-    );
-  }
+  await cardStreamUpdateChain;
 
   // Append status footer (model + context usage) to the card before closing.
   if (cardStream?.started && cardStreamFinalText) {
@@ -2994,6 +2959,13 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
     // Broadcast to other bots via Redis pub/sub (discussion mode only)
     if (isGroup && readGroupMode(chatId).mode === "discussion") {
+      const textMentions = extractFeishuAtTextMentions(cardStreamFinalText);
+      const broadcastMentions = textMentions.length > 0
+        ? textMentions.map((m) => ({ key: m.key, id: m.id, name: m.name }))
+        : undefined;
+      log?.info(
+        `[${account.accountId}] [broadcast] publishing: msgId=${cardStream.messageId.slice(-12)} textLen=${cardStreamFinalText.length} mentions=${textMentions.length} content=${cardStreamFinalText.slice(0, 80)}`,
+      );
       void publishBotMessage({
         msgId: cardStream.messageId,
         chatId,
@@ -3003,7 +2975,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         content: cardStreamFinalText,
         msgType: "interactive",
         createTime: Date.now(),
-        mentions: cardStream.message?.mentions as Array<Record<string, unknown>> | undefined,
+        mentions: broadcastMentions,
       });
     }
   }
@@ -3231,6 +3203,10 @@ async function deliverFeishuReply(params: {
 
           // Broadcast to other bots via Redis pub/sub (discussion mode only)
           if (isGroup && readGroupMode(chatId).mode === "discussion") {
+            const chunkMentions = extractFeishuAtTextMentions(chunks[ci]);
+            log?.info(
+              `[${account.accountId}] [broadcast] publishing (post): msgId=${sentMessage.messageId.slice(-12)} textLen=${chunks[ci].length} mentions=${chunkMentions.length}`,
+            );
             void publishBotMessage({
               msgId: sentMessage.messageId,
               chatId,
@@ -3240,6 +3216,9 @@ async function deliverFeishuReply(params: {
               content: chunks[ci],
               msgType: "post",
               createTime: Date.now(),
+              mentions: chunkMentions.length > 0
+                ? chunkMentions.map((m) => ({ key: m.key, id: m.id, name: m.name }))
+                : undefined,
             });
           }
         }
