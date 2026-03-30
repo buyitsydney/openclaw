@@ -511,6 +511,8 @@ export async function seedDiscussionParticipants(
     const seedParticipants = dedupeNonEmptyStrings(participantAppIds);
     if (seedParticipants.length === 0) return;
     const tx = redis!.multi();
+    // Clear stale participants from previous discussions before seeding
+    tx.del(pKey);
     for (const participantAppId of seedParticipants) {
       tx.zadd(pKey, now, participantAppId);
     }
