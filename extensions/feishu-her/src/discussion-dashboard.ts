@@ -106,6 +106,7 @@ export function initDashboard(opts: DashboardOpts): void {
       const chatId = channel.slice(BROADCAST_CHANNEL.length + 1);
       if (!chatId.startsWith("oc_")) return;
       knownChatIds.add(chatId);
+      log?.info(`[dashboard] pmessage: chatId=${chatId.slice(-8)} from=${msg.senderAppId?.slice(-8)}`);
       if (msg.senderAppId && msg.senderName) {
         void registerName(msg.senderAppId, msg.senderName);
       }
@@ -220,7 +221,10 @@ async function refreshDashboard(chatId: string): Promise<void> {
     return;
   }
 
-  if (leader !== myAppId) return;
+  if (leader !== myAppId) {
+    log?.info(`[dashboard] ${chatId.slice(-8)}: skip refresh (leader=${leader?.slice(-8)} != me=${myAppId.slice(-8)})`);
+    return;
+  }
 
   const fp = fingerprint(turn, participants, leader);
   const meta = cache.get(chatId) ?? (await loadMetaFromRedis(chatId));
@@ -236,7 +240,10 @@ async function refreshDashboard(chatId: string): Promise<void> {
   }
 
   if (meta.lastFingerprint !== fp) {
+    log?.info(`[dashboard] ${chatId.slice(-8)}: patching (owner=${turn.ownerAppId.slice(-8)} phase=${turn.phase})`);
     await patchCard(chatId, meta.messageId, turn, participants, leader, fp);
+  } else {
+    log?.info(`[dashboard] ${chatId.slice(-8)}: no change (fp match)`);
   }
 }
 
