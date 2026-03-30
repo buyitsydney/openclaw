@@ -67,7 +67,8 @@ describe("feishu_board tool", () => {
   });
 
   it("create inserts board block into document and returns whiteboard_id", async () => {
-    const createChildrenMock = vi.fn(async () => ({
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const createChildrenMock = vi.fn(async (..._args: any[]) => ({
       code: 0,
       data: {
         children: [
@@ -226,7 +227,8 @@ describe("feishu_board tool", () => {
   });
 
   it("create_diagram sends Mermaid code to SDK", async () => {
-    const createPlantumlMock = vi.fn(async () => ({
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const createPlantumlMock = vi.fn(async (..._args: any[]) => ({
       code: 0,
       data: { node_id: "diagram_1" },
     }));
@@ -262,7 +264,11 @@ describe("feishu_board tool", () => {
   });
 
   it("create_diagram defaults to Mermaid when no syntax specified", async () => {
-    const createPlantumlMock = vi.fn(async () => ({ code: 0, data: { node_id: "d2" } }));
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const createPlantumlMock = vi.fn(async (..._args: any[]) => ({
+      code: 0,
+      data: { node_id: "d2" },
+    }));
     getFeishuClientMock.mockReturnValue({
       board: {
         v1: {
@@ -286,7 +292,11 @@ describe("feishu_board tool", () => {
   });
 
   it("create_diagram sends PlantUML with syntax_type=1", async () => {
-    const createPlantumlMock = vi.fn(async () => ({ code: 0, data: { node_id: "d3" } }));
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const createPlantumlMock = vi.fn(async (..._args: any[]) => ({
+      code: 0,
+      data: { node_id: "d3" },
+    }));
     getFeishuClientMock.mockReturnValue({
       board: {
         v1: {

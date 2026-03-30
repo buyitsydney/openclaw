@@ -10,8 +10,8 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { stringEnum } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import { stringEnum } from "openclaw/plugin-sdk/feishu";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
   callFeishuApiWithUserToken,

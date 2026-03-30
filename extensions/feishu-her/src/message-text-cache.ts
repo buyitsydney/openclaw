@@ -91,7 +91,10 @@ export function cacheMessageText(messageId: string, text: string): void {
 
   if (messageTextCache.size > MESSAGE_TEXT_CACHE_MAX) {
     const oldestEntries = [...messageTextCache.entries()].sort((a, b) => a[1].ts - b[1].ts);
-    for (const [staleMessageId] of oldestEntries.slice(0, messageTextCache.size - MESSAGE_TEXT_CACHE_MAX)) {
+    for (const [staleMessageId] of oldestEntries.slice(
+      0,
+      messageTextCache.size - MESSAGE_TEXT_CACHE_MAX,
+    )) {
       messageTextCache.delete(staleMessageId);
     }
   }

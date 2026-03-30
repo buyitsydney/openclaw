@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { OpenClawConfig } from "openclaw/plugin-sdk";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/feishu";
 
 /** Shorten model ID to a display name (e.g., "claude-sonnet-4-20250514" → "Sonnet 4"). */
 function shortenModelName(model?: string): string {

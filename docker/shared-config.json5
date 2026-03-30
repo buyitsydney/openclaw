@@ -75,8 +75,12 @@
   // 插件
   plugins: {
     deny: ["feishu"],
+    load: {
+      paths: ["/data/.openclaw/plugins/a2a-gateway"],
+    },
     entries: {
       "feishu-her": { enabled: true },
+      "a2a-gateway": { enabled: true, config: { routing: { defaultAgentId: "main" } } },
     },
   },
 

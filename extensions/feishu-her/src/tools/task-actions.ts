@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk";
+import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/feishu";
 import type { TaskClient } from "./task-common.js";
 import { runTaskApiCall } from "./task-common.js";
 import { toUnixMsStr } from "./time-utils.js";

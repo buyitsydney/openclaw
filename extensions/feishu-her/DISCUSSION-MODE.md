@@ -10,11 +10,11 @@ to hold real-time discussions initiated by a human user.
 
 ### 1. Redis State (`discussion-state.ts`)
 
-| Redis Key | Type | Purpose |
-|---|---|---|
-| `discussion:{chatId}:participants` | Sorted Set | Active bots (score = epoch-seconds) |
-| `discussion:{chatId}:leader` | String | Current leader appId |
-| `discussion:{chatId}:last_activity` | String | Last activity epoch-ms (for auto-exit) |
+| Redis Key                           | Type       | Purpose                                |
+| ----------------------------------- | ---------- | -------------------------------------- |
+| `discussion:{chatId}:participants`  | Sorted Set | Active bots (score = epoch-seconds)    |
+| `discussion:{chatId}:leader`        | String     | Current leader appId                   |
+| `discussion:{chatId}:last_activity` | String     | Last activity epoch-ms (for auto-exit) |
 
 - **Participant Lease**: bots ZADD themselves every 10s tick. Stale members (>30s) are pruned.
 - **Leader Election**: smallest appId among active participants. Re-elected only when current leader drops.
@@ -68,6 +68,7 @@ Timer tick (10s)
 ### 5. Card Stream Guard (gateway.ts)
 
 `startCardStream()` skips when:
+
 - `isSyntheticMessage` (heartbeat) — always skipped
 - `isBotSender` (broadcast from another bot) — **added to prevent 180s orphan card streams**
 - `!sharedCardStreamingEnabled` or `cardStream` already exists
@@ -111,15 +112,15 @@ Human @mentions bots in group
 
 ## Key Constants
 
-| Constant | Value | Location |
-|---|---|---|
-| `TICK_INTERVAL_MS` | 10,000 ms | gateway.ts |
-| `LEADER_HEARTBEAT_INTERVAL_MS` | 30,000 ms | gateway.ts |
-| `HEARTBEAT_SUPPRESS_MS` | 60,000 ms | gateway.ts |
-| `LEADER_HEARTBEAT_MAX_IDLE` | 3 | gateway.ts |
-| `DEFERRED_HEARTBEAT_TRUE_IDLE_MS` | 60,000 ms | gateway.ts (module-level) |
-| `AUTO_EXIT_MS` | 300,000 ms (5 min) | discussion-state.ts |
-| `LEASE_TTL_S` | 30 s | discussion-state.ts |
+| Constant                          | Value              | Location                  |
+| --------------------------------- | ------------------ | ------------------------- |
+| `TICK_INTERVAL_MS`                | 10,000 ms          | gateway.ts                |
+| `LEADER_HEARTBEAT_INTERVAL_MS`    | 30,000 ms          | gateway.ts                |
+| `HEARTBEAT_SUPPRESS_MS`           | 60,000 ms          | gateway.ts                |
+| `LEADER_HEARTBEAT_MAX_IDLE`       | 3                  | gateway.ts                |
+| `DEFERRED_HEARTBEAT_TRUE_IDLE_MS` | 60,000 ms          | gateway.ts (module-level) |
+| `AUTO_EXIT_MS`                    | 300,000 ms (5 min) | discussion-state.ts       |
+| `LEASE_TTL_S`                     | 30 s               | discussion-state.ts       |
 
 ## Known Limitations
 

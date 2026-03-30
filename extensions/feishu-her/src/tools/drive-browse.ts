@@ -84,9 +84,7 @@ export async function searchRootDriveItemsByTitle(
 ): Promise<Array<Required<Pick<DriveBrowseItem, "token" | "name" | "type">> & DriveBrowseItem>> {
   const root = await listDriveItemsByUser(userToken);
   const matched = root.files.filter(
-    (
-      item,
-    ): item is Required<Pick<DriveBrowseItem, "token" | "name" | "type">> & DriveBrowseItem =>
+    (item): item is Required<Pick<DriveBrowseItem, "token" | "name" | "type">> & DriveBrowseItem =>
       typeof item.token === "string" &&
       item.token.trim().length > 0 &&
       typeof item.name === "string" &&

@@ -3,7 +3,7 @@
  * Called from the plugin's register() entry point.
  */
 
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
 import { listEnabledFeishuAccounts } from "../accounts.js";
 import { fetchBackendUserScopes } from "../oauth.js";
 import { registerFeishuBitableTools } from "./bitable.js";
@@ -22,6 +22,7 @@ import { registerFeishuChatTools } from "./chat.js";
 import { registerFeishuDeepSearchTool } from "./deep-search.js";
 import { registerFeishuDirectoryTools } from "./directory.js";
 import { registerDiscussionLeaderTool } from "./discussion-leader.js";
+import { registerDiscussionLifecycleTools } from "./discussion-lifecycle.js";
 import { registerFeishuDocTools } from "./docx.js";
 import { registerFeishuDriveTools } from "./drive.js";
 import { registerFeishuKnowledgeQATool, KNOWLEDGE_QA_REQUIRED_SCOPE } from "./knowledge-qa.js";
@@ -58,6 +59,7 @@ export async function registerAllFeishuTools(api: OpenClawPluginApi): Promise<vo
   registerFeishuMessageSearchTool(api);
   registerFeishuMinutesTools(api);
   registerDiscussionLeaderTool(api);
+  registerDiscussionLifecycleTools(api);
   registerFeishuBotDirectoryTool(api);
   registerFeishuBoardTools(api);
   // Gate knowledge-qa on backend scope availability (auto-detected, no config needed)

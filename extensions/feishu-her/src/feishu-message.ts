@@ -1,4 +1,4 @@
-import type { ChannelLogSink } from "openclaw/plugin-sdk";
+import type { ChannelLogSink } from "openclaw/plugin-sdk/feishu";
 import { resolveFeishuAccountLabel, type ResolvedFeishuAccount } from "./accounts.js";
 import { formatFeishuAtText } from "./mention-text.js";
 import { getFeishuClient } from "./outbound.js";
@@ -976,9 +976,9 @@ export function parseFeishuMessageContent(params: {
       };
     }
     case "merge_forward": {
-      // Initial parse returns null — gateway layer will expand via API
+      // Initial parse returns empty — gateway layer will expand via API
       return {
-        rawText: null,
+        rawText: "",
         text: buildFeishuTextPayload(""),
         coverage: "none",
         attachments: [],

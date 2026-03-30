@@ -5,8 +5,8 @@
 
 import type * as Lark from "@larksuiteoapi/node-sdk";
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { stringEnum } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import { stringEnum } from "openclaw/plugin-sdk/feishu";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
   callFeishuApiWithUserToken,
@@ -254,7 +254,7 @@ async function listFields(client: Lark.Client, appToken: string, tableId: string
       type: f.type,
       type_name: FIELD_TYPE_NAMES[f.type ?? 0] || `type_${f.type}`,
       is_primary: f.is_primary,
-      ...(f.property && { property: f.property }),
+      ...(f.property ? { property: f.property } : {}),
     })),
     total: (res.data?.items ?? []).length,
   };
@@ -274,7 +274,7 @@ async function listFieldsByUser(userToken: string, appToken: string, tableId: st
       type: f.type,
       type_name: FIELD_TYPE_NAMES[f.type ?? 0] || `type_${f.type}`,
       is_primary: f.is_primary,
-      ...(f.property && { property: f.property }),
+      ...(f.property ? { property: f.property } : {}),
     })),
     total: (res.data?.items ?? []).length,
   };

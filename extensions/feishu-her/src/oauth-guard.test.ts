@@ -8,14 +8,14 @@ import {
   type FeishuUserToken,
 } from "./oauth.js";
 
-const fakeAccount: ResolvedFeishuAccount = {
+const fakeAccount = {
   accountId: "test-acct",
   knownBots: {},
   appId: "cli_test",
   appSecret: "secret",
   encryptKey: undefined,
   verificationToken: undefined,
-} as ResolvedFeishuAccount;
+} as unknown as ResolvedFeishuAccount;
 
 const fakeToken: FeishuUserToken = {
   open_id: "ou_test123",

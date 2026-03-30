@@ -9,8 +9,8 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { stringEnum } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import { stringEnum } from "openclaw/plugin-sdk/feishu";
 import { listEnabledFeishuAccounts } from "../accounts.js";
 import { getFeishuClient } from "../outbound.js";
 
@@ -403,7 +403,8 @@ export function registerFeishuBoardTools(api: OpenClawPluginApi): void {
                 // oxlint-disable-next-line typescript/no-explicit-any
                 const res = (await client.board.v1.whiteboardNode.create({
                   path: { whiteboard_id: whiteboardId },
-                  data: { nodes: connectors },
+                  // oxlint-disable-next-line typescript/no-explicit-any
+                  data: { nodes: connectors as any },
                   // oxlint-disable-next-line typescript/no-explicit-any
                 })) as any;
                 if (res.code !== 0) {

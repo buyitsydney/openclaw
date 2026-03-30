@@ -1,21 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 
+// oxlint-disable-next-line typescript/no-explicit-any
 const messageCreateMock = vi.hoisted(() =>
-  vi.fn(async () => ({
+  vi.fn(async (..._args: any[]) => ({
     code: 0,
     data: { message_id: "om_created_card" },
   })),
 );
+// oxlint-disable-next-line typescript/no-explicit-any
 const messageReplyMock = vi.hoisted(() =>
-  vi.fn(async () => ({
+  vi.fn(async (..._args: any[]) => ({
     code: 0,
     data: { message_id: "om_reply_card" },
   })),
 );
 const getTenantAccessTokenMock = vi.hoisted(() => vi.fn(async () => "tenant-token"));
+// oxlint-disable-next-line typescript/no-explicit-any
 const fetchMock = vi.hoisted(() =>
-  vi.fn(async () => ({
+  vi.fn(async (..._args: any[]) => ({
     json: async () => ({ code: 0, msg: "ok" }),
   })),
 );
@@ -270,7 +273,8 @@ describe("feishu user-facing card outbound", () => {
   });
 
   it("keeps literal at-tag examples in reports renderable without retry-stripping", async () => {
-    fetchMock.mockImplementation(async (_url, init) => {
+    // oxlint-disable-next-line typescript/no-explicit-any
+    fetchMock.mockImplementation(async (_url: any, init: any) => {
       const parsed = parseCardPayload(init as { body?: string });
       const markdown = parsed.markdown;
       const hasRealCardMention = markdown.includes("<at id=ou_tester></at>");

@@ -12,7 +12,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
   getArchiveEntryDisplaySender,
@@ -430,7 +430,7 @@ export function registerFeishuDeepSearchTool(api: OpenClawPluginApi): void {
                   stats.drive += r.length;
                   allResults.push(...r);
                 })
-                .catch((e) => searchErrors.push(`drive[${kw}]: ${String(e)}`)),
+                .catch((e) => void searchErrors.push(`drive[${kw}]: ${String(e)}`)),
             );
 
             tasks.push(
@@ -439,7 +439,7 @@ export function registerFeishuDeepSearchTool(api: OpenClawPluginApi): void {
                   stats.wiki += r.length;
                   allResults.push(...r);
                 })
-                .catch((e) => searchErrors.push(`wiki[${kw}]: ${String(e)}`)),
+                .catch((e) => void searchErrors.push(`wiki[${kw}]: ${String(e)}`)),
             );
 
             if (includeMinutes) {
@@ -449,7 +449,7 @@ export function registerFeishuDeepSearchTool(api: OpenClawPluginApi): void {
                     stats.minutes += r.length;
                     allResults.push(...r);
                   })
-                  .catch((e) => searchErrors.push(`minutes[${kw}]: ${String(e)}`)),
+                  .catch((e) => void searchErrors.push(`minutes[${kw}]: ${String(e)}`)),
               );
             }
 

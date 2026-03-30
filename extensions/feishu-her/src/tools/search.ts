@@ -8,8 +8,8 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { stringEnum } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import { stringEnum } from "openclaw/plugin-sdk/feishu";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
   callFeishuApiWithUserToken,
@@ -405,8 +405,7 @@ export function registerFeishuSearchTool(api: OpenClawPluginApi): void {
               wiki: wikiResults.length,
               merged: merged.length,
             },
-            note:
-              "Drive and Wiki are searched independently. Root-level Drive folders are supplemented via user-root browse because Feishu's docs search may miss folders.",
+            note: "Drive and Wiki are searched independently. Root-level Drive folders are supplemented via user-root browse because Feishu's docs search may miss folders.",
           });
         } catch (err) {
           const authResp = await handleFeishuTokenError(err, firstAccount, redirectUri);

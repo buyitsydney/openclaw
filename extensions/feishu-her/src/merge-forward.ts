@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ChannelLogSink } from "openclaw/plugin-sdk";
+import type { ChannelLogSink } from "openclaw/plugin-sdk/feishu";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { parseFeishuInteractiveText, parseFeishuPostText } from "./feishu-message.js";
 import { createArchiveTextForBuffer } from "./group-archive.js";
@@ -12,6 +12,9 @@ import { downloadFeishuFile, downloadFeishuImage, getFeishuClient } from "./outb
 export type FeishuFetchedMessageItem = {
   message_id?: string;
   upper_message_id?: string;
+  parent_id?: string;
+  root_id?: string;
+  thread_id?: string;
   create_time?: string;
   msg_type?: string;
   chat_id?: string;
@@ -654,9 +657,7 @@ export async function expandMergeForwardItems(params: {
   // Only resolve human users (ou_ prefix), skip bots (cli_ prefix) and other types
   const humanSenderIds = [
     ...new Set(
-      subMessages
-        .filter((m) => m.sender?.id?.startsWith("ou_"))
-        .map((m) => m.sender!.id!),
+      subMessages.filter((m) => m.sender?.id?.startsWith("ou_")).map((m) => m.sender!.id!),
     ),
   ];
   // For bot senders, use mention name or app_id prefix
@@ -698,7 +699,10 @@ export async function expandMergeForwardItems(params: {
     const senderId = item.sender?.id ?? "";
     const senderName = senderNames.get(senderId) ?? senderId.slice(0, 12) ?? "unknown";
     const timeStr = item.create_time
-      ? new Date(Number.parseInt(item.create_time, 10)).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })
+      ? new Date(Number.parseInt(item.create_time, 10)).toLocaleString("zh-CN", {
+          timeZone: "Asia/Shanghai",
+          hour12: false,
+        })
       : "";
     const senderPrefix = timeStr ? `[${senderName} ${timeStr}]` : `[${senderName}]`;
 
@@ -749,7 +753,9 @@ export async function expandMergeForwardItems(params: {
             fileName,
           });
           mediaFiles.push({ type: mediaType, localPath, fileName, contentType: ct });
-          blocks.push(prefixBulletBlock(`${senderPrefix} [${mediaType}: ${fileName} → saved: ${localPath}]`));
+          blocks.push(
+            prefixBulletBlock(`${senderPrefix} [${mediaType}: ${fileName} → saved: ${localPath}]`),
+          );
           coverage = mergeCoverage(coverage, "full");
           params.log?.info?.(
             `[${params.account.accountId}] merge_forward media saved: ${mediaType} ${fileName} → ${localPath}`,

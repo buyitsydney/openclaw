@@ -5,8 +5,8 @@
 
 import type * as Lark from "@larksuiteoapi/node-sdk";
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { stringEnum } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import { stringEnum } from "openclaw/plugin-sdk/feishu";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
   callFeishuApiWithUserToken,
@@ -148,11 +148,7 @@ async function listSpacesByUser(userToken: string) {
   return { spaces, ...(spaces.length === 0 && { hint: WIKI_ACCESS_HINT }) };
 }
 
-async function listNodesByUser(
-  userToken: string,
-  spaceId: string,
-  parentNodeToken?: string,
-) {
+async function listNodesByUser(userToken: string, spaceId: string, parentNodeToken?: string) {
   const res = await callFeishuApiWithUserToken<WikiNodesResponse>({
     method: "GET",
     endpoint: `/wiki/v2/spaces/${encodeURIComponent(spaceId)}/nodes`,

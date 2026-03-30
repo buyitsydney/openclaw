@@ -7,7 +7,7 @@
  */
 
 import type { TSchema } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import { getFeishuClient } from "../outbound.js";
 import {

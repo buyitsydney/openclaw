@@ -1,4 +1,4 @@
-import { fetchWithSsrFGuard } from "openclaw/plugin-sdk";
+import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/feishu";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { createArchiveTextForBuffer } from "./group-archive.js";
 import { callFeishuApiWithUserToken, getValidUserToken } from "./oauth.js";

@@ -16,29 +16,39 @@ import type {
   ChannelLogSink,
   OpenClawConfig,
   RuntimeEnv,
-} from "openclaw/plugin-sdk";
+} from "openclaw/plugin-sdk/feishu";
 import {
   extractReasoningDirective,
+  normalizeReasoningLevel,
+  readSessionStoreJson5,
   type ReasoningLevel,
-} from "../../../src/auto-reply/reply/directives.js";
-import { normalizeReasoningLevel } from "../../../src/auto-reply/thinking.js";
-import { readSessionStoreJson5 } from "../../../src/infra/state-migrations.fs.js";
+} from "openclaw/plugin-sdk/feishu";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { resolveGroupOwnerIds } from "./accounts.js";
+import { initDashboard, destroyDashboard } from "./discussion-dashboard.js";
+import {
+  authorizeDiscussionOutboundMessage,
+  handleDiscussionOutboundMessage,
+} from "./discussion-outbound.js";
 import {
   initDiscussionState,
   initBroadcast,
   discussionTick,
-  publishBotMessage,
   subscribeBotMessages,
   shutdownBroadcast,
   getDiscussionLeader,
   getDiscussionParticipants,
   shutdownDiscussionState,
   setDiscussionLeader,
-  activateDiscussionGroup,
-  markDiscussionIdle,
+  seedDiscussionParticipants,
+  recordDiscussionActivity,
+  getDiscussionTurn,
+  openDiscussionAgendaTurn,
+  claimDiscussionAssignedTurn,
+  completeDiscussionTurnWithOutput,
+  maybeExpireDiscussionTurn,
   type BotBroadcastMessage,
+  type DiscussionTurnState,
 } from "./discussion-state.ts";
 import { buildDriveFileContextFromText } from "./drive-file-read.js";
 import {
@@ -69,7 +79,7 @@ import {
   loadArchiveEntries,
   normalizeArchiveEntry,
 } from "./group-archive.js";
-import { formatFeishuAtText, extractFeishuAtTextMentions } from "./mention-text.js";
+import { formatFeishuAtText } from "./mention-text.js";
 import {
   expandFetchedMessageItem,
   expandMergeForwardMessage,
@@ -1007,16 +1017,14 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
 
   // ── Bot-to-bot broadcast via Redis pub/sub ────────────────────────────
   // Feishu im.message.receive_v1 does NOT push bot-sent messages to other bots.
-  // Instead of polling the Feishu API every 10s, each bot PUBLISHes its own
-  // sent messages to Redis. Other bots SUBSCRIBE and receive them in <100ms.
-  // Zero Feishu API calls for inter-bot communication.
+  // We still publish bot messages so peers can observe discussion activity in
+  // logs, but actual turn ownership is decided only by the Redis room/turn state.
   initBroadcast({ redisUrl: process.env.REDIS_URL });
 
+  initDashboard({ redisUrl: process.env.REDIS_URL, account, log });
+
   const deps: InboundDeps = { account, config, abortSignal, log, setStatus, core };
-  const BROADCAST_ERROR_BACKOFF_MS = 120_000;
-  let broadcastBackoffUntil = 0;
-  const injectedBroadcastIds = new Set<string>();
-  const INJECTED_IDS_MAX = 500;
+  const discussionTurnActive = new Map<string, Promise<void>>();
 
   const BROADCAST_SKIP_PATTERNS = [
     "API rate limit",
@@ -1030,83 +1038,38 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
     "New session started",
     "Agent was aborted",
     "compacted",
+    "Compacting",
   ];
 
-  // Collect pattern: first @mentioned broadcast injects immediately; subsequent
-  // ones buffer (keep latest only). When processing finishes, drain the pending
-  // message. AI sees all intermediate messages via 20-message history injection.
-  const broadcastActive = new Map<string, Promise<void>>();
-  const broadcastPending = new Map<string, BotBroadcastMessage>();
-
-  const injectBroadcastMessage = (msg: BotBroadcastMessage) => {
-    log?.info(
-      `[${account.accountId}] [broadcast] injecting: msgId=${msg.msgId.slice(-12)} from=${msg.senderAppId} in ${msg.chatId.slice(-8)}`,
-    );
-
-    const p = handleInboundMessage(
-      {
-        message: {
-          message_id: msg.msgId,
-          chat_id: msg.chatId,
-          chat_type: "group",
-          message_type: msg.msgType,
-          content: msg.content,
-          create_time: String(msg.createTime),
-          parent_id: msg.parentId ?? "",
-          mentions: msg.mentions ?? [],
-        },
-        sender: {
-          sender_id: { open_id: msg.senderOpenId },
-          sender_type: "bot",
-          _broadcastSenderName: msg.senderName,
-        },
-      },
-      deps,
-    )
-      .catch((err) => {
-        log?.error(`[${account.accountId}] [broadcast] handle error: ${String(err)}`);
-        broadcastBackoffUntil = Date.now() + BROADCAST_ERROR_BACKOFF_MS;
-      })
-      .finally(() => {
-        broadcastActive.delete(msg.chatId);
-        const next = broadcastPending.get(msg.chatId);
-        if (next) {
-          broadcastPending.delete(msg.chatId);
-          injectBroadcastMessage(next);
-        }
-      });
-
-    broadcastActive.set(msg.chatId, p);
-  };
+  const buildDiscussionTurnEvent = (chatId: string, turn: DiscussionTurnState) => ({
+    message: {
+      message_id: `discussion-turn:${chatId}:${turn.turnId}:${turn.sourceMessageId}`,
+      chat_id: chatId,
+      chat_type: "group",
+      message_type: "text",
+      content: JSON.stringify({
+        text:
+          "[discussion-turn] 系统已将当前轮次分配给你。" +
+          "请基于最近群消息直接推进；如果你本轮不发言，输出 NO_REPLY 即可。系统会在你结束后自动调度下一位。",
+      }),
+      create_time: String(Date.now()),
+      parent_id: turn.sourceMessageId,
+      mentions: [],
+    },
+    sender: {
+      sender_id: { open_id: "discussion-turn" },
+      sender_type: "heartbeat",
+      _syntheticKind: "discussion-turn",
+      _discussionTurnId: turn.turnId,
+    },
+  });
 
   subscribeBotMessages(account.appId, (msg: BotBroadcastMessage) => {
-    log?.info(
-      `[${account.accountId}] [broadcast] received: msgId=${msg.msgId.slice(-12)} from=${msg.senderAppId.slice(-8)} chat=${msg.chatId.slice(-8)}`,
-    );
-    if (Date.now() < broadcastBackoffUntil) {
-      log?.info(
-        `[${account.accountId}] [broadcast] dropped (backoff): msgId=${msg.msgId.slice(-12)}`,
-      );
-      return;
-    }
-    if (injectedBroadcastIds.has(msg.msgId)) {
-      log?.info(
-        `[${account.accountId}] [broadcast] dropped (dedup): msgId=${msg.msgId.slice(-12)}`,
-      );
-      return;
-    }
-    injectedBroadcastIds.add(msg.msgId);
-
     const mode = readGroupMode(msg.chatId);
     if (mode.mode !== "discussion") {
-      log?.info(
-        `[${account.accountId}] [broadcast] dropped (mode=${mode.mode}): msgId=${msg.msgId.slice(-12)}`,
-      );
       return;
     }
 
-    // Broadcast should carry only the semantic reply body. Status footer is UI-only
-    // and must not influence internal turn-taking or skip-pattern filters.
     const normalizedContent = stripInjectedStatusFooter(msg.content);
     const normalizedMsg =
       normalizedContent === msg.content ? msg : { ...msg, content: normalizedContent };
@@ -1118,46 +1081,47 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
       return;
     }
     if (BROADCAST_SKIP_PATTERNS.some((p) => normalizedMsg.content.includes(p))) {
-      log?.info(
-        `[${account.accountId}] [broadcast] dropped (skip-pattern): msgId=${msg.msgId.slice(-12)}`,
-      );
       return;
     }
 
-    // Only explicit mention metadata may wake another bot from a broadcast.
-    if (!shouldInjectDiscussionBroadcast(normalizedMsg, account)) {
-      log?.info(
-        `[${account.accountId}] [broadcast] skipping (not @mentioned): msgId=${msg.msgId.slice(-12)} name=${account.name} content=${normalizedMsg.content?.slice(0, 100)}`,
-      );
-      injectedBroadcastIds.delete(msg.msgId);
-      return;
-    }
+    log?.info(
+      `[${account.accountId}] [broadcast] context-only: msgId=${msg.msgId.slice(-12)} from=${msg.senderAppId.slice(-8)} chat=${msg.chatId.slice(-8)} content=${normalizedMsg.content.slice(0, 80)}`,
+    );
 
-    // Collect pattern: if already processing for this chat, buffer (keep latest).
-    if (broadcastActive.has(normalizedMsg.chatId)) {
-      log?.info(
-        `[${account.accountId}] [broadcast] queued (processing active): msgId=${msg.msgId.slice(-12)} chat=${msg.chatId.slice(-8)}`,
-      );
-      broadcastPending.set(normalizedMsg.chatId, normalizedMsg);
-    } else {
-      injectBroadcastMessage(normalizedMsg);
-    }
-
-    // GC dedup set
-    if (injectedBroadcastIds.size > INJECTED_IDS_MAX) {
-      const toDelete = injectedBroadcastIds.size - Math.floor(INJECTED_IDS_MAX / 2);
-      const iter = injectedBroadcastIds.values();
-      for (let i = 0; i < toDelete; i++) iter.next();
-      const keep = new Set<string>();
-      for (const v of iter) keep.add(v);
-      injectedBroadcastIds.clear();
-      for (const v of keep) injectedBroadcastIds.add(v);
+    // Fast-path turn claim: a broadcast usually means a turn just completed.
+    // The deterministic turn state in Redis is the source of truth; this just
+    // avoids waiting up to 10s for the next tick to discover the assignment.
+    const broadcastChatId = msg.chatId.trim();
+    if (broadcastChatId.startsWith("oc_") && !discussionTurnActive.has(broadcastChatId)) {
+      claimDiscussionAssignedTurn({
+        chatId: broadcastChatId,
+        myAppId: account.appId,
+        nowMs: Date.now(),
+      })
+        .then((claimedTurn) => {
+          if (!claimedTurn || discussionTurnActive.has(broadcastChatId)) return;
+          log?.info(
+            `[${account.accountId}] [turn] fast-claim via broadcast: chat=${broadcastChatId.slice(-8)} turn=${claimedTurn.turnId} owner=${claimedTurn.ownerAppId.slice(-8)}`,
+          );
+          const promise = handleInboundMessage(
+            buildDiscussionTurnEvent(broadcastChatId, claimedTurn),
+            deps,
+          )
+            .catch((err) => {
+              log?.error(`[${account.accountId}] [turn] handle error: ${String(err)}`);
+            })
+            .finally(() => {
+              discussionTurnActive.delete(broadcastChatId);
+            });
+          discussionTurnActive.set(broadcastChatId, promise);
+        })
+        .catch(() => {});
     }
   });
 
-  log?.info(`[${account.accountId}] [broadcast] subscriber active, zero-API bot-to-bot messaging`);
+  log?.info(`[${account.accountId}] [broadcast] subscriber active, fast-path turn claim enabled`);
 
-  // ── Discussion tick timer (leader election + idle state sync, zero model wakeups) ──
+  // ── Discussion tick timer (leader election + turn assignment) ──
   const TICK_INTERVAL_MS = 10_000;
   const discussionTickTimer = setInterval(async () => {
     try {
@@ -1181,14 +1145,54 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
           isDiscussionMode: isDiscussion,
         });
 
-        if (isDiscussion && tick.shouldAutoExit) {
-          log?.info(
-            `[${account.accountId}] [broadcast] ${chatId.slice(-8)}: auto-exit -> idle (mode unchanged)`,
-          );
-          await markDiscussionIdle(chatId);
-          broadcastPending.delete(chatId);
+        if (!isDiscussion) {
           continue;
         }
+
+        const expiredTurn = await maybeExpireDiscussionTurn({ chatId, nowMs: Date.now() });
+        if (expiredTurn) {
+          log?.info(
+            `[${account.accountId}] [turn] expired previous=${expiredTurn.previousOwnerAppId.slice(-8)} ` +
+              `next=${expiredTurn.nextTurn?.ownerAppId.slice(-8) ?? "closed"} chat=${chatId.slice(-8)}`,
+          );
+        }
+
+        if (discussionTurnActive.has(chatId)) {
+          continue;
+        }
+
+        const currentTurn = await getDiscussionTurn(chatId);
+        if (
+          !currentTurn ||
+          currentTurn.ownerAppId !== account.appId ||
+          currentTurn.phase !== "assigned"
+        ) {
+          continue;
+        }
+
+        const claimedTurn = await claimDiscussionAssignedTurn({
+          chatId,
+          myAppId: account.appId,
+          nowMs: Date.now(),
+        });
+        if (!claimedTurn) {
+          continue;
+        }
+
+        log?.info(
+          `[${account.accountId}] [turn] injecting owner turn: chat=${chatId.slice(-8)} turn=${claimedTurn.turnId} owner=${claimedTurn.ownerAppId.slice(-8)}`,
+        );
+        const discussionTurnPromise = handleInboundMessage(
+          buildDiscussionTurnEvent(chatId, claimedTurn),
+          deps,
+        )
+          .catch((err) => {
+            log?.error(`[${account.accountId}] [turn] handle error: ${String(err)}`);
+          })
+          .finally(() => {
+            discussionTurnActive.delete(chatId);
+          });
+        discussionTurnActive.set(chatId, discussionTurnPromise);
       }
     } catch (err) {
       log?.warn(`[${account.accountId}] discussion tick error: ${String(err)}`);
@@ -1205,7 +1209,8 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
       "abort",
       async () => {
         clearInterval(discussionTickTimer);
-        broadcastPending.clear();
+        discussionTurnActive.clear();
+        await destroyDashboard().catch(() => {});
         await shutdownBroadcast().catch(() => {});
         const stateDir =
           process.env.OPENCLAW_STATE_DIR?.trim() ||
@@ -1260,22 +1265,267 @@ function mentionsCurrentBot(
   });
 }
 
-export function shouldInjectDiscussionBroadcast(
-  msg: Pick<BotBroadcastMessage, "mentions">,
-  account: Pick<ResolvedFeishuAccount, "appId" | "botOpenId">,
-): boolean {
-  return mentionsCurrentBot(msg.mentions ?? [], account);
+type DiscussionMentionRoutingAccount = Pick<
+  ResolvedFeishuAccount,
+  "accountId" | "appId" | "botOpenId" | "knownBotOpenIds"
+>;
+
+function resolveDiscussionMentionToAppId(
+  mentionId: string,
+  account: DiscussionMentionRoutingAccount,
+): string | null {
+  const normalizedMentionId = mentionId.trim();
+  if (!normalizedMentionId) {
+    return null;
+  }
+  if (normalizedMentionId === account.appId) {
+    return account.appId;
+  }
+  if (normalizedMentionId === account.botOpenId) {
+    return account.appId;
+  }
+  const mappedAppId = account.knownBotOpenIds?.[normalizedMentionId]?.trim();
+  if (mappedAppId) {
+    return mappedAppId;
+  }
+  if (normalizedMentionId.startsWith("cli_")) {
+    return normalizedMentionId;
+  }
+  return null;
+}
+
+export function resolveDiscussionMentionedBotAppIds(
+  mentions: Array<{ id?: string }>,
+  account: DiscussionMentionRoutingAccount,
+): string[] {
+  const resolved: string[] = [];
+  const seen = new Set<string>();
+  for (const mention of mentions) {
+    const mentionId = mention.id?.trim();
+    if (!mentionId) {
+      continue;
+    }
+    const appId = resolveDiscussionMentionToAppId(mentionId, account);
+    if (!appId || seen.has(appId)) {
+      continue;
+    }
+    seen.add(appId);
+    resolved.push(appId);
+  }
+  return resolved;
+}
+
+export function selectDiscussionHumanOwnerAppId(params: {
+  mentionedBotAppIds: string[];
+  leaderAppId: string | null;
+}): string | null {
+  const mentionedBotAppIds = params.mentionedBotAppIds.map((appId) => appId.trim()).filter(Boolean);
+  if (mentionedBotAppIds.length === 0) {
+    return null;
+  }
+  const leaderAppId = params.leaderAppId?.trim();
+  if (leaderAppId && mentionedBotAppIds.includes(leaderAppId)) {
+    return leaderAppId;
+  }
+  return mentionedBotAppIds[0] ?? null;
+}
+
+export function selectDiscussionHumanControlTargetAppId(params: {
+  mentionedBotAppIds: string[];
+  leaderAppId: string | null;
+}): string | null {
+  const mentionedBotAppIds = params.mentionedBotAppIds.map((appId) => appId.trim()).filter(Boolean);
+  if (mentionedBotAppIds.length > 0) {
+    return mentionedBotAppIds[0] ?? null;
+  }
+  return params.leaderAppId?.trim() || null;
+}
+
+export function resolveDiscussionHumanRouting(params: {
+  hasActiveTurn: boolean;
+  mentionedBotAppIds: string[];
+  leaderAppId: string | null;
+  explicitLeaderAppId: string | null;
+  isBotSender: boolean;
+  isSyntheticMessage: boolean;
+}): { mode: "bootstrap" | "direct" | "ignore"; targetAppId: string | null } {
+  if (params.isBotSender || params.isSyntheticMessage) {
+    return { mode: "ignore", targetAppId: null };
+  }
+  if (params.hasActiveTurn) {
+    const targetAppId = selectDiscussionHumanControlTargetAppId({
+      mentionedBotAppIds: params.mentionedBotAppIds,
+      leaderAppId: params.leaderAppId,
+    });
+    return targetAppId ? { mode: "direct", targetAppId } : { mode: "ignore", targetAppId: null };
+  }
+  const targetAppId = selectDiscussionHumanOwnerAppId({
+    mentionedBotAppIds: params.mentionedBotAppIds,
+    leaderAppId: params.explicitLeaderAppId ?? params.leaderAppId,
+  });
+  return targetAppId ? { mode: "bootstrap", targetAppId } : { mode: "ignore", targetAppId: null };
+}
+
+function dedupeDiscussionAppIds(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = value.trim();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function escapeDiscussionRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function selectDiscussionExplicitLeaderAppId(params: {
+  text: string;
+  mentions: Array<{ key?: string; id?: string; name?: string }>;
+  account: DiscussionMentionRoutingAccount;
+}): string | null {
+  const normalizedText = params.text.trim();
+  if (!normalizedText) {
+    return null;
+  }
+
+  const resolvedMentions = dedupeDiscussionAppIds(
+    params.mentions
+      .map((mention) =>
+        mention.id ? resolveDiscussionMentionToAppId(mention.id, params.account) : null,
+      )
+      .filter((appId): appId is string => Boolean(appId)),
+  );
+
+  for (const mention of params.mentions) {
+    const mentionId = mention.id?.trim();
+    if (!mentionId) {
+      continue;
+    }
+    const appId = resolveDiscussionMentionToAppId(mentionId, params.account);
+    if (!appId) {
+      continue;
+    }
+    const tokens = dedupeDiscussionAppIds([
+      mention.key ?? "",
+      mention.name ?? "",
+      mention.name ? `@${mention.name}` : "",
+    ]);
+    for (const token of tokens) {
+      const escapedToken = escapeDiscussionRegex(token);
+      const patterns = [
+        new RegExp(
+          `${escapedToken}[，,：:\\s]*你?[，,：:\\s]*(?:来\\s*)?(?:主导|主持|负责|lead)`,
+          "i",
+        ),
+        new RegExp(`${escapedToken}[，,：:\\s]*你?[，,：:\\s]*(?:做|当)\\s*leader`, "i"),
+        new RegExp(`${escapedToken}[，,：:\\s]*你?[，,：:\\s]*是\\s*leader`, "i"),
+        new RegExp(
+          `(?:让|由)[，,：:\\s]*${escapedToken}[，,：:\\s]*(?:来\\s*)?(?:主导|主持|负责|lead)`,
+          "i",
+        ),
+      ];
+      if (patterns.some((pattern) => pattern.test(normalizedText))) {
+        return appId;
+      }
+    }
+  }
+
+  if (
+    resolvedMentions.length === 1 &&
+    /(?:你?[，,：:\s]*(?:来\s*)?(?:主导|主持|负责|lead)|你?[，,：:\s]*(?:做|当)\s*leader|你?[，,：:\s]*是\s*leader)/i.test(
+      normalizedText,
+    )
+  ) {
+    return resolvedMentions[0] ?? null;
+  }
+
+  return null;
+}
+
+export function buildDiscussionAgendaParticipantAppIds(params: {
+  mentionedBotAppIds: string[];
+  ownerAppId: string;
+  explicitLeaderAppId: string | null;
+}): string[] {
+  return dedupeDiscussionAppIds([
+    params.ownerAppId,
+    ...params.mentionedBotAppIds,
+    params.explicitLeaderAppId ?? "",
+  ]);
+}
+
+export function shouldBypassDiscussionTurnScheduling(params: {
+  isCommand: boolean;
+  isBotSender: boolean;
+  isSyntheticMessage: boolean;
+}): boolean {
+  return params.isCommand && !params.isBotSender && !params.isSyntheticMessage;
+}
+
+export function shouldAcceptDiscussionSyntheticTurn(params: {
+  currentTurnId: string | null | undefined;
+  syntheticTurnId: string | null | undefined;
+}): boolean {
+  return Boolean(
+    params.currentTurnId &&
+    params.syntheticTurnId &&
+    params.currentTurnId.trim() === params.syntheticTurnId.trim(),
+  );
+}
+
+export function normalizeFeishuReplyTargetMessageId(messageId?: string): string {
+  const normalized = messageId?.trim() ?? "";
+  if (!normalized) {
+    return "";
+  }
+  // Synthetic discussion-turn ids are internal wakeup markers, not real Feishu messages.
+  if (normalized.startsWith("discussion-turn:") || normalized.startsWith("discussion-tool:")) {
+    return "";
+  }
+  return normalized;
+}
+
+async function syncDiscussionTurnForSilentDispatch(params: {
+  chatId: string;
+  account: DiscussionMentionRoutingAccount;
+  expectedTurnId?: string;
+}): Promise<void> {
+  const allowed = await authorizeDiscussionOutboundMessage({
+    chatId: params.chatId,
+    account: { ...params.account, name: "" },
+    expectedTurnId: params.expectedTurnId,
+  });
+  if (!allowed) {
+    return;
+  }
+  const transition = await completeDiscussionTurnWithOutput({
+    chatId: params.chatId,
+    ownerAppId: params.account.appId,
+  });
+  if (!transition) {
+    return;
+  }
+  void recordDiscussionActivity(params.chatId);
 }
 
 export function shouldProcessDiscussionMessage(params: {
   isBotSender: boolean;
   isSelfBot: boolean;
   isSyntheticMessage: boolean;
-  wasMentioned: boolean;
+  isDiscussionTurn: boolean;
+  isHumanSelectedTarget: boolean;
 }): boolean {
   if (params.isSelfBot) return false;
+  if (params.isDiscussionTurn) return true;
   if (params.isSyntheticMessage) return false;
-  return params.wasMentioned;
+  if (params.isBotSender) return false;
+  return params.isHumanSelectedTarget;
 }
 
 type FeishuBotIdentityPromptAccount = Pick<
@@ -1549,6 +1799,12 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   if (isSyntheticMessage) {
     sender.sender_type = "bot";
   }
+  const syntheticSender = sender as typeof sender & {
+    _syntheticKind?: string;
+    _discussionTurnId?: string;
+    _broadcastSenderName?: string;
+  };
+  const isDiscussionTurnSynthetic = syntheticSender._syntheticKind === "discussion-turn";
 
   const messageId: string = message.message_id ?? "";
   const chatId: string = message.chat_id ?? "";
@@ -1852,9 +2108,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   );
   let senderDisplayName: string | undefined;
   if (isSyntheticMessage) {
-    senderDisplayName = "system-heartbeat";
-  } else if (isBotSender && sender._broadcastSenderName) {
-    senderDisplayName = sender._broadcastSenderName;
+    senderDisplayName = isDiscussionTurnSynthetic ? "system-discussion-turn" : "system-heartbeat";
+  } else if (isBotSender && syntheticSender._broadcastSenderName) {
+    senderDisplayName = syntheticSender._broadcastSenderName;
   } else
     try {
       const nameResult = await resolveFeishuSenderName({ account, senderOpenId: senderId, log });
@@ -1907,6 +2163,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   let currentGroupMentions: FeishuMention[] = [];
   let currentGroupMode = "owner-at";
   let currentGroupModeContext: string | undefined;
+  let acceptedDiscussionTurn: DiscussionTurnState | null = null;
+  let discussionHumanRoutingMode: "bootstrap" | "direct" | null = null;
+  let discussionHumanRoutingTargetAppId: string | null = null;
   const isCommand = cleanText.startsWith("/");
   const ACK_EMOJI = "Get";
   let ackReactionId: string | null = null;
@@ -2029,28 +2288,152 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     }
 
     if (currentGroupMode === "discussion") {
-      const shouldProcessDiscussion = shouldProcessDiscussionMessage({
+      const activeTurn = await getDiscussionTurn(chatId);
+      const hasActiveTurn = activeTurn !== null;
+      const discussionLeaderAppId = await getDiscussionLeader(chatId);
+      const humanMentionedBotAppIds =
+        !isBotSender && !isSyntheticMessage
+          ? resolveDiscussionMentionedBotAppIds(mentions, account)
+          : [];
+      const explicitDiscussionLeaderAppId =
+        !isBotSender && !isSyntheticMessage && !hasActiveTurn
+          ? selectDiscussionExplicitLeaderAppId({
+              text: currentMessageArchiveText || textFromMessage,
+              mentions,
+              account,
+            })
+          : null;
+      const discussionRoutingLeaderAppId = discussionLeaderAppId;
+      const humanDiscussionRouting = resolveDiscussionHumanRouting({
+        hasActiveTurn,
+        mentionedBotAppIds: humanMentionedBotAppIds,
+        leaderAppId: discussionRoutingLeaderAppId,
+        explicitLeaderAppId: explicitDiscussionLeaderAppId,
         isBotSender,
-        isSelfBot,
         isSyntheticMessage,
-        wasMentioned,
       });
-      if (!shouldProcessDiscussion) {
-        if (isSyntheticMessage) {
-          log?.info(`[${account.accountId}] discussion mode: synthetic heartbeat suppressed`);
-        } else if (isSelfBot) {
-          log?.info(`[${account.accountId}] discussion mode: self-bot msg, skipping`);
-        } else {
+      discussionHumanRoutingMode =
+        humanDiscussionRouting.mode === "ignore" ? null : humanDiscussionRouting.mode;
+      discussionHumanRoutingTargetAppId = humanDiscussionRouting.targetAppId;
+      const isHumanSelectedDiscussionTarget =
+        !isBotSender && !isSyntheticMessage && discussionHumanRoutingTargetAppId === account.appId;
+      const bypassDiscussionTurnScheduling = shouldBypassDiscussionTurnScheduling({
+        isCommand,
+        isBotSender,
+        isSyntheticMessage,
+      });
+      if (bypassDiscussionTurnScheduling) {
+        log?.info(
+          `[${account.accountId}] discussion mode: command bypasses deterministic turn scheduler`,
+        );
+      } else {
+        const shouldProcessDiscussion = shouldProcessDiscussionMessage({
+          isBotSender,
+          isSelfBot,
+          isSyntheticMessage,
+          isDiscussionTurn: isDiscussionTurnSynthetic,
+          isHumanSelectedTarget: isHumanSelectedDiscussionTarget,
+        });
+        if (!shouldProcessDiscussion) {
+          if (isDiscussionTurnSynthetic) {
+            log?.info(
+              `[${account.accountId}] discussion mode: synthetic owner turn not assigned here`,
+            );
+          } else if (isSyntheticMessage) {
+            log?.info(`[${account.accountId}] discussion mode: synthetic heartbeat suppressed`);
+          } else if (isSelfBot) {
+            log?.info(`[${account.accountId}] discussion mode: self-bot msg, skipping`);
+          } else if (isBotSender) {
+            log?.info(
+              `[${account.accountId}] discussion mode: peer bot msg archived only (owner scheduled by runtime)`,
+            );
+          } else if (discussionHumanRoutingMode === "direct" && discussionHumanRoutingTargetAppId) {
+            log?.info(
+              `[${account.accountId}] discussion mode: human direct command to ${discussionHumanRoutingTargetAppId.slice(-8)}, archived only`,
+            );
+          } else if (
+            discussionHumanRoutingMode === "bootstrap" &&
+            discussionHumanRoutingTargetAppId
+          ) {
+            log?.info(
+              `[${account.accountId}] discussion mode: bootstrap owner selected ${discussionHumanRoutingTargetAppId.slice(-8)}, archived only`,
+            );
+          } else {
+            log?.info(
+              `[${account.accountId}] discussion mode: human msg without routed bot, archived only`,
+            );
+          }
+          return;
+        }
+        const agendaParticipantAppIds =
+          discussionHumanRoutingMode === "bootstrap"
+            ? buildDiscussionAgendaParticipantAppIds({
+                mentionedBotAppIds: humanMentionedBotAppIds,
+                ownerAppId: discussionHumanRoutingTargetAppId ?? account.appId,
+                explicitLeaderAppId: explicitDiscussionLeaderAppId,
+              })
+            : [];
+        if (isDiscussionTurnSynthetic) {
+          const currentTurn = await getDiscussionTurn(chatId);
+          if (
+            !shouldAcceptDiscussionSyntheticTurn({
+              currentTurnId: currentTurn?.turnId,
+              syntheticTurnId: syntheticSender._discussionTurnId,
+            })
+          ) {
+            log?.info(
+              `[${account.accountId}] discussion mode: stale synthetic turn ignored (current=${currentTurn?.turnId ?? "none"} synthetic=${syntheticSender._discussionTurnId ?? "none"})`,
+            );
+            return;
+          }
+          acceptedDiscussionTurn = currentTurn;
+        } else if (discussionHumanRoutingMode === "bootstrap") {
+          await seedDiscussionParticipants(chatId, agendaParticipantAppIds);
+          if (explicitDiscussionLeaderAppId) {
+            await setDiscussionLeader(chatId, explicitDiscussionLeaderAppId);
+          }
+          const chairAppId =
+            explicitDiscussionLeaderAppId ?? discussionLeaderAppId ?? account.appId;
+          acceptedDiscussionTurn = await openDiscussionAgendaTurn({
+            chatId,
+            ownerAppId: account.appId,
+            chairAppId,
+            participantAppIds: agendaParticipantAppIds,
+            sourceMessageId: messageId,
+          });
+        } else if (discussionHumanRoutingMode === "direct") {
+          // Direct human command — bot processes without acquiring a turn.
+          // The ongoing discussion turn is NOT affected.
+          await recordDiscussionActivity(chatId);
           log?.info(
-            `[${account.accountId}] discussion mode: ${isBotSender ? "bot" : "human"} msg without explicit @mention, archived only`,
+            `[${account.accountId}] discussion mode: direct human command, processing without turn`,
+          );
+        } else {
+          await recordDiscussionActivity(chatId);
+          log?.info(
+            `[${account.accountId}] discussion mode: human message archived without acquiring a turn`,
           );
         }
-        return;
+        if (!acceptedDiscussionTurn && discussionHumanRoutingMode !== "direct") {
+          log?.info(
+            `[${account.accountId}] discussion mode: failed to acquire deterministic turn for ${chatId}`,
+          );
+          return;
+        }
+        if (acceptedDiscussionTurn && acceptedDiscussionTurn.ownerAppId !== account.appId) {
+          log?.info(
+            `[${account.accountId}] discussion mode: acquired turn now belongs to ${acceptedDiscussionTurn.ownerAppId.slice(-8)}, skipping`,
+          );
+          return;
+        }
+        if (acceptedDiscussionTurn) {
+          await recordDiscussionActivity(chatId);
+          log?.info(
+            `[${account.accountId}] discussion mode: accepted ${isDiscussionTurnSynthetic ? "synthetic owner turn" : "bootstrap owner turn"} in ${chatId} ` +
+              `(turn=${acceptedDiscussionTurn.turnId} owner=${acceptedDiscussionTurn.ownerAppId.slice(-8)})`,
+          );
+        }
       }
-      await activateDiscussionGroup(chatId, account.appId);
-      log?.info(
-        `[${account.accountId}] discussion mode: ${isBotSender ? "bot" : "human"} msg from ${senderId} in ${chatId}, explicitly @mentioned -> processing`,
-      );
       // Fall through to agent processing
     } else if (currentGroupMode === "owner") {
       // 🔒主人: only owner's messages, filter all bot messages.
@@ -2275,11 +2658,12 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // ── Fetch quoted message content (if this is a reply) ──
   let quotedContext = "";
   let quotedBodyForReply: string | undefined;
-  if (parentId) {
+  const normalizedParentId = normalizeFeishuReplyTargetMessageId(parentId);
+  if (normalizedParentId) {
     try {
       const quoted = await getQuotedMessageContent({
         account,
-        parentMessageId: parentId,
+        parentMessageId: normalizedParentId,
         currentChatId: chatId,
         log,
         mergeForwardSourceAccess,
@@ -2291,20 +2675,20 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         });
         quotedContext =
           `\n${renderFeishuQuotedContext({
-            messageId: parentId,
+            messageId: normalizedParentId,
             messageType: quoted.contentType,
             sender: quoted.sender,
             text: quoted.content.slice(0, 500),
           })}` + (quotedDriveFileContext ? `\n${quotedDriveFileContext}` : "");
         // Prefix with message_id so AI can extract it even in DMs where core strips reply_to_id.
         quotedBodyForReply = `${renderFeishuQuotedReplyBody({
-          messageId: parentId,
+          messageId: normalizedParentId,
           messageType: quoted.contentType,
           sender: quoted.sender,
           text: quoted.content.slice(0, 2000),
         })}${quotedDriveFileContext ? `\n${quotedDriveFileContext}` : ""}`;
         log?.info(
-          `[${account.accountId}] quoted msg fetched: ${parentId} -> ${quoted.content.slice(0, 80)}`,
+          `[${account.accountId}] quoted msg fetched: ${normalizedParentId} -> ${quoted.content.slice(0, 80)}`,
         );
       }
       // Download images embedded in the quoted message (standalone image, post img, card degraded img).
@@ -2447,46 +2831,50 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         if (currentGroupMode === "discussion") {
           const dLeader = await getDiscussionLeader(chatId);
           const dParticipants = await getDiscussionParticipants(chatId);
+          const dTurn = acceptedDiscussionTurn ?? (await getDiscussionTurn(chatId));
           const amLeader = dLeader === account.appId;
-          const currentBotWasMentioned = mentionsCurrentBot(currentGroupMentions, account);
+          const amCurrentOwner = dTurn?.ownerAppId === account.appId;
+          const isDirectHumanCommand =
+            discussionHumanRoutingMode === "direct" &&
+            discussionHumanRoutingTargetAppId === account.appId;
           const resolveNameFromKnown = (appId: string): string =>
             (account.knownBots as Record<string, string>)?.[appId] ?? appId.slice(-8);
           const leaderName = dLeader ? resolveNameFromKnown(dLeader) : "未选出";
           const participantNames = dParticipants.map((id) => resolveNameFromKnown(id)).join(", ");
+          const currentOwnerName = dTurn ? resolveNameFromKnown(dTurn.ownerAppId) : "未分配";
+          const currentTurnId = dTurn?.turnId ?? "none";
+          const remainingQueueNames =
+            dTurn?.remainingQueue.map((id) => resolveNameFromKnown(id)).join(", ") || "无";
 
           const commonMechanism =
-            "技术机制：bot 之间通过 Redis 广播几乎实时收到彼此消息；系统只会额外补充最近群消息作为上下文，不靠 10 秒轮询来决定是否触发你。" +
-            "只有被显式 @到、或被人类明确指定接任 leader 的 bot 才应该接话。没有显式点到时不要发群消息。系统不会在空闲时主动唤醒你。";
+            "技术机制：系统通过 Redis 共享当前讨论状态与 turn 决定谁发言；peer bot 的群消息只作为上下文，不直接改 owner。" +
+            "人类消息优先级最高：被人类明确 @ 到的 bot 会直接回复，不影响正在进行的讨论轮次。" +
+            "只有当前 running owner 才公开发言。任意时刻只允许一个 current owner。";
 
           if (amLeader) {
             discussionRule =
-              `讨论模式。你是本次讨论的主导者（leader）。当前参与者：${participantNames}。` +
-              `你负责推进讨论节奏、@分配发言、控制轮次。其他 bot 等你 @才发言。` +
-              `只有当人类显式 @到你，或人类明确指定你接任 leader 时，你才开场或推进讨论。不要先发“收到/准备好了/进入讨论模式”之类的确认语，第一条可见消息必须直接推进讨论。` +
-              `如果人类明确指定另一个 bot 接任 leader，你只调用 set_discussion_leader 工具完成移交，然后本轮立即结束；不要再发公开交接消息，让新 leader 自己开场。` +
+              `讨论模式。你是当前讨论的 leader / chair。当前参与者：${participantNames}。当前 owner：${currentOwnerName}。当前 turn_id：${currentTurnId}。剩余等待队列：${remainingQueueNames}。` +
+              `你负责控场、异常恢复、必要时追加轮次和最后收官，但不等于每轮都要亲自发言。只有当系统把 owner 交给你时，你才公开说话。` +
+              `如果要结束讨论，必须调用 end_discussion；如果要清空旧队列并重新开始，必须调用 reset_discussion；如果只是更换主导者，调用 set_discussion_leader。调用这三个 tool 时都必须带上当前 turn_id。不要只靠中文说“结束了/重开吧/你来主导”而不调工具。` +
+              `如果人类明确指定另一个 bot 接任 leader，你只调用 set_discussion_leader 工具完成移交；需要新一轮时再由被选中的 bot 调用 reset_discussion。` +
               `群里发言时严禁调用 message(action=send, ...)、feishu_message 或任何手动发群消息工具；直接输出你要发到群里的正文，系统会自动发送。` +
-              commonMechanism +
-              `如果人类通过 set_discussion_leader 工具指定了新的主导者，你自动变为参与者。`;
+              commonMechanism;
           } else {
             discussionRule =
-              `讨论模式。你是参与者。当前主导者是 ${leaderName}。当前参与者：${participantNames}。` +
-              `默认保持沉默。等主导者 @你时发言，被 @时给出你的观点。不要主动推进讨论节奏。` +
-              `如果当前输入直接来自人类，而人类没有显式 @你，也没有明确指定你接任 leader，则本轮必须闭嘴：不要发送任何群消息，不要发“收到/准备好了/进入讨论模式/我先补充一句”这类确认语。` +
+              `讨论模式。你是参与者。当前 leader / chair 是 ${leaderName}。当前参与者：${participantNames}。当前 owner：${currentOwnerName}。当前 turn_id：${currentTurnId}。剩余等待队列：${remainingQueueNames}。` +
+              `默认旁听。只有当系统把当前 turn 分配给你，或人类显式 @ 触发你成为首轮 owner 时，你才公开发言。不要主动推进讨论节奏。` +
               `群里发言时严禁调用 message(action=send, ...)、feishu_message 或任何手动发群消息工具；直接输出你要发到群里的正文，系统会自动发送。` +
               commonMechanism +
-              `如果人类明确指定你为新主导者（说"你来主导/你负责/你当leader"），使用 set_discussion_leader 工具更新主导者。` +
-              `人类只是提问（"你觉得呢/你怎么看"）不算指定主导者，不要调用工具。`;
+              `如果人类明确 @ 到你，你会直接回复人类，不影响当前讨论轮次；如果不是你，就继续旁听，不要抢话。若你确实需要调用 end_discussion / reset_discussion / set_discussion_leader，必须带上当前 turn_id。`;
           }
 
-          const discussionTurnRule = amLeader
-            ? !isBotSender
-              ? "[讨论模式当轮规则]\n当前输入直接来自人类，且人类显式 @了你。由你负责本轮开场、点名或总结；如果人类明确指定了别的 bot 当 leader，则只切 leader 并立即结束本轮。不要发送任何纯确认语，第一条群消息必须直接推进讨论。\n"
-              : "[讨论模式当轮规则]\n当前输入来自其他 bot。只有在对方明确向你汇报、向你提问、或把推进权交给你时，你才接续推进；不要发送纯确认语。\n"
-            : !isBotSender
-              ? currentBotWasMentioned
-                ? "[讨论模式当轮规则]\n当前输入直接来自人类，且人类显式 @了你。你可以直接回答；如果人类还明确指定你接任 leader，则先调用 set_discussion_leader 再继续。不要发送任何纯确认语。\n"
-                : "[讨论模式当轮规则]\n当前输入直接来自人类，但人类没有显式 @你。你必须保持沉默，不要发送任何群消息，也不要发“收到/准备好了/进入讨论模式”等确认语。\n"
-              : "[讨论模式当轮规则]\n当前输入来自其他 bot。只有当对方明确 @你、明确点名你回答、或明确把接力交给你时，你才回复；否则保持沉默，不要发送确认语。\n";
+          const discussionTurnRule = isDirectHumanCommand
+            ? "[人类直接消息]\n人类明确 @ 了你。请直接回答人类的问题。当前讨论轮次不受影响，你不需要管理轮次或调用 end_discussion / reset_discussion 等工具。\n"
+            : isDiscussionTurnSynthetic
+              ? "[讨论模式当轮规则]\n这是系统分配给你的当前轮次。你现在就是本轮唯一允许公开发言的 owner，请直接推进；如果你本轮不发言，输出 NO_REPLY。结束时只能把下一棒交给唯一一个 owner，或明确请 leader / chair 接手分配；不要同时点名多人。\n"
+              : amCurrentOwner
+                ? "[讨论模式当轮规则]\n这条人类消息已被系统确定为由你负责的首轮输入。你直接开场或回答；不要发送纯确认语。结束时请用一句简短的话说明下一棒交给谁，并与系统实际调度保持一致。\n"
+                : "[讨论模式当轮规则]\n你当前不是本轮 owner；除非系统重新把 turn 分配给你，否则保持沉默，不要抢话。\n";
           currentReplyRule = `${discussionTurnRule}\n${currentReplyRule}`;
         }
         const hardcodedRule = discussionRule ?? modeHardcoded[currentGroupMode];
@@ -2576,6 +2964,25 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     storePath,
     sessionKey: route.sessionKey,
   });
+  const expectedDiscussionTurnId = acceptedDiscussionTurn?.turnId;
+  let discussionVisibleReplyBlocked = false;
+  const canEmitVisibleDiscussionReply = async (): Promise<boolean> => {
+    if (!isGroup || currentGroupMode !== "discussion" || isCommand || !expectedDiscussionTurnId) {
+      return true;
+    }
+    if (discussionVisibleReplyBlocked) {
+      return false;
+    }
+    const allowed = await authorizeDiscussionOutboundMessage({
+      chatId,
+      account,
+      expectedTurnId: expectedDiscussionTurnId,
+    });
+    if (!allowed) {
+      discussionVisibleReplyBlocked = true;
+    }
+    return allowed;
+  };
   // Card streaming is enabled for both private and group chats (V2 readback relies on local cache).
   // Disabled for commands (/new, /reset etc.) which have their own response flow,
   // and for reasoning=on mode which needs separate bubble delivery.
@@ -2586,8 +2993,8 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   let cardStream: FeishuCardStream | undefined;
   let cardStreamCreating = false;
 
-  // onReplyStart: create the card stream when the AI actually starts processing
-  // (after session lane queuing — never fires for queued messages).
+  // Card stream is created lazily only when there is visible content to show.
+  // This avoids empty "ghost cards" for tool-only discussion control turns.
   const startCardStream = async () => {
     if (
       isSyntheticMessage ||
@@ -2625,6 +3032,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   let cardStreamPrefix = "";
   let cardStreamLastPartial = "";
   let cardStreamFinalText = "";
+  let cardStreamVisibleText = "";
   let groupAccumulatedText = "";
   let groupAccumulatedReplyToId: string | undefined;
   let cardStreamUpdateChain: Promise<void> = Promise.resolve();
@@ -2638,8 +3046,10 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   };
 
   const updateCardStream = (text?: string) =>
-    queueCardStreamUpdate(() => {
-      if (!text || !cardStream?.started) return;
+    queueCardStreamUpdate(async () => {
+      if (!text || !(await canEmitVisibleDiscussionReply())) return;
+      await startCardStream();
+      if (!cardStream?.started) return;
       // Detect paragraph boundary: if text doesn't start with the previous partial,
       // it means deltaBuffer was reset (new assistant message). Freeze the previous
       // paragraph into the prefix.
@@ -2652,31 +3062,61 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       // Combine finished paragraphs with the current in-progress paragraph.
       const full = cardStreamPrefix ? cardStreamPrefix + "\n\n" + text : text;
       cardStream.update(full);
+      cardStreamVisibleText = full;
     });
 
   const updateReasoningCardStream = (text?: string) =>
     queueCardStreamUpdate(async () => {
-      if (!text || !cardStream?.started) return;
+      if (!text || !(await canEmitVisibleDiscussionReply())) return;
+      await startCardStream();
+      if (!cardStream?.started) return;
       // Flush reasoning immediately so the first visible card frame is the
       // reasoning preview, even if answer partials arrive in the same throttle window.
       cardStream.update(text);
+      cardStreamVisibleText = text;
       await cardStream.flush();
     });
 
   const stopCardStream = async () => {
     if (!cardStream?.started) return;
     await cardStreamUpdateChain;
+    const stillAllowed = await canEmitVisibleDiscussionReply();
+    const finalVisibleText = cardStreamFinalText || cardStreamVisibleText;
     // 1. Stop accepting new updates and cancel any scheduled timer.
     //    This prevents stray delayed flushes from firing after finalize.
     cardStream.stop();
+    if (!stillAllowed) {
+      if (finalVisibleText?.trim()) {
+        // Card already has visible content the user can see — never delete it.
+        // Just finalize with what we have so "[生成中...]" clears.
+        log?.info(
+          `[${account.accountId}] stale discussion turn but card has visible text (${finalVisibleText.length} chars), preserving ${cardStream.messageId}`,
+        );
+        await cardStream.finalize(finalVisibleText);
+      } else {
+        // Empty/ghost card from a stale turn — safe to delete.
+        log?.info(
+          `[${account.accountId}] stale discussion turn with empty card, deleting ${cardStream.messageId}`,
+        );
+        try {
+          if (cardStream.messageId) {
+            await deleteFeishuMessage({ account, messageId: cardStream.messageId });
+          }
+        } catch (err) {
+          log?.error(`[${account.accountId}] stale card delete failed: ${String(err)}`);
+        }
+      }
+      cardStream = undefined;
+      return;
+    }
     // 2. Push the full accumulated text as one final card update.
     //    onPartialReply may miss the tail of the last paragraph because deliver()
     //    can fire after the last partial — ensure the card shows the complete text.
-    if (cardStreamFinalText) {
-      await cardStream.sendFinal(cardStreamFinalText);
+    if (finalVisibleText) {
+      await cardStream.sendFinal(finalVisibleText);
     }
     // 3. Close streaming mode so "[生成中...]" clears.
-    await cardStream.finalize(cardStreamFinalText);
+    await cardStream.finalize(finalVisibleText);
     // Record group reply for rate limiting; trigger error cooldown if it was an error card
     if (isGroup) {
       if (
@@ -2725,6 +3165,13 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     cfg: config,
     dispatcherOptions: {
       deliver: async (payload, info) => {
+        if (!(await canEmitVisibleDiscussionReply())) {
+          log?.info(
+            `[${account.accountId}] deliver: suppressing visible reply for stale discussion turn`,
+          );
+          if (info.kind === "final") resolveDeliverGate?.();
+          return;
+        }
         if (!deliverFired) {
           deliverFired = true;
           // Lazily ensure card stream + ACK exist for lane-queued messages
@@ -2778,7 +3225,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
               account,
               chatId,
               isGroup,
-              replyToMessageId: messageId,
+              expectedDiscussionTurnId,
+              skipDiscussionSync: isCommand,
+              replyToMessageId: isSyntheticMessage ? normalizedParentId || undefined : messageId,
               log,
               setStatus,
               config,
@@ -2811,7 +3260,13 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
                 account,
                 chatId,
                 isGroup,
-                replyToMessageId: isGroup && !isSyntheticMessage ? messageId : undefined,
+                expectedDiscussionTurnId,
+                skipDiscussionSync: isCommand,
+                replyToMessageId: isGroup
+                  ? isSyntheticMessage
+                    ? normalizedParentId || undefined
+                    : messageId
+                  : undefined,
                 log,
                 setStatus,
                 config,
@@ -2837,7 +3292,13 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           account,
           chatId,
           isGroup,
-          replyToMessageId: isGroup && !isSyntheticMessage ? messageId : undefined,
+          expectedDiscussionTurnId,
+          skipDiscussionSync: isCommand,
+          replyToMessageId: isGroup
+            ? isSyntheticMessage
+              ? normalizedParentId || undefined
+              : messageId
+            : undefined,
           log,
           setStatus,
           config,
@@ -2854,8 +3315,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         log?.error(`[${account.accountId}] Feishu ${info.kind} reply failed: ${String(err)}`);
       },
       onReplyStart: async () => {
-        // Fire ACK reaction and card stream in parallel when AI starts processing.
-        await Promise.all([addAckReaction(), startCardStream()]);
+        await addAckReaction();
       },
     },
     replyOptions: {
@@ -2913,7 +3373,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       account,
       chatId,
       isGroup,
-      replyToMessageId: isSyntheticMessage ? undefined : messageId,
+      expectedDiscussionTurnId,
+      skipDiscussionSync: isCommand,
+      replyToMessageId: isSyntheticMessage ? normalizedParentId || undefined : messageId,
       log,
       setStatus,
       config,
@@ -2940,13 +3402,13 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   }
   // Ghost card cleanup: AI used feishu_message tool instead of deliver callback,
   // so cardStream was created by onReplyStart but received 0 chars. Delete it.
-  if (cardStream?.started && !cardStreamFinalText) {
+  if (cardStream?.started && !cardStreamFinalText?.trim() && !cardStreamVisibleText?.trim()) {
     log?.info(
-      `[${account.accountId}] ghost card detected (deliverFired=${dispatchResult?.deliverFired ?? false}), deleting ${cardStream.messageId}`,
+      `[${account.accountId}] ghost card detected (counts=${JSON.stringify(dispatchResult?.counts ?? {})}), deleting ${cardStream.messageId}`,
     );
     cardStream.stop();
     try {
-      await deleteFeishuMessage({ account, messageId: cardStream.messageId });
+      await deleteFeishuMessage({ account, messageId: cardStream.messageId! });
     } catch (err) {
       log?.error(`[${account.accountId}] ghost card delete failed: ${String(err)}`);
     }
@@ -2987,29 +3449,34 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       );
     }
 
-    // Broadcast to other bots via Redis pub/sub (discussion mode only)
-    if (isGroup && readGroupMode(chatId).mode === "discussion") {
-      const broadcastText = stripInjectedStatusFooter(cardStreamFinalText);
-      const textMentions = extractFeishuAtTextMentions(broadcastText);
-      const broadcastMentions =
-        textMentions.length > 0
-          ? textMentions.map((m) => ({ key: m.key, id: m.id, name: m.name }))
-          : undefined;
-      log?.info(
-        `[${account.accountId}] [broadcast] publishing: msgId=${cardStream.messageId.slice(-12)} textLen=${broadcastText.length} mentions=${textMentions.length} content=${broadcastText.slice(0, 80)}`,
-      );
-      void publishBotMessage({
-        msgId: cardStream.messageId,
+    if (isGroup && !isCommand) {
+      const outbound = await handleDiscussionOutboundMessage({
+        messageId: cardStream.messageId,
         chatId,
-        senderAppId: account.appId,
-        senderOpenId: account.botOpenId ?? account.appId,
-        senderName: account.name ?? account.accountId,
-        content: broadcastText,
-        msgType: "interactive",
-        createTime: Date.now(),
-        mentions: broadcastMentions,
+        text: cardStreamFinalText,
+        account,
+        expectedTurnId: expectedDiscussionTurnId,
       });
+      log?.info(
+        outbound.suppressed
+          ? `[${account.accountId}] [broadcast] suppressed stale discussion output: msgId=${cardStream.messageId.slice(-12)}`
+          : `[${account.accountId}] [broadcast] publishing: msgId=${cardStream.messageId.slice(-12)} textLen=${outbound.broadcastText.length} mentions=${outbound.mentionCount} content=${outbound.broadcastText.slice(0, 80)}`,
+      );
     }
+  }
+
+  if (
+    isGroup &&
+    currentGroupMode === "discussion" &&
+    acceptedDiscussionTurn?.ownerAppId === account.appId &&
+    !groupAccumulatedText &&
+    !cardStreamFinalText
+  ) {
+    await syncDiscussionTurnForSilentDispatch({
+      chatId,
+      account,
+      expectedTurnId: expectedDiscussionTurnId,
+    });
   }
 }
 
@@ -3020,20 +3487,51 @@ async function deliverFeishuReply(params: {
   account: ResolvedFeishuAccount;
   chatId: string;
   isGroup?: boolean;
+  expectedDiscussionTurnId?: string;
   replyToMessageId?: string;
+  skipDiscussionSync?: boolean;
   log?: ChannelLogSink;
   setStatus: (patch: Partial<ChannelAccountSnapshot>) => void;
   config: OpenClawConfig;
   core: ReturnType<typeof getFeishuRuntime>;
 }): Promise<void> {
-  const { payload, account, chatId, isGroup, replyToMessageId, log, setStatus, config, core } =
-    params;
+  const {
+    payload,
+    account,
+    chatId,
+    isGroup,
+    expectedDiscussionTurnId,
+    replyToMessageId,
+    skipDiscussionSync,
+    log,
+    setStatus,
+    config,
+    core,
+  } = params;
   const botActor = buildFeishuBotActorFromAccount(account);
-  const payloadReplyToId = typeof payload.replyToId === "string" ? payload.replyToId.trim() : "";
-  const effectiveReplyToMessageId = payloadReplyToId || replyToMessageId;
+  const payloadReplyToId = normalizeFeishuReplyTargetMessageId(
+    typeof payload.replyToId === "string" ? payload.replyToId : "",
+  );
+  const effectiveReplyToMessageId =
+    payloadReplyToId || normalizeFeishuReplyTargetMessageId(replyToMessageId);
   const resolveReplyRef = (message: Parameters<typeof buildFeishuReplyRefFromSentMessage>[0]) =>
     buildFeishuReplyRefFromSentMessage(message) ??
     buildFeishuReplyRef({ parentId: effectiveReplyToMessageId });
+  let discussionOutboundMessageId = "";
+  let discussionOutboundText = "";
+  if (isGroup && expectedDiscussionTurnId) {
+    const allowed = await authorizeDiscussionOutboundMessage({
+      chatId,
+      account,
+      expectedTurnId: expectedDiscussionTurnId,
+    });
+    if (!allowed) {
+      log?.info(
+        `[${account.accountId}] deliver: skipping direct outbound for stale discussion turn ${expectedDiscussionTurnId}`,
+      );
+      return;
+    }
+  }
 
   // Handle media (images/audio) if present.
   const mediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
@@ -3082,6 +3580,8 @@ async function deliverFeishuReply(params: {
         });
         if (sentMessage) {
           recordSentMessage(chatId, sentMessage.messageId, "[audio]");
+          discussionOutboundMessageId = sentMessage.messageId;
+          discussionOutboundText = "[audio]";
           try {
             await archiveSentFeishuBinaryMessage({
               chatId,
@@ -3112,6 +3612,8 @@ async function deliverFeishuReply(params: {
         });
         if (sentMessage) {
           recordSentMessage(chatId, sentMessage.messageId, "[video]");
+          discussionOutboundMessageId = sentMessage.messageId;
+          discussionOutboundText = "[video]";
           try {
             await archiveSentFeishuBinaryMessage({
               chatId,
@@ -3142,6 +3644,8 @@ async function deliverFeishuReply(params: {
         });
         if (sentMessage) {
           recordSentMessage(chatId, sentMessage.messageId, "[image]");
+          discussionOutboundMessageId = sentMessage.messageId;
+          discussionOutboundText = "[image]";
           try {
             await archiveSentFeishuBinaryMessage({
               chatId,
@@ -3172,6 +3676,8 @@ async function deliverFeishuReply(params: {
         });
         if (sentMessage) {
           recordSentMessage(chatId, sentMessage.messageId, `[file: ${fileName}]`);
+          discussionOutboundMessageId = sentMessage.messageId;
+          discussionOutboundText = `[file: ${fileName}]`;
           try {
             await archiveSentFeishuBinaryMessage({
               chatId,
@@ -3201,6 +3707,27 @@ async function deliverFeishuReply(params: {
         /* ignore fallback error */
       }
     }
+  }
+
+  if (
+    isGroup &&
+    !skipDiscussionSync &&
+    !payload.text &&
+    discussionOutboundMessageId &&
+    discussionOutboundText
+  ) {
+    const outbound = await handleDiscussionOutboundMessage({
+      messageId: discussionOutboundMessageId,
+      chatId,
+      text: discussionOutboundText,
+      account,
+      expectedTurnId: expectedDiscussionTurnId,
+    });
+    log?.info(
+      outbound.suppressed
+        ? `[${account.accountId}] [broadcast] suppressed stale discussion media: msgId=${discussionOutboundMessageId.slice(-12)}`
+        : `[${account.accountId}] [broadcast] publishing (media): msgId=${discussionOutboundMessageId.slice(-12)} textLen=${outbound.broadcastText.length} mentions=${outbound.mentionCount}`,
+    );
   }
 
   if (payload.text) {
@@ -3233,27 +3760,20 @@ async function deliverFeishuReply(params: {
             reply: resolveReplyRef(sentMessage),
           });
 
-          // Broadcast to other bots via Redis pub/sub (discussion mode only)
-          if (isGroup && readGroupMode(chatId).mode === "discussion") {
-            const broadcastText = stripInjectedStatusFooter(chunks[ci]);
-            const chunkMentions = extractFeishuAtTextMentions(broadcastText);
-            log?.info(
-              `[${account.accountId}] [broadcast] publishing (post): msgId=${sentMessage.messageId.slice(-12)} textLen=${broadcastText.length} mentions=${chunkMentions.length}`,
-            );
-            void publishBotMessage({
-              msgId: sentMessage.messageId,
+          if (isGroup && !skipDiscussionSync) {
+            const outbound = await handleDiscussionOutboundMessage({
+              messageId: sentMessage.messageId,
               chatId,
-              senderAppId: account.appId,
-              senderOpenId: account.botOpenId ?? account.appId,
-              senderName: account.name ?? account.accountId,
-              content: broadcastText,
-              msgType: "post",
-              createTime: Date.now(),
-              mentions:
-                chunkMentions.length > 0
-                  ? chunkMentions.map((m) => ({ key: m.key, id: m.id, name: m.name }))
-                  : undefined,
+              text: chunks[ci],
+              account,
+              completeTurn: ci === chunks.length - 1,
+              expectedTurnId: expectedDiscussionTurnId,
             });
+            log?.info(
+              outbound.suppressed
+                ? `[${account.accountId}] [broadcast] suppressed stale discussion post: msgId=${sentMessage.messageId.slice(-12)}`
+                : `[${account.accountId}] [broadcast] publishing (post): msgId=${sentMessage.messageId.slice(-12)} textLen=${outbound.broadcastText.length} mentions=${outbound.mentionCount}`,
+            );
           }
         }
         setStatus({ lastOutboundAt: Date.now() });

@@ -1,4 +1,4 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/feishu";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { finalizeInboundContext } from "../../../src/auto-reply/reply/inbound-context.js";
 import type { ResolvedFeishuAccount } from "./accounts.js";
@@ -14,16 +14,21 @@ const buildDriveFileContextFromTextMock = vi.hoisted(() => vi.fn(async () => "")
 const createFeishuCardStreamMock = vi.hoisted(() => vi.fn());
 const sendFeishuRichTextMock = vi.hoisted(() => vi.fn(async () => "om_sent_text"));
 const sendFeishuRichTextDetailedMock = vi.hoisted(() =>
-  vi.fn(async () => ({ messageId: "om_sent_text_d" })),
+  // oxlint-disable-next-line typescript/no-explicit-any
+  vi.fn(async (..._args: any[]) => ({ messageId: "om_sent_text_d" })),
 );
 const sendFeishuTextMock = vi.hoisted(() => vi.fn(async () => "om_sent_fallback"));
 const sendFeishuReplyMock = vi.hoisted(() => vi.fn(async () => "om_sent_reply"));
 const sendFeishuReplyDetailedMock = vi.hoisted(() =>
-  vi.fn(async () => ({ messageId: "om_sent_reply_d" })),
+  // oxlint-disable-next-line typescript/no-explicit-any
+  vi.fn(async (..._args: any[]) => ({ messageId: "om_sent_reply_d" })),
 );
 const cacheMessageTextMock = vi.hoisted(() => vi.fn());
 const buildFeishuStatusFooterMock = vi.hoisted(() => vi.fn(() => ""));
-const dispatchReplyWithBufferedBlockDispatcherMock = vi.hoisted(() => vi.fn(async () => {}));
+// oxlint-disable-next-line typescript/no-explicit-any
+const dispatchReplyWithBufferedBlockDispatcherMock = vi.hoisted(() =>
+  vi.fn(async (..._args: any[]) => {}),
+);
 const readSessionStoreJson5Mock = vi.hoisted(() => vi.fn(() => ({ store: {}, ok: true })));
 
 vi.mock("@larksuiteoapi/node-sdk", () => ({
@@ -90,6 +95,7 @@ import { setFeishuRuntime } from "./runtime.js";
 
 const account: ResolvedFeishuAccount = {
   accountId: "default",
+  knownBots: {},
   enabled: true,
   appId: "cli_x",
   appSecret: "sec_x",
@@ -252,6 +258,8 @@ describe("feishu gateway reasoning delivery", () => {
     const gatewayPromise = startFeishuGateway({
       account,
       config,
+      // oxlint-disable-next-line typescript/no-explicit-any
+      runtime: {} as any,
       abortSignal: abortController.signal,
       setStatus: vi.fn(),
       log: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
@@ -328,6 +336,8 @@ describe("feishu gateway reasoning delivery", () => {
     const gatewayPromise = startFeishuGateway({
       account,
       config,
+      // oxlint-disable-next-line typescript/no-explicit-any
+      runtime: {} as any,
       abortSignal: abortController.signal,
       setStatus: vi.fn(),
       log: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
@@ -444,6 +454,8 @@ describe("feishu gateway reasoning: enqueue-followup reproducer", () => {
     const gatewayPromise = startFeishuGateway({
       account,
       config,
+      // oxlint-disable-next-line typescript/no-explicit-any
+      runtime: {} as any,
       abortSignal: abortController.signal,
       setStatus: vi.fn(),
       log: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },

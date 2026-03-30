@@ -150,7 +150,6 @@ describe("gateway merge_forward", () => {
 
     const result = await expandMergeForwardMessage({
       account: MOCK_ACCOUNT,
-      parentMessageId: "om_parent_test",
       messageId: "om_merge_1",
     });
 

@@ -23,7 +23,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { homedir } from "node:os";
 import { join } from "node:path";
 import * as Lark from "@larksuiteoapi/node-sdk";
-import { fetchWithSsrFGuard } from "openclaw/plugin-sdk";
+import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/feishu";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { getFeishuClient, sendFeishuRichText } from "./outbound.js";
 

@@ -1,4 +1,4 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/feishu";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { finalizeInboundContext } from "../../../src/auto-reply/reply/inbound-context.js";
 import type { ResolvedFeishuAccount } from "./accounts.js";
@@ -37,7 +37,7 @@ const getFeishuClientMock = vi.hoisted(() =>
 const getFeishuChatNameMock = vi.hoisted(() => vi.fn(async () => "test"));
 const recordSessionMetaFromInboundMock = vi.hoisted(() => vi.fn(async () => {}));
 const sendFeishuReplyDetailedMock = vi.hoisted(() =>
-  vi.fn(async ({ messageId }: { messageId: string }) => ({
+  vi.fn(async ({ messageId }: { messageId: string; text: string }) => ({
     messageId: `om_sent_for_${messageId}`,
     chatId: "oc_test_room",
     messageType: "interactive",
@@ -73,6 +73,12 @@ const dispatchReplyWithBufferedBlockDispatcherMock = vi.hoisted(() =>
 );
 
 vi.mock("@larksuiteoapi/node-sdk", () => ({
+  AppType: { SelfBuilt: "SelfBuilt" },
+  Client: vi.fn(function Client() {
+    return {};
+  }),
+  defaultHttpInstance: {},
+  Domain: { Feishu: "https://open.feishu.cn" },
   LoggerLevel: { info: "info" },
   EventDispatcher: vi.fn(function EventDispatcher() {
     return {
@@ -183,6 +189,7 @@ function createInboundEvent(params: {
   senderId: string;
   text: string;
   messageId: string;
+  parentId?: string;
 }) {
   return {
     message: {
@@ -190,6 +197,7 @@ function createInboundEvent(params: {
       chat_id: params.chatId,
       chat_type: "group",
       message_type: "text",
+      parent_id: params.parentId ?? "",
       content: JSON.stringify({ text: params.text }),
       mentions: [
         {
@@ -249,9 +257,11 @@ describe("feishu gateway reply delivery", () => {
     const gatewayPromise = startFeishuGateway({
       account,
       config,
+      // oxlint-disable-next-line typescript/no-explicit-any
+      runtime: {} as any,
       abortSignal: abortController.signal,
       setStatus: vi.fn(),
-      log: { info: vi.fn(), error: vi.fn() },
+      log: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
     });
     const handler = larkState.handlers["im.message.receive_v1"];
     expect(handler).toBeTypeOf("function");
@@ -270,6 +280,42 @@ describe("feishu gateway reply delivery", () => {
     expect(firstCall?.messageId).toBe("om_explicit_parent");
     expect(firstCall?.text).toContain("请只引用目标消息回复");
     expect(sendFeishuRichTextDetailedMock).not.toHaveBeenCalled();
+
+    abortController.abort();
+    await gatewayPromise;
+  });
+
+  it("never fetches quoted content for synthetic discussion tool ids", async () => {
+    const abortController = new AbortController();
+    const gatewayPromise = startFeishuGateway({
+      account,
+      config,
+      // oxlint-disable-next-line typescript/no-explicit-any
+      runtime: {} as any,
+      abortSignal: abortController.signal,
+      setStatus: vi.fn(),
+      log: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
+    });
+    const handler = larkState.handlers["im.message.receive_v1"];
+    expect(handler).toBeTypeOf("function");
+
+    handler?.(
+      createInboundEvent({
+        chatId: "oc_test_room",
+        senderId: "ou_owner",
+        text: "@her 帮我继续",
+        messageId: "om_inbound_msg_2",
+        parentId: "discussion-tool:oc_test_room:reset:cli_x:1774625920002",
+      }),
+    );
+    await waitForReplySendCalls(1);
+
+    expect(
+      messageGetMock.mock.calls.some(
+        (call) =>
+          call?.[0]?.path?.message_id === "discussion-tool:oc_test_room:reset:cli_x:1774625920002",
+      ),
+    ).toBe(false);
 
     abortController.abort();
     await gatewayPromise;

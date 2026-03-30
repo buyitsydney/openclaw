@@ -1,0 +1,344 @@
+{
+  "id": "a2a-gateway",
+  "name": "A2A Gateway",
+  "description": "OpenClaw A2A v0.3.0 gateway with Agent Card, JSON-RPC, and REST endpoints",
+  "version": "1.0.1",
+  "defaultConfig": {
+    "agentCard": {
+      "name": "OpenClaw A2A Gateway",
+      "description": "A2A bridge for OpenClaw agents",
+      "skills": [{ "id": "chat", "name": "chat", "description": "Chat bridge" }]
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "agentCard": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "url": { "type": "string" },
+          "skills": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                { "type": "string" },
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": { "type": "string" },
+                    "name": { "type": "string" },
+                    "description": { "type": "string" }
+                  },
+                  "required": ["name"]
+                }
+              ]
+            }
+          }
+        }
+      },
+      "server": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "host": { "type": "string", "default": "0.0.0.0" },
+          "port": { "type": "number", "default": 18800 }
+        }
+      },
+      "storage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tasksDir": { "type": "string", "default": "~/.openclaw/a2a-tasks" },
+          "taskTtlHours": {
+            "type": "number",
+            "default": 72,
+            "minimum": 1,
+            "description": "Hours before completed/failed/canceled tasks are automatically deleted (default 72h)"
+          },
+          "cleanupIntervalMinutes": {
+            "type": "number",
+            "default": 60,
+            "minimum": 1,
+            "description": "Minutes between automatic task cleanup runs (default 60min)"
+          }
+        }
+      },
+      "peers": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string" },
+            "agentCardUrl": { "type": "string" },
+            "auth": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": ["bearer", "apiKey"]
+                },
+                "token": { "type": "string" }
+              },
+              "required": ["type", "token"]
+            }
+          },
+          "required": ["name", "agentCardUrl"]
+        }
+      },
+      "security": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "inboundAuth": {
+            "type": "string",
+            "enum": ["none", "bearer"],
+            "default": "none"
+          },
+          "token": { "type": "string" },
+          "tokens": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Multiple tokens for zero-downtime rotation. Used alongside or instead of 'token'."
+          },
+          "allowedMimeTypes": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Allowed MIME type patterns for file transfer (e.g. \"image/*\", \"application/pdf\")"
+          },
+          "maxFileSizeBytes": {
+            "type": "number",
+            "default": 52428800,
+            "minimum": 0,
+            "description": "Max file size in bytes for URI-based files (default 50MB)"
+          },
+          "maxInlineFileSizeBytes": {
+            "type": "number",
+            "default": 10485760,
+            "minimum": 0,
+            "description": "Max file size in bytes for inline base64 files (default 10MB)"
+          },
+          "fileUriAllowlist": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "URI hostname allowlist patterns (e.g. \"*.example.com\"). Empty allows all public hosts."
+          }
+        }
+      },
+      "routing": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "defaultAgentId": {
+            "type": "string",
+            "default": "default"
+          },
+          "rules": {
+            "type": "array",
+            "default": [],
+            "description": "Routing rules for auto-selecting peer + agentId based on message content",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "match", "target"],
+              "properties": {
+                "name": { "type": "string", "description": "Human-readable rule name" },
+                "match": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "pattern": {
+                      "type": "string",
+                      "description": "Regex pattern (case-insensitive)"
+                    },
+                    "tags": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Match any tag (OR)"
+                    },
+                    "skills": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Match peer skills"
+                    }
+                  }
+                },
+                "target": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["peer"],
+                  "properties": {
+                    "peer": { "type": "string", "description": "Target peer name" },
+                    "agentId": { "type": "string", "description": "Route to specific agentId" }
+                  }
+                },
+                "priority": {
+                  "type": "number",
+                  "default": 0,
+                  "description": "Higher = checked first"
+                }
+              }
+            }
+          }
+        }
+      },
+      "limits": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "maxConcurrentTasks": {
+            "type": "number",
+            "default": 4,
+            "minimum": 1
+          },
+          "maxQueuedTasks": {
+            "type": "number",
+            "default": 100,
+            "minimum": 0
+          }
+        }
+      },
+      "observability": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "structuredLogs": {
+            "type": "boolean",
+            "default": true
+          },
+          "exposeMetricsEndpoint": {
+            "type": "boolean",
+            "default": true
+          },
+          "metricsPath": {
+            "type": "string",
+            "default": "/a2a/metrics"
+          },
+          "metricsAuth": {
+            "type": "string",
+            "enum": ["none", "bearer"],
+            "default": "none",
+            "description": "Authentication for the metrics endpoint. When set to 'bearer', reuses security.token/tokens."
+          },
+          "auditLogPath": {
+            "type": "string",
+            "default": "~/.openclaw/a2a-audit.jsonl",
+            "description": "Path for the JSONL audit log file (separate from structured logs)."
+          }
+        }
+      },
+      "timeouts": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "agentResponseTimeoutMs": {
+            "type": "number",
+            "default": 300000,
+            "minimum": 1000
+          }
+        }
+      },
+      "resilience": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "healthCheck": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": { "type": "boolean", "default": true },
+              "intervalMs": { "type": "number", "default": 30000, "minimum": 1000 },
+              "timeoutMs": { "type": "number", "default": 5000, "minimum": 500 }
+            }
+          },
+          "retry": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "maxRetries": { "type": "number", "default": 3, "minimum": 0 },
+              "baseDelayMs": { "type": "number", "default": 1000, "minimum": 100 },
+              "maxDelayMs": { "type": "number", "default": 10000, "minimum": 100 }
+            }
+          },
+          "circuitBreaker": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "failureThreshold": { "type": "number", "default": 5, "minimum": 1 },
+              "resetTimeoutMs": { "type": "number", "default": 30000, "minimum": 1000 }
+            }
+          }
+        }
+      },
+      "advertise": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "mDNS self-advertisement. When enabled, the gateway publishes SRV + TXT records on the local network so other A2A gateways can discover it automatically.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable mDNS self-advertisement (requires multicast-dns)"
+          },
+          "serviceName": {
+            "type": "string",
+            "default": "_a2a._tcp.local",
+            "description": "DNS-SD service type to advertise"
+          },
+          "ttl": {
+            "type": "number",
+            "default": 120,
+            "minimum": 10,
+            "description": "TTL in seconds for advertised DNS records"
+          }
+        }
+      },
+      "discovery": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "DNS-SD based dynamic agent discovery. Disabled by default. When enabled, the gateway queries DNS SRV + TXT records to find peer agents on the local network.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable DNS-SD based peer discovery"
+          },
+          "serviceName": {
+            "type": "string",
+            "default": "_a2a._tcp.local",
+            "description": "DNS-SD service name to query for SRV records"
+          },
+          "refreshIntervalMs": {
+            "type": "number",
+            "default": 30000,
+            "minimum": 1000,
+            "description": "How often to re-query DNS for peer discovery (milliseconds)"
+          },
+          "mergeWithStatic": {
+            "type": "boolean",
+            "default": true,
+            "description": "When true, discovered peers supplement static peers config. Static peers take precedence on name collision."
+          }
+        }
+      }
+    }
+  },
+  "uiHints": {
+    "peers": {
+      "items": {
+        "auth": {
+          "token": { "sensitive": true }
+        }
+      }
+    },
+    "security": {
+      "token": { "sensitive": true },
+      "tokens": { "items": { "sensitive": true } }
+    }
+  }
+}

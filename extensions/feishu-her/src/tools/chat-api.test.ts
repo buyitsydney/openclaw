@@ -7,7 +7,7 @@ const fetchWithSsrFGuardMock = vi.hoisted(() => vi.fn());
 vi.mock("../outbound.js", () => ({
   getFeishuClient: getFeishuClientMock,
 }));
-vi.mock("openclaw/plugin-sdk", () => ({
+vi.mock("openclaw/plugin-sdk/feishu", () => ({
   fetchWithSsrFGuard: fetchWithSsrFGuardMock,
 }));
 

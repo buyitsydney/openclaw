@@ -193,6 +193,7 @@ PORT_RT=$((BASE + 2))    # Realtime WebSocket
 PORT_FE=$((BASE + 3))    # Frontend HTTP
 PORT_WS=$((BASE + 4))    # Frontend WS Proxy
 PORT_OAUTH=$((BASE + 5)) # OAuth callback (feishu minutes)
+PORT_A2A=$((BASE + 6))   # A2A Gateway (agent-to-agent)
 
 # --- Logs ---
 if [ "$ACTION" = "logs" ]; then
@@ -633,6 +634,19 @@ DEPT_SKILLS_DIR="$HOME/.openclaw/dept-skills/${DEPT_NAME}"
 mkdir -p "$DEPT_SKILLS_DIR"
 echo -e "${GREEN}  ✓ 部门 skills: ${DEPT_SKILLS_DIR} (dept=${DEPT_NAME})${NC}"
 
+# A2A Gateway plugin (optional, from repo docker/plugins/)
+A2A_PLUGIN_DIR="${SCRIPT_DIR}/docker/plugins/a2a-gateway"
+if [ -d "$A2A_PLUGIN_DIR" ] && [ -f "$A2A_PLUGIN_DIR/index.ts" ]; then
+  if [ ! -d "$A2A_PLUGIN_DIR/node_modules" ]; then
+    echo -e "${YELLOW}  ⟳ A2A plugin: installing dependencies...${NC}"
+    (cd "$A2A_PLUGIN_DIR" && npm install --omit=dev --ignore-scripts 2>&1 | tail -1)
+  fi
+  echo -e "${GREEN}  ✓ A2A plugin: ${A2A_PLUGIN_DIR}${NC}"
+else
+  A2A_PLUGIN_DIR=""
+  echo -e "  · A2A plugin: 未安装（跳过）"
+fi
+
 # --- Compute webchat URL from token + port (before docker run) ---
 AUTH_TOKEN=$(python3 -c "
 import json
@@ -655,7 +669,7 @@ NAMED_FE_HOST="${TP}u${USER_ID}-fe.carher.net"
 NAMED_AUTH_HOST="${TP}u${USER_ID}-auth.carher.net"
 
 echo -e "${YELLOW}启动容器 ${CONTAINER_NAME}...${NC}"
-echo -e "  端口映射: GW=${PORT_GW} FE=${PORT_FE} WS=${PORT_WS} OAuth=${PORT_OAUTH} (RT=内部，不暴露)"
+echo -e "  端口映射: GW=${PORT_GW} FE=${PORT_FE} WS=${PORT_WS} OAuth=${PORT_OAUTH} A2A=${PORT_A2A} (RT=内部，不暴露)"
 
 # Dev mode: bind mount host source into container; use a named volume for
 # node_modules so the container keeps its own Linux-native dependencies
@@ -697,14 +711,19 @@ docker run -d \
   ${WEBCHAT_URL:+-e WEBCHAT_URL="$WEBCHAT_URL"} \
   -e VOICE_FE_HOST="${NAMED_FE_HOST}" \
   -e VOICE_PROXY_HOST="${NAMED_PROXY_HOST}" \
+  -e CARHER_SERVER="${CARHER_SERVER:-local}" \
+  -e CARHER_LAN_IP="${CARHER_LAN_IP:-}" \
+  -e CARHER_A2A_PORT="${PORT_A2A}" \
   -p "${PORT_GW}:18789" \
   -p "${PORT_FE}:8000" \
   -p "${PORT_WS}:8080" \
   -p "${PORT_OAUTH}:18891" \
+  -p "${PORT_A2A}:18800" \
   -v "carher-${USER_ID}-data:/data/.openclaw" \
   -v "${GCLOUD_ADC}:/gcloud/application_default_credentials.json:ro" \
   -v "${SHARED_SKILLS_DIR}:/data/.openclaw/skills:ro" \
   -v "${DEPT_SKILLS_DIR}:/data/.agents/skills:ro" \
+  ${A2A_PLUGIN_DIR:+-v "${A2A_PLUGIN_DIR}:/data/.openclaw/plugins/a2a-gateway:ro"} \
   -v "${CONFIG_MOUNT}:/data/.openclaw/openclaw.json:ro" \
   -v "${SCRIPT_DIR}/docker/carher-config.json:/data/.openclaw/carher-config.json:ro" \
   -v "${SCRIPT_DIR}/docker/shared-config.json5:/data/.openclaw/shared-config.json5:ro" \

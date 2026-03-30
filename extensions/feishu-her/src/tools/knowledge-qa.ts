@@ -16,8 +16,8 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { stringEnum } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import { stringEnum } from "openclaw/plugin-sdk/feishu";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
   getValidUserToken,
@@ -523,7 +523,11 @@ export function registerFeishuKnowledgeQATool(api: OpenClawPluginApi): void {
           // so Her can prompt the user to re-authorize in this same response.
           // oxlint-disable-next-line typescript/no-explicit-any
           const r = result as any;
-          if (r?.quality === "error" && r?.error && /9999|Unauthorized|expired/i.test(String(r.error))) {
+          if (
+            r?.quality === "error" &&
+            r?.error &&
+            /9999|Unauthorized|expired/i.test(String(r.error))
+          ) {
             handleFeishuTokenError(firstAccount);
             const reauth = await requireUserToken({
               account: firstAccount,

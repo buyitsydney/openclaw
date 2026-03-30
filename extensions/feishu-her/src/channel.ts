@@ -12,13 +12,14 @@ import {
   type ChannelMessageActionName,
   type ChannelPlugin,
   type OpenClawConfig,
-} from "openclaw/plugin-sdk";
+} from "openclaw/plugin-sdk/feishu";
 import {
   listFeishuAccountIds,
   resolveDefaultFeishuAccountId,
   resolveFeishuAccount,
   type ResolvedFeishuAccount,
 } from "./accounts.js";
+import { handleDiscussionOutboundMessage, isDiscussionChatTarget } from "./discussion-outbound.js";
 import { buildFeishuBotActorFromAccount } from "./feishu-message.js";
 import { buildFeishuTextPayload } from "./feishu-message.js";
 import { startFeishuGateway } from "./gateway.js";
@@ -39,10 +40,7 @@ import {
   removeFeishuReaction,
   deleteFeishuMessage,
 } from "./outbound.js";
-import { publishBotMessage } from "./discussion-state.ts";
-import { extractFeishuAtTextMentions } from "./mention-text.js";
 import { getFeishuRuntime } from "./runtime.js";
-import { readGroupMode } from "./group-mode.js";
 import { recordSentMessage } from "./sent-message-log.js";
 
 const meta = {
@@ -210,8 +208,8 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
     },
   },
   actions: {
-    listActions: ({ cfg }) => {
-      if (!cfg.channels?.["feishu"]) return [];
+    describeMessageTool: ({ cfg }) => {
+      if (!cfg.channels?.["feishu"]) return null;
       const section = cfg.channels["feishu"] as Record<string, unknown> | undefined;
       const gate = createActionGate(section?.actions as Record<string, boolean> | undefined);
       const actions = new Set<ChannelMessageActionName>();
@@ -221,7 +219,7 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
       if (gate("deleteMessage")) {
         actions.add("delete");
       }
-      return Array.from(actions);
+      return { actions: Array.from(actions), capabilities: [], schema: null };
     },
     supportsAction: ({ action }) => action === "react" || action === "delete",
     handleAction: async ({ action, params, cfg, accountId }) => {
@@ -286,6 +284,9 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
     },
     sendText: async ({ to, text, accountId, cfg, replyToId, threadId }) => {
       const account = resolveFeishuAccount({ cfg, accountId });
+      if (isDiscussionChatTarget(to)) {
+        return { channel: "feishu", messageId: "" };
+      }
       const botActor = buildFeishuBotActorFromAccount(account);
       const replyToMessageId = resolveReplyToMessageId({ replyToId, threadId });
       const reply = buildFeishuReplyRef({ parentId: replyToMessageId });
@@ -308,31 +309,20 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
           textParts: buildFeishuTextPayload(text),
           ...(reply && { reply }),
         });
-
-        // Broadcast to other bots via Redis (discussion mode, group chats only).
-        // This captures messages sent by the AI's `message` tool, which bypasses
-        // the gateway.ts deliver callback where the other publishBotMessage lives.
-        if (to.startsWith("oc_") && readGroupMode(to).mode === "discussion") {
-          const mentions = extractFeishuAtTextMentions(text);
-          void publishBotMessage({
-            msgId: sentMessage.messageId,
-            chatId: to,
-            senderAppId: account.appId,
-            senderOpenId: account.botOpenId ?? account.appId,
-            senderName: account.name ?? account.accountId,
-            content: text,
-            msgType: "post",
-            createTime: Date.now(),
-            mentions: mentions.length > 0
-              ? mentions.map((m) => ({ key: m.key, id: m.id, name: m.name }))
-              : undefined,
-          });
-        }
+        await handleDiscussionOutboundMessage({
+          messageId: sentMessage.messageId,
+          chatId: to,
+          text,
+          account,
+        });
       }
       return { channel: "feishu", messageId: sentMessage?.messageId ?? "" };
     },
     sendMedia: async ({ to, text, mediaUrl, accountId, cfg, replyToId, threadId }) => {
       const account = resolveFeishuAccount({ cfg, accountId });
+      if (isDiscussionChatTarget(to)) {
+        return { channel: "feishu", messageId: "" };
+      }
       const botActor = buildFeishuBotActorFromAccount(account);
       const replyToMessageId = resolveReplyToMessageId({ replyToId, threadId });
       const reply = buildFeishuReplyRef({ parentId: replyToMessageId });
@@ -341,9 +331,11 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
       });
       let primaryMid: string | undefined;
       let lastMid: string | undefined;
+      let discussionOutboundMessageId: string | undefined;
+      let discussionOutboundText: string | undefined;
       if (mediaUrl) {
         try {
-          const { loadWebMedia } = await import("openclaw/plugin-sdk");
+          const { loadWebMedia } = await import("openclaw/plugin-sdk/feishu");
           const { readFile } = await import("node:fs/promises");
           const FEISHU_MAX_BYTES = 30 * 1024 * 1024;
           const media = await loadWebMedia(mediaUrl, {
@@ -367,6 +359,8 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
                 primaryMid ??= sentMessage.messageId;
                 lastMid = sentMessage.messageId;
                 recordSentMessage(to, sentMessage.messageId, "[audio]");
+                discussionOutboundMessageId = sentMessage.messageId;
+                discussionOutboundText = "[audio]";
                 try {
                   await archiveSentFeishuBinaryMessage({
                     chatId: to,
@@ -398,6 +392,8 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
                 primaryMid ??= sentMessage.messageId;
                 lastMid = sentMessage.messageId;
                 recordSentMessage(to, sentMessage.messageId, "[video]");
+                discussionOutboundMessageId = sentMessage.messageId;
+                discussionOutboundText = "[video]";
                 try {
                   await archiveSentFeishuBinaryMessage({
                     chatId: to,
@@ -429,6 +425,8 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
                 primaryMid ??= sentMessage.messageId;
                 lastMid = sentMessage.messageId;
                 recordSentMessage(to, sentMessage.messageId, "[image]");
+                discussionOutboundMessageId = sentMessage.messageId;
+                discussionOutboundText = "[image]";
                 try {
                   await archiveSentFeishuBinaryMessage({
                     chatId: to,
@@ -463,6 +461,8 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
                 primaryMid ??= sentMessage.messageId;
                 lastMid = sentMessage.messageId;
                 recordSentMessage(to, sentMessage.messageId, `[file] ${fileName}`);
+                discussionOutboundMessageId = sentMessage.messageId;
+                discussionOutboundText = `[file] ${fileName}`;
                 try {
                   await archiveSentFeishuBinaryMessage({
                     chatId: to,
@@ -504,6 +504,8 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
             primaryMid ??= mid;
             lastMid = mid;
             recordSentMessage(to, mid, `[media] ${mediaUrl}`);
+            discussionOutboundMessageId = mid;
+            discussionOutboundText = `[media] ${mediaUrl}`;
           }
         }
       }
@@ -518,6 +520,8 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
           lastMid = sentMessage.messageId;
           recordSentMessage(to, sentMessage.messageId, text);
           cacheMessageText(sentMessage.messageId, text);
+          discussionOutboundMessageId = sentMessage.messageId;
+          discussionOutboundText = text;
           archiveSentFeishuTextMessage({
             chatId: to,
             message: sentMessage,
@@ -529,6 +533,14 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
             ...(reply && { reply }),
           });
         }
+      }
+      if (discussionOutboundMessageId && discussionOutboundText) {
+        await handleDiscussionOutboundMessage({
+          messageId: discussionOutboundMessageId,
+          chatId: to,
+          text: discussionOutboundText,
+          account,
+        });
       }
       return { channel: "feishu", messageId: primaryMid ?? lastMid ?? "" };
     },

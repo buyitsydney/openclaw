@@ -1,4 +1,4 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/feishu";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { finalizeInboundContext } from "../../../src/auto-reply/reply/inbound-context.js";
 import type { ResolvedFeishuAccount } from "./accounts.js";
@@ -6,7 +6,8 @@ import type { ResolvedFeishuAccount } from "./accounts.js";
 const larkState = vi.hoisted(() => ({
   handlers: {} as Record<string, (data: unknown) => unknown>,
 }));
-const recordSessionMetaFromInboundMock = vi.hoisted(() => vi.fn(async () => {}));
+// oxlint-disable-next-line typescript/no-explicit-any
+const recordSessionMetaFromInboundMock = vi.hoisted(() => vi.fn(async (..._args: any[]) => {}));
 const contactUserGetMock = vi.hoisted(() =>
   vi.fn(async () => ({ data: { user: { name: "owner" } } })),
 );
@@ -305,7 +306,9 @@ describe("feishu gateway inbound session metadata", () => {
       config,
       abortSignal: abortController.signal,
       setStatus: vi.fn(),
-      log: { info: vi.fn(), error: vi.fn() },
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      // oxlint-disable-next-line typescript/no-explicit-any
+      runtime: {} as any,
     });
     const handler = larkState.handlers["im.message.receive_v1"];
     expect(handler).toBeTypeOf("function");
@@ -339,14 +342,17 @@ describe("feishu gateway inbound session metadata", () => {
   });
 
   it("falls back to chat id when the group name cannot be resolved", async () => {
-    getFeishuChatNameMock.mockResolvedValueOnce(null);
+    // oxlint-disable-next-line typescript/no-explicit-any
+    getFeishuChatNameMock.mockResolvedValueOnce(null as any);
     const abortController = new AbortController();
     const gatewayPromise = startFeishuGateway({
       account,
       config,
       abortSignal: abortController.signal,
       setStatus: vi.fn(),
-      log: { info: vi.fn(), error: vi.fn() },
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      // oxlint-disable-next-line typescript/no-explicit-any
+      runtime: {} as any,
     });
     const handler = larkState.handlers["im.message.receive_v1"];
     expect(handler).toBeTypeOf("function");
@@ -379,7 +385,9 @@ describe("feishu gateway inbound session metadata", () => {
       config,
       abortSignal: abortController.signal,
       setStatus: vi.fn(),
-      log: { info: vi.fn(), error: vi.fn() },
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      // oxlint-disable-next-line typescript/no-explicit-any
+      runtime: {} as any,
     });
     const handler = larkState.handlers["im.message.receive_v1"];
     expect(handler).toBeTypeOf("function");
@@ -419,7 +427,9 @@ describe("feishu gateway inbound session metadata", () => {
       config,
       abortSignal: abortController.signal,
       setStatus: vi.fn(),
-      log: { info: vi.fn(), error: vi.fn() },
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      // oxlint-disable-next-line typescript/no-explicit-any
+      runtime: {} as any,
     });
     const handler = larkState.handlers["im.message.receive_v1"];
     expect(handler).toBeTypeOf("function");
@@ -462,7 +472,9 @@ describe("feishu gateway inbound session metadata", () => {
       config,
       abortSignal: abortController.signal,
       setStatus: vi.fn(),
-      log: { info: vi.fn(), error: vi.fn() },
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      // oxlint-disable-next-line typescript/no-explicit-any
+      runtime: {} as any,
     });
     const handler = larkState.handlers["im.message.receive_v1"];
     expect(handler).toBeTypeOf("function");

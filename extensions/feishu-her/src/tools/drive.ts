@@ -9,8 +9,8 @@ import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import type * as Lark from "@larksuiteoapi/node-sdk";
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { fetchWithSsrFGuard, stringEnum } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import { fetchWithSsrFGuard, stringEnum } from "openclaw/plugin-sdk/feishu";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
   getValidUserToken,
@@ -113,7 +113,9 @@ function requireFolderToken(value: unknown, action: string): string {
 function requireListFolderToken(value: unknown): string {
   const token = requireStringParam(value, "folder_token");
   if (token === "0" || token.toLowerCase() === "root") {
-    throw new Error("list_folder requires a real folder token. Root browsing must use action=list_root.");
+    throw new Error(
+      "list_folder requires a real folder token. Root browsing must use action=list_root.",
+    );
   }
   return token;
 }

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -42,5 +42,27 @@ export function readGroupMode(chatId: string): GroupModeInfo {
     return { mode: normalizedMode, context };
   } catch {
     return { mode: "owner-at" };
+  }
+}
+
+/**
+ * Update only the `context` field in an existing group-modes JSON file.
+ * No-op if the file doesn't exist (mode was never set for this group).
+ */
+export function updateGroupModeContext(chatId: string, context: string): boolean {
+  const dir = resolveGroupModesDir();
+  let filePath = join(dir, `${chatId}.json`);
+  if (!existsSync(filePath)) {
+    filePath = join(dir, `feishu:${chatId}.json`);
+    if (!existsSync(filePath)) return false;
+  }
+  try {
+    const data = JSON.parse(readFileSync(filePath, "utf-8"));
+    data.context = context;
+    data.set_at = new Date().toISOString();
+    writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n", "utf-8");
+    return true;
+  } catch {
+    return false;
   }
 }

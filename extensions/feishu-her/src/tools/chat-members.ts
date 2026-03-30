@@ -1,6 +1,6 @@
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { stringEnum } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import { stringEnum } from "openclaw/plugin-sdk/feishu";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import { callChatApi, makeLocalErrorResult, makeToolResult } from "./chat-api.js";
 import { getTenantAccessToken, fetchChatHistory } from "./chat-history.js";

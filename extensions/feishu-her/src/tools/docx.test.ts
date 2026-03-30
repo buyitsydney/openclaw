@@ -211,14 +211,49 @@ describe("feishu-her feishu_doc anti-regression", () => {
       },
     });
     resolveOAuthRedirectUriMock.mockReturnValue("https://example.com/callback");
-    callFeishuApiWithUserTokenMock.mockImplementation(async (request: {
-      endpoint: string;
-      query?: Record<string, string>;
-    }) => {
-      const segments = request.endpoint.split("/");
-      const documentId = decodeURIComponent(segments[4] ?? "");
-      if (request.endpoint.endsWith("/raw_content")) {
-        const res = await rawContentMock({
+    callFeishuApiWithUserTokenMock.mockImplementation(
+      async (request: { endpoint: string; query?: Record<string, string> }) => {
+        const segments = request.endpoint.split("/");
+        const documentId = decodeURIComponent(segments[4] ?? "");
+        if (request.endpoint.endsWith("/raw_content")) {
+          const res = await rawContentMock({
+            path: { document_id: documentId },
+          });
+          return {
+            code: res.code ?? 0,
+            msg: res.msg ?? "ok",
+            data: res.data ?? null,
+          };
+        }
+        if (request.endpoint.endsWith("/blocks")) {
+          const params = request.query?.page_token
+            ? {
+                page_token: request.query.page_token,
+                page_size: Number(request.query.page_size ?? "500"),
+              }
+            : { page_size: Number(request.query?.page_size ?? "500") };
+          const res = await blockListMock({
+            path: { document_id: documentId },
+            params,
+          });
+          return {
+            code: res.code ?? 0,
+            msg: res.msg ?? "ok",
+            data: res.data ?? null,
+          };
+        }
+        if (request.endpoint.includes("/blocks/")) {
+          const blockId = decodeURIComponent(segments[6] ?? "");
+          const res = await blockGetMock({
+            path: { document_id: documentId, block_id: blockId },
+          });
+          return {
+            code: res.code ?? 0,
+            msg: res.msg ?? "ok",
+            data: res.data ?? null,
+          };
+        }
+        const res = await docGetMock({
           path: { document_id: documentId },
         });
         return {
@@ -226,44 +261,8 @@ describe("feishu-her feishu_doc anti-regression", () => {
           msg: res.msg ?? "ok",
           data: res.data ?? null,
         };
-      }
-      if (request.endpoint.endsWith("/blocks")) {
-        const params = request.query?.page_token
-          ? {
-              page_token: request.query.page_token,
-              page_size: Number(request.query.page_size ?? "500"),
-            }
-          : { page_size: Number(request.query?.page_size ?? "500") };
-        const res = await blockListMock({
-          path: { document_id: documentId },
-          params,
-        });
-        return {
-          code: res.code ?? 0,
-          msg: res.msg ?? "ok",
-          data: res.data ?? null,
-        };
-      }
-      if (request.endpoint.includes("/blocks/")) {
-        const blockId = decodeURIComponent(segments[6] ?? "");
-        const res = await blockGetMock({
-          path: { document_id: documentId, block_id: blockId },
-        });
-        return {
-          code: res.code ?? 0,
-          msg: res.msg ?? "ok",
-          data: res.data ?? null,
-        };
-      }
-      const res = await docGetMock({
-        path: { document_id: documentId },
-      });
-      return {
-        code: res.code ?? 0,
-        msg: res.msg ?? "ok",
-        data: res.data ?? null,
-      };
-    });
+      },
+    );
     readDriveFileContextByTokenMock.mockResolvedValue({
       ok: true,
       token: "file_1",

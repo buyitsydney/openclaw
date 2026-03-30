@@ -11,8 +11,10 @@ vi.mock("./oauth.js", () => ({
   callFeishuApiWithUserToken: callFeishuApiWithUserTokenMock,
 }));
 
-vi.mock("openclaw/plugin-sdk", async () => {
-  const actual = await vi.importActual<typeof import("openclaw/plugin-sdk")>("openclaw/plugin-sdk");
+vi.mock("openclaw/plugin-sdk/feishu", async () => {
+  const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/feishu")>(
+    "openclaw/plugin-sdk/feishu",
+  );
   return {
     ...actual,
     fetchWithSsrFGuard: fetchWithSsrFGuardMock,
