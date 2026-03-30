@@ -1088,6 +1088,19 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
       `[${account.accountId}] [broadcast] context-only: msgId=${msg.msgId.slice(-12)} from=${msg.senderAppId.slice(-8)} chat=${msg.chatId.slice(-8)} content=${normalizedMsg.content.slice(0, 80)}`,
     );
 
+    // Archive peer bot messages so group history search and memory-bridge stay complete.
+    archiveGroupMessage({
+      chatId: normalizedMsg.chatId,
+      chatName: null,
+      senderId: normalizedMsg.senderAppId,
+      senderName: normalizedMsg.senderName || normalizedMsg.senderAppId.slice(-8),
+      text: normalizedMsg.content,
+      msgId: normalizedMsg.msgId,
+      ts: Math.floor(normalizedMsg.createTime / 1000),
+      messageType: normalizedMsg.msgType || "post",
+      mentions: normalizedMsg.mentions as any,
+    });
+
     // Fast-path turn claim: a broadcast usually means a turn just completed.
     // The deterministic turn state in Redis is the source of truth; this just
     // avoids waiting up to 10s for the next tick to discover the assignment.
