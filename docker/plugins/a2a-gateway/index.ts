@@ -1092,9 +1092,24 @@ const plugin = {
         // Start Redis registry (self-register + discover peers)
         if (registryInitConfig) {
           try {
-            // ioredis lives in the main app's node_modules, not in the plugin dir
-            const IoRedis =
-              require("/app/node_modules/ioredis").default || require("/app/node_modules/ioredis");
+            // ioredis lives in the main app's node_modules (flat or pnpm hoisted)
+            const IoRedis = (() => {
+              for (const p of ["ioredis", "/app/node_modules/ioredis"]) {
+                try { const m = require(p); return m.default || m; } catch {}
+              }
+              // pnpm hoisted path
+              const fs = require("fs");
+              const dir = "/app/node_modules/.pnpm";
+              if (fs.existsSync(dir)) {
+                for (const d of fs.readdirSync(dir)) {
+                  if (d.startsWith("ioredis@")) {
+                    const m = require(`${dir}/${d}/node_modules/ioredis`);
+                    return m.default || m;
+                  }
+                }
+              }
+              throw new Error("ioredis not found");
+            })();
             const redis = new IoRedis(registryInitConfig.redisUrl, {
               lazyConnect: true,
               maxRetriesPerRequest: 2,
