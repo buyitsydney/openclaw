@@ -2316,7 +2316,11 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         humanDiscussionRouting.mode === "ignore" ? null : humanDiscussionRouting.mode;
       discussionHumanRoutingTargetAppId = humanDiscussionRouting.targetAppId;
       const isHumanSelectedDiscussionTarget =
-        !isBotSender && !isSyntheticMessage && discussionHumanRoutingTargetAppId === account.appId;
+        !isBotSender &&
+        !isSyntheticMessage &&
+        (discussionHumanRoutingMode === "direct"
+          ? humanMentionedBotAppIds.includes(account.appId)
+          : discussionHumanRoutingTargetAppId === account.appId);
       const bypassDiscussionTurnScheduling = shouldBypassDiscussionTurnScheduling({
         isCommand,
         isBotSender,
@@ -2836,7 +2840,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           const amCurrentOwner = dTurn?.ownerAppId === account.appId;
           const isDirectHumanCommand =
             discussionHumanRoutingMode === "direct" &&
-            discussionHumanRoutingTargetAppId === account.appId;
+            humanMentionedBotAppIds.includes(account.appId);
           const resolveNameFromKnown = (appId: string): string =>
             (account.knownBots as Record<string, string>)?.[appId] ?? appId.slice(-8);
           const leaderName = dLeader ? resolveNameFromKnown(dLeader) : "未选出";
