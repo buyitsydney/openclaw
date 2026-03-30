@@ -2853,7 +2853,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           const amCurrentOwner = dTurn?.ownerAppId === account.appId;
           const isDirectHumanCommand =
             discussionHumanRoutingMode === "direct" &&
-            wasMentioned;
+            discussionHumanRoutingTargetAppId === account.appId;
           const resolveNameFromKnown = (appId: string): string =>
             (account.knownBots as Record<string, string>)?.[appId] ?? appId.slice(-8);
           const leaderName = dLeader ? resolveNameFromKnown(dLeader) : "未选出";
