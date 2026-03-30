@@ -81,3 +81,10 @@ export {
 } from "./webhook-memory-guards.js";
 export { applyBasicWebhookRequestGuards } from "./webhook-request-guards.js";
 export { optionalStringEnum, stringEnum } from "../agents/schema/typebox.js";
+// Compat shims: symbols used by dev feishu-her overlaid onto v2026.3.12
+export { normalizeAccountId } from "./account-id.js";
+export { extractPdfContent } from "../media/pdf-extract.js";
+export { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
+export { sniffMimeFromBase64 } from "../media/sniff-mime-from-base64.js";
+export { loadWebMedia } from "../web/media.js";
+export type { ChannelLogSink } from "../channels/plugins/types.core.js";
