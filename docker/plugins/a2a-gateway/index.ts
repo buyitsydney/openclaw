@@ -455,10 +455,7 @@ const plugin = {
         api.logger.info?.(`a2a-gateway: refreshRegistryPeers found ${peers.length} peers`);
         _sharedRegistryPeersCache = peers.map((p) => ({
           name: p.name,
-          agentCardUrl: p.card.endpoints.docker.replace(
-            "/a2a/jsonrpc",
-            "/.well-known/agent-card.json",
-          ),
+          agentCardUrl: p.agentCardUrl,
           auth: undefined as any,
         }));
       } catch {
