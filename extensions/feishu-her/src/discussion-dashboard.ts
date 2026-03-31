@@ -478,12 +478,13 @@ async function patchCard(
     });
     const data = (await res.json()) as { code: number; msg: string };
     if (data.code !== 0) {
-      log?.warn(`[dashboard] ${chatId.slice(-8)}: patch failed: ${data.code} ${data.msg}`);
+      log?.warn(`[dashboard] ${chatId.slice(-8)}: patch FAILED: ${data.code} ${data.msg}`);
       if (data.code === 230001 || data.code === 230003) {
         cache.delete(chatId);
       }
       return;
     }
+    log?.info(`[dashboard] ${chatId.slice(-8)}: patch OK (owner=${turn.ownerAppId.slice(-8)} next=${turn.remainingQueue.find((id) => id !== turn.ownerAppId)?.slice(-8) ?? "none"})`);
 
     const meta = cache.get(chatId);
     if (meta) meta.lastFingerprint = fp;
