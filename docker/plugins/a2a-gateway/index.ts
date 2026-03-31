@@ -348,7 +348,7 @@ const plugin = {
           botId: discoverBotId(),
           botName: resolvedBotName,
           port: config.server.port,
-          ownerAccountId,
+          ownerAccountId: _sharedOwnerAccountId,
           skills: Array.isArray(config.agentCard.skills)
             ? config.agentCard.skills
             : [{ id: "chat", name: "chat" }],
