@@ -106,7 +106,7 @@ async function extractDriveFileContent(params: {
     contentType: params.contentType,
     fileName: params.title,
     defaultBaseName: "feishu-drive-file",
-    includePathLine: false,
+    includePathLine: true,
   });
   if (!content) {
     return { ok: false, reason: `unsupported file type: ${params.title}` };

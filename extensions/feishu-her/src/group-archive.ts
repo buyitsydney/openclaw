@@ -39,7 +39,6 @@ export type GroupArchiveEntry = {
   reply?: FeishuReplyRef;
 };
 
-const OFFICE_EXTS = new Set([".pptx", ".docx", ".xlsx", ".odt", ".odp", ".ods", ".rtf"]);
 const MAX_OFFICE_CHARS = 100_000;
 const MAX_PDF_PAGES = 5;
 const MAX_PDF_PIXELS = 3_000_000;
@@ -316,11 +315,8 @@ export async function buildArchiveTextFromSavedFile(params: {
       return includePathLine ? pathLine : "";
     }
   }
-  // Office files stay path-only. We still persist the local file so the agent
-  // can decide whether and how to read it, but we never pre-parse them here.
-  if (OFFICE_EXTS.has(ext)) return pathLine;
-
-  return includePathLine ? pathLine : "";
+  // Non-PDF files: persist locally, return path so the agent can read on demand.
+  return pathLine;
 }
 
 export async function createArchiveTextForBuffer(params: {

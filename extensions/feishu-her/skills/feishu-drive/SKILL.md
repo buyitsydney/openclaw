@@ -38,6 +38,19 @@ metadata: { "openclaw": { "emoji": "🗂️" } }
 - `delete`
 - `upload_file`
 
+## 读取云盘文件内容
+
+云盘中的普通文件（.txt / .log / .csv / .pdf / .gz 等）可通过 `feishu_doc` 读取：
+
+```
+feishu_doc(action="read", doc_type="file", doc_token="<file_token>")
+```
+
+- `file_token` 从 `list_folder` / `list_root` 结果中获取
+- PDF 会直接提取正文返回
+- 其他文件类型下载到本地后返回保存路径，agent 可用 `exec` 按需读取（cat / head / tail / grep / zcat 等）
+- **不要用 `web_fetch` 访问飞书文件链接**——需要鉴权，必定失败
+
 ## 共享文件夹记忆
 
 用户给出云盘文件夹链接或 `folder_token` 时：
