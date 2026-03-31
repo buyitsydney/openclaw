@@ -83,6 +83,10 @@ function asNumber(value: unknown, fallback: number): number {
   return fallback;
 }
 
+// Module-level shared state for Redis registry (shared across all register() invocations)
+let _sharedRegistryManager: RegistryManager | null = null;
+let _sharedRegistryPeersCache: PeerConfig[] = [];
+
 function asBoolean(value: unknown, fallback: boolean): boolean {
   if (typeof value === "boolean") {
     return value;
@@ -316,7 +320,7 @@ const plugin = {
     // ------------------------------------------------------------------
     // Redis Registry: self-registration + peer discovery
     // ------------------------------------------------------------------
-    let registryManager: RegistryManager | null = null;
+    // _sharedRegistryManager is module-level (_sharedRegistryManager) to survive multiple register() calls
     const ownerAccountId = discoverOwnerAccountId();
     // Pass owner account to executor so A2A sessions use owner's OAuth token
     innerExecutor.ownerAccountId = ownerAccountId;
@@ -418,8 +422,8 @@ const plugin = {
      * Get the effective peer list: static peers + DNS discovered + Redis registry.
      * Static peers always take precedence on name collision.
      */
-    let registryPeersCache: PeerConfig[] = [];
-    let registryPeersCacheExpiry = 0;
+    // _sharedRegistryPeersCache is module-level (_sharedRegistryPeersCache)
+    
 
     const getEffectivePeers = (): PeerConfig[] => {
       let basePeers: PeerConfig[];
@@ -432,9 +436,9 @@ const plugin = {
       }
 
       // Merge with Redis registry peers (cached, refreshed async)
-      if (registryPeersCache.length > 0) {
+      if (_sharedRegistryPeersCache.length > 0) {
         const staticNames = new Set(basePeers.map((p) => p.name));
-        const registryOnly = registryPeersCache.filter((p) => !staticNames.has(p.name));
+        const registryOnly = _sharedRegistryPeersCache.filter((p) => !staticNames.has(p.name));
         return [...basePeers, ...registryOnly];
       }
       return basePeers;
@@ -442,12 +446,14 @@ const plugin = {
 
     // Async registry peer refresh (non-blocking)
     const refreshRegistryPeers = async (): Promise<void> => {
-      if (!registryManager) {
+      if (!_sharedRegistryManager) {
+        api.logger.warn?.("a2a-gateway: refreshRegistryPeers skipped (_sharedRegistryManager is null)");
         return;
       }
       try {
-        const peers = await registryManager.getPeers();
-        registryPeersCache = peers.map((p) => ({
+        const peers = await _sharedRegistryManager.getPeers();
+        api.logger.info?.(`a2a-gateway: refreshRegistryPeers found ${peers.length} peers`);
+        _sharedRegistryPeersCache = peers.map((p) => ({
           name: p.name,
           agentCardUrl: p.card.endpoints.docker.replace(
             "/a2a/jsonrpc",
@@ -1133,10 +1139,10 @@ const plugin = {
               registeredAt: new Date().toISOString(),
             };
 
-            registryManager = new RegistryManager(redis, registryCard, (msg) =>
+            _sharedRegistryManager = new RegistryManager(redis, registryCard, (msg) =>
               api.logger.info(msg),
             );
-            await registryManager.start();
+            await _sharedRegistryManager.start();
             await refreshRegistryPeers();
             setInterval(() => refreshRegistryPeers().catch(() => {}), 30_000);
           } catch (err) {
@@ -1240,8 +1246,8 @@ const plugin = {
       },
       async stop(_ctx) {
         // Stop Redis registry (unregister)
-        if (registryManager) {
-          await registryManager.stop();
+        if (_sharedRegistryManager) {
+          await _sharedRegistryManager.stop();
         }
 
         // Stop mDNS self-advertisement (sends goodbye packet)
