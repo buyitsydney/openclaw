@@ -309,10 +309,12 @@ const plugin = {
     const taskStore = new FileTaskStore(config.storage.tasksDir);
     const innerExecutor = new OpenClawAgentExecutor(api, config);
     const executor = new QueueingAgentExecutor(innerExecutor, telemetry, config.limits);
-    // Auto-set agentCard.url to container hostname so peers don't resolve to localhost
+    // Auto-set agentCard.url: use LAN IP when available (cross-server), else container hostname
     if (!config.agentCard.url) {
-      const hostname = discoverBotId() || os.hostname();
-      config.agentCard.url = `http://${hostname}:${config.server.port}/a2a/jsonrpc`;
+      const lanIp = process.env.CARHER_LAN_IP;
+      const a2aPort = process.env.CARHER_A2A_PORT || String(config.server.port);
+      const host = lanIp ? `${lanIp}:${a2aPort}` : `${discoverBotId() || os.hostname()}:${config.server.port}`;
+      config.agentCard.url = `http://${host}/a2a/jsonrpc`;
       api.logger.info(`a2a-gateway: auto-set agentCard.url to ${config.agentCard.url}`);
     }
     const agentCard = buildAgentCard(config);
