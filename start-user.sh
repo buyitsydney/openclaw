@@ -577,9 +577,9 @@ if feishu_id and feishu_secret:
         'appSecret': feishu_secret,
     }
     if feishu_name:
-        feishu_cfg['name'] = f"{feishu_name}的her"
+        feishu_cfg['name'] = feishu_name + '的her'
     if known_bots:
-        feishu_cfg['knownBots'] = {k: f"{v}的her" for k, v in known_bots.items()}
+        feishu_cfg['knownBots'] = {k: v + '的her' for k, v in known_bots.items()}
     if known_bot_open_ids:
         feishu_cfg['knownBotOpenIds'] = known_bot_open_ids
     if feishu_bot_open_id:
