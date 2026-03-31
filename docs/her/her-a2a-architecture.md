@@ -1,9 +1,9 @@
 # Her A2A 互联互通架构设计
 
-> 日期: 2026-03-28 (创建) / 2026-03-29 (本地验证通过)
-> 状态: **Local Verified** — 4 bot 本地测试 69 次 A2A 调用，100% 成功率，零错误
-> 范围: 3 台服务器、200 个 bot 通过 A2A 协议实现任意互通
-> 下一步: S1 灰度测试 (carher-12)
+> 日期: 2026-03-28 (创建) / 2026-03-29 (本地验证) / 2026-03-31 (线上灰度通过)
+> 状态: **Grayscale Verified** — 跨 S1/S2/S3 三台服务器，4 bot 灰度测试通过
+> 范围: 3 台服务器、200 个 bot 通过 A2A 协议实现任意互通 + Skills 发现与路由
+> 下一步: 全量上线
 
 ---
 
@@ -729,3 +729,460 @@ docker exec carher-101 node /data/.openclaw/plugins/a2a-gateway/skill/scripts/a2
 4. device identity mismatch → 重新生成 device.json（公钥和 deviceId 不匹配）
 
 **结论**: 本地验证通过，可以灰度上线。
+
+### 10.5 线上灰度测试（2026-03-31，已通过）
+
+**环境**: 4 bot 跨 3 台服务器（S1/S2/S3），镜像 `carher:release-312`，分支 `release/v2026.3.12-plus`
+
+| Bot | ID | 服务器 | 用户 |
+|-----|-----|--------|------|
+| carher-13 | 13 | S1 (10.68.13.186) | 卜弋天 |
+| carher-14 | 14 | S3 (10.68.13.188) | 刘国现 |
+| carher-66 | 66 | S2 (10.68.13.187) | 白羽 |
+| carher-75 | 75 | S3 (10.68.13.188) | 林森 |
+
+**验证结果**:
+
+| 维度 | 结果 |
+|------|------|
+| 跨服务器 A2A 通信 | ✅ S1→S3, S1→S2 全通 |
+| Redis Registry 自注册 | ✅ 4/4 注册 |
+| 跨服务器 Peer 发现 | ✅ 每个 bot 发现 3 peers |
+| LAN 端点路由 | ✅ 跨服务器走 LAN IP:Port |
+| Owner OAuth 权限 | ✅ A2A session 使用 owner 的 user_access_token |
+| 日历完整信息（标题/参会人/会议室） | ✅ 林森、白羽完整返回 |
+| Known Bots | ✅ 77 entries |
+| Discussion Mode 兼容 | ✅ 不影响群聊讨论 |
+
+**修复的关键问题**:
+
+1. **Agent Card URL 用 localhost** → 改为 LAN IP（`CARHER_LAN_IP:CARHER_A2A_PORT`）
+2. **refreshRegistryPeers 总用 Docker 端点** → 改为用 registry 已选路的 agentCardUrl
+3. **registryManager/ownerAccountId 多实例 null** → 提升到模块级别变量
+4. **A2A session 没有 OAuth 权限感知** → 注入 extraSystemPrompt 告知 bot 拥有 owner 的完整 OAuth 权限
+5. **插件文件 ownership 被 Docker 安全检查拒绝** → git pull 后 chown root
+6. **seed participants 不清理历史** → 加 DEL before ZADD
+
+**部署流程（已验证）**:
+```bash
+# 每台服务器一次性操作
+cd /Data/CarHer
+git checkout release/v2026.3.12-plus  # 或 git pull
+sudo chown -R root:root docker/plugins/a2a-gateway/  # npm install 后
+./start-user.sh --id=N --image=carher:release-312
+```
+
+---
+
+## 11. Skills 发现与路由架构
+
+> 日期: 2026-03-31 (创建)
+> 状态: **设计中**
+> 前置依赖: Section 3 Redis Registry 已上线
+
+### 11.1 问题
+
+当前每个 bot 的 Agent Card skills 是占位符：
+
+```json
+"skills": [
+  { "id": "chat", "name": "通用对话" },
+  { "id": "feishu-tools", "name": "飞书工具" }
+]
+```
+
+200 个 bot 拥有完全相同的 tools（feishu_docx, feishu_search, feishu_calendar...），但服务的**人不同、部门不同、权限域不同、知识域不同**。A2A 管道已通（69/69 调用零错误），但 bot 不知道"找谁做什么"——只能靠 TOOLS.md 硬编码 peer 名字。
+
+如果公司有 20,000 个 bot，把所有 bot 的 skills 注入 context window 是不可能的。
+
+### 11.2 核心原则：Skills 不等于 Tools
+
+| 维度 | Tools 回答的 | Skills 应该回答的 |
+|------|------------|-----------------|
+| 能力 | 我能读文档 | 我能读**财务部的预算文档** |
+| 知识 | 我能搜索 | 我知道**产品路线图和技术架构** |
+| 角色 | 我能管日历 | 我是**张总的秘书，能帮安排会议** |
+| 权限 | 我能审批 | 我能**审批 5 万以下的采购单** |
+
+Tools 描述的是"我会用什么 API"，Skills 描述的是"我能帮你解决什么问题"。
+
+### 11.3 架构：Skills Registry + Discovery Tool
+
+**关键设计：bot 不需要知道所有 peer 的 skills，只需要一个搜索工具。**
+
+```
+                    ┌─────────────────────────────────┐
+                    │       Skills Registry (Redis)    │
+                    │                                  │
+                    │  a2a:skills:{botId}   Hash       │
+                    │  a2a:skills:tag:{tag} Set        │
+                    │  a2a:skills:dept:{d}  Set        │
+                    │  a2a:skills:vec:{id}  Vector     │
+                    │                                  │
+                    │  Register: bot 启动时写入         │
+                    │  Search:   tag + 全文 + 向量      │
+                    └──────────▲──────┬────────────────┘
+                               │      │
+                       register│      │top 3-5 results
+                               │      │
+              ┌────────────────┤      ├────────────────┐
+              │                │      │                │
+         ┌────┴────┐     ┌────┴────┐     ┌────┴────┐
+         │ Bot A   │     │ Bot B   │     │ Bot ... │
+         │ 产品-张三│     │ 工程-李四│     │ × 20000 │
+         └─────────┘     └─────────┘     └─────────┘
+```
+
+对比：
+
+| 方案 | Context 成本 | 扩展性 | 精度 |
+|------|------------|--------|------|
+| 全量注入 prompt | O(N) 爆炸 | 200 就到极限 | 高但浪费 |
+| 静态 routing rules | O(rules) | 规则维护成本高 | 死板 |
+| **Discovery Tool** | **O(1) 固定** | **20,000+ 无压力** | **语义匹配** |
+
+### 11.4 Skills 注册格式
+
+每个 bot 启动时向 Redis 注册自己的 skills "名片"（扩展现有 `a2a:card:{botId}`）：
+
+```json
+{
+  "botId": "carher-13",
+  "name": "卜弋天的Her",
+  "owner": "卜弋天",
+  "department": "产品部",
+  "role": "产品负责人",
+  "skills": [
+    {
+      "id": "product-roadmap",
+      "name": "产品路线图",
+      "description": "掌握2026年全年产品路线图，可回答功能排期、版本计划、里程碑、优先级调整等问题",
+      "category": "knowledge",
+      "tags": ["产品", "规划", "路线图", "排期"]
+    },
+    {
+      "id": "cross-team-review",
+      "name": "跨部门评审协调",
+      "description": "可发起和协调需求评审、技术评审，拉通产品/工程/设计多方",
+      "category": "coordination",
+      "tags": ["评审", "协调", "跨部门"]
+    }
+  ],
+  "skillsSummary": "产品规划、用户反馈分析、跨部门评审协调、会议安排"
+}
+```
+
+Skill category 枚举：
+
+| category | 含义 | 典型例子 |
+|----------|------|---------|
+| `knowledge` | 能回答某领域的问题 | 产品路线图、财务数据、技术架构 |
+| `action` | 能执行某种操作 | 审批采购、安排会议、创建文档 |
+| `coordination` | 能协调多方 | 跨部门评审、事故响应、周会协调 |
+
+Redis 数据结构（扩展 Section 5）：
+
+```
+现有:
+  a2a:card:{botId}         → Agent Card JSON (TTL 120s)
+  a2a:index                → SET of botIds
+
+新增:
+  a2a:skills:{botId}       → Hash { owner, department, role, skills_json, summary }
+  a2a:skills:tag:{tag}     → SET of botIds (倒排索引)
+  a2a:skills:dept:{dept}   → SET of botIds (按部门分组)
+```
+
+注册时机：和现有 Agent Card 注册同步（bot 启动时写入，60s 续约）。skills 数据和 card 用同一 TTL，bot 下线自动清除。
+
+### 11.5 Discovery Tool：给 LLM 一个搜索工具
+
+不往 prompt 里塞 20,000 个 bot 的信息。给 LLM 一个 **tool**：
+
+```typescript
+// 新工具: a2a_discover
+{
+  name: "a2a_discover",
+  description: "搜索企业内其他 AI 助理的能力。当你需要帮助但不知道该找谁时使用。",
+  parameters: {
+    query: "string — 自然语言描述你需要什么帮助",
+    category: "string (可选) — knowledge | action | coordination",
+    department: "string (可选) — 限定部门",
+    limit: "number (可选, 默认 5) — 返回数量"
+  }
+}
+```
+
+返回值（永远只返回 top-N，不超过 5-10 条）：
+
+```json
+[
+  {
+    "botId": "carher-25",
+    "name": "财务部-王五的助理",
+    "relevance": 0.92,
+    "matchedSkill": "采购审批(10万以内)",
+    "department": "财务部",
+    "howToReach": "a2a_send"
+  },
+  {
+    "botId": "carher-78",
+    "name": "行政部-赵六的助理",
+    "relevance": 0.78,
+    "matchedSkill": "办公采购流程指导",
+    "department": "行政部",
+    "howToReach": "a2a_send"
+  }
+]
+```
+
+**Context 成本永远是 O(1)**：tool 定义 ~100 token + 搜索结果 ~200 token。无论 200 还是 20,000 个 bot。
+
+LLM 的调用流程：
+
+```
+用户: "帮我查一下北京办公室的社保基数调整了没有"
+
+Bot 思考: 这是 HR/社保领域，我不擅长
+  ↓
+Bot calls: a2a_discover({ query: "北京社保基数政策", category: "knowledge" })
+  ↓ Registry 搜索（tag + 全文 + 向量）
+  ← [{ name: "HR-北京-小李的助理", skill: "北京社保公积金政策", relevance: 0.95 }]
+  ↓
+Bot calls: a2a_send({ target: "carher-42", message: "请查2026年北京社保基数是否有调整" })
+  ← "2026年4月起北京社保基数上限调整为36,549元/月..."
+  ↓
+Bot → 用户: "查到了，2026年4月起..."
+```
+
+### 11.6 三个圈：群聊场景的 Context 注入策略
+
+```
+┌──────────────────────────────────────────────┐
+│              Circle 3: 全企业                 │
+│         20,000 bots — 通过 a2a_discover 搜索  │
+│                                               │
+│   ┌────────────────────────────────────┐     │
+│   │        Circle 2: 常联系             │     │
+│   │    Top 10 历史协作 bot (缓存注入)   │     │
+│   │                                     │     │
+│   │   ┌──────────────────────────┐     │     │
+│   │   │   Circle 1: 群内          │     │     │
+│   │   │  3-8 bots (现有机制)      │     │     │
+│   │   │  [Bot Identity] block     │     │     │
+│   │   └──────────────────────────┘     │     │
+│   └────────────────────────────────────┘     │
+└──────────────────────────────────────────────┘
+```
+
+**System prompt 只注入 Circle 1 + Circle 2（合计不超过 18 个 bot，几百 token）。Circle 3 通过 tool 按需搜索。**
+
+#### Circle 1: 群内 bot（已有，不变）
+
+现有的 `[Bot Identity]` 块。群里有谁、app_id、open_id。
+
+#### Circle 2: 常联系 bot（新增，低成本）
+
+基于历史 A2A 交互记录，每个 bot 缓存 top-10 常协作的 peer。注入 prompt：
+
+```
+[常联系的其他助理]
+以下是你经常协作的助理（可直接 a2a_send）：
+- 财务-王五 (carher-25): 擅长预算审批、成本分析
+- HR-小李 (carher-42): 擅长考勤、社保、招聘流程
+- 工程-老赵 (carher-67): 擅长技术方案评审、排期评估
+```
+
+数据来源：统计过去 30 天 `a2a:audit` 日志中的调用频次，取 top-10。10 个 bot 的摘要约 200-300 token。
+
+#### Circle 3: 全企业（discovery tool）
+
+对 LLM 来说就是 tool 列表里多了一个 `a2a_discover`。仅在 Circle 1/2 找不到合适的 bot 时触发。
+
+#### Discussion mode leader 的决策流程
+
+```
+Leader 收到议题: "新功能定价策略"
+
+Step 1: 看群内 (Circle 1) → 工程bot在，设计bot在，财务bot不在
+Step 2: 看常联系 (Circle 2) → 财务-王五，历史上帮过3次定价分析
+Step 3: 决策:
+  - 群内工程bot → set_discussion_leader (技术成本评估)
+  - 群内设计bot → set_discussion_leader (用户体验影响)
+  - 群外财务bot → a2a_send (定价建模) ← 静默咨询，结果由 leader 综合
+```
+
+群里的人类只看到群内 bot 的讨论 + leader 的综合发言。背后还有群外 bot 通过 A2A 提供"弹药"。
+
+### 11.7 搜索实现：三种精度梯度
+
+```
+┌──────────────────────────────────┐
+│        Discovery Query           │
+│   "谁能帮我处理北京社保?"         │
+└─────────┬──────────┬─────────────┘
+          │          │
+   ┌──────▼────┐ ┌──▼──────────┐ ┌───────────────┐
+   │ Tag Match │ │ Text Search │ │ Vector Search │
+   │ O(1)      │ │ FT.SEARCH   │ │ Cosine Sim    │
+   │ "社保"∈tag│ │ "北京 社保"  │ │ embedding(q)  │
+   │ → 精确    │ │ → 关键词     │ │ → 语义        │
+   └──────┬────┘ └──────┬──────┘ └──────┬────────┘
+          │              │               │
+          └──────────────┼───────────────┘
+                         │
+                  ┌──────▼──────┐
+                  │ Hybrid Rank │
+                  │ Fusion      │
+                  │ top 5       │
+                  └─────────────┘
+```
+
+1. **Tag 精确匹配**：`SMEMBERS a2a:skills:tag:社保` → O(1) 直接命中
+2. **全文搜索**：Redis RediSearch `FT.SEARCH` 对 skills description 做关键词匹配
+3. **向量语义搜索**：用 `BAAI/bge-m3`（`shared-config.json5` 里 memorySearch 已有）对 query 编码，和 `skillsSummary` 的 embedding 做 cosine similarity
+
+三路结果做 Reciprocal Rank Fusion 合并，取 top-N。
+
+**落地顺序**：P0 先做 tag 匹配（零成本），P1 加全文搜索（需 RediSearch 模块），P2 加向量搜索（复用现有 bge-m3 embedding pipeline）。
+
+### 11.8 Skills 配置：从手动到自动
+
+200 个 bot 不可能手动写 skills，20,000 更不可能。三个自动化来源：
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌──────────────────┐
+│  Org Chart      │     │  Document Space   │     │  Interaction Log │
+│  部门+职级+角色  │     │  Owner 的文档/Wiki │     │  历史问答模式     │
+└────────┬────────┘     └────────┬─────────┘     └────────┬─────────┘
+         │                       │                         │
+    自动生成                自动生成                    自动生成
+    role skills            knowledge skills            inferred skills
+         │                       │                         │
+         └───────────────────────┼─────────────────────────┘
+                                 │
+                          ┌──────▼──────┐
+                          │ Skills Merge │
+                          │ + 人工修正   │
+                          └─────────────┘
+```
+
+#### 来源 1: 飞书通讯录 (Org Chart)
+
+Bot 启动时通过 feishu_directory 查 owner 的部门和职级，自动生成 role skills：
+
+- 部门=财务部，职级=经理 → `category:action` 的审批类 skills
+- 部门=工程部，角色=SRE → `coordinate:incident-response`
+- 部门=HR → `knowledge:hr-policy`, `action:pto-management`
+
+#### 来源 2: 文档空间 (Document Space)
+
+启动时扫描 owner 的飞书文档标题和 wiki 空间名：
+
+- Owner 有 "2026产品路线图.docx" → `knowledge:product-roadmap`
+- Owner 有 "北京社保政策汇总" wiki → `knowledge:beijing-social-insurance`
+- Owner 有 "Q1销售报告" sheet → `knowledge:sales-report`
+
+#### 来源 3: 交互历史 (Interaction Log)
+
+统计过去 30 天的 A2A + 私聊问答模式：
+
+- 被问 "报销" 相关 30 次 → 推断 `action:expense-reimbursement`
+- 被问 "技术方案" 相关 50 次 → 推断 `knowledge:tech-architecture`
+
+#### Skills 人工修正
+
+自动生成的 skills 存入 `a2a:skills:{botId}:auto`，owner 或管理员可通过配置覆盖/补充/删除：
+
+```json
+// carher-config overlay (per-bot)
+{
+  "plugins": {
+    "entries": {
+      "a2a-gateway": {
+        "config": {
+          "agentCard": {
+            "skills": [
+              { "id": "budget-approval", "name": "采购审批", "description": "审批10万以内的采购申请，包括办公设备、软件订阅、差旅报销。不处理工程外包合同。", "category": "action", "tags": ["采购", "审批", "报销"] }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+手动配置优先级高于自动生成。最终 skills = 手动配置 + 未被覆盖的自动生成。
+
+### 11.9 Skills Description 编写规范
+
+Description 会被 embedding 和全文搜索命中，写法直接影响发现精度。
+
+**公式：[能做什么] + [具体范围/举例] + [边界/不做什么]**
+
+差的写法：
+
+```json
+{ "id": "fin-1", "name": "财务", "description": "处理财务相关事务" }
+```
+
+好的写法：
+
+```json
+{
+  "id": "budget-approval",
+  "name": "采购审批",
+  "description": "审批10万以内的采购申请，包括办公设备、软件订阅、差旅报销。需要提供采购单号或金额+事由。不处理：工程外包合同、跨年度预算。",
+  "category": "action",
+  "tags": ["采购", "审批", "报销", "预算", "办公设备", "软件订阅"]
+}
+```
+
+三个要素：
+
+1. **能做什么**：一句话概括核心能力
+2. **具体范围**：列举 3-5 个典型场景，覆盖同义词（提高搜索命中率）
+3. **边界**：说明不处理什么（避免误匹配，防止 A 类请求误路由到 B）
+
+### 11.10 与现有能力的集成点
+
+| 现有组件 | 集成方式 |
+|----------|---------|
+| `a2a:card:{botId}` (Section 5) | skills 字段从占位符升级为真实 skills 数组 |
+| `a2a_send` tool | 不变。discover 找到目标后用 a2a_send 发任务 |
+| `feishu_bot_directory` tool | 扩展：当 query 带能力关键词时，走 skills registry 搜索 |
+| `[Bot Identity]` prompt block | 不变（Circle 1），增加 `[常联系的其他助理]` block（Circle 2） |
+| Discussion mode leader | leader 可调 a2a_discover 找群外专家，通过 a2a_send 静默咨询 |
+| Section 0.7 信息分级 | a2a_discover 返回的 bot 仍受信息分级约束（Level 0/1/2） |
+| `shared-config.json5` memorySearch | 复用 bge-m3 embedding 模型做向量搜索 |
+
+### 11.11 实施计划
+
+| 阶段 | 内容 | 改动文件 | 前置 |
+|------|------|---------|------|
+| **P0** | Skills 注册：bot 启动时写 skills 到 Redis（手动配置） | `registry.ts`, `types.ts` | 无 |
+| **P0** | `a2a_discover` tool：tag 精确匹配 | 新文件 `src/tools/a2a-discover.ts` | Skills 注册 |
+| **P0** | Circle 2 常联系 peer：统计 A2A 审计日志，注入 prompt | `gateway.ts` | A2A 审计日志 |
+| **P1** | 全文搜索：RediSearch FT.SEARCH 对 skills description | `registry.ts` | RediSearch 模块 |
+| **P1** | 向量搜索：复用 bge-m3 对 skillsSummary 编码 | `registry.ts` | bge-m3 可用 |
+| **P2** | Skills 自动生成 (org chart)：从飞书通讯录提取部门/角色 | 新文件 `src/skills-auto.ts` | feishu_directory |
+| **P3** | Skills 自动生成 (doc space)：扫描 owner 文档标题 | `src/skills-auto.ts` | feishu_drive |
+| **P3** | Skills 自动生成 (interaction log)：统计历史问答模式 | `src/skills-auto.ts` | A2A 审计日志 30天 |
+
+**P0 做完，200 bot 之间的智能路由就能跑起来。P1 做完，搜索精度质变。P2/P3 解决 20,000 规模的配置成本。**
+
+### 11.12 与 Section 0.7 风险框架的关系
+
+Skills Discovery 不改变 Section 0.7 的信息分级框架。`a2a_discover` 只告诉你"谁能帮忙"，不泄漏任何信息。实际的信息流动仍然发生在 `a2a_send` 阶段，受 Level 0/1/2 分级约束：
+
+```
+a2a_discover("谁了解G700项目？")
+  → 返回: [{ name: "PM-宏伟的助理", skill: "项目管理" }]
+  → 这一步只暴露了"宏伟的bot擅长项目管理"（公开信息，Level 0）
+
+a2a_send(target: "宏伟的bot", message: "G700项目进展？")
+  → 宏伟的bot根据调用方身份判断信息分级
+  → 跨部门调用 → Level 0 → 只返回公开信息
+  → 信息分级在 a2a_send 阶段执行，不在 discover 阶段
+```
