@@ -83,9 +83,10 @@ function asNumber(value: unknown, fallback: number): number {
   return fallback;
 }
 
-// Module-level shared state for Redis registry (shared across all register() invocations)
+// Module-level shared state (shared across all register() invocations)
 let _sharedRegistryManager: RegistryManager | null = null;
 let _sharedRegistryPeersCache: PeerConfig[] = [];
+let _sharedOwnerAccountId: string | undefined;
 
 function asBoolean(value: unknown, fallback: boolean): boolean {
   if (typeof value === "boolean") {
@@ -323,11 +324,14 @@ const plugin = {
     // Redis Registry: self-registration + peer discovery
     // ------------------------------------------------------------------
     // _sharedRegistryManager is module-level (_sharedRegistryManager) to survive multiple register() calls
-    const ownerAccountId = discoverOwnerAccountId();
+    // Owner account is module-level so it survives multiple register() calls
+    if (!_sharedOwnerAccountId) {
+      _sharedOwnerAccountId = discoverOwnerAccountId();
+    }
     // Pass owner account to executor so A2A sessions use owner's OAuth token
-    innerExecutor.ownerAccountId = ownerAccountId;
-    if (ownerAccountId) {
-      api.logger.info(`a2a-gateway: discovered owner account: ${ownerAccountId}`);
+    innerExecutor.ownerAccountId = _sharedOwnerAccountId;
+    if (_sharedOwnerAccountId) {
+      api.logger.info(`a2a-gateway: discovered owner account: ${_sharedOwnerAccountId}`);
     }
 
     // Redis registry is initialized lazily in service start (async context)

@@ -1243,6 +1243,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
         sessionKey,
         ...(this.ownerAccountId ? { accountId: this.ownerAccountId } : {}),
       };
+      this.api.logger.info(`a2a-gateway: dispatch accountId=${this.ownerAccountId ?? "NONE"} sessionKey=${sessionKey}`);
 
       const finalPayload = await gateway.request(
         "agent",
