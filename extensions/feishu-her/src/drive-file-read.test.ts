@@ -104,7 +104,7 @@ describe("drive file read", () => {
       contentType: "application/pdf",
       fileName: "CL-31-07 任职资格管理办法 A1.pdf",
       defaultBaseName: "feishu-drive-file",
-      includePathLine: false,
+      includePathLine: true,
     });
   });
 

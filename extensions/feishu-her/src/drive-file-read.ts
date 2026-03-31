@@ -39,7 +39,7 @@ export type DriveFileContextResult =
 async function getDriveFileMeta(params: {
   userToken: string;
   fileToken: string;
-}): Promise<{ ok: true; title: string } | { ok: false; reason: string }> {
+}): Promise<{ title: string | null }> {
   const response = await callFeishuApiWithUserToken<DriveMetaResponse>({
     method: "POST",
     endpoint: "/drive/v1/metas/batch_query",
@@ -50,20 +50,37 @@ async function getDriveFileMeta(params: {
     },
   });
   if (response.code !== 0) {
-    return { ok: false, reason: `drive meta failed: ${response.msg || response.code}` };
+    return { title: null };
   }
   const meta = Array.isArray(response.data?.metas) ? response.data.metas[0] : undefined;
   const title = typeof meta?.title === "string" ? meta.title.trim() : "";
-  if (!title) {
-    return { ok: false, reason: "drive meta missing title" };
+  return { title: title || null };
+}
+
+function extractFilenameFromContentDisposition(header: string | null): string | null {
+  if (!header) return null;
+  // RFC 6266: filename*=UTF-8''encoded or filename="quoted"
+  const utf8Match = header.match(/filename\*\s*=\s*UTF-8''([^\s;]+)/i);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      /* fall through */
+    }
   }
-  return { ok: true, title };
+  const quotedMatch = header.match(/filename\s*=\s*"([^"]+)"/i);
+  if (quotedMatch?.[1]) return quotedMatch[1];
+  const plainMatch = header.match(/filename\s*=\s*([^\s;]+)/i);
+  return plainMatch?.[1]?.trim() || null;
 }
 
 async function downloadDriveFile(params: {
   userToken: string;
   fileToken: string;
-}): Promise<{ ok: true; buffer: Buffer; contentType: string } | { ok: false; reason: string }> {
+}): Promise<
+  | { ok: true; buffer: Buffer; contentType: string; fileName: string | null }
+  | { ok: false; reason: string }
+> {
   const { response, release } = await fetchWithSsrFGuard({
     url: `https://open.feishu.cn/open-apis/drive/v1/files/${params.fileToken}/download`,
     init: {
@@ -90,6 +107,7 @@ async function downloadDriveFile(params: {
       ok: true,
       buffer,
       contentType: response.headers.get("content-type")?.trim() ?? "application/octet-stream",
+      fileName: extractFilenameFromContentDisposition(response.headers.get("content-disposition")),
     };
   } finally {
     await release();
@@ -157,31 +175,36 @@ export async function readDriveFileContextByToken(params: {
     userToken: token.access_token,
     fileToken: params.fileToken,
   });
-  if (!meta.ok) {
-    return { ok: false, token: params.fileToken, reason: meta.reason };
-  }
 
   const download = await downloadDriveFile({
     userToken: token.access_token,
     fileToken: params.fileToken,
   });
   if (!download.ok) {
-    return { ok: false, token: params.fileToken, title: meta.title, reason: download.reason };
+    return {
+      ok: false,
+      token: params.fileToken,
+      title: meta.title ?? undefined,
+      reason: download.reason,
+    };
   }
 
+  // Title priority: meta API > Content-Disposition header > fileToken fallback
+  const title = meta.title ?? download.fileName ?? params.fileToken;
+
   const extracted = await extractDriveFileContent({
-    title: meta.title,
+    title,
     contentType: download.contentType,
     buffer: download.buffer,
   });
   if (!extracted.ok) {
-    return { ok: false, token: params.fileToken, title: meta.title, reason: extracted.reason };
+    return { ok: false, token: params.fileToken, title, reason: extracted.reason };
   }
 
   return {
     ok: true,
     token: params.fileToken,
-    title: meta.title,
+    title,
     contentType: download.contentType,
     content: extracted.content,
   };
