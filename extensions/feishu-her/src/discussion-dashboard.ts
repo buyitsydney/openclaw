@@ -486,6 +486,9 @@ async function patchCard(
     }
     log?.info(`[dashboard] ${chatId.slice(-8)}: patch OK (owner=${turn.ownerAppId.slice(-8)} next=${turn.remainingQueue.find((id) => id !== turn.ownerAppId)?.slice(-8) ?? "none"})`);
 
+    // Re-pin to force Feishu to refresh the pinned preview
+    await setTopNotice(chatId, messageId);
+
     const meta = cache.get(chatId);
     if (meta) meta.lastFingerprint = fp;
   } catch (err) {
