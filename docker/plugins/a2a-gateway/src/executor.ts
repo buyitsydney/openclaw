@@ -1242,6 +1242,10 @@ export class OpenClawAgentExecutor implements AgentExecutor {
         idempotencyKey: runId,
         sessionKey,
         ...(this.ownerAccountId ? { accountId: this.ownerAccountId } : {}),
+        extraSystemPrompt:
+          "[A2A Context] This request arrived via A2A (Agent-to-Agent protocol) from another bot. " +
+          "You are running with your owner's full OAuth permissions — you have user_access_token for all authorized scopes (calendar, docs, drive, etc.). " +
+          "Use user-level API calls directly (e.g. list_events, not check_freebusy). Do NOT ask for OAuth authorization — it is already granted.",
       };
       this.api.logger.info(`a2a-gateway: dispatch accountId=${this.ownerAccountId ?? "NONE"} sessionKey=${sessionKey}`);
 
