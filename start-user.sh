@@ -649,10 +649,10 @@ if [ "${A2A_ENABLED:-0}" = "1" ] && [ -d "$A2A_PLUGIN_DIR" ] && [ -f "$A2A_PLUGI
     A2A_MERGED_SKILLS="/tmp/carher-${USER_ID}-skills"
     rm -rf "$A2A_MERGED_SKILLS"
     mkdir -p "$A2A_MERGED_SKILLS"
-    # Copy global skills
-    cp -r "$SHARED_SKILLS_DIR"/* "$A2A_MERGED_SKILLS/" 2>/dev/null
+    # Copy global skills (may be empty, || true prevents set -e exit)
+    cp -r "$SHARED_SKILLS_DIR"/* "$A2A_MERGED_SKILLS/" 2>/dev/null || true
     # Add A2A skills on top
-    cp -r "$A2A_SKILLS_SRC"/* "$A2A_MERGED_SKILLS/" 2>/dev/null
+    cp -r "$A2A_SKILLS_SRC"/* "$A2A_MERGED_SKILLS/" 2>/dev/null || true
     SHARED_SKILLS_DIR="$A2A_MERGED_SKILLS"
     echo -e "${GREEN}  ✓ A2A skills: merged into ${A2A_MERGED_SKILLS}${NC}"
   fi
