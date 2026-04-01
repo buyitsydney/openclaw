@@ -2457,20 +2457,6 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         }
       }
       // Fall through to agent processing
-    } else if (currentGroupMode === "owner") {
-      // 🔒主人: only owner's messages, filter all bot messages.
-      if (isBotSender) {
-        log?.info(`[${account.accountId}] owner mode: bot msg, archived only`);
-        return;
-      }
-      const ownerIds = resolveGroupOwnerIds(account.config);
-      const isOwner = ownerIds.length === 0 || ownerIds.includes(senderId);
-      if (!isOwner) {
-        log?.info(`[${account.accountId}] owner mode: non-owner ${senderId}, archived only`);
-        return;
-      }
-      log?.info(`[${account.accountId}] owner mode: owner ${senderId} in ${chatId}, processing`);
-      // Fall through to agent processing
     } else if (currentGroupMode === "group-at") {
       // 👥群@: anyone who @mentions the bot gets a response, no owner restriction.
       if (isBotSender) {
@@ -2844,7 +2830,6 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         // Inject group mode info: hardcoded safety rules per mode + user context
         const ownerOpenId = resolveGroupOwnerIds(account.config)[0] ?? "";
         const modeHardcoded: Record<string, string> = {
-          owner: "只响应主人的消息",
           "group-at":
             "任何人@你都回复。注意：你使用主人的权限，搜索结果可能包含主人的私人信息，不要泄露",
         };

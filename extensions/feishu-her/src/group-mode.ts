@@ -14,9 +14,9 @@ export function resolveGroupModesDir(): string {
 
 /**
  * Read per-group mode from {workspace}/group-modes/{chatId}.json.
- * Returns the normalized mode string ("owner-at", "owner", "group-at", "group", "discussion")
+ * Returns the normalized mode string ("owner-at", "group-at", "discussion")
  * or "owner-at" if the file doesn't exist or is invalid.
- * Legacy names (default, auto-reply, at-reply, monitor, manager) are auto-mapped.
+ * Legacy names (default, auto-reply, owner, at-reply, monitor, manager, group) are auto-mapped.
  */
 export function readGroupMode(chatId: string): GroupModeInfo {
   const dir = resolveGroupModesDir();
@@ -30,12 +30,15 @@ export function readGroupMode(chatId: string): GroupModeInfo {
   try {
     const data = JSON.parse(readFileSync(filePath, "utf-8"));
     const mode = typeof data?.mode === "string" && data.mode.trim() ? data.mode.trim() : "owner-at";
+    // Legacy "owner" mode removed — fall back to owner-at (safe default).
     const aliasMap: Record<string, string> = {
       default: "owner-at",
-      "auto-reply": "owner",
+      "auto-reply": "owner-at",
+      owner: "owner-at",
       "at-reply": "group-at",
-      monitor: "group",
-      manager: "group",
+      monitor: "group-at",
+      manager: "group-at",
+      group: "group-at",
     };
     const normalizedMode = aliasMap[mode] ?? mode;
     const context = typeof data?.context === "string" ? data.context.trim() : undefined;
