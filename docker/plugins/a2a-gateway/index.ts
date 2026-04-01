@@ -473,7 +473,10 @@ const plugin = {
      * Look up a peer by name from the effective peer list.
      */
     const findPeer = (name: string): PeerConfig | undefined => {
-      return getEffectivePeers().find((p) => p.name.toLowerCase() === name.toLowerCase());
+      const lower = name.toLowerCase();
+      return getEffectivePeers().find(
+        (p) => p.name.toLowerCase() === lower || (p as any).card?.id?.toLowerCase() === lower,
+      );
     };
 
     // Wire peer state into telemetry snapshot
