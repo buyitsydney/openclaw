@@ -1156,15 +1156,17 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
         const mode = readGroupMode(chatId);
         const isDiscussion = mode.mode === "discussion";
 
+        if (!isDiscussion) {
+          // Not in discussion mode — unregister from Redis and skip.
+          await discussionTick({ chatId, myAppId: account.appId, isDiscussionMode: false });
+          continue;
+        }
+
         const tick = await discussionTick({
           chatId,
           myAppId: account.appId,
-          isDiscussionMode: isDiscussion,
+          isDiscussionMode: true,
         });
-
-        if (!isDiscussion) {
-          continue;
-        }
 
         const expiredTurn = await maybeExpireDiscussionTurn({ chatId, nowMs: Date.now() });
         if (expiredTurn) {
