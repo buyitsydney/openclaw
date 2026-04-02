@@ -643,18 +643,11 @@ if [ "${A2A_ENABLED:-0}" = "1" ] && [ -d "$A2A_PLUGIN_DIR" ] && [ -f "$A2A_PLUGI
     (cd "$A2A_PLUGIN_DIR" && npm install --omit=dev --ignore-scripts 2>&1 | tail -1)
   fi
   echo -e "${GREEN}  ✓ A2A plugin: ${A2A_PLUGIN_DIR}${NC}"
-  # A2A skills: prepare merged skills dir (global + a2a-specific)
+  # A2A skills: copy into global skills dir so openclaw skill loader picks them up
   A2A_SKILLS_SRC="${SCRIPT_DIR}/docker/skills"
   if [ -d "$A2A_SKILLS_SRC" ]; then
-    A2A_MERGED_SKILLS="/tmp/carher-${USER_ID}-skills"
-    rm -rf "$A2A_MERGED_SKILLS"
-    mkdir -p "$A2A_MERGED_SKILLS"
-    # Copy global skills (may be empty, || true prevents set -e exit)
-    cp -r "$SHARED_SKILLS_DIR"/* "$A2A_MERGED_SKILLS/" 2>/dev/null || true
-    # Add A2A skills on top
-    cp -r "$A2A_SKILLS_SRC"/* "$A2A_MERGED_SKILLS/" 2>/dev/null || true
-    SHARED_SKILLS_DIR="$A2A_MERGED_SKILLS"
-    echo -e "${GREEN}  ✓ A2A skills: merged into ${A2A_MERGED_SKILLS}${NC}"
+    cp -r "$A2A_SKILLS_SRC"/* "$SHARED_SKILLS_DIR/" 2>/dev/null || true
+    echo -e "${GREEN}  ✓ A2A skills: copied to ${SHARED_SKILLS_DIR}${NC}"
   fi
 else
   A2A_PLUGIN_DIR=""
