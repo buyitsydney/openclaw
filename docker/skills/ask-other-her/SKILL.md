@@ -1,7 +1,7 @@
 ---
-name: her-social-network
+name: ask-other-her
 version: 2.0.0
-description: "Her社交网络 — 公司大脑。当你搞不定一个问题、搜不到文档、没有权限、需要其他部门信息、或用户让你找人帮忙时自动触发。"
+description: "问其他Her — 你搞不定的问题、搜不到的文档、没权限的数据，找公司里其他Her帮忙。财务、HR、法务、技术、产品、运营——通过A2A直接脑对脑问。"
 author: openclaw
 ---
 
