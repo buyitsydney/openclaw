@@ -646,9 +646,11 @@ if [ "${A2A_ENABLED:-0}" = "1" ] && [ -d "$A2A_PLUGIN_SRC" ] && [ -f "$A2A_PLUGI
   # Copy plugin to a root-owned temp dir so openclaw's ownership check passes.
   # Source files stay cltx-owned (git works normally), container sees uid=0.
   A2A_PLUGIN_DIR="/tmp/carher-${USER_ID}-a2a-plugin"
-  sudo rm -rf "$A2A_PLUGIN_DIR" 2>/dev/null || true
+  rm -rf "$A2A_PLUGIN_DIR" 2>/dev/null || true
   cp -r "$A2A_PLUGIN_SRC" "$A2A_PLUGIN_DIR"
-  sudo chown -R root:root "$A2A_PLUGIN_DIR"
+  # chown root so openclaw's uid=0 ownership check passes in container.
+  # Use sudo -n (non-interactive) to avoid blocking on password prompt.
+  sudo -n chown -R root:root "$A2A_PLUGIN_DIR" 2>/dev/null || echo -e "${YELLOW}  ⚠ Could not chown plugin to root (sudo unavailable). Plugin may fail ownership check.${NC}"
   echo -e "${GREEN}  ✓ A2A plugin: ${A2A_PLUGIN_SRC} → ${A2A_PLUGIN_DIR} (root-owned)${NC}"
   # A2A skills: copy into global skills dir so openclaw skill loader picks them up
   A2A_SKILLS_SRC="${SCRIPT_DIR}/docker/skills"
