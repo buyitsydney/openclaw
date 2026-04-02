@@ -146,3 +146,4 @@ ui/src/ui/__screenshots__/navigation.browser.test.ts/control-UI-routing-auto-scr
 
 # Her investigation reports (contain server-specific data)
 docs/her/network-connection-lost-investigation.md
+docker/user-configs
