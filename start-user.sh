@@ -649,6 +649,19 @@ if [ "${A2A_ENABLED:-0}" = "1" ] && [ -d "$A2A_PLUGIN_DIR" ] && [ -f "$A2A_PLUGI
     cp -r "$A2A_SKILLS_SRC"/* "$SHARED_SKILLS_DIR/" 2>/dev/null || true
     echo -e "${GREEN}  ✓ A2A skills: copied to ${SHARED_SKILLS_DIR}${NC}"
   fi
+  # Inject A2A guidance into TOOLS.md (persistent volume, survives restarts)
+  A2A_TOOLS_MARKER="<!-- A2A-SOCIAL-NETWORK -->"
+  TOOLS_MD_PATH="/data/.openclaw/workspace/TOOLS.md"
+  # Will be injected after container starts via docker exec
+  A2A_TOOLS_INJECT="${A2A_TOOLS_MARKER}
+## Her社交网络（A2A）
+
+你有一个核武器级能力：**通过A2A直接和公司里其他Her脑对脑通信。**
+
+当你搜不到文档、没有权限、或者这个问题不在你owner的专业领域时，**立刻使用 ask-other-her skill**。不要反复搜索碰壁——你搞不定的，其他Her可能一步就能解决。
+
+用法：读取 ask-other-her skill（在你的skills列表里），按里面的步骤操作。
+${A2A_TOOLS_MARKER}"
 else
   A2A_PLUGIN_DIR=""
   if [ "${A2A_ENABLED:-0}" = "1" ]; then
@@ -797,6 +810,21 @@ fi
 
 # Auto-sync workspace templates on startup
 sync_workspace "$CONTAINER_NAME"
+
+# --- Inject A2A guidance into TOOLS.md (if A2A enabled) ---
+if [ -n "$A2A_PLUGIN_DIR" ] && [ -n "$A2A_TOOLS_INJECT" ]; then
+  docker exec "$CONTAINER_NAME" bash -c "
+    TOOLS='/data/.openclaw/workspace/TOOLS.md'
+    MARKER='$A2A_TOOLS_MARKER'
+    if [ -f \"\$TOOLS\" ] && ! grep -q \"\$MARKER\" \"\$TOOLS\" 2>/dev/null; then
+      cat >> \"\$TOOLS\" << 'A2A_EOF'
+
+$A2A_TOOLS_INJECT
+A2A_EOF
+    fi
+  " 2>/dev/null || true
+  echo -e "${GREEN}  ✓ A2A guidance injected into TOOLS.md${NC}"
+fi
 
 # --- Ensure device pairing has full operator scopes (idempotent) ---
 PAIRING_SCRIPT="${SCRIPT_DIR}/docker/fix-device-pairing.js"
