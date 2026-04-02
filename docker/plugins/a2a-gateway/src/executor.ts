@@ -14,7 +14,7 @@ import {
 } from "./file-security.js";
 import type { GatewayConfig, OpenClawPluginApi } from "./types.js";
 
-const DEFAULT_AGENT_RESPONSE_TIMEOUT_MS = 300_000;
+const DEFAULT_AGENT_RESPONSE_TIMEOUT_MS = 120_000;
 const GATEWAY_CONNECT_TIMEOUT_MS = 10_000;
 const GATEWAY_REQUEST_TIMEOUT_MS = 10_000;
 const HOOKS_WAKE_TIMEOUT_MS = 5_000;
@@ -1245,7 +1245,11 @@ export class OpenClawAgentExecutor implements AgentExecutor {
         extraSystemPrompt:
           "[A2A Context] This request arrived via A2A (Agent-to-Agent protocol) from another bot. " +
           "You are running with your owner's full OAuth permissions — you have user_access_token for all authorized scopes (calendar, docs, drive, etc.). " +
-          "Use user-level API calls directly (e.g. list_events, not check_freebusy). Do NOT ask for OAuth authorization — it is already granted.",
+          "Use user-level API calls directly (e.g. list_events, not check_freebusy). Do NOT ask for OAuth authorization — it is already granted. " +
+          "[A2A Response Rules] You have a 120-second time limit. The requesting bot will receive a timeout error if you take longer. " +
+          "Be fast and direct: search 1-2 times, if you find something reply immediately, if not say so. " +
+          "Do not greet, do not ask follow-up questions, do not explain who you are. Just answer the question. " +
+          "If you cannot find the information, reply: 'I could not find relevant documents for this query.'",
       };
       this.api.logger.info(`a2a-gateway: dispatch accountId=${this.ownerAccountId ?? "NONE"} sessionKey=${sessionKey}`);
 
