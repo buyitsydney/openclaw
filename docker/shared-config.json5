@@ -11,6 +11,7 @@
   // Agent 默认配置
   agents: {
     defaults: {
+      maxConcurrent: 16,
       contextTokens: 200000,
       userTimezone: "Asia/Shanghai",
       compaction: { mode: "safeguard" },
@@ -80,7 +81,13 @@
     },
     entries: {
       "feishu-her": { enabled: true },
-      "a2a-gateway": { enabled: true, config: { routing: { defaultAgentId: "main" } } },
+      "a2a-gateway": {
+        enabled: true,
+        config: {
+          routing: { defaultAgentId: "main" },
+          limits: { maxConcurrentTasks: 8 },
+        },
+      },
     },
   },
 
