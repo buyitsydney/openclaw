@@ -1,0 +1,69 @@
+# Car Her 容器化 Dockerfile
+# 基于现有 Dockerfile，增加 Python（Live Frontend Proxy 需要）
+#
+# 构建: ./start-docker.sh
+# 用法: ./start-user.sh --id=1 --random
+#
+# 层缓存策略:
+#   layers 1-5  — 系统包/工具链（极少变动）
+#   layers 6-9  — 依赖清单 package.json/lockfile/patches（只改依赖才失效）
+#   layer 10    — pnpm install（带 store 缓存挂载，即使失效也秒级）
+#   layer 11-12 — pip install（独立于源码，requirements.txt 不变就不装）
+#   layer 13+   — 源码 COPY + build（日常改代码只从这里开始 ~30s）
+
+FROM node:22-bookworm
+
+# Install Bun + Python3 + Chromium (browser tool) + CJK fonts
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      python3 python3-pip python3-venv curl ffmpeg \
+      chromium fonts-liberation fonts-noto-cjk fonts-noto-color-emoji && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://bun.sh/install | bash
+ENV PATH="/root/.bun/bin:${PATH}"
+
+RUN corepack enable
+
+WORKDIR /app
+
+# --- Dependency manifests only (no source code, no scripts) ---
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY ui/package.json ./ui/package.json
+COPY patches ./patches
+
+# Copy all extension package.json files so pnpm resolves workspace deps
+COPY extensions/feishu-her/package.json ./extensions/feishu-her/package.json
+COPY extensions/realtime/package.json ./extensions/realtime/package.json
+
+# pnpm install with persistent store cache — even on layer miss, cached
+# packages are reused from the mount instead of re-downloading from registry
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile
+
+# pip install BEFORE source copy — only rebuilds when requirements.txt changes
+COPY extensions/realtime/live-frontend/requirements.txt /tmp/py-requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install --break-system-packages -r /tmp/py-requirements.txt requests
+
+# --- Source code (daily changes only invalidate from here) ---
+COPY . .
+RUN NODE_OPTIONS=--max-old-space-size=1536 OPENCLAW_A2UI_SKIP_MISSING=1 pnpm build:docker
+ENV OPENCLAW_PREFER_PNPM=1
+RUN pnpm ui:build
+
+# Entrypoint script
+COPY scripts/carher-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENV NODE_ENV=production
+
+# Embed build hash for auto-rebuild detection by start-user.sh
+# Format: "<git-sha>" or "<git-sha>-dirty-<diff-hash>"
+ARG BUILD_HASH=unknown
+LABEL carher.build.hash=$BUILD_HASH
+
+# Ports: Gateway(18789), Realtime(18790), Frontend(8000), WS Proxy(8080)
+EXPOSE 18789 18790 8000 8080
+
+CMD ["/entrypoint.sh"]

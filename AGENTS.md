@@ -268,9 +268,34 @@
 - **Multi-agent safety:** when the user says "push", you may `git pull --rebase` to integrate latest changes (never discard other agents' work). When the user says "commit", scope to your changes only. When the user says "commit all", commit everything in grouped chunks.
 - **Multi-agent safety:** prefer grouped `commit` / `pull --rebase` / `push` cycles for related work instead of many tiny syncs.
 - **Multi-agent safety:** do **not** create/remove/modify `git worktree` checkouts (or edit `.worktrees/*`) unless explicitly requested.
+- **Worktree workflow:** when the user asks to create a worktree for a new feature, always ask which branch to base it on (do not default to current HEAD/`dev`). Use `EnterWorktree` to create the worktree, then inside it run `git reset --hard <base-branch>` to rebase onto the desired branch. Or equivalently: `git worktree add -b <new-branch> .claude/worktrees/<name> <base-branch>` from the main repo.
+- **Testing (feishu-her):** tester (carher-101, id=101), tester2 (carher-102, id=102), and tester3 (carher-103, id=103) all run **locally on the Mac**, not on remote servers. No SSH needed. Read docs carefully — "本地" means local.
+- **Testing in worktree — MUST-DO before `start-user.sh`:** worktrees only contain git-tracked files. `docker/users.csv` and other gitignored configs are missing. Before building/starting any container from a worktree, symlink all required non-git files from the main repo:
+  ```
+  ln -s /path/to/main-repo/docker/users.csv <worktree>/docker/users.csv
+  ls <worktree>/docker/server.env 2>/dev/null || ln -s /path/to/main-repo/docker/server.env <worktree>/docker/server.env
+  ```
+  Then: `./build-image.sh --tag=carher:xxx` → `./start-user.sh --id=101 --image=carher:xxx` → verify `docker logs carher-101 | grep 'WSClient connected'`.
 - **Multi-agent safety:** do **not** switch branches / check out a different branch unless explicitly requested.
 - **Multi-agent safety:** running multiple agents is OK as long as each agent has its own session.
 - **Multi-agent safety:** when you see unrecognized files, keep going; focus on your changes and commit only those.
+- **Multi-agent safety: worktree isolation rules** (CRITICAL — violations cause cross-agent corruption):
+  - **Never modify `.git/config`** — especially never set `core.bare=true`. All worktrees share the same `.git`, so one agent's config change breaks every other agent's git operations.
+  - **Only operate on your own directory.** If you're in a worktree (`/path/.claude/worktrees/agent-xxx/`), never read/write/build from the main repo directory or another agent's worktree. Vice versa.
+  - **`build-image.sh` must run from your directory.** It uses `$SCRIPT_DIR` to determine the build context. Running from the wrong directory builds the wrong branch's code silently.
+  - **Docker test images must use unique tags.** Each agent uses its own tag (e.g., `carher:feat-a-test`). Never overwrite `carher:local` — that's the production image for all 200 users.
+  - **Never checkout the same branch in two worktrees.** Git forbids this and will produce errors or silent corruption.
+  - **After creating a worktree**, verify `git -C <worktree-path> branch --show-current` before doing any work — confirm you're on the right branch.
+  - **Non-git files (users.csv, tokens, configs) are NOT in worktrees.** They live on the host filesystem. If your worktree needs them, symlink — don't copy (copies go stale).
+  - **Cross-server CSV sync**: S1/S2/S3 each have independent `docker/users.csv` copies. When updating `feishu_bot_open_id` (column 10), you MUST update ALL servers' CSVs, not just the server where the bot runs. Otherwise cross-server bots can't identify each other.
+- **Worktree workflow:** when the user asks to create a worktree for a new feature, always ask which branch to base it on (do not default to current HEAD/`dev`). Use `git worktree add -b <new-branch> .claude/worktrees/<name> <base-branch>` from the main repo.
+- **Testing (feishu-her):** tester (carher-101, id=101), tester2 (carher-102, id=102), and tester3 (carher-103, id=103) all run **locally on the Mac**, not on remote servers. No SSH needed. Read docs carefully — "本地" means local.
+- **Testing in worktree — MUST-DO before `start-user.sh`:** worktrees only contain git-tracked files. `docker/users.csv` and other gitignored configs are missing. Before building/starting any container from a worktree, symlink all required non-git files from the main repo:
+  ```
+  ln -s /path/to/main-repo/docker/users.csv <worktree>/docker/users.csv
+  ls <worktree>/docker/server.env 2>/dev/null || ln -s /path/to/main-repo/docker/server.env <worktree>/docker/server.env
+  ```
+  Then: `./build-image.sh --tag=carher:xxx` → `./start-user.sh --id=101 --image=carher:xxx` → verify `docker logs carher-101 | grep 'WSClient connected'`.
 - Lint/format churn:
   - If staged+unstaged diffs are formatting-only, auto-resolve without asking.
   - If commit/push already requested, auto-stage and include formatting-only follow-ups in the same commit (or a tiny follow-up commit if needed), no extra confirmation.

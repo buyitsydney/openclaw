@@ -86,6 +86,10 @@ If a bare install spec matches a bundled plugin id (for example `diffs`), OpenCl
 installs the bundled plugin directly. To install an npm package with the same
 name, use an explicit scoped spec (for example `@scope/diffs`).
 
+If a bare install spec matches a bundled plugin id (for example `diffs`), OpenClaw
+installs the bundled plugin directly. To install an npm package with the same
+name, use an explicit scoped spec (for example `@scope/diffs`).
+
 Supported archives: `.zip`, `.tgz`, `.tar.gz`, `.tar`.
 
 Claude marketplace installs are also supported.

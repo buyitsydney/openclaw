@@ -1,0 +1,30 @@
+{
+  "capturedIssue": {
+    "source": "carher-13 docx blocks api",
+    "title": "智能纪要：03-09 | 平台化进展会 2026年3月9日",
+    "blockType": 27,
+    "downloadEndpoint": "https://open.feishu.cn/open-apis/drive/v1/medias/{token}/download",
+    "contentType": "image/png"
+  },
+  "simulatedDoc": {
+    "title": "智能纪要：03-09 | 平台化进展会 2026年3月9日",
+    "blocks": [
+      {
+        "block_id": "image_block_1",
+        "block_type": 27,
+        "image": {
+          "token": "docx_image_token_1",
+          "caption": {
+            "content": "KP31项目B1样计划表格（来自共享）"
+          },
+          "width": 1040,
+          "height": 375
+        }
+      }
+    ],
+    "downloadedDocxImage": {
+      "contentType": "image/png",
+      "base64": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAEUlEQVR4nGPgWnDnPwgzwBgAVJAKFY8gamAAAAAASUVORK5CYII="
+    }
+  }
+}

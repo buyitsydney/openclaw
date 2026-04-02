@@ -1,0 +1,19 @@
+{
+  "name": "@openclaw/realtime",
+  "version": "0.1.0",
+  "description": "Gemini Live + OpenClaw realtime voice integration",
+  "type": "module",
+  "dependencies": {
+    "chokidar": "^3.6.0",
+    "ws": "^8.19.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.10",
+    "openclaw": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

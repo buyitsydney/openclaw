@@ -32,6 +32,27 @@ async function auditSingleGroup() {
   });
 }
 
+function mockGetChatMemberStatus(status: string) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true, result: { status } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    ),
+  );
+}
+
+async function auditSingleGroup() {
+  return auditTelegramGroupMembership({
+    token: "t",
+    botId: 123,
+    groupIds: ["-1001"],
+    timeoutMs: 5000,
+  });
+}
+
 describe("telegram audit", () => {
   beforeAll(async () => {
     vi.doMock("./fetch.js", () => ({

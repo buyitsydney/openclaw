@@ -1,0 +1,40 @@
+---
+description: 代码修改边界和流程规则
+alwaysApply: true
+---
+
+# 代码修改边界
+
+## 不可修改的代码（视为 upstream）
+
+以下目录的代码属于 OpenClaw 上游开源项目，**本地绝不允许修改**：
+
+- `src/` — OpenClaw 核心代码（全部）
+- `node_modules/` — 所有依赖（包括 pi-coding-agent、pi-ai 等）
+- `apps/` — 上游原生应用代码
+
+## 可以修改的代码（自己的插件和部署）
+
+- `extensions/realtime/` — realtime 语音插件（自有）
+- `extensions/feishu-her/` — 飞书插件（自有，物理隔离于 upstream feishu）
+- `docs/her/` — 自有文档
+- `scripts/`、`start*.sh`、`Dockerfile*`、`docker/` — 部署脚本
+- `~/.openclaw/openclaw.json` — 运行时配置
+- `.cursor/` — Cursor 规则和技能
+- `skills/` — 自有技能文件（**所有 skill 必须在此目录，禁止在 `~/.openclaw/workspace/skills/` 创建**）
+- `package.json` — 仅限依赖升级（不改代码逻辑）
+
+## Skill 存放规则
+
+- **所有 skill 只允许放在 repo 的 `skills/` 目录下**
+- **严禁在 `~/.openclaw/workspace/skills/` 下创建或修改 skill**
+- 原因：Docker 镜像只打包 repo 内的 `skills/`，workspace skills 不会同步到 Docker 容器，导致版本不一致
+- AI 运行时更新 skill 内容（如 `references/sources.md`）也必须写入 `skills/`，不能写 workspace
+
+## 修改流程
+
+1. **分析问题** — 读代码、搜索、理解根因
+2. **提出方案** — 文字描述计划，说清改哪些文件、为什么、怎么改、影响范围
+3. **等待确认** — 用户明确同意后才能动手修改代码
+4. **执行修改** — 按确认的方案执行
+5. git commit / git push 需要用户额外单独确认

@@ -1,0 +1,97 @@
+// CarHer 共享功能配置 — 本地 Her 和所有 Docker 用户容器共用
+// 修改此文件会同时影响所有环境（本地 + Docker），请谨慎
+//
+// 规则:
+// - 只放所有环境通用的功能配置
+// - 不放 secrets（API keys 用 ${VAR_NAME} 引用）
+// - 数组类型可以放这里，但 overlay 不要重复同一个 key（否则 deep merge 会 concat）
+// - 不放环境特有配置（gateway bind/auth、browser headless 等）
+
+{
+  // Agent 默认配置
+  agents: {
+    defaults: {
+      contextTokens: 200000,
+      userTimezone: "Asia/Shanghai",
+      compaction: { mode: "safeguard" },
+      // 语义搜索记忆 — apiKey 通过环境变量注入
+      memorySearch: {
+        provider: "openai",
+        remote: {
+          baseUrl: "https://openrouter.ai/api/v1/",
+          apiKey: "${OPENROUTER_API_KEY}",
+        },
+        model: "BAAI/bge-m3",
+        sources: ["memory", "sessions"],
+        experimental: { sessionMemory: true },
+        query: {
+          minScore: 0.25,
+          maxResults: 8,
+          hybrid: {
+            vectorWeight: 0.7,
+            textWeight: 0.3,
+            mmr: { enabled: true, lambda: 0.4 },
+          },
+        },
+      },
+    },
+  },
+
+  // 工具配置
+  tools: {
+    web: {
+      search: { provider: "perplexity" },
+    },
+    // 显式指定 Groq STT，跳过本地 whisper auto-detect
+    media: {
+      audio: {
+        models: [{ provider: "groq" }],
+      },
+    },
+  },
+
+  // 命令（环境特有的 restart 由各自 overlay 设置）
+  commands: {
+    native: "auto",
+    nativeSkills: "auto",
+  },
+
+  // 消息格式
+  messages: {
+    ackReactionScope: "group-mentions",
+    tts: {
+      auto: "inbound",
+      provider: "edge",
+      edge: { voice: "zh-CN-XiaoxiaoNeural" },
+    },
+  },
+
+  // 浏览器（headless/noSandbox 由各自 overlay 覆盖）
+  browser: {
+    enabled: true,
+    defaultProfile: "openclaw",
+  },
+
+  // 插件
+  plugins: {
+    deny: ["feishu"],
+    load: {
+      paths: ["/data/.openclaw/plugins/a2a-gateway"],
+    },
+    entries: {
+      "feishu-her": { enabled: true },
+      "a2a-gateway": { enabled: true, config: { routing: { defaultAgentId: "main" } } },
+    },
+  },
+
+  // 飞书基础配置（凭证由各环境 overlay 提供）
+  channels: {
+    feishu: {
+      enabled: true,
+      groups: { enabled: true, archive: true },
+      // "v1" = inline card + im.message.patch (safe, readable via API)
+      // "v2" = CardKit streaming (typewriter animation, full markdown, requires local cache for readback)
+      cardStreamVersion: "v1",
+    },
+  },
+}
