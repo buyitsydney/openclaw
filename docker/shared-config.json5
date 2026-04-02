@@ -85,7 +85,7 @@
         enabled: true,
         config: {
           routing: { defaultAgentId: "main" },
-          limits: { maxConcurrentTasks: 8 },
+          limits: { maxConcurrentTasks: 4 },
         },
       },
     },
