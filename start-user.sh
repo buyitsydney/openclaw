@@ -636,13 +636,20 @@ echo -e "${GREEN}  ✓ 部门 skills: ${DEPT_SKILLS_DIR} (dept=${DEPT_NAME})${NC
 
 # A2A Gateway plugin (optional, from repo docker/plugins/)
 # Default: OFF. Set A2A_ENABLED=1 to enable for this container.
-A2A_PLUGIN_DIR="${SCRIPT_DIR}/docker/plugins/a2a-gateway"
-if [ "${A2A_ENABLED:-0}" = "1" ] && [ -d "$A2A_PLUGIN_DIR" ] && [ -f "$A2A_PLUGIN_DIR/index.ts" ]; then
-  if [ ! -d "$A2A_PLUGIN_DIR/node_modules" ]; then
+A2A_PLUGIN_SRC="${SCRIPT_DIR}/docker/plugins/a2a-gateway"
+A2A_PLUGIN_DIR=""
+if [ "${A2A_ENABLED:-0}" = "1" ] && [ -d "$A2A_PLUGIN_SRC" ] && [ -f "$A2A_PLUGIN_SRC/index.ts" ]; then
+  if [ ! -d "$A2A_PLUGIN_SRC/node_modules" ]; then
     echo -e "${YELLOW}  ⟳ A2A plugin: installing dependencies...${NC}"
-    (cd "$A2A_PLUGIN_DIR" && npm install --omit=dev --ignore-scripts 2>&1 | tail -1)
+    (cd "$A2A_PLUGIN_SRC" && npm install --omit=dev --ignore-scripts 2>&1 | tail -1)
   fi
-  echo -e "${GREEN}  ✓ A2A plugin: ${A2A_PLUGIN_DIR}${NC}"
+  # Copy plugin to a root-owned temp dir so openclaw's ownership check passes.
+  # Source files stay cltx-owned (git works normally), container sees uid=0.
+  A2A_PLUGIN_DIR="/tmp/carher-${USER_ID}-a2a-plugin"
+  sudo rm -rf "$A2A_PLUGIN_DIR" 2>/dev/null || true
+  cp -r "$A2A_PLUGIN_SRC" "$A2A_PLUGIN_DIR"
+  sudo chown -R root:root "$A2A_PLUGIN_DIR"
+  echo -e "${GREEN}  ✓ A2A plugin: ${A2A_PLUGIN_SRC} → ${A2A_PLUGIN_DIR} (root-owned)${NC}"
   # A2A skills: copy into global skills dir so openclaw skill loader picks them up
   A2A_SKILLS_SRC="${SCRIPT_DIR}/docker/skills"
   if [ -d "$A2A_SKILLS_SRC" ]; then
