@@ -48,6 +48,14 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # --- Source code (daily changes only invalidate from here) ---
 COPY . .
+
+# A2A plugin: install runtime deps inside the image so no host-side
+# bind-mount or sudo chown is needed. Image files are root-owned,
+# bypassing OpenClaw's plugin ownership check automatically.
+RUN if [ -f docker/plugins/a2a-gateway/package.json ]; then \
+      cd docker/plugins/a2a-gateway && npm install --omit=dev --ignore-scripts; \
+    fi
+
 RUN NODE_OPTIONS=--max-old-space-size=1536 OPENCLAW_A2UI_SKIP_MISSING=1 pnpm build:docker
 ENV OPENCLAW_PREFER_PNPM=1
 RUN pnpm ui:build

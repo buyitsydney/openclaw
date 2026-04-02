@@ -76,7 +76,7 @@
   plugins: {
     deny: ["feishu"],
     load: {
-      paths: ["/data/.openclaw/plugins/a2a-gateway"],
+      paths: ["/app/docker/plugins/a2a-gateway"],
     },
     entries: {
       "feishu-her": { enabled: true },

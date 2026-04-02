@@ -634,34 +634,15 @@ DEPT_SKILLS_DIR="$HOME/.openclaw/dept-skills/${DEPT_NAME}"
 mkdir -p "$DEPT_SKILLS_DIR"
 echo -e "${GREEN}  ✓ 部门 skills: ${DEPT_SKILLS_DIR} (dept=${DEPT_NAME})${NC}"
 
-# A2A Gateway plugin (optional, from repo docker/plugins/)
-# Default: OFF. Set A2A_ENABLED=1 to enable for this container.
-A2A_PLUGIN_SRC="${SCRIPT_DIR}/docker/plugins/a2a-gateway"
-A2A_PLUGIN_DIR=""
-if [ "${A2A_ENABLED:-0}" = "1" ] && [ -d "$A2A_PLUGIN_SRC" ] && [ -f "$A2A_PLUGIN_SRC/index.ts" ]; then
-  if [ ! -d "$A2A_PLUGIN_SRC/node_modules" ]; then
-    echo -e "${YELLOW}  ⟳ A2A plugin: installing dependencies...${NC}"
-    (cd "$A2A_PLUGIN_SRC" && npm install --omit=dev --ignore-scripts 2>&1 | tail -1)
-  fi
-  # Copy plugin to a root-owned temp dir so openclaw's ownership check passes.
-  # Source files stay cltx-owned (git works normally), container sees uid=0.
-  A2A_PLUGIN_DIR="/tmp/carher-${USER_ID}-a2a-plugin"
-  rm -rf "$A2A_PLUGIN_DIR" 2>/dev/null || true
-  cp -r "$A2A_PLUGIN_SRC" "$A2A_PLUGIN_DIR"
-  # chown root so openclaw's uid=0 ownership check passes in container.
-  # Use sudo -n (non-interactive) to avoid blocking on password prompt.
-  sudo -n chown -R root:root "$A2A_PLUGIN_DIR" 2>/dev/null || echo -e "${YELLOW}  ⚠ Could not chown plugin to root (sudo unavailable). Plugin may fail ownership check.${NC}"
-  echo -e "${GREEN}  ✓ A2A plugin: ${A2A_PLUGIN_SRC} → ${A2A_PLUGIN_DIR} (root-owned)${NC}"
-  # A2A skills: copy into global skills dir so openclaw skill loader picks them up
-  A2A_SKILLS_SRC="${SCRIPT_DIR}/docker/skills"
-  if [ -d "$A2A_SKILLS_SRC" ]; then
-    cp -r "$A2A_SKILLS_SRC"/* "$SHARED_SKILLS_DIR/" 2>/dev/null || true
-    echo -e "${GREEN}  ✓ A2A skills: copied to ${SHARED_SKILLS_DIR}${NC}"
-  fi
-  # Inject A2A guidance into TOOLS.md (persistent volume, survives restarts)
+# A2A Gateway plugin — baked into the Docker image at /app/docker/plugins/a2a-gateway.
+# No host-side bind mount needed; plugin deps are installed during image build.
+# A2A_ENABLED env var still controls whether the gateway activates at runtime.
+A2A_SKILLS_SRC="${SCRIPT_DIR}/docker/skills"
+if [ "${A2A_ENABLED:-0}" = "1" ] && [ -d "$A2A_SKILLS_SRC" ]; then
+  cp -r "$A2A_SKILLS_SRC"/* "$SHARED_SKILLS_DIR/" 2>/dev/null || true
+  echo -e "${GREEN}  ✓ A2A plugin: baked into image (no bind mount needed)${NC}"
+  echo -e "${GREEN}  ✓ A2A skills: copied to ${SHARED_SKILLS_DIR}${NC}"
   A2A_TOOLS_MARKER="<!-- A2A-SOCIAL-NETWORK -->"
-  TOOLS_MD_PATH="/data/.openclaw/workspace/TOOLS.md"
-  # Will be injected after container starts via docker exec
   A2A_TOOLS_INJECT="${A2A_TOOLS_MARKER}
 ## Her社交网络（A2A）
 
@@ -671,13 +652,10 @@ if [ "${A2A_ENABLED:-0}" = "1" ] && [ -d "$A2A_PLUGIN_SRC" ] && [ -f "$A2A_PLUGI
 
 用法：读取 ask-other-her skill（在你的skills列表里），按里面的步骤操作。
 ${A2A_TOOLS_MARKER}"
+elif [ "${A2A_ENABLED:-0}" = "1" ]; then
+  echo -e "  · A2A plugin: baked into image (skills dir not found, skipping skills copy)"
 else
-  A2A_PLUGIN_DIR=""
-  if [ "${A2A_ENABLED:-0}" = "1" ]; then
-    echo -e "  · A2A plugin: 未安装（跳过）"
-  else
-    echo -e "  · A2A plugin: 未启用（设 A2A_ENABLED=1 开启）"
-  fi
+  echo -e "  · A2A plugin: 未启用（设 A2A_ENABLED=1 开启）"
 fi
 
 # --- Compute webchat URL from token + port (before docker run) ---
@@ -756,7 +734,6 @@ docker run -d \
   -v "${GCLOUD_ADC}:/gcloud/application_default_credentials.json:ro" \
   -v "${SHARED_SKILLS_DIR}:/data/.openclaw/skills:ro" \
   -v "${DEPT_SKILLS_DIR}:/data/.agents/skills:ro" \
-  ${A2A_PLUGIN_DIR:+-v "${A2A_PLUGIN_DIR}:/data/.openclaw/plugins/a2a-gateway:ro"} \
   -v "${CONFIG_MOUNT}:/data/.openclaw/openclaw.json:ro" \
   -v "${SCRIPT_DIR}/docker/carher-config.json:/data/.openclaw/carher-config.json:ro" \
   -v "${SCRIPT_DIR}/docker/shared-config.json5:/data/.openclaw/shared-config.json5:ro" \
@@ -821,7 +798,7 @@ fi
 sync_workspace "$CONTAINER_NAME"
 
 # --- Inject A2A guidance into TOOLS.md (if A2A enabled) ---
-if [ -n "$A2A_PLUGIN_DIR" ] && [ -n "$A2A_TOOLS_INJECT" ]; then
+if [ "${A2A_ENABLED:-0}" = "1" ] && [ -n "$A2A_TOOLS_INJECT" ]; then
   docker exec "$CONTAINER_NAME" bash -c "
     TOOLS='/data/.openclaw/workspace/TOOLS.md'
     MARKER='$A2A_TOOLS_MARKER'

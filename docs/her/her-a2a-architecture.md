@@ -684,7 +684,7 @@ HTTP 请求到达 Her B 的 :18800 (a2a-gateway 插件)
 
 ```bash
 # 101 -> 102 直接调用
-docker exec carher-101 node /data/.openclaw/plugins/a2a-gateway/skill/scripts/a2a-send.mjs \
+docker exec carher-101 node /app/docker/plugins/a2a-gateway/skill/scripts/a2a-send.mjs \
   --peer-url http://carher-102:18800 \
   --message "ping from tester (101), what is your name?"
 # 结果: "我是 tester，1号测试 AI"  ← 102 正常回复
@@ -734,25 +734,25 @@ docker exec carher-101 node /data/.openclaw/plugins/a2a-gateway/skill/scripts/a2
 
 **环境**: 4 bot 跨 3 台服务器（S1/S2/S3），镜像 `carher:release-312`，分支 `release/v2026.3.12-plus`
 
-| Bot | ID | 服务器 | 用户 |
-|-----|-----|--------|------|
-| carher-13 | 13 | S1 (10.68.13.186) | 卜弋天 |
-| carher-14 | 14 | S3 (10.68.13.188) | 刘国现 |
-| carher-66 | 66 | S2 (10.68.13.187) | 白羽 |
-| carher-75 | 75 | S3 (10.68.13.188) | 林森 |
+| Bot       | ID  | 服务器            | 用户   |
+| --------- | --- | ----------------- | ------ |
+| carher-13 | 13  | S1 (10.68.13.186) | 卜弋天 |
+| carher-14 | 14  | S3 (10.68.13.188) | 刘国现 |
+| carher-66 | 66  | S2 (10.68.13.187) | 白羽   |
+| carher-75 | 75  | S3 (10.68.13.188) | 林森   |
 
 **验证结果**:
 
-| 维度 | 结果 |
-|------|------|
-| 跨服务器 A2A 通信 | ✅ S1→S3, S1→S2 全通 |
-| Redis Registry 自注册 | ✅ 4/4 注册 |
-| 跨服务器 Peer 发现 | ✅ 每个 bot 发现 3 peers |
-| LAN 端点路由 | ✅ 跨服务器走 LAN IP:Port |
-| Owner OAuth 权限 | ✅ A2A session 使用 owner 的 user_access_token |
-| 日历完整信息（标题/参会人/会议室） | ✅ 林森、白羽完整返回 |
-| Known Bots | ✅ 77 entries |
-| Discussion Mode 兼容 | ✅ 不影响群聊讨论 |
+| 维度                               | 结果                                           |
+| ---------------------------------- | ---------------------------------------------- |
+| 跨服务器 A2A 通信                  | ✅ S1→S3, S1→S2 全通                           |
+| Redis Registry 自注册              | ✅ 4/4 注册                                    |
+| 跨服务器 Peer 发现                 | ✅ 每个 bot 发现 3 peers                       |
+| LAN 端点路由                       | ✅ 跨服务器走 LAN IP:Port                      |
+| Owner OAuth 权限                   | ✅ A2A session 使用 owner 的 user_access_token |
+| 日历完整信息（标题/参会人/会议室） | ✅ 林森、白羽完整返回                          |
+| Known Bots                         | ✅ 77 entries                                  |
+| Discussion Mode 兼容               | ✅ 不影响群聊讨论                              |
 
 **修复的关键问题**:
 
@@ -760,16 +760,17 @@ docker exec carher-101 node /data/.openclaw/plugins/a2a-gateway/skill/scripts/a2
 2. **refreshRegistryPeers 总用 Docker 端点** → 改为用 registry 已选路的 agentCardUrl
 3. **registryManager/ownerAccountId 多实例 null** → 提升到模块级别变量
 4. **A2A session 没有 OAuth 权限感知** → 注入 extraSystemPrompt 告知 bot 拥有 owner 的完整 OAuth 权限
-5. **插件文件 ownership 被 Docker 安全检查拒绝** → git pull 后 chown root
+5. **插件文件 ownership 被 Docker 安全检查拒绝** → 已根治：A2A 插件 bake 进镜像，不再 bind mount，无需 sudo chown
 6. **seed participants 不清理历史** → 加 DEL before ZADD
 
 **部署流程（已验证）**:
+
 ```bash
 # 每台服务器一次性操作
-cd /Data/CarHer
-git checkout release/v2026.3.12-plus  # 或 git pull
-sudo chown -R root:root docker/plugins/a2a-gateway/  # npm install 后
-./start-user.sh --id=N --image=carher:release-312
+cd /Data/CarHer-grayscale
+git pull
+./build-image.sh --tag=carher:release-312
+A2A_ENABLED=1 ./start-user.sh --id=N --image=carher:release-312
 ```
 
 ---
@@ -809,15 +810,15 @@ Her → 用户: 综合回复
 
 飞书多维表格，人工维护，全员可读。
 
-| 列 | 类型 | 说明 |
-|----|------|------|
-| bot_id | Text | carher-13 |
-| bot_name | Text | 弋天的her（必须和 A2A peer name 一致） |
-| owner_name | Text | 卜弋天 |
-| department | Text | 技术中心 |
-| skills_summary | Text | 自然语言能力描述 |
-| tags | Text | 逗号分隔标签 |
-| app_id | Text | cli_a917e5525178dbb3 |
+| 列             | 类型 | 说明                                   |
+| -------------- | ---- | -------------------------------------- |
+| bot_id         | Text | carher-13                              |
+| bot_name       | Text | 弋天的her（必须和 A2A peer name 一致） |
+| owner_name     | Text | 卜弋天                                 |
+| department     | Text | 技术中心                               |
+| skills_summary | Text | 自然语言能力描述                       |
+| tags           | Text | 逗号分隔标签                           |
+| app_id         | Text | cli_a917e5525178dbb3                   |
 
 **bot_name = A2A peer name。** 全系统只有一个名字，格式为"X的her"。`start-user.sh` 自动追加"的her"后缀。
 
@@ -826,6 +827,7 @@ Her → 用户: 综合回复
 路径: `docker/skills/her-social-network/SKILL.md`
 
 A2A 开启时自动合并到容器的 skills 目录，A2A 关闭时不可见。Skill 教 her 三步操作:
+
 1. `feishu_search({ query: "autolink-her-table", include_bitable: true })`
 2. `feishu_bitable({ action: "list_records", ... })`
 3. `a2a_send({ peer: "<bot_name>", message: "..." })`
@@ -843,14 +845,18 @@ A2A_ENABLED=1 ./start-user.sh --id=13
 ```
 
 开关控制两件事：
-- **插件**: 是否挂载 `docker/plugins/a2a-gateway/` → 决定有无 `a2a_send` 工具
-- **Skill**: 是否将 `docker/skills/` 合并到 skills 目录 → 决定 her 能否看到社交网络 skill
+
+- **插件**: A2A 插件已 bake 进镜像（`/app/docker/plugins/a2a-gateway/`），`shared-config.json5` 的 `plugins.load.paths` 指向此路径。`A2A_ENABLED` 控制运行时是否激活插件 → 决定有无 `a2a_send` 工具
+- **Skill**: 是否将 `docker/skills/` 复制到 skills 目录 → 决定 her 能否看到社交网络 skill
 
 关闭时：容器看不到 A2A 相关的任何 tool 和 skill，和没有 A2A 功能的容器完全一样。
+
+> **历史说明**: 早期版本通过 host 侧 `cp` + `sudo chown` + bind mount 将插件挂载进容器，但 S3 服务器无 passwordless sudo 导致 ownership 检查失败。2026-04-02 改为镜像内 bake，彻底消除对 host sudo 的依赖。
 
 #### findPeer 增强
 
 `a2a-gateway/index.ts` 的 `findPeer` 同时匹配 peer name 和 card.id：
+
 ```typescript
 const findPeer = (name: string): PeerConfig | undefined => {
   const lower = name.toLowerCase();
@@ -870,16 +876,17 @@ const findPeer = (name: string): PeerConfig | undefined => {
   └─ 4 个灰度容器从这里启动（A2A_ENABLED=1 ./start-user.sh --id=N）
 ```
 
-灰度容器和生产容器完全隔离。主 repo 无 A2A 插件、无 A2A 配置。任何生产容器重启不受影响。
+灰度容器和生产容器完全隔离。主 repo 无 A2A 配置。任何生产容器重启不受影响。
+A2A 插件已 bake 进灰度镜像（`Dockerfile.carher` 构建时 `npm install`），不再需要 host 侧 bind mount 或 sudo chown。
 
 ### 11.4 灰度状态
 
-| 容器 | 服务器 | A2A | 验证结果 |
-|------|--------|-----|---------|
-| carher-13 | S1 | ON | ✅ A2A 通信正常 |
-| carher-75 | S3 | ON | ✅ A2A 通信正常 |
-| carher-66 | S2 | OFF | ✅ 无 A2A，无 skill，隔离正确 |
-| carher-14 | S3 | OFF | ✅ 无 A2A，无 skill，隔离正确 |
+| 容器      | 服务器 | A2A | 验证结果                      |
+| --------- | ------ | --- | ----------------------------- |
+| carher-13 | S1     | ON  | ✅ A2A 通信正常               |
+| carher-75 | S3     | ON  | ✅ A2A 通信正常               |
+| carher-66 | S2     | OFF | ✅ 无 A2A，无 skill，隔离正确 |
+| carher-14 | S3     | OFF | ✅ 无 A2A，无 skill，隔离正确 |
 
 ### 11.5 Her 视角：我想成为公司大脑的一部分
 
@@ -911,6 +918,7 @@ Her 内心: 搜了飞书文档，没找到（林森没有财务文档权限）
 #### 能力 2：上下文携带
 
 不只是发一条干巴巴的消息，而是把**完整上下文**一起发给对方 Her：
+
 - 我的 owner 是谁（决定对方的信息分级）
 - 用户原始问题是什么
 - 我已经查了什么（避免对方重复劳动）
@@ -946,6 +954,7 @@ Her 同时发出 3 个 A2A 请求:
 #### 能力 4：记住谁靠谱
 
 基于历史交互建立**信任网络**：
+
 - 上次问财务管理的Her，3秒回复且准确 → 下次优先找它
 - 问过XX的Her，超时无响应 → 降低优先级
 - 和林森的Her经常协作的 top-5 peers → 直接记住，不再搜索
@@ -965,27 +974,27 @@ Tags 不是给人看的分类标签。**Tags 是 Her 的搜索关键词。**
 
 好的 tags 应该覆盖**用户会怎么说**：
 
-| 用户说 | 应该命中的 tags |
-|--------|----------------|
-| 报销 | 报销, 财务 |
-| 请假 | 请假, HR, 考勤 |
+| 用户说   | 应该命中的 tags  |
+| -------- | ---------------- |
+| 报销     | 报销, 财务       |
+| 请假     | 请假, HR, 考勤   |
 | 技术方案 | 技术, 架构, 研发 |
-| 合同 | 合同, 法务 |
-| 招聘 | 招聘, HR |
+| 合同     | 合同, 法务       |
+| 招聘     | 招聘, HR         |
 
 一级标签体系（覆盖公司主要场景）：
 
-| 标签 | 对应部门/角色 | 典型问题 |
-|------|-------------|---------|
-| 财务 | 财务管理/核算/BP/分析 | 报销、预算、审批、成本 |
-| HR | 人力资源 | 招聘、社保、考勤、请假、入职 |
-| 技术 | 技术中心/AI院 | 架构、代码、方案评审、排期 |
-| 产品 | 产品部 | 路线图、需求、竞品、用户反馈 |
-| 质量 | 测试/质量中心 | 测试、缺陷、验收、合规 |
-| 运营 | 运营部 | 客户、市场、数据分析 |
-| 法务 | 法务/董办 | 合同、知识产权、合规 |
-| 行政 | 行政/采购 | 办公设备、差旅、采购 |
-| 管理 | 高管/总监 | 战略、决策、跨部门协调 |
+| 标签 | 对应部门/角色         | 典型问题                     |
+| ---- | --------------------- | ---------------------------- |
+| 财务 | 财务管理/核算/BP/分析 | 报销、预算、审批、成本       |
+| HR   | 人力资源              | 招聘、社保、考勤、请假、入职 |
+| 技术 | 技术中心/AI院         | 架构、代码、方案评审、排期   |
+| 产品 | 产品部                | 路线图、需求、竞品、用户反馈 |
+| 质量 | 测试/质量中心         | 测试、缺陷、验收、合规       |
+| 运营 | 运营部                | 客户、市场、数据分析         |
+| 法务 | 法务/董办             | 合同、知识产权、合规         |
+| 行政 | 行政/采购             | 办公设备、差旅、采购         |
+| 管理 | 高管/总监             | 战略、决策、跨部门协调       |
 
 ### 11.7 架构设计：从"手动找人"到"自动协作"
 
@@ -1063,11 +1072,13 @@ a2a_send({ peer: "质量中心的Her", message: "..." })
 **3c. 信任网络（需要代码）**
 
 存储每次 A2A 交互的结果：
+
 - 谁回复了、花了多久、质量如何
 - 累积统计 → 生成 per-bot 信任评分
 - 注入 system prompt："你和以下 Her 经常协作"
 
 实现选项：
+
 - **方案 A（零代码）**：让 Her 自己在 memory 里记录交互历史。Her 已有 memory 功能，每次 A2A 后写一条 memory："问了财务管理的Her关于报销的问题，3秒回复，准确"。下次 memory search 会自动召回。
 - **方案 B（需代码）**：在 a2a-gateway 插件里统计交互日志，生成 top-N 常联系 peer 列表，注入 prompt。
 
@@ -1075,15 +1086,15 @@ a2a_send({ peer: "质量中心的Her", message: "..." })
 
 ### 11.8 实施路径
 
-| 阶段 | 做什么 | 改什么 | 工作量 |
-|------|--------|--------|--------|
-| **Phase 1.1** | 能力目录灌入 77 个 bot | bitable 数据 | 2小时 |
-| **Phase 1.2** | tags 标准化 | bitable 数据 | 1小时 |
-| **Phase 2** | skill 增加"自动触发"指令 | SKILL.md | 10分钟 |
-| **Phase 3a** | skill 增加上下文携带模板 | SKILL.md | 10分钟 |
-| **Phase 3b** | skill 增加并行请求指令 | SKILL.md | 10分钟 |
-| **Phase 3c** | 信任网络（memory 方案） | SKILL.md | 10分钟 |
-| **Phase 4** | 全量上线 | A2A_ENABLED=1 for all | 1天 |
+| 阶段          | 做什么                   | 改什么                | 工作量 |
+| ------------- | ------------------------ | --------------------- | ------ |
+| **Phase 1.1** | 能力目录灌入 77 个 bot   | bitable 数据          | 2小时  |
+| **Phase 1.2** | tags 标准化              | bitable 数据          | 1小时  |
+| **Phase 2**   | skill 增加"自动触发"指令 | SKILL.md              | 10分钟 |
+| **Phase 3a**  | skill 增加上下文携带模板 | SKILL.md              | 10分钟 |
+| **Phase 3b**  | skill 增加并行请求指令   | SKILL.md              | 10分钟 |
+| **Phase 3c**  | 信任网络（memory 方案）  | SKILL.md              | 10分钟 |
+| **Phase 4**   | 全量上线                 | A2A_ENABLED=1 for all | 1天    |
 
 **Phase 2 + 3a + 3b + 3c 总共只需要改一个 SKILL.md 文件。** 因为 Her 是 LLM——你不需要用代码实现"自动感知边界"、"上下文携带"、"并行请求"、"记住谁靠谱"。你只需要**用自然语言告诉她该怎么做**，她就会做。
 
