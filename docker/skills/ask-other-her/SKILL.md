@@ -35,12 +35,25 @@ feishu_search({ query: "autolink-her-table", scope: "all", include_bitable: true
 
 ```
 feishu_bitable({ action: "get_meta", url: "<搜索结果中的URL>" })
-feishu_bitable({ action: "list_records", app_token: "<appToken>", table_id: "<tableId>" })
 ```
 
-每行是一个Her：bot_id、bot_name、owner_name、department、skills_summary、tags。
+然后用 search_records 按 tags 精准筛选（不要全量 list_records）：
 
-用 tags 和 skills_summary 匹配你要找的能力。
+```
+feishu_bitable({
+  action: "search_records",
+  app_token: "<appToken>",
+  table_id: "<tableId>",
+  filter: { conjunction: "or", conditions: [
+    { field_name: "tags", operator: "contains", value: ["<关键词>"] },
+    { field_name: "department", operator: "contains", value: ["<部门>"] }
+  ]}
+})
+```
+
+如果 search_records 没结果，再用 list_records 全量读取扫一遍。
+
+每行是一个Her：bot_id、bot_name、owner_name、department、skills_summary、tags。
 
 ### 第3步：联系目标Her
 
