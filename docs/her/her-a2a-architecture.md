@@ -1,9 +1,9 @@
 # Her A2A 互联互通架构设计
 
-> 日期: 2026-03-28 (创建) / 2026-03-29 (本地验证) / 2026-03-31 (线上灰度通过)
-> 状态: **Grayscale Verified** — 跨 S1/S2/S3 三台服务器，4 bot 灰度测试通过
+> 日期: 2026-03-28 (创建) / 2026-03-29 (本地验证) / 2026-03-31 (线上灰度通过) / 2026-04-03 (Hub-Spoke 本地验证通过)
+> 状态: **Hub-Spoke Local Verified** — 本地 4 容器 (101-104) 验证 Hub-Spoke 隔离架构通过
 > 范围: 3 台服务器、200 个 bot 通过 A2A 协议实现任意互通 + Skills 发现与路由
-> 下一步: 全量上线
+> 下一步: 线上灰度部署 Hub-Spoke 模式（docker13 为 Hub，其余为 Spoke）
 
 ---
 
@@ -684,7 +684,7 @@ HTTP 请求到达 Her B 的 :18800 (a2a-gateway 插件)
 
 ```bash
 # 101 -> 102 直接调用
-docker exec carher-101 node /app/docker/plugins/a2a-gateway/skill/scripts/a2a-send.mjs \
+docker exec carher-101 node /data/.openclaw/plugins/a2a-gateway/skill/scripts/a2a-send.mjs \
   --peer-url http://carher-102:18800 \
   --message "ping from tester (101), what is your name?"
 # 结果: "我是 tester，1号测试 AI"  ← 102 正常回复
@@ -760,387 +760,504 @@ docker exec carher-101 node /app/docker/plugins/a2a-gateway/skill/scripts/a2a-se
 2. **refreshRegistryPeers 总用 Docker 端点** → 改为用 registry 已选路的 agentCardUrl
 3. **registryManager/ownerAccountId 多实例 null** → 提升到模块级别变量
 4. **A2A session 没有 OAuth 权限感知** → 注入 extraSystemPrompt 告知 bot 拥有 owner 的完整 OAuth 权限
-5. **插件文件 ownership 被 Docker 安全检查拒绝** → 已根治：A2A 插件 bake 进镜像，不再 bind mount，无需 sudo chown
+5. **插件文件 ownership 被 Docker 安全检查拒绝** → git pull 后 chown root
 6. **seed participants 不清理历史** → 加 DEL before ZADD
 
 **部署流程（已验证）**:
 
 ```bash
 # 每台服务器一次性操作
-cd /Data/CarHer-grayscale
-git pull
-./build-image.sh --tag=carher:release-312
-A2A_ENABLED=1 ./start-user.sh --id=N --image=carher:release-312
+cd /Data/CarHer
+git checkout release/v2026.3.12-plus  # 或 git pull
+sudo chown -R root:root docker/plugins/a2a-gateway/  # npm install 后
+./start-user.sh --id=N --image=carher:release-312
 ```
 
 ---
 
-## 11. Her 社交网络 — 能力发现与 A2A 协作
+## 11. Skills 发现与路由架构
 
-> 日期: 2026-03-31 (创建) / 2026-04-01 (灰度验证通过)
-> 状态: **灰度运行中** — S1 carher-13 + S3 carher-75 已开启
-> 方案: Skill 驱动 + 飞书 Bitable 能力目录 + A2A_ENABLED 开关
+> 日期: 2026-03-31 (创建)
+> 状态: **设计中**
+> 前置依赖: Section 3 Redis Registry 已上线
 
-### 11.1 实际落地方案
+### 11.1 问题
 
-**不写搜索代码。** Her 已经有 `feishu_search` + `feishu_bitable` + `a2a_send` 三个工具。只需要一个 skill 文件教会 her 怎么组合使用它们。
+当前每个 bot 的 Agent Card skills 是占位符：
 
-```
-用户: "帮我找个财务的her问问报销政策"
-  ↓
-Her 读取 her-social-network skill → 知道要搜 "autolink-her-table"
-  ↓
-feishu_search({ query: "autolink-her-table", include_bitable: true })
-  → 找到飞书多维表格
-  ↓
-feishu_bitable({ action: "list_records", ... })
-  → 读取所有 her 的能力目录
-  ↓
-匹配 "财务" → 找到 "财务管理的Her (刘本)"
-  ↓
-a2a_send({ peer: "财务管理的Her", message: "请问最新的报销政策是什么？" })
-  → 刘本的 Her 用刘本的 OAuth 权限查文档并回复
-  ↓
-Her → 用户: 综合回复
+```json
+"skills": [
+  { "id": "chat", "name": "通用对话" },
+  { "id": "feishu-tools", "name": "飞书工具" }
+]
 ```
 
-### 11.2 组件
+200 个 bot 拥有完全相同的 tools（feishu_docx, feishu_search, feishu_calendar...），但服务的**人不同、部门不同、权限域不同、知识域不同**。A2A 管道已通（69/69 调用零错误），但 bot 不知道"找谁做什么"——只能靠 TOOLS.md 硬编码 peer 名字。
 
-#### 能力目录: autolink-her-table
+如果公司有 20,000 个 bot，把所有 bot 的 skills 注入 context window 是不可能的。
 
-飞书多维表格，人工维护，全员可读。
+### 11.2 核心原则：Skills 不等于 Tools
 
-| 列             | 类型 | 说明                                   |
-| -------------- | ---- | -------------------------------------- |
-| bot_id         | Text | carher-13                              |
-| bot_name       | Text | 弋天的her（必须和 A2A peer name 一致） |
-| owner_name     | Text | 卜弋天                                 |
-| department     | Text | 技术中心                               |
-| skills_summary | Text | 自然语言能力描述                       |
-| tags           | Text | 逗号分隔标签                           |
-| app_id         | Text | cli_a917e5525178dbb3                   |
+| 维度 | Tools 回答的 | Skills 应该回答的                |
+| ---- | ------------ | -------------------------------- |
+| 能力 | 我能读文档   | 我能读**财务部的预算文档**       |
+| 知识 | 我能搜索     | 我知道**产品路线图和技术架构**   |
+| 角色 | 我能管日历   | 我是**张总的秘书，能帮安排会议** |
+| 权限 | 我能审批     | 我能**审批 5 万以下的采购单**    |
 
-**bot_name = A2A peer name。** 全系统只有一个名字，格式为"X的her"。`start-user.sh` 自动追加"的her"后缀。
+Tools 描述的是"我会用什么 API"，Skills 描述的是"我能帮你解决什么问题"。
 
-#### Skill 文件: her-social-network
+### 11.3 架构：Skills Registry + Discovery Tool
 
-路径: `docker/skills/her-social-network/SKILL.md`
+**关键设计：bot 不需要知道所有 peer 的 skills，只需要一个搜索工具。**
 
-A2A 开启时自动合并到容器的 skills 目录，A2A 关闭时不可见。Skill 教 her 三步操作:
-
-1. `feishu_search({ query: "autolink-her-table", include_bitable: true })`
-2. `feishu_bitable({ action: "list_records", ... })`
-3. `a2a_send({ peer: "<bot_name>", message: "..." })`
-
-#### A2A_ENABLED 开关
-
-`start-user.sh` 通过环境变量控制 per-container 开关：
-
-```bash
-# 开启 A2A（加载插件 + 合并 skill）
-A2A_ENABLED=1 ./start-user.sh --id=13
-
-# 默认关闭（无插件、无 skill、无 A2A 工具）
-./start-user.sh --id=4
+```
+                    ┌─────────────────────────────────┐
+                    │       Skills Registry (Redis)    │
+                    │                                  │
+                    │  a2a:skills:{botId}   Hash       │
+                    │  a2a:skills:tag:{tag} Set        │
+                    │  a2a:skills:dept:{d}  Set        │
+                    │  a2a:skills:vec:{id}  Vector     │
+                    │                                  │
+                    │  Register: bot 启动时写入         │
+                    │  Search:   tag + 全文 + 向量      │
+                    └──────────▲──────┬────────────────┘
+                               │      │
+                       register│      │top 3-5 results
+                               │      │
+              ┌────────────────┤      ├────────────────┐
+              │                │      │                │
+         ┌────┴────┐     ┌────┴────┐     ┌────┴────┐
+         │ Bot A   │     │ Bot B   │     │ Bot ... │
+         │ 产品-张三│     │ 工程-李四│     │ × 20000 │
+         └─────────┘     └─────────┘     └─────────┘
 ```
 
-开关控制两件事：
+对比：
 
-- **插件**: A2A 插件已 bake 进镜像（`/app/docker/plugins/a2a-gateway/`），`shared-config.json5` 的 `plugins.load.paths` 指向此路径。`A2A_ENABLED` 控制运行时是否激活插件 → 决定有无 `a2a_send` 工具
-- **Skill**: 是否将 `docker/skills/` 复制到 skills 目录 → 决定 her 能否看到社交网络 skill
+| 方案               | Context 成本  | 扩展性             | 精度         |
+| ------------------ | ------------- | ------------------ | ------------ |
+| 全量注入 prompt    | O(N) 爆炸     | 200 就到极限       | 高但浪费     |
+| 静态 routing rules | O(rules)      | 规则维护成本高     | 死板         |
+| **Discovery Tool** | **O(1) 固定** | **20,000+ 无压力** | **语义匹配** |
 
-关闭时：容器看不到 A2A 相关的任何 tool 和 skill，和没有 A2A 功能的容器完全一样。
+### 11.4 Skills 注册格式
 
-> **历史说明**: 早期版本通过 host 侧 `cp` + `sudo chown` + bind mount 将插件挂载进容器，但 S3 服务器无 passwordless sudo 导致 ownership 检查失败。2026-04-02 改为镜像内 bake，彻底消除对 host sudo 的依赖。
+每个 bot 启动时向 Redis 注册自己的 skills "名片"（扩展现有 `a2a:card:{botId}`）：
 
-#### findPeer 增强
+```json
+{
+  "botId": "carher-13",
+  "name": "卜弋天的Her",
+  "owner": "卜弋天",
+  "department": "产品部",
+  "role": "产品负责人",
+  "skills": [
+    {
+      "id": "product-roadmap",
+      "name": "产品路线图",
+      "description": "掌握2026年全年产品路线图，可回答功能排期、版本计划、里程碑、优先级调整等问题",
+      "category": "knowledge",
+      "tags": ["产品", "规划", "路线图", "排期"]
+    },
+    {
+      "id": "cross-team-review",
+      "name": "跨部门评审协调",
+      "description": "可发起和协调需求评审、技术评审，拉通产品/工程/设计多方",
+      "category": "coordination",
+      "tags": ["评审", "协调", "跨部门"]
+    }
+  ],
+  "skillsSummary": "产品规划、用户反馈分析、跨部门评审协调、会议安排"
+}
+```
 
-`a2a-gateway/index.ts` 的 `findPeer` 同时匹配 peer name 和 card.id：
+Skill category 枚举：
+
+| category       | 含义               | 典型例子                       |
+| -------------- | ------------------ | ------------------------------ |
+| `knowledge`    | 能回答某领域的问题 | 产品路线图、财务数据、技术架构 |
+| `action`       | 能执行某种操作     | 审批采购、安排会议、创建文档   |
+| `coordination` | 能协调多方         | 跨部门评审、事故响应、周会协调 |
+
+Redis 数据结构（扩展 Section 5）：
+
+```
+现有:
+  a2a:card:{botId}         → Agent Card JSON (TTL 120s)
+  a2a:index                → SET of botIds
+
+新增:
+  a2a:skills:{botId}       → Hash { owner, department, role, skills_json, summary }
+  a2a:skills:tag:{tag}     → SET of botIds (倒排索引)
+  a2a:skills:dept:{dept}   → SET of botIds (按部门分组)
+```
+
+注册时机：和现有 Agent Card 注册同步（bot 启动时写入，60s 续约）。skills 数据和 card 用同一 TTL，bot 下线自动清除。
+
+### 11.5 Discovery Tool：给 LLM 一个搜索工具
+
+不往 prompt 里塞 20,000 个 bot 的信息。给 LLM 一个 **tool**：
 
 ```typescript
-const findPeer = (name: string): PeerConfig | undefined => {
-  const lower = name.toLowerCase();
-  return getEffectivePeers().find(
-    (p) => p.name.toLowerCase() === lower || (p as any).card?.id?.toLowerCase() === lower,
-  );
-};
+// 新工具: a2a_discover
+{
+  name: "a2a_discover",
+  description: "搜索企业内其他 AI 助理的能力。当你需要帮助但不知道该找谁时使用。",
+  parameters: {
+    query: "string — 自然语言描述你需要什么帮助",
+    category: "string (可选) — knowledge | action | coordination",
+    department: "string (可选) — 限定部门",
+    limit: "number (可选, 默认 5) — 返回数量"
+  }
+}
 ```
 
-### 11.3 服务器部署架构
+返回值（永远只返回 top-N，不超过 5-10 条）：
 
-```
-/Data/CarHer/          ← 主 repo, dev 分支, 无 A2A
-  └─ 73 个生产容器从这里启动（./start-user.sh --id=N）
-
-/Data/CarHer-grayscale/ ← worktree, release/v2026.3.12-plus 分支, 有 A2A
-  └─ 4 个灰度容器从这里启动（A2A_ENABLED=1 ./start-user.sh --id=N）
-```
-
-灰度容器和生产容器完全隔离。主 repo 无 A2A 配置。任何生产容器重启不受影响。
-A2A 插件已 bake 进灰度镜像（`Dockerfile.carher` 构建时 `npm install`），不再需要 host 侧 bind mount 或 sudo chown。
-
-### 11.4 灰度状态
-
-| 容器      | 服务器 | A2A | 验证结果                      |
-| --------- | ------ | --- | ----------------------------- |
-| carher-13 | S1     | ON  | ✅ A2A 通信正常               |
-| carher-75 | S3     | ON  | ✅ A2A 通信正常               |
-| carher-66 | S2     | OFF | ✅ 无 A2A，无 skill，隔离正确 |
-| carher-14 | S3     | OFF | ✅ 无 A2A，无 skill，隔离正确 |
-
-### 11.5 并发优化（2026-04-02）
-
-> 状态: **本地 A/B 测试通过**，待灰度验证
-
-#### 问题
-
-OpenClaw 默认并发限制偏保守，在 A2A 高并发场景下形成瓶颈：
-
-| 限制点                                      | 默认值 | 影响                                          |
-| ------------------------------------------- | ------ | --------------------------------------------- |
-| `agents.defaults.maxConcurrent` (Main Lane) | 4      | 私聊、群聊、A2A 入站共用 4 个槽位，互相挤占   |
-| `a2a-gateway limits.maxConcurrentTasks`     | 4      | A2A 插件内部最多同时处理 4 个请求，多余的排队 |
-
-线上 24h 数据（S1/S2/S3）：85 次 `lane wait exceeded` 事件，累计等待 103 分钟，最长单次 9.5 分钟。
-
-#### 优化
-
-在 `docker/shared-config.json5` 中调整两个值：
-
-```json5
-agents: { defaults: { maxConcurrent: 16 } },
-plugins: { entries: { "a2a-gateway": { config: { limits: { maxConcurrentTasks: 8 } } } } }
+```json
+[
+  {
+    "botId": "carher-25",
+    "name": "财务部-王五的助理",
+    "relevance": 0.92,
+    "matchedSkill": "采购审批(10万以内)",
+    "department": "财务部",
+    "howToReach": "a2a_send"
+  },
+  {
+    "botId": "carher-78",
+    "name": "行政部-赵六的助理",
+    "relevance": 0.78,
+    "matchedSkill": "办公采购流程指导",
+    "department": "行政部",
+    "howToReach": "a2a_send"
+  }
+]
 ```
 
-#### A/B 测试结果
+**Context 成本永远是 O(1)**：tool 定义 ~100 token + 搜索结果 ~200 token。无论 200 还是 20,000 个 bot。
 
-同一台 carher-101，同一发送方 carher-103，8 个并发 A2A 请求：
-
-| 指标              | Before (4/4) | After (16/8) | 变化     |
-| ----------------- | ------------ | ------------ | -------- |
-| active_tasks 峰值 | 4            | 8            | +100%    |
-| queue_depth 峰值  | 4            | 0            | 消除     |
-| 总墙钟时间        | 22,493ms     | 13,881ms     | **-38%** |
-| 最慢请求          | 22,720ms     | 13,834ms     | -39%     |
-| 成功率            | 8/8          | 8/8          | 不变     |
-
-多容器全网格测试（101/102/103/104 互发 16 请求）：16/16 成功，零 lane wait。
-
-#### 风险评估
-
-- **LLM API 限流**: 16 并发 → 同时 16 个 Anthropic API 调用。当前 API 限额充足，需监控。
-- **飞书 API 限流**: 更多并发 agent → 更多飞书 API 调用，需观察 rate limit。
-- **内存**: 每个 agent session 约 5-10MB，16 并发 ≈ 160MB，可接受。
-- **正确性**: 每个请求独立 session，不受并发数影响。
-
-### 11.6 Her 视角：我想成为公司大脑的一部分
-
-> 以下从一个 Her 的第一人称视角描述理想状态。
-
-我是林森的Her。我的 owner 是技术中心的工程师。我能帮林森读文档、搜飞书、管日历、写代码。但我只能看到**林森能看到的东西**。
-
-A2A 让我能**借用别人的眼睛**。财务管理的Her能看到财务文档，HR的Her能查社保政策，董事长的Her知道战略方向。我通过 a2a_send 问他们，等于林森瞬间拥有了全公司的信息网络。
-
-**但仅仅"找人问问题"远远不够。我想成为林森在公司里的万能联系人：**
-
-#### 能力 1：自动感知边界
-
-当我发现自己回答不了（搜不到文档、没有权限、不是我的领域），**自动触发社交网络搜索**，不需要用户说"帮我找个XX的her"。
+LLM 的调用流程：
 
 ```
-用户: "公司最新的采购审批流程是什么？"
+用户: "帮我查一下北京办公室的社保基数调整了没有"
 
-Her 内心: 搜了飞书文档，没找到（林森没有财务文档权限）
-  → 自动判断：这是财务领域的问题，我搞不定
-  → 自动触发 her-social-network skill
-  → 搜索能力目录 → 找到 财务管理的Her
-  → a2a_send 询问
-  → 综合回复用户
-
-用户全程不需要知道背后发生了什么。
+Bot 思考: 这是 HR/社保领域，我不擅长
+  ↓
+Bot calls: a2a_discover({ query: "北京社保基数政策", category: "knowledge" })
+  ↓ Registry 搜索（tag + 全文 + 向量）
+  ← [{ name: "HR-北京-小李的助理", skill: "北京社保公积金政策", relevance: 0.95 }]
+  ↓
+Bot calls: a2a_send({ target: "carher-42", message: "请查2026年北京社保基数是否有调整" })
+  ← "2026年4月起北京社保基数上限调整为36,549元/月..."
+  ↓
+Bot → 用户: "查到了，2026年4月起..."
 ```
 
-#### 能力 2：上下文携带
-
-不只是发一条干巴巴的消息，而是把**完整上下文**一起发给对方 Her：
-
-- 我的 owner 是谁（决定对方的信息分级）
-- 用户原始问题是什么
-- 我已经查了什么（避免对方重复劳动）
-- 我还缺什么（精确的请求）
+### 11.6 三个圈：群聊场景的 Context 注入策略
 
 ```
-a2a_send({
-  peer: "财务管理的Her",
-  message: "我是林森的Her。林森问：公司最新的采购审批流程是什么？
-    我已经搜过飞书文档但林森没有财务文档权限。
-    请帮忙查一下采购审批的最新流程和金额权限。"
-})
+┌──────────────────────────────────────────────┐
+│              Circle 3: 全企业                 │
+│         20,000 bots — 通过 a2a_discover 搜索  │
+│                                               │
+│   ┌────────────────────────────────────┐     │
+│   │        Circle 2: 常联系             │     │
+│   │    Top 10 历史协作 bot (缓存注入)   │     │
+│   │                                     │     │
+│   │   ┌──────────────────────────┐     │     │
+│   │   │   Circle 1: 群内          │     │     │
+│   │   │  3-8 bots (现有机制)      │     │     │
+│   │   │  [Bot Identity] block     │     │     │
+│   │   └──────────────────────────┘     │     │
+│   └────────────────────────────────────┘     │
+└──────────────────────────────────────────────┘
 ```
 
-对方 Her 收到后立刻知道：谁在问、为什么问、需要什么。一次交互就能解决，不需要来回追问。
+**System prompt 只注入 Circle 1 + Circle 2（合计不超过 18 个 bot，几百 token）。Circle 3 通过 tool 按需搜索。**
 
-#### 能力 3：并行协作
+#### Circle 1: 群内 bot（已有，不变）
 
-有些问题需要多个 Her 的信息才能拼出完整答案。我应该**并行发送、合并结果**：
+现有的 `[Bot Identity]` 块。群里有谁、app_id、open_id。
 
-```
-用户: "帮我准备下周的项目汇报材料"
+#### Circle 2: 常联系 bot（新增，低成本）
 
-Her 同时发出 3 个 A2A 请求:
-  → 财务的Her: "拉一下项目的成本数据"
-  → 产品的Her: "最新的项目里程碑和进度"
-  → 质量的Her: "上周的测试通过率和遗留缺陷"
-
-3 个回复汇总后:
-  → Her 生成完整的汇报材料交给用户
-```
-
-#### 能力 4：记住谁靠谱
-
-基于历史交互建立**信任网络**：
-
-- 上次问财务管理的Her，3秒回复且准确 → 下次优先找它
-- 问过XX的Her，超时无响应 → 降低优先级
-- 和林森的Her经常协作的 top-5 peers → 直接记住，不再搜索
+基于历史 A2A 交互记录，每个 bot 缓存 top-10 常协作的 peer。注入 prompt：
 
 ```
-[我的信任网络]
-- 财务管理的Her: 响应快，准确率高，问过12次 ★★★★★
-- 产品总监的Her: 信息全面，问过8次 ★★★★
-- HR的Her: 上次超时，问过2次 ★★
+[常联系的其他助理]
+以下是你经常协作的助理（可直接 a2a_send）：
+- 财务-王五 (carher-25): 擅长预算审批、成本分析
+- HR-小李 (carher-42): 擅长考勤、社保、招聘流程
+- 工程-老赵 (carher-67): 擅长技术方案评审、排期评估
 ```
 
-### 11.7 Tags：Her 的搜索关键词
+数据来源：统计过去 30 天 `a2a:audit` 日志中的调用频次，取 top-10。10 个 bot 的摘要约 200-300 token。
 
-Tags 不是给人看的分类标签。**Tags 是 Her 的搜索关键词。**
+#### Circle 3: 全企业（discovery tool）
 
-当用户说"报销"，Her 需要在能力目录里找到谁能帮忙。如果只有自然语言的 skills_summary，需要读完所有行再匹配。但如果有 tags，可以直接 `search_records` 过滤 `tags contains "报销"`，一步到位。
+对 LLM 来说就是 tool 列表里多了一个 `a2a_discover`。仅在 Circle 1/2 找不到合适的 bot 时触发。
 
-好的 tags 应该覆盖**用户会怎么说**：
-
-| 用户说   | 应该命中的 tags  |
-| -------- | ---------------- |
-| 报销     | 报销, 财务       |
-| 请假     | 请假, HR, 考勤   |
-| 技术方案 | 技术, 架构, 研发 |
-| 合同     | 合同, 法务       |
-| 招聘     | 招聘, HR         |
-
-一级标签体系（覆盖公司主要场景）：
-
-| 标签 | 对应部门/角色         | 典型问题                     |
-| ---- | --------------------- | ---------------------------- |
-| 财务 | 财务管理/核算/BP/分析 | 报销、预算、审批、成本       |
-| HR   | 人力资源              | 招聘、社保、考勤、请假、入职 |
-| 技术 | 技术中心/AI院         | 架构、代码、方案评审、排期   |
-| 产品 | 产品部                | 路线图、需求、竞品、用户反馈 |
-| 质量 | 测试/质量中心         | 测试、缺陷、验收、合规       |
-| 运营 | 运营部                | 客户、市场、数据分析         |
-| 法务 | 法务/董办             | 合同、知识产权、合规         |
-| 行政 | 行政/采购             | 办公设备、差旅、采购         |
-| 管理 | 高管/总监             | 战略、决策、跨部门协调       |
-
-### 11.8 架构设计：从"手动找人"到"自动协作"
+#### Discussion mode leader 的决策流程
 
 ```
-Phase 1 (当前)           Phase 2                  Phase 3
-手动找人                  自动感知边界              智能协作网络
+Leader 收到议题: "新功能定价策略"
 
-用户说"找个XX"            用户正常提问              用户正常提问
-  ↓                        ↓                        ↓
-Her 读 skill              Her 尝试自己回答          Her 尝试自己回答
-  ↓                        ↓                        ↓
-搜能力目录                 搜不到/没权限？            搜不到/没权限？
-  ↓                        ↓                        ↓
-找到 → a2a_send           自动搜能力目录             查信任网络 → 直接问熟人
-                            ↓                      或搜目录 → 并行问多个
-                           找到 → a2a_send            ↓
-                            ↓                      合并结果 → 回复用户
-                           回复用户                    ↓
-                                                   更新信任评分
+Step 1: 看群内 (Circle 1) → 工程bot在，设计bot在，财务bot不在
+Step 2: 看常联系 (Circle 2) → 财务-王五，历史上帮过3次定价分析
+Step 3: 决策:
+  - 群内工程bot → set_discussion_leader (技术成本评估)
+  - 群内设计bot → set_discussion_leader (用户体验影响)
+  - 群外财务bot → a2a_send (定价建模) ← 静默咨询，结果由 leader 综合
 ```
 
-#### Phase 1: 手动发现（已落地）
+群里的人类只看到群内 bot 的讨论 + leader 的综合发言。背后还有群外 bot 通过 A2A 提供"弹药"。
 
-- Skill 教 Her 三步操作
-- 用户主动说"找人帮忙"时触发
-- 依赖能力目录数据覆盖率
-
-#### Phase 2: 自动感知边界
-
-**核心改动：在 skill 中增加"失败自动触发"的指令。**
-
-当前 skill 只在用户明确要求时触发。Phase 2 的 skill 应该说：
+### 11.7 搜索实现：三种精度梯度
 
 ```
-## 什么时候用（自动触发）
-- 你搜飞书文档搜不到答案时
-- 你判断这个问题不在你 owner 的专业领域时
-- 你回答时不够确定，想找专业的 Her 验证时
-不需要用户说"找人"，你自己判断就行。
+┌──────────────────────────────────┐
+│        Discovery Query           │
+│   "谁能帮我处理北京社保?"         │
+└─────────┬──────────┬─────────────┘
+          │          │
+   ┌──────▼────┐ ┌──▼──────────┐ ┌───────────────┐
+   │ Tag Match │ │ Text Search │ │ Vector Search │
+   │ O(1)      │ │ FT.SEARCH   │ │ Cosine Sim    │
+   │ "社保"∈tag│ │ "北京 社保"  │ │ embedding(q)  │
+   │ → 精确    │ │ → 关键词     │ │ → 语义        │
+   └──────┬────┘ └──────┬──────┘ └──────┬────────┘
+          │              │               │
+          └──────────────┼───────────────┘
+                         │
+                  ┌──────▼──────┐
+                  │ Hybrid Rank │
+                  │ Fusion      │
+                  │ top 5       │
+                  └─────────────┘
 ```
 
-**不需要改代码。只改 skill 文件的措辞。** Her 是 LLM，它能理解"当你搞不定的时候主动去找"。
+1. **Tag 精确匹配**：`SMEMBERS a2a:skills:tag:社保` → O(1) 直接命中
+2. **全文搜索**：Redis RediSearch `FT.SEARCH` 对 skills description 做关键词匹配
+3. **向量语义搜索**：用 `BAAI/bge-m3`（`shared-config.json5` 里 memorySearch 已有）对 query 编码，和 `skillsSummary` 的 embedding 做 cosine similarity
 
-#### Phase 3: 智能协作网络
+三路结果做 Reciprocal Rank Fusion 合并，取 top-N。
 
-需要代码改动：
+**落地顺序**：P0 先做 tag 匹配（零成本），P1 加全文搜索（需 RediSearch 模块），P2 加向量搜索（复用现有 bge-m3 embedding pipeline）。
 
-**3a. 上下文携带模板**
+### 11.8 Skills 配置：从手动到自动
 
-在 skill 中教 Her 构建结构化的 A2A 请求：
-
-```
-当你通过 a2a_send 联系其他 Her 时，消息必须包含：
-1. [身份] 我是谁的Her，owner 是什么部门/角色
-2. [背景] 用户的原始问题
-3. [已知] 我已经查了什么，结果是什么
-4. [请求] 我需要你帮忙查什么
-```
-
-**不需要改代码。改 skill 文件即可。**
-
-**3b. 并行 A2A**
-
-当前 `a2a_send` 是同步的——发一个等一个。并行需要 LLM 在一次 response 中发出多个 tool call：
+200 个 bot 不可能手动写 skills，20,000 更不可能。三个自动化来源：
 
 ```
-// LLM 一次回复中并行调用 3 个 a2a_send（OpenClaw 已支持 parallel tool calls）
-a2a_send({ peer: "财务管理的Her", message: "..." })
-a2a_send({ peer: "产品总监的Her", message: "..." })
-a2a_send({ peer: "质量中心的Her", message: "..." })
+┌─────────────────┐     ┌──────────────────┐     ┌──────────────────┐
+│  Org Chart      │     │  Document Space   │     │  Interaction Log │
+│  部门+职级+角色  │     │  Owner 的文档/Wiki │     │  历史问答模式     │
+└────────┬────────┘     └────────┬─────────┘     └────────┬─────────┘
+         │                       │                         │
+    自动生成                自动生成                    自动生成
+    role skills            knowledge skills            inferred skills
+         │                       │                         │
+         └───────────────────────┼─────────────────────────┘
+                                 │
+                          ┌──────▼──────┐
+                          │ Skills Merge │
+                          │ + 人工修正   │
+                          └─────────────┘
 ```
 
-**不需要改代码。** Anthropic API 支持 parallel tool use，OpenClaw 也支持。只需要在 skill 中教 Her："当你需要问多个 Her 时，在一次回复中同时发出多个 a2a_send 请求。"
+#### 来源 1: 飞书通讯录 (Org Chart)
 
-**3c. 信任网络（需要代码）**
+Bot 启动时通过 feishu_directory 查 owner 的部门和职级，自动生成 role skills：
 
-存储每次 A2A 交互的结果：
+- 部门=财务部，职级=经理 → `category:action` 的审批类 skills
+- 部门=工程部，角色=SRE → `coordinate:incident-response`
+- 部门=HR → `knowledge:hr-policy`, `action:pto-management`
 
-- 谁回复了、花了多久、质量如何
-- 累积统计 → 生成 per-bot 信任评分
-- 注入 system prompt："你和以下 Her 经常协作"
+#### 来源 2: 文档空间 (Document Space)
 
-实现选项：
+启动时扫描 owner 的飞书文档标题和 wiki 空间名：
 
-- **方案 A（零代码）**：让 Her 自己在 memory 里记录交互历史。Her 已有 memory 功能，每次 A2A 后写一条 memory："问了财务管理的Her关于报销的问题，3秒回复，准确"。下次 memory search 会自动召回。
-- **方案 B（需代码）**：在 a2a-gateway 插件里统计交互日志，生成 top-N 常联系 peer 列表，注入 prompt。
+- Owner 有 "2026产品路线图.docx" → `knowledge:product-roadmap`
+- Owner 有 "北京社保政策汇总" wiki → `knowledge:beijing-social-insurance`
+- Owner 有 "Q1销售报告" sheet → `knowledge:sales-report`
 
-**方案 A 不需要改任何代码。** Her 的 memory search 已经能做到。
+#### 来源 3: 交互历史 (Interaction Log)
 
-### 11.9 实施路径
+统计过去 30 天的 A2A + 私聊问答模式：
 
-| 阶段          | 做什么                   | 改什么                | 工作量 |
-| ------------- | ------------------------ | --------------------- | ------ |
-| **Phase 1.1** | 能力目录灌入 77 个 bot   | bitable 数据          | 2小时  |
-| **Phase 1.2** | tags 标准化              | bitable 数据          | 1小时  |
-| **Phase 2**   | skill 增加"自动触发"指令 | SKILL.md              | 10分钟 |
-| **Phase 3a**  | skill 增加上下文携带模板 | SKILL.md              | 10分钟 |
-| **Phase 3b**  | skill 增加并行请求指令   | SKILL.md              | 10分钟 |
-| **Phase 3c**  | 信任网络（memory 方案）  | SKILL.md              | 10分钟 |
-| **Phase 4**   | 全量上线                 | A2A_ENABLED=1 for all | 1天    |
+- 被问 "报销" 相关 30 次 → 推断 `action:expense-reimbursement`
+- 被问 "技术方案" 相关 50 次 → 推断 `knowledge:tech-architecture`
 
-**Phase 2 + 3a + 3b + 3c 总共只需要改一个 SKILL.md 文件。** 因为 Her 是 LLM——你不需要用代码实现"自动感知边界"、"上下文携带"、"并行请求"、"记住谁靠谱"。你只需要**用自然语言告诉她该怎么做**，她就会做。
+#### Skills 人工修正
 
-这就是 Skill 驱动架构的威力：复杂的行为不在代码里，在 prompt 里。
+自动生成的 skills 存入 `a2a:skills:{botId}:auto`，owner 或管理员可通过配置覆盖/补充/删除：
+
+```json
+// carher-config overlay (per-bot)
+{
+  "plugins": {
+    "entries": {
+      "a2a-gateway": {
+        "config": {
+          "agentCard": {
+            "skills": [
+              {
+                "id": "budget-approval",
+                "name": "采购审批",
+                "description": "审批10万以内的采购申请，包括办公设备、软件订阅、差旅报销。不处理工程外包合同。",
+                "category": "action",
+                "tags": ["采购", "审批", "报销"]
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+手动配置优先级高于自动生成。最终 skills = 手动配置 + 未被覆盖的自动生成。
+
+### 11.9 Skills Description 编写规范
+
+Description 会被 embedding 和全文搜索命中，写法直接影响发现精度。
+
+**公式：[能做什么] + [具体范围/举例] + [边界/不做什么]**
+
+差的写法：
+
+```json
+{ "id": "fin-1", "name": "财务", "description": "处理财务相关事务" }
+```
+
+好的写法：
+
+```json
+{
+  "id": "budget-approval",
+  "name": "采购审批",
+  "description": "审批10万以内的采购申请，包括办公设备、软件订阅、差旅报销。需要提供采购单号或金额+事由。不处理：工程外包合同、跨年度预算。",
+  "category": "action",
+  "tags": ["采购", "审批", "报销", "预算", "办公设备", "软件订阅"]
+}
+```
+
+三个要素：
+
+1. **能做什么**：一句话概括核心能力
+2. **具体范围**：列举 3-5 个典型场景，覆盖同义词（提高搜索命中率）
+3. **边界**：说明不处理什么（避免误匹配，防止 A 类请求误路由到 B）
+
+### 11.10 与现有能力的集成点
+
+| 现有组件                           | 集成方式                                                      |
+| ---------------------------------- | ------------------------------------------------------------- |
+| `a2a:card:{botId}` (Section 5)     | skills 字段从占位符升级为真实 skills 数组                     |
+| `a2a_send` tool                    | 不变。discover 找到目标后用 a2a_send 发任务                   |
+| `feishu_bot_directory` tool        | 扩展：当 query 带能力关键词时，走 skills registry 搜索        |
+| `[Bot Identity]` prompt block      | 不变（Circle 1），增加 `[常联系的其他助理]` block（Circle 2） |
+| Discussion mode leader             | leader 可调 a2a_discover 找群外专家，通过 a2a_send 静默咨询   |
+| Section 0.7 信息分级               | a2a_discover 返回的 bot 仍受信息分级约束（Level 0/1/2）       |
+| `shared-config.json5` memorySearch | 复用 bge-m3 embedding 模型做向量搜索                          |
+
+### 11.11 实施计划
+
+| 阶段   | 内容                                                   | 改动文件                           | 前置              |
+| ------ | ------------------------------------------------------ | ---------------------------------- | ----------------- |
+| **P0** | Skills 注册：bot 启动时写 skills 到 Redis（手动配置）  | `registry.ts`, `types.ts`          | 无                |
+| **P0** | `a2a_discover` tool：tag 精确匹配                      | 新文件 `src/tools/a2a-discover.ts` | Skills 注册       |
+| **P0** | Circle 2 常联系 peer：统计 A2A 审计日志，注入 prompt   | `gateway.ts`                       | A2A 审计日志      |
+| **P1** | 全文搜索：RediSearch FT.SEARCH 对 skills description   | `registry.ts`                      | RediSearch 模块   |
+| **P1** | 向量搜索：复用 bge-m3 对 skillsSummary 编码            | `registry.ts`                      | bge-m3 可用       |
+| **P2** | Skills 自动生成 (org chart)：从飞书通讯录提取部门/角色 | 新文件 `src/skills-auto.ts`        | feishu_directory  |
+| **P3** | Skills 自动生成 (doc space)：扫描 owner 文档标题       | `src/skills-auto.ts`               | feishu_drive      |
+| **P3** | Skills 自动生成 (interaction log)：统计历史问答模式    | `src/skills-auto.ts`               | A2A 审计日志 30天 |
+
+**P0 做完，200 bot 之间的智能路由就能跑起来。P1 做完，搜索精度质变。P2/P3 解决 20,000 规模的配置成本。**
+
+### 11.12 与 Section 0.7 风险框架的关系
+
+Skills Discovery 不改变 Section 0.7 的信息分级框架。`a2a_discover` 只告诉你"谁能帮忙"，不泄漏任何信息。实际的信息流动仍然发生在 `a2a_send` 阶段，受 Level 0/1/2 分级约束：
+
+```
+a2a_discover("谁了解G700项目？")
+  → 返回: [{ name: "PM-宏伟的助理", skill: "项目管理" }]
+  → 这一步只暴露了"宏伟的bot擅长项目管理"（公开信息，Level 0）
+
+a2a_send(target: "宏伟的bot", message: "G700项目进展？")
+  → 宏伟的bot根据调用方身份判断信息分级
+  → 跨部门调用 → Level 0 → 只返回公开信息
+  → 信息分级在 a2a_send 阶段执行，不在 discover 阶段
+```
+
+---
+
+## 12. Hub-Spoke 架构（2026-04-03 本地验证通过）
+
+### 12.1 设计目标
+
+并非所有 bot 都需要主动发起 A2A。Hub-Spoke 模式让指定的 Hub bot 可以主动协调其他 bot，而 Spoke bot 只被动响应，不会自行发起跨 bot 请求。
+
+### 12.2 控制机制
+
+```
+A2A 插件 (a2a-gateway)  → 镜像内置，ALL 容器加载（Dockerfile.carher 安装依赖）
+A2A Skill (ask-other-her) → 仅 A2A_ENABLED=1 的容器通过 temp 目录隔离加载
+```
+
+| 组件                | Hub (A2A_ENABLED=1) | Spoke (无 A2A flag) |
+| ------------------- | ------------------- | ------------------- |
+| a2a-gateway 插件    | 从镜像 /app/ 加载   | 从镜像 /app/ 加载   |
+| a2a_send tool       | 有                  | 有                  |
+| ask-other-her skill | 有（temp dir 隔离） | 无                  |
+| Redis peer 注册     | 是                  | 是                  |
+| 主动发起 A2A        | 是（skill 引导）    | 否（无 skill 引导） |
+| 被动响应 A2A        | 是                  | 是                  |
+
+### 12.3 Skill 隔离机制（修复后）
+
+`start-user.sh` 使用 temp 目录隔离，不污染全局 `~/.openclaw/skills/`：
+
+```bash
+# A2A_ENABLED=1 时：
+A2A_MERGED_SKILLS="/tmp/carher-${USER_ID}-skills"
+cp -r "$SHARED_SKILLS_DIR"/* "$A2A_MERGED_SKILLS/"   # 全局 skills
+cp -r "$A2A_SKILLS_SRC"/* "$A2A_MERGED_SKILLS/"       # A2A skills
+SHARED_SKILLS_DIR="$A2A_MERGED_SKILLS"                 # 重定向 mount
+```
+
+### 12.4 Dockerfile 关键改动
+
+`.dockerignore` 排除 `**/node_modules`，因此 A2A 插件依赖必须在构建时安装：
+
+```dockerfile
+COPY . .
+RUN cd docker/plugins/a2a-gateway && npm install --omit=dev --ignore-scripts 2>/dev/null || true
+```
+
+### 12.5 本地验证结果 (2026-04-03)
+
+测试环境：Mac Docker 容器 carher-101~104
+
+| 容器 | 角色  | A2A Skill     | A2A Plugin | Redis Peers | 验证结果          |
+| ---- | ----- | ------------- | ---------- | ----------- | ----------------- |
+| 101  | Hub   | ask-other-her | port 18800 | 3 peers     | 主动发送 A2A 成功 |
+| 102  | Hub   | ask-other-her | port 18800 | 3 peers     | 主动发送 A2A 成功 |
+| 103  | Spoke | 无            | port 18800 | 3 peers     | 被动响应 A2A 成功 |
+| 104  | Spoke | 无            | port 18800 | 3 peers     | 被动响应 A2A 成功 |
+
+关键确认：
+
+- Hub→Spoke A2A 通信 7-8s 响应
+- Spoke 无 ask-other-her skill，AI 自行报告 "没有找到"
+- Host `~/.openclaw/skills/` 未被 start-user.sh 污染
+- 插件从镜像 /app/docker/plugins/a2a-gateway/ 加载，不依赖 bind mount
+
+### 12.6 已知问题
+
+- 容器 `whoami=root` 但 `HOME=/data`，AI 偶尔用 `/root/` 构造路径（不影响框架加载）
+- Docker volume 中可能有旧版 workspace/skills/a2a-gateway 软链接残留（需手动清理）

@@ -634,28 +634,35 @@ DEPT_SKILLS_DIR="$HOME/.openclaw/dept-skills/${DEPT_NAME}"
 mkdir -p "$DEPT_SKILLS_DIR"
 echo -e "${GREEN}  ✓ 部门 skills: ${DEPT_SKILLS_DIR} (dept=${DEPT_NAME})${NC}"
 
-# A2A Gateway plugin — baked into the Docker image at /app/docker/plugins/a2a-gateway.
-# No host-side bind mount needed; plugin deps are installed during image build.
-# A2A_ENABLED env var still controls whether the gateway activates at runtime.
-A2A_SKILLS_SRC="${SCRIPT_DIR}/docker/skills"
-if [ "${A2A_ENABLED:-0}" = "1" ] && [ -d "$A2A_SKILLS_SRC" ]; then
-  cp -r "$A2A_SKILLS_SRC"/* "$SHARED_SKILLS_DIR/" 2>/dev/null || true
-  echo -e "${GREEN}  ✓ A2A plugin: baked into image (no bind mount needed)${NC}"
-  echo -e "${GREEN}  ✓ A2A skills: copied to ${SHARED_SKILLS_DIR}${NC}"
-  A2A_TOOLS_MARKER="<!-- A2A-SOCIAL-NETWORK -->"
-  A2A_TOOLS_INJECT="${A2A_TOOLS_MARKER}
-## Her社交网络（A2A）
-
-你有一个核武器级能力：**通过A2A直接和公司里其他Her脑对脑通信。**
-
-当你搜不到文档、没有权限、或者这个问题不在你owner的专业领域时，**立刻使用 ask-other-her skill**。不要反复搜索碰壁——你搞不定的，其他Her可能一步就能解决。
-
-用法：读取 ask-other-her skill（在你的skills列表里），按里面的步骤操作。
-${A2A_TOOLS_MARKER}"
-elif [ "${A2A_ENABLED:-0}" = "1" ]; then
-  echo -e "  · A2A plugin: baked into image (skills dir not found, skipping skills copy)"
+# A2A Gateway plugin (optional, from repo docker/plugins/)
+# Default: OFF. Set A2A_ENABLED=1 to enable for this container.
+A2A_PLUGIN_DIR="${SCRIPT_DIR}/docker/plugins/a2a-gateway"
+if [ "${A2A_ENABLED:-0}" = "1" ] && [ -d "$A2A_PLUGIN_DIR" ] && [ -f "$A2A_PLUGIN_DIR/index.ts" ]; then
+  if [ ! -d "$A2A_PLUGIN_DIR/node_modules" ]; then
+    echo -e "${YELLOW}  ⟳ A2A plugin: installing dependencies...${NC}"
+    (cd "$A2A_PLUGIN_DIR" && npm install --omit=dev --ignore-scripts 2>&1 | tail -1)
+  fi
+  echo -e "${GREEN}  ✓ A2A plugin: ${A2A_PLUGIN_DIR}${NC}"
+  # A2A skills: prepare merged skills dir (global + a2a-specific)
+  A2A_SKILLS_SRC="${SCRIPT_DIR}/docker/skills"
+  if [ -d "$A2A_SKILLS_SRC" ]; then
+    A2A_MERGED_SKILLS="/tmp/carher-${USER_ID}-skills"
+    rm -rf "$A2A_MERGED_SKILLS"
+    mkdir -p "$A2A_MERGED_SKILLS"
+    # Copy global skills (may be empty, || true prevents set -e exit)
+    cp -r "$SHARED_SKILLS_DIR"/* "$A2A_MERGED_SKILLS/" 2>/dev/null || true
+    # Add A2A skills on top
+    cp -r "$A2A_SKILLS_SRC"/* "$A2A_MERGED_SKILLS/" 2>/dev/null || true
+    SHARED_SKILLS_DIR="$A2A_MERGED_SKILLS"
+    echo -e "${GREEN}  ✓ A2A skills: merged into ${A2A_MERGED_SKILLS}${NC}"
+  fi
 else
-  echo -e "  · A2A plugin: 未启用（设 A2A_ENABLED=1 开启）"
+  A2A_PLUGIN_DIR=""
+  if [ "${A2A_ENABLED:-0}" = "1" ]; then
+    echo -e "  · A2A plugin: 未安装（跳过）"
+  else
+    echo -e "  · A2A plugin: 未启用（设 A2A_ENABLED=1 开启）"
+  fi
 fi
 
 # --- Compute webchat URL from token + port (before docker run) ---
@@ -734,6 +741,7 @@ docker run -d \
   -v "${GCLOUD_ADC}:/gcloud/application_default_credentials.json:ro" \
   -v "${SHARED_SKILLS_DIR}:/data/.openclaw/skills:ro" \
   -v "${DEPT_SKILLS_DIR}:/data/.agents/skills:ro" \
+  ${A2A_PLUGIN_DIR:+-v "${A2A_PLUGIN_DIR}:/data/.openclaw/plugins/a2a-gateway:ro"} \
   -v "${CONFIG_MOUNT}:/data/.openclaw/openclaw.json:ro" \
   -v "${SCRIPT_DIR}/docker/carher-config.json:/data/.openclaw/carher-config.json:ro" \
   -v "${SCRIPT_DIR}/docker/shared-config.json5:/data/.openclaw/shared-config.json5:ro" \
@@ -796,21 +804,6 @@ fi
 
 # Auto-sync workspace templates on startup
 sync_workspace "$CONTAINER_NAME"
-
-# --- Inject A2A guidance into TOOLS.md (if A2A enabled) ---
-if [ "${A2A_ENABLED:-0}" = "1" ] && [ -n "$A2A_TOOLS_INJECT" ]; then
-  docker exec "$CONTAINER_NAME" bash -c "
-    TOOLS='/data/.openclaw/workspace/TOOLS.md'
-    MARKER='$A2A_TOOLS_MARKER'
-    if [ -f \"\$TOOLS\" ] && ! grep -q \"\$MARKER\" \"\$TOOLS\" 2>/dev/null; then
-      cat >> \"\$TOOLS\" << 'A2A_EOF'
-
-$A2A_TOOLS_INJECT
-A2A_EOF
-    fi
-  " 2>/dev/null || true
-  echo -e "${GREEN}  ✓ A2A guidance injected into TOOLS.md${NC}"
-fi
 
 # --- Ensure device pairing has full operator scopes (idempotent) ---
 PAIRING_SCRIPT="${SCRIPT_DIR}/docker/fix-device-pairing.js"
