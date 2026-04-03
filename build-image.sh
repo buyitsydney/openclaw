@@ -135,13 +135,7 @@ if [ -n "$BRANCH" ]; then
   find "$BUILD_DIR/extensions" "$BUILD_DIR/src" -name '*.ts' -exec touch {} + 2>/dev/null
 fi
 
-CACHE_FLAG=""
-if [ -n "$FORCE" ]; then
-  CACHE_FLAG="--no-cache"
-fi
-
 DOCKER_BUILDKIT=1 docker build \
-  $CACHE_FLAG \
   -f "$BUILD_DIR/Dockerfile.carher" \
   --build-arg BUILD_HASH="$CURRENT_BUILD_HASH" \
   -t "$TAG" \
