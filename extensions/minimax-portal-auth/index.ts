@@ -9,10 +9,10 @@ import { loginMiniMaxPortalOAuth, type MiniMaxRegion } from "./oauth.js";
 
 const PROVIDER_ID = "minimax-portal";
 const PROVIDER_LABEL = "MiniMax";
-const DEFAULT_MODEL = "MiniMax-M2.5";
+const DEFAULT_MODEL = "MiniMax-M2.7";
 const DEFAULT_BASE_URL_CN = "https://api.minimaxi.com/anthropic";
 const DEFAULT_BASE_URL_GLOBAL = "https://api.minimax.io/anthropic";
-const DEFAULT_CONTEXT_WINDOW = 200000;
+const DEFAULT_CONTEXT_WINDOW = 400000;
 const DEFAULT_MAX_TOKENS = 8192;
 const OAUTH_PLACEHOLDER = "minimax-oauth";
 
@@ -78,19 +78,13 @@ function createOAuthHandler(region: MiniMaxRegion) {
                 api: "anthropic-messages",
                 models: [
                   buildModelDefinition({
-                    id: "MiniMax-M2.5",
-                    name: "MiniMax M2.5",
+                    id: "MiniMax-M2.7",
+                    name: "MiniMax M2.7",
                     input: ["text"],
                   }),
                   buildModelDefinition({
-                    id: "MiniMax-M2.5-highspeed",
-                    name: "MiniMax M2.5 Highspeed",
-                    input: ["text"],
-                    reasoning: true,
-                  }),
-                  buildModelDefinition({
-                    id: "MiniMax-M2.5-Lightning",
-                    name: "MiniMax M2.5 Lightning",
+                    id: "MiniMax-M2.7-highspeed",
+                    name: "MiniMax M2.7 Highspeed",
                     input: ["text"],
                     reasoning: true,
                   }),
@@ -101,12 +95,9 @@ function createOAuthHandler(region: MiniMaxRegion) {
           agents: {
             defaults: {
               models: {
-                [modelRef("MiniMax-M2.5")]: { alias: "minimax-m2.5" },
-                [modelRef("MiniMax-M2.5-highspeed")]: {
-                  alias: "minimax-m2.5-highspeed",
-                },
-                [modelRef("MiniMax-M2.5-Lightning")]: {
-                  alias: "minimax-m2.5-lightning",
+                [modelRef("MiniMax-M2.7")]: { alias: "minimax-m2.7" },
+                [modelRef("MiniMax-M2.7-highspeed")]: {
+                  alias: "minimax-m2.7-highspeed",
                 },
               },
             },

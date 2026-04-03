@@ -46,7 +46,7 @@ resolve_model() {
     gpt|gpt54|gpt-5.4|gpt54pro|gpt-5.4-pro) echo "openrouter/openai/gpt-5.4" ;;
     gpt-4o)                echo "openrouter/openai/gpt-4o" ;;
     gpt-4o-mini)           echo "openrouter/openai/gpt-4o-mini" ;;
-    minimax|minimax-m2.5)  echo "openrouter/minimax/minimax-m2.5" ;;
+    minimax|minimax-m2.7)  echo "openrouter/minimax/minimax-m2.7" ;;
     glm|glm-5)             echo "openrouter/z-ai/glm-5" ;;
     codex)                 echo "openrouter/openai/gpt-5.3-codex" ;;
     *)                     echo "$1" ;;
@@ -449,7 +449,7 @@ if provider == 'anthropic':
         'openrouter/anthropic/claude-opus-4.6': {'alias': 'or-opus'},
         'openrouter/anthropic/claude-sonnet-4.6': {'alias': 'or-sonnet'},
         'openrouter/google/gemini-3.1-pro-preview': {'alias': 'gemini'},
-        'openrouter/minimax/minimax-m2.5': {'alias': 'minimax'},
+        'openrouter/minimax/minimax-m2.7': {'alias': 'minimax'},
         'openrouter/z-ai/glm-5': {'alias': 'glm'},
         'openrouter/openai/gpt-5.4': {'alias': 'gpt'},
         'openrouter/openai/gpt-5.3-codex': {'alias': 'codex'},
@@ -461,7 +461,7 @@ else:
         'anthropic/claude-opus-4-6': {'alias': 'or-opus'},
         'anthropic/claude-sonnet-4-6': {'alias': 'or-sonnet'},
         'openrouter/google/gemini-3.1-pro-preview': {'alias': 'gemini'},
-        'openrouter/minimax/minimax-m2.5': {'alias': 'minimax'},
+        'openrouter/minimax/minimax-m2.7': {'alias': 'minimax'},
         'openrouter/z-ai/glm-5': {'alias': 'glm'},
         'openrouter/openai/gpt-5.4': {'alias': 'gpt'},
         'openrouter/openai/gpt-5.3-codex': {'alias': 'codex'},
