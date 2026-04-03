@@ -258,6 +258,9 @@ export function parseConfig(
     timeouts: {
       agentResponseTimeoutMs: asNumber(timeouts.agentResponseTimeoutMs, 300_000),
     },
+    outbound: {
+      enabled: asBoolean(asObject(config.outbound).enabled, false),
+    },
     resilience: {
       healthCheck: {
         enabled: asBoolean(healthCheck.enabled, true),
@@ -333,6 +336,7 @@ const plugin = {
     if (_sharedOwnerAccountId) {
       api.logger.info(`a2a-gateway: discovered owner account: ${_sharedOwnerAccountId}`);
     }
+    api.logger.info(`a2a-gateway: outbound.enabled=${config.outbound.enabled}`);
 
     // Redis registry is initialized lazily in service start (async context)
     const redisUrl = process.env.REDIS_URL;
@@ -826,8 +830,9 @@ const plugin = {
     // ------------------------------------------------------------------
     // Agent tool: a2a_send_file
     // Lets the agent send a file (by URI) to a peer via A2A FilePart.
+    // Gated by outbound.enabled — receive-only containers skip this.
     // ------------------------------------------------------------------
-    if (api.registerTool) {
+    if (config.outbound.enabled && api.registerTool) {
       const sendFileParams = {
         type: "object" as const,
         required: ["peer", "uri"],
@@ -962,6 +967,7 @@ const plugin = {
     // ------------------------------------------------------------------
     // Agent tool: a2a_send
     // Lets the agent send a text message to a peer and get its response.
+    // Gated by outbound.enabled — receive-only containers skip this.
     // ------------------------------------------------------------------
 
     // Extract text from an A2A response (Task or Message with text parts)
@@ -986,7 +992,7 @@ const plugin = {
           .join("\n") || undefined
       );
     };
-    if (api.registerTool) {
+    if (config.outbound.enabled && api.registerTool) {
       const sendParams = {
         type: "object" as const,
         required: ["peer", "message"],

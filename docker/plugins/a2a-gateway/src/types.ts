@@ -116,6 +116,10 @@ export interface GatewayConfig {
      */
     agentResponseTimeoutMs?: number;
   };
+  /** When false (default), outbound a2a_send/a2a_send_file tools are not registered. */
+  outbound: {
+    enabled: boolean;
+  };
   resilience: PeerResilienceConfig;
   /** DNS-SD discovery configuration. Disabled by default. */
   discovery: DnsDiscoveryConfig;

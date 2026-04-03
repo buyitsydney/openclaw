@@ -203,6 +203,17 @@
           }
         }
       },
+      "outbound": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable outbound A2A tools (a2a_send, a2a_send_file). Default false = receive-only."
+          }
+        }
+      },
       "observability": {
         "type": "object",
         "additionalProperties": false,
