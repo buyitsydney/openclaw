@@ -23,6 +23,7 @@ import { registerFeishuDeepSearchTool } from "./deep-search.js";
 import { registerFeishuDirectoryTools } from "./directory.js";
 import { registerDiscussionLeaderTool } from "./discussion-leader.js";
 import { registerDiscussionLifecycleTools } from "./discussion-lifecycle.js";
+import { registerFeishuDocCommentsTools } from "./doc-comments.js";
 import { registerFeishuDocTools } from "./docx.js";
 import { registerFeishuDriveTools } from "./drive.js";
 import { registerFeishuKnowledgeQATool, KNOWLEDGE_QA_REQUIRED_SCOPE } from "./knowledge-qa.js";
@@ -41,6 +42,7 @@ export async function registerAllFeishuTools(api: OpenClawPluginApi): Promise<vo
   registerFeishuDeepSearchTool(api);
   registerFeishuWikiTools(api);
   registerFeishuDriveTools(api);
+  registerFeishuDocCommentsTools(api);
   registerFeishuBitableTools(api);
   registerFeishuSheetTools(api);
   registerFeishuChatTools(api);
