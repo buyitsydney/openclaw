@@ -25,6 +25,7 @@ import {
 } from "openclaw/plugin-sdk/feishu";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { resolveGroupOwnerIds } from "./accounts.js";
+import { initBotRegistry, destroyBotRegistry } from "./bot-registry.js";
 import { initDashboard, destroyDashboard } from "./discussion-dashboard.js";
 import {
   authorizeDiscussionOutboundMessage,
@@ -1023,6 +1024,9 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
 
   initDashboard({ redisUrl: process.env.REDIS_URL, account, log });
 
+  // ── Bot Registry (dynamic knownBots via Redis, replaces static CSV config) ──
+  initBotRegistry({ redisUrl: process.env.REDIS_URL, account, log });
+
   const deps: InboundDeps = { account, config, abortSignal, log, setStatus, core };
   const discussionTurnActive = new Map<string, Promise<void>>();
 
@@ -1224,6 +1228,7 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
         clearInterval(discussionTickTimer);
         discussionTurnActive.clear();
         await destroyDashboard().catch(() => {});
+        destroyBotRegistry();
         await shutdownBroadcast().catch(() => {});
         const stateDir =
           process.env.OPENCLAW_STATE_DIR?.trim() ||
