@@ -5,7 +5,7 @@ const callFeishuApiWithUserTokenMock = vi.hoisted(() => vi.fn());
 const getValidUserTokenMock = vi.hoisted(() => vi.fn());
 const requireUserTokenMock = vi.hoisted(() => vi.fn());
 const resolveOAuthRedirectUriMock = vi.hoisted(() => vi.fn());
-const getFeishuClientMock = vi.hoisted(() => vi.fn());
+  handleFeishuTokenError: vi.fn(() => null),const getFeishuClientMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../accounts.js", () => ({
   listEnabledFeishuAccounts: listEnabledFeishuAccountsMock,

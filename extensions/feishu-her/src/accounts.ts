@@ -1,5 +1,6 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/feishu";
-import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "openclaw/plugin-sdk/feishu";
+import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/feishu";
+import { normalizeAccountId } from "openclaw/plugin-sdk/core";
 
 export type FeishuCredentialSource = "config" | "env" | "none";
 

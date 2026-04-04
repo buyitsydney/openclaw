@@ -9,9 +9,9 @@ import { homedir } from "os";
 import { isAbsolute, join, resolve, basename } from "path";
 import type * as Lark from "@larksuiteoapi/node-sdk";
 import { Type } from "@sinclair/typebox";
-import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/feishu";
+import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/browser-support";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
-import { sniffMimeFromBase64, stringEnum } from "openclaw/plugin-sdk/feishu";
+import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import { readDriveFileContextByToken } from "../drive-file-read.js";
 import {

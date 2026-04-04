@@ -1,0 +1,84 @@
+{
+  "$include": "./carher-config.json",
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "anthropic/claude-opus-4-6"
+      },
+      "models": {
+        "anthropic/claude-opus-4-6": {
+          "alias": "opus"
+        },
+        "anthropic/claude-sonnet-4-6": {
+          "alias": "sonnet"
+        },
+        "openrouter/anthropic/claude-opus-4.6": {
+          "alias": "or-opus"
+        },
+        "openrouter/anthropic/claude-sonnet-4.6": {
+          "alias": "or-sonnet"
+        },
+        "openrouter/google/gemini-3.1-pro-preview": {
+          "alias": "gemini"
+        },
+        "openrouter/minimax/minimax-m2.5": {
+          "alias": "minimax"
+        },
+        "openrouter/z-ai/glm-5": {
+          "alias": "glm"
+        },
+        "openrouter/openai/gpt-5.4": {
+          "alias": "gpt"
+        },
+        "openrouter/openai/gpt-5.3-codex": {
+          "alias": "codex"
+        }
+      }
+    }
+  },
+  "plugins": {
+    "entries": {
+      "realtime": {
+        "config": {
+          "gemini": {
+            "projectId": "gen-lang-client-0519229117",
+            "model": "gemini-live-2.5-flash-native-audio"
+          }
+        }
+      }
+    }
+  },
+  "channels": {
+    "feishu": {
+      "enabled": true,
+      "appId": "cli_a94e4cee07e69bc2",
+      "appSecret": "yZAbtVFhoIJZ2egnbcBtKb8ijwhJH7Mg",
+      "name": "tester4\u7684her",
+      "knownBots": {
+        "cli_a92c9ee95538dbdf": "her\u7684her",
+        "cli_a92c99d102b8dbca": "tester\u7684her",
+        "cli_a9054f702c789bd9": "\u8463\u4e8b\u957f\u7684her",
+        "cli_a93cbff979b89bd8": "tester2\u7684her",
+        "cli_a94a51d8873bdbb6": "tester3\u7684her",
+        "cli_a94e4cee07e69bc2": "tester4\u7684her"
+      },
+      "knownBotOpenIds": {
+        "ou_1fb7eb3ce04e145de925452da2d4cc2f": "cli_a92c9ee95538dbdf",
+        "ou_1a9c02079fef1f5f0f4daaaaffd2326c": "cli_a92c99d102b8dbca",
+        "ou_f56f6a988fd543d9d11cd1736390c41c": "cli_a9054f702c789bd9",
+        "ou_d2dcb5a6c7ad3934861b7120c30c2b1e": "cli_a93cbff979b89bd8",
+        "ou_7a20b02b902b3a45a3184b078f68e43e": "cli_a94a51d8873bdbb6"
+      },
+      "dm": {
+        "allowFrom": [
+          "ou_93f297be4daba3e8db17ad3351a2c763"
+        ]
+      },
+      "groups": {
+        "enabled": true,
+        "archive": true
+      },
+      "oauthRedirectUri": "https://u104-auth.carher.net/feishu/oauth/callback"
+    }
+  }
+}

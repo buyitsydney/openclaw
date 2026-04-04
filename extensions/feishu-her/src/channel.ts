@@ -6,13 +6,13 @@ import {
   deleteAccountFromConfigSection,
   formatPairingApproveHint,
   jsonResult,
-  normalizeAccountId,
   readStringParam,
   setAccountEnabledInConfigSection,
   type ChannelMessageActionName,
   type ChannelPlugin,
   type OpenClawConfig,
 } from "openclaw/plugin-sdk/feishu";
+import { normalizeAccountId } from "openclaw/plugin-sdk/core";
 import {
   listFeishuAccountIds,
   resolveDefaultFeishuAccountId,

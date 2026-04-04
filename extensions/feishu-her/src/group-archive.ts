@@ -3,7 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, extname, join, parse } from "node:path";
-import { extractPdfContent } from "openclaw/plugin-sdk/feishu";
+import { extractPdfContent } from "./media-helpers.js";
 import {
   buildFeishuTextPayload,
   formatFeishuActorLabel,

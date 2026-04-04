@@ -27,27 +27,16 @@ RUN corepack enable
 
 WORKDIR /app
 
-# --- Dependency manifests only (no source code, no scripts) ---
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
-COPY ui/package.json ./ui/package.json
-COPY patches ./patches
-
-# Copy all extension package.json files so pnpm resolves workspace deps
-COPY extensions/feishu-her/package.json ./extensions/feishu-her/package.json
-COPY extensions/realtime/package.json ./extensions/realtime/package.json
-
-# pnpm install with persistent store cache — even on layer miss, cached
-# packages are reused from the mount instead of re-downloading from registry
-RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
-    pnpm install --frozen-lockfile
-
-# pip install BEFORE source copy — only rebuilds when requirements.txt changes
-COPY extensions/realtime/live-frontend/requirements.txt /tmp/py-requirements.txt
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --break-system-packages -r /tmp/py-requirements.txt requests
-
-# --- Source code (daily changes only invalidate from here) ---
+# --- Full source copy, then install + build ---
 COPY . .
+
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    pnpm install --no-frozen-lockfile
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install --break-system-packages -r extensions/realtime/live-frontend/requirements.txt requests
+
+RUN cd docker/plugins/a2a-gateway && npm install --omit=dev --ignore-scripts 2>/dev/null || true
 RUN NODE_OPTIONS=--max-old-space-size=1536 OPENCLAW_A2UI_SKIP_MISSING=1 pnpm build:docker
 ENV OPENCLAW_PREFER_PNPM=1
 RUN pnpm ui:build

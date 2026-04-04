@@ -20,9 +20,9 @@ import type {
 import {
   extractReasoningDirective,
   normalizeReasoningLevel,
-  readSessionStoreJson5,
   type ReasoningLevel,
-} from "openclaw/plugin-sdk/feishu";
+} from "./reasoning-helpers.js";
+import { readSessionStoreJson5 } from "./session-store-helpers.js";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { resolveGroupOwnerIds } from "./accounts.js";
 import { initDashboard, destroyDashboard } from "./discussion-dashboard.js";
