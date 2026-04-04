@@ -39,15 +39,13 @@ async function cleanupA2aSessionFile(sKey: string, logger?: { warn: (msg: string
     const entry = store[sKey];
     if (!entry?.sessionId) return;
 
-    // Delete .jsonl transcript file
+    // Only delete .jsonl transcript file. Do NOT write sessions.json —
+    // the gateway's session store has its own locking; bypassing it
+    // causes corruption and "sessionKey is not defined" errors.
     const jsonlPath = path.join(sessionsDir, `${entry.sessionId}.jsonl`);
     if (fs.existsSync(jsonlPath)) {
       fs.unlinkSync(jsonlPath);
     }
-
-    // Remove entry from sessions.json
-    delete store[sKey];
-    fs.writeFileSync(storePath, JSON.stringify(store), "utf-8");
   } catch (err) {
     logger?.warn(`a2a-gateway: session cleanup failed for ${sKey}: ${String(err).slice(0, 120)}`);
   }
@@ -70,13 +68,12 @@ export async function cleanupAllA2aSessions(logger?: { info: (msg: string) => vo
       if (entry?.sessionId) {
         const jsonlPath = path.join(sessionsDir, `${entry.sessionId}.jsonl`);
         try { fs.unlinkSync(jsonlPath); } catch {}
+        deleted++;
       }
-      delete store[key];
-      deleted++;
     }
-
-    fs.writeFileSync(storePath, JSON.stringify(store), "utf-8");
-    logger?.info(`a2a-gateway: startup cleanup removed ${deleted} stale a2a sessions`);
+    // Do NOT rewrite sessions.json — gateway's session store has its own locking.
+    // Orphan entries (key pointing to deleted .jsonl) are harmless.
+    logger?.info(`a2a-gateway: startup cleanup removed ${deleted} stale a2a session files`);
   } catch (err) {
     logger?.warn(`a2a-gateway: startup session cleanup failed: ${String(err).slice(0, 120)}`);
   }
