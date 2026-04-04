@@ -588,7 +588,7 @@ if [ "${A2A_ENABLED:-0}" = "1" ] && [ -d "$A2A_PLUGIN_DIR" ] && [ -f "$A2A_PLUGI
         echo -e "  · A2A skill '${skill_name}': 跳过（outbound 未启用）"
         continue
       fi
-      cp -r "$skill_dir" "$A2A_MERGED_SKILLS/" 2>/dev/null || true
+      cp -r "${skill_dir%/}" "$A2A_MERGED_SKILLS/" 2>/dev/null || true
     done
     SHARED_SKILLS_DIR="$A2A_MERGED_SKILLS"
     echo -e "${GREEN}  ✓ A2A skills: merged into ${A2A_MERGED_SKILLS}${NC}"
