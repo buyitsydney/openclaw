@@ -29,14 +29,14 @@ function resolveSessionsDir(): string {
 }
 
 /** Delete the .jsonl file for an a2a session. Best-effort, never throws. */
-async function cleanupA2aSessionFile(sessionKey: string, logger?: { warn: (msg: string) => void }): Promise<void> {
+async function cleanupA2aSessionFile(sKey: string, logger?: { warn: (msg: string) => void }): Promise<void> {
   try {
     const sessionsDir = resolveSessionsDir();
     const storePath = path.join(sessionsDir, "sessions.json");
     if (!fs.existsSync(storePath)) return;
 
     const store = JSON.parse(fs.readFileSync(storePath, "utf-8"));
-    const entry = store[sessionKey];
+    const entry = store[sKey];
     if (!entry?.sessionId) return;
 
     // Delete .jsonl transcript file
@@ -46,10 +46,10 @@ async function cleanupA2aSessionFile(sessionKey: string, logger?: { warn: (msg: 
     }
 
     // Remove entry from sessions.json
-    delete store[sessionKey];
+    delete store[sKey];
     fs.writeFileSync(storePath, JSON.stringify(store), "utf-8");
   } catch (err) {
-    logger?.warn(`a2a-gateway: session cleanup failed for ${sessionKey}: ${String(err).slice(0, 120)}`);
+    logger?.warn(`a2a-gateway: session cleanup failed for ${sKey}: ${String(err).slice(0, 120)}`);
   }
 }
 
