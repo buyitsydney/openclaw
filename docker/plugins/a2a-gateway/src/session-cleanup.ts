@@ -63,10 +63,13 @@ export function cleanupAllA2aSessions(
       if (entry?.sessionId) {
         const jsonlPath = path.join(sessionsDir, `${entry.sessionId}.jsonl`);
         try { fs.unlinkSync(jsonlPath); } catch {}
-        deleted++;
       }
+      delete store[key];
+      deleted++;
     }
-    logger?.info(`a2a-gateway: startup cleanup removed ${deleted} stale a2a session files`);
+    // Startup: safe to rewrite sessions.json (no concurrent gateway writes yet).
+    fs.writeFileSync(storePath, JSON.stringify(store, null, 2), "utf-8");
+    logger?.info(`a2a-gateway: startup cleanup removed ${deleted} stale a2a sessions (files + index)`);
   } catch (err) {
     logger?.warn(`a2a-gateway: startup session cleanup failed: ${String(err).slice(0, 120)}`);
   }
