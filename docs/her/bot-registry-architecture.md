@@ -88,24 +88,16 @@ Bot Registry 复用了 a2a gateway `registry.ts` 的成熟模式（RegistryManag
 
 ## 灰度测试结果（2026-04-04）
 
-### 灰度容器（7 个，跨 3 台服务器）
+### 灰度规模
 
-| 服务器 | 容器 | 用户 | A2A | 状态 |
-|--------|------|------|-----|------|
-| S1 | carher-12 | test | spoke | ✅ |
-| S1 | carher-13 | 卜弋天 | **hub** (OUTBOUND=1) | ✅ |
-| S2 | carher-42 | 卞曹明 | spoke | ✅ |
-| S2 | carher-43 | 顾然 | spoke | ✅ |
-| S2 | carher-66 | 白羽 | spoke | ✅ |
-| S3 | carher-14 | 刘国现 | spoke | ✅ |
-| S3 | carher-75 | 林森 | spoke | ✅ |
+7 个容器，跨 3 台服务器（S1/S2/S3），1 个 hub + 6 个 spoke。
 
 ### 验证通过的项目
 
 - Redis `her:bot:index`: 8 bots，跨服务器自动发现 ✅
 - Lease 续期（TTL 在 60-120s 间跳动）✅
 - 消费者零改动，群聊 bot 识别正常 ✅
-- A2A hub-spoke：docker-13 有 ask-other-her skill，其他无 ✅
+- A2A hub-spoke：hub 容器有 ask-other-her skill，其他 spoke 无 ✅
 - 服务器 dev 分支未被触碰 ✅
 - 独立 worktree (`/tmp/bot-registry-wt/`) + 独立镜像 (`carher:bot-registry`) ✅
 
@@ -133,7 +125,7 @@ ln -sf /Data/CarHer/docker/users.csv docker/users.csv
 A2A_ENABLED=1 ./start-user.sh --id=N --image=carher:bot-registry
 
 # 启动 hub（主动发送 a2a）
-A2A_ENABLED=1 A2A_OUTBOUND=1 ./start-user.sh --id=13 --image=carher:bot-registry
+A2A_ENABLED=1 A2A_OUTBOUND=1 ./start-user.sh --id=N --image=carher:bot-registry
 
 # 回滚（用主仓库的 start-user.sh + carher:local）
 cd /Data/CarHer && ./start-user.sh --id=N
