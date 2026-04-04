@@ -29,7 +29,7 @@ import {
   parseDnsDiscoveryConfig,
 } from "./src/dns-discovery.js";
 import { MdnsResponder, buildMdnsAdvertiseConfig } from "./src/dns-responder.js";
-import { OpenClawAgentExecutor, cleanupAllA2aSessions } from "./src/executor.js";
+import { OpenClawAgentExecutor } from "./src/executor.js";
 import { validateUri, validateMimeType } from "./src/file-security.js";
 import { PeerHealthManager } from "./src/peer-health.js";
 import { PushNotificationStore } from "./src/push-notifications.js";
@@ -304,10 +304,6 @@ const plugin = {
 
   register(api: OpenClawPluginApi) {
     const config = parseConfig(api.pluginConfig, api.resolvePath?.bind(api));
-
-    // Startup: clean up stale a2a sessions from previous runs.
-    cleanupAllA2aSessions(api.logger);
-
     const telemetry = new GatewayTelemetry(api.logger, {
       structuredLogs: config.observability.structuredLogs,
     });
