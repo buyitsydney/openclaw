@@ -13,71 +13,9 @@ import {
   sanitizeUriForLog,
 } from "./file-security.js";
 import type { GatewayConfig, OpenClawPluginApi } from "./types.js";
+import { cleanupA2aSessionFile } from "./session-cleanup.js";
 
 const DEFAULT_AGENT_RESPONSE_TIMEOUT_MS = 300_000;
-
-// ── A2A session cleanup ─────────────────────────────────────────────────────
-// A2A tasks create ephemeral sessions (.jsonl files + sessions.json entries)
-// that have no audit or memory-search value. Clean them up after each task
-// to prevent session pollution and storage bloat.
-
-function resolveSessionsDir(): string {
-  const home = process.env.OPENCLAW_STATE_DIR?.trim()
-    || process.env.HOME
-    || os.homedir();
-  return path.join(home, ".openclaw", "agents", "main", "sessions");
-}
-
-/** Delete the .jsonl file for an a2a session. Best-effort, never throws. */
-async function cleanupA2aSessionFile(sKey: string, logger?: { warn: (msg: string) => void }): Promise<void> {
-  try {
-    const sessionsDir = resolveSessionsDir();
-    const storePath = path.join(sessionsDir, "sessions.json");
-    if (!fs.existsSync(storePath)) return;
-
-    const store = JSON.parse(fs.readFileSync(storePath, "utf-8"));
-    const entry = store[sKey];
-    if (!entry?.sessionId) return;
-
-    // Only delete .jsonl transcript file. Do NOT write sessions.json —
-    // the gateway's session store has its own locking; bypassing it
-    // causes corruption and "sessionKey is not defined" errors.
-    const jsonlPath = path.join(sessionsDir, `${entry.sessionId}.jsonl`);
-    if (fs.existsSync(jsonlPath)) {
-      fs.unlinkSync(jsonlPath);
-    }
-  } catch (err) {
-    logger?.warn(`a2a-gateway: session cleanup failed for ${sKey}: ${String(err).slice(0, 120)}`);
-  }
-}
-
-/** Startup cleanup: remove all historical a2a sessions. */
-export async function cleanupAllA2aSessions(logger?: { info: (msg: string) => void; warn: (msg: string) => void }): Promise<void> {
-  try {
-    const sessionsDir = resolveSessionsDir();
-    const storePath = path.join(sessionsDir, "sessions.json");
-    if (!fs.existsSync(storePath)) return;
-
-    const store = JSON.parse(fs.readFileSync(storePath, "utf-8"));
-    const a2aKeys = Object.keys(store).filter((k) => k.includes(":a2a:"));
-    if (a2aKeys.length === 0) return;
-
-    let deleted = 0;
-    for (const key of a2aKeys) {
-      const entry = store[key];
-      if (entry?.sessionId) {
-        const jsonlPath = path.join(sessionsDir, `${entry.sessionId}.jsonl`);
-        try { fs.unlinkSync(jsonlPath); } catch {}
-        deleted++;
-      }
-    }
-    // Do NOT rewrite sessions.json — gateway's session store has its own locking.
-    // Orphan entries (key pointing to deleted .jsonl) are harmless.
-    logger?.info(`a2a-gateway: startup cleanup removed ${deleted} stale a2a session files`);
-  } catch (err) {
-    logger?.warn(`a2a-gateway: startup session cleanup failed: ${String(err).slice(0, 120)}`);
-  }
-}
 const GATEWAY_CONNECT_TIMEOUT_MS = 10_000;
 const GATEWAY_REQUEST_TIMEOUT_MS = 10_000;
 const HOOKS_WAKE_TIMEOUT_MS = 5_000;
