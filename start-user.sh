@@ -491,6 +491,11 @@ if gemini_project:
 else:
     print('WARNING: GEMINI_PROJECT_ID not found (env / ~/.openclaw/openclaw.json)', file=sys.stderr)
 
+# A2A outbound permission — inject plugin config override when enabled
+a2a_outbound = os.environ.get('A2A_OUTBOUND', '0')
+if a2a_outbound == '1':
+    cfg.setdefault('plugins', {}).setdefault('entries', {}).setdefault('a2a-gateway', {}).setdefault('config', {})['outbound'] = {'enabled': True}
+
 # Feishu credentials from users.csv
 feishu_name = '${CSV_NAME}'
 feishu_id = '${CSV_FEISHU_ID}'
@@ -576,10 +581,23 @@ if [ "${A2A_ENABLED:-0}" = "1" ] && [ -d "$A2A_PLUGIN_DIR" ] && [ -f "$A2A_PLUGI
     mkdir -p "$A2A_MERGED_SKILLS"
     # Copy global skills (may be empty, || true prevents set -e exit)
     cp -r "$SHARED_SKILLS_DIR"/* "$A2A_MERGED_SKILLS/" 2>/dev/null || true
-    # Add A2A skills on top
-    cp -r "$A2A_SKILLS_SRC"/* "$A2A_MERGED_SKILLS/" 2>/dev/null || true
+    # Selectively copy A2A skills: ask-other-her only when outbound enabled
+    for skill_dir in "$A2A_SKILLS_SRC"/*/; do
+      skill_name=$(basename "$skill_dir")
+      if [ "$skill_name" = "ask-other-her" ] && [ "${A2A_OUTBOUND:-0}" != "1" ]; then
+        echo -e "  · A2A skill '${skill_name}': 跳过（outbound 未启用）"
+        continue
+      fi
+      cp -r "$skill_dir" "$A2A_MERGED_SKILLS/" 2>/dev/null || true
+    done
     SHARED_SKILLS_DIR="$A2A_MERGED_SKILLS"
     echo -e "${GREEN}  ✓ A2A skills: merged into ${A2A_MERGED_SKILLS}${NC}"
+  fi
+  # Outbound status
+  if [ "${A2A_OUTBOUND:-0}" = "1" ]; then
+    echo -e "${GREEN}  ✓ A2A outbound: 已启用（可主动发送）${NC}"
+  else
+    echo -e "  · A2A outbound: 仅接收（设 A2A_OUTBOUND=1 开启发送）"
   fi
 else
   A2A_PLUGIN_DIR=""
