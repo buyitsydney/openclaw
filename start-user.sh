@@ -46,7 +46,7 @@ resolve_model() {
     gpt|gpt54|gpt-5.4|gpt54pro|gpt-5.4-pro) echo "openrouter/openai/gpt-5.4" ;;
     gpt-4o)                echo "openrouter/openai/gpt-4o" ;;
     gpt-4o-mini)           echo "openrouter/openai/gpt-4o-mini" ;;
-    minimax|minimax-m2.5)  echo "openrouter/minimax/minimax-m2.5" ;;
+    minimax|minimax-m2.7)  echo "openrouter/minimax/minimax-m2.7" ;;
     glm|glm-5)             echo "openrouter/z-ai/glm-5" ;;
     codex)                 echo "openrouter/openai/gpt-5.3-codex" ;;
     *)                     echo "$1" ;;
@@ -399,73 +399,9 @@ else
   echo -e "${YELLOW}  ⚠ docker/users.csv 不存在，使用默认配置${NC}"
 fi
 
-CSV_KNOWN_BOTS_B64="$(
-  python3 - "$USERS_CSV" <<'PY'
-import base64
-import csv
-import json
-import pathlib
-import sys
-
-users_csv = pathlib.Path(sys.argv[1])
-known = {}
-if users_csv.exists():
-    with users_csv.open(newline="", encoding="utf-8") as f:
-        for row in csv.reader(f):
-            if not row:
-                continue
-            uid = row[0].strip() if len(row) > 0 else ""
-            if not uid or uid.startswith("#"):
-                continue
-            label = row[1].strip() if len(row) > 1 else ""
-            app_id = row[3].strip() if len(row) > 3 else ""
-            if label and app_id:
-                known[app_id] = label
-
-host_cfg_path = pathlib.Path.home() / ".openclaw" / "openclaw.json"
-if host_cfg_path.exists():
-    try:
-        host_cfg = json.loads(host_cfg_path.read_text(encoding="utf-8"))
-    except Exception:
-        host_cfg = {}
-    feishu = ((host_cfg.get("channels") or {}).get("feishu") or {})
-    host_app_id = str(feishu.get("appId") or "").strip()
-    host_name = str(feishu.get("name") or "").strip()
-    if host_app_id and host_name:
-        known[host_app_id] = host_name
-
-payload = json.dumps(known, ensure_ascii=False).encode("utf-8")
-print(base64.b64encode(payload).decode("ascii"))
-PY
-)"
-
-CSV_KNOWN_BOT_OPEN_IDS_B64="$(
-  python3 - "$USERS_CSV" <<'PY'
-import base64
-import csv
-import json
-import pathlib
-import sys
-
-users_csv = pathlib.Path(sys.argv[1])
-known = {}
-if users_csv.exists():
-    with users_csv.open(newline="", encoding="utf-8") as f:
-        for row in csv.reader(f):
-            if not row:
-                continue
-            uid = row[0].strip() if len(row) > 0 else ""
-            if not uid or uid.startswith("#"):
-                continue
-            app_id = row[3].strip() if len(row) > 3 else ""
-            bot_open_id = row[9].strip() if len(row) > 9 else ""
-            if app_id and bot_open_id:
-                known[bot_open_id] = app_id
-
-payload = json.dumps(known, ensure_ascii=False).encode("utf-8")
-print(base64.b64encode(payload).decode("ascii"))
-PY
-)"
+# knownBots/knownBotOpenIds are no longer generated from CSV.
+# Bot identity is now dynamically registered via Redis (bot-registry.ts).
+# Each container self-registers at startup; peers are discovered automatically.
 
 # --- Resolve provider: CSV > default (openrouter) ---
 USER_PROVIDER="${CSV_PROVIDER:-openrouter}"
@@ -513,7 +449,7 @@ if provider == 'anthropic':
         'openrouter/anthropic/claude-opus-4.6': {'alias': 'or-opus'},
         'openrouter/anthropic/claude-sonnet-4.6': {'alias': 'or-sonnet'},
         'openrouter/google/gemini-3.1-pro-preview': {'alias': 'gemini'},
-        'openrouter/minimax/minimax-m2.5': {'alias': 'minimax'},
+        'openrouter/minimax/minimax-m2.7': {'alias': 'minimax'},
         'openrouter/z-ai/glm-5': {'alias': 'glm'},
         'openrouter/openai/gpt-5.4': {'alias': 'gpt'},
         'openrouter/openai/gpt-5.3-codex': {'alias': 'codex'},
@@ -525,7 +461,7 @@ else:
         'anthropic/claude-opus-4-6': {'alias': 'or-opus'},
         'anthropic/claude-sonnet-4-6': {'alias': 'or-sonnet'},
         'openrouter/google/gemini-3.1-pro-preview': {'alias': 'gemini'},
-        'openrouter/minimax/minimax-m2.5': {'alias': 'minimax'},
+        'openrouter/minimax/minimax-m2.7': {'alias': 'minimax'},
         'openrouter/z-ai/glm-5': {'alias': 'glm'},
         'openrouter/openai/gpt-5.4': {'alias': 'gpt'},
         'openrouter/openai/gpt-5.3-codex': {'alias': 'codex'},
@@ -555,6 +491,11 @@ if gemini_project:
 else:
     print('WARNING: GEMINI_PROJECT_ID not found (env / ~/.openclaw/openclaw.json)', file=sys.stderr)
 
+# A2A outbound permission — inject plugin config override when enabled
+a2a_outbound = os.environ.get('A2A_OUTBOUND', '0')
+if a2a_outbound == '1':
+    cfg.setdefault('plugins', {}).setdefault('entries', {}).setdefault('a2a-gateway', {}).setdefault('config', {})['outbound'] = {'enabled': True}
+
 # Feishu credentials from users.csv
 feishu_name = '${CSV_NAME}'
 feishu_id = '${CSV_FEISHU_ID}'
@@ -562,14 +503,6 @@ feishu_secret = '${CSV_FEISHU_SECRET}'
 feishu_owner = '${CSV_FEISHU_OWNER}'
 feishu_bot_open_id = '${CSV_FEISHU_BOT_OPEN_ID}'
 owner_allow_from_raw = '${CSV_OWNER_ALLOW_FROM}'
-known_bots_b64 = '${CSV_KNOWN_BOTS_B64}'
-known_bot_open_ids_b64 = '${CSV_KNOWN_BOT_OPEN_IDS_B64}'
-known_bots = json.loads(base64.b64decode(known_bots_b64).decode('utf-8')) if known_bots_b64 else {}
-known_bot_open_ids = (
-    json.loads(base64.b64decode(known_bot_open_ids_b64).decode('utf-8'))
-    if known_bot_open_ids_b64
-    else {}
-)
 if feishu_id and feishu_secret:
     feishu_cfg = {
         'enabled': True,
@@ -578,10 +511,7 @@ if feishu_id and feishu_secret:
     }
     if feishu_name:
         feishu_cfg['name'] = feishu_name + '的her'
-    if known_bots:
-        feishu_cfg['knownBots'] = {k: v + '的her' for k, v in known_bots.items()}
-    if known_bot_open_ids:
-        feishu_cfg['knownBotOpenIds'] = known_bot_open_ids
+    # knownBots/knownBotOpenIds removed — now populated dynamically via Redis bot-registry.
     if feishu_bot_open_id:
         feishu_cfg['botOpenId'] = feishu_bot_open_id
     if feishu_owner:
@@ -651,10 +581,23 @@ if [ "${A2A_ENABLED:-0}" = "1" ] && [ -d "$A2A_PLUGIN_DIR" ] && [ -f "$A2A_PLUGI
     mkdir -p "$A2A_MERGED_SKILLS"
     # Copy global skills (may be empty, || true prevents set -e exit)
     cp -r "$SHARED_SKILLS_DIR"/* "$A2A_MERGED_SKILLS/" 2>/dev/null || true
-    # Add A2A skills on top
-    cp -r "$A2A_SKILLS_SRC"/* "$A2A_MERGED_SKILLS/" 2>/dev/null || true
+    # Selectively copy A2A skills: ask-other-her only when outbound enabled
+    for skill_dir in "$A2A_SKILLS_SRC"/*/; do
+      skill_name=$(basename "$skill_dir")
+      if [ "$skill_name" = "ask-other-her" ] && [ "${A2A_OUTBOUND:-0}" != "1" ]; then
+        echo -e "  · A2A skill '${skill_name}': 跳过（outbound 未启用）"
+        continue
+      fi
+      cp -r "${skill_dir%/}" "$A2A_MERGED_SKILLS/" 2>/dev/null || true
+    done
     SHARED_SKILLS_DIR="$A2A_MERGED_SKILLS"
     echo -e "${GREEN}  ✓ A2A skills: merged into ${A2A_MERGED_SKILLS}${NC}"
+  fi
+  # Outbound status
+  if [ "${A2A_OUTBOUND:-0}" = "1" ]; then
+    echo -e "${GREEN}  ✓ A2A outbound: 已启用（可主动发送）${NC}"
+  else
+    echo -e "  · A2A outbound: 仅接收（设 A2A_OUTBOUND=1 开启发送）"
   fi
 else
   A2A_PLUGIN_DIR=""

@@ -38,3 +38,7 @@ alwaysApply: true
 3. **等待确认** — 用户明确同意后才能动手修改代码
 4. **执行修改** — 按确认的方案执行
 5. git commit / git push 需要用户额外单独确认
+
+## 遇到问题时的铁律
+
+- **永远解决根因，不要 hack 绕过。** 例如 Docker 构建缺依赖，修 Dockerfile/构建脚本，不要 docker exec + docker commit。

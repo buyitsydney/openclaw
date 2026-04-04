@@ -13,6 +13,7 @@ import {
   sanitizeUriForLog,
 } from "./file-security.js";
 import type { GatewayConfig, OpenClawPluginApi } from "./types.js";
+import { cleanupA2aSessionFile } from "./session-cleanup.js"; // TEST: import only, no calls
 
 const DEFAULT_AGENT_RESPONSE_TIMEOUT_MS = 300_000;
 const GATEWAY_CONNECT_TIMEOUT_MS = 10_000;
@@ -1200,6 +1201,9 @@ export class OpenClawAgentExecutor implements AgentExecutor {
     };
     eventBus.publish(canceledTask);
     this.taskContextByTaskId.delete(taskId);
+    // Clean up ephemeral a2a session on cancel.
+    const cancelSk = `agent:${this.defaultAgentId}:a2a:${contextId}`;
+    cleanupA2aSessionFile(cancelSk, this.api.logger);
     eventBus.finished();
   }
 
@@ -1227,12 +1231,11 @@ export class OpenClawAgentExecutor implements AgentExecutor {
 
     await gateway.connect();
 
+    // Declare sessionKey outside try so it's accessible in finally.
+    // jiti's transpilation breaks try-scoped const visibility in finally blocks.
+    const sessionKey = `agent:${agentId}:a2a:${contextId}`;
+
     try {
-      // Derive a deterministic session key from A2A contextId for:
-      // 1. Session reuse across messages in the same A2A context (conversation continuity)
-      // 2. Isolation between different A2A contexts (no cross-contamination)
-      // The gateway `agent` RPC auto-creates the session if it doesn't exist.
-      const sessionKey = `agent:${agentId}:a2a:${contextId}`;
 
       const runId = uuidv4();
       const agentParams: Record<string, unknown> = {
@@ -1285,6 +1288,8 @@ export class OpenClawAgentExecutor implements AgentExecutor {
       throw new Error("No assistant response text returned by gateway");
     } finally {
       gateway.close();
+      // Clean up ephemeral a2a session — no audit/memory value.
+      cleanupA2aSessionFile(sessionKey, this.api.logger);
     }
   }
 

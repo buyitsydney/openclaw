@@ -30,6 +30,7 @@ import {
 } from "./src/dns-discovery.js";
 import { MdnsResponder, buildMdnsAdvertiseConfig } from "./src/dns-responder.js";
 import { OpenClawAgentExecutor } from "./src/executor.js";
+import { cleanupAllA2aSessions } from "./src/session-cleanup.js";
 import { validateUri, validateMimeType } from "./src/file-security.js";
 import { PeerHealthManager } from "./src/peer-health.js";
 import { PushNotificationStore } from "./src/push-notifications.js";
@@ -258,6 +259,9 @@ export function parseConfig(
     timeouts: {
       agentResponseTimeoutMs: asNumber(timeouts.agentResponseTimeoutMs, 300_000),
     },
+    outbound: {
+      enabled: asBoolean(asObject(config.outbound).enabled, false),
+    },
     resilience: {
       healthCheck: {
         enabled: asBoolean(healthCheck.enabled, true),
@@ -301,6 +305,10 @@ const plugin = {
 
   register(api: OpenClawPluginApi) {
     const config = parseConfig(api.pluginConfig, api.resolvePath?.bind(api));
+
+    // Startup: clean up stale a2a sessions from previous runs.
+    cleanupAllA2aSessions(api.logger);
+
     const telemetry = new GatewayTelemetry(api.logger, {
       structuredLogs: config.observability.structuredLogs,
     });
@@ -335,6 +343,7 @@ const plugin = {
     if (_sharedOwnerAccountId) {
       api.logger.info(`a2a-gateway: discovered owner account: ${_sharedOwnerAccountId}`);
     }
+    api.logger.info(`a2a-gateway: outbound.enabled=${config.outbound.enabled}`);
 
     // Redis registry is initialized lazily in service start (async context)
     const redisUrl = process.env.REDIS_URL;
@@ -829,8 +838,9 @@ const plugin = {
     // ------------------------------------------------------------------
     // Agent tool: a2a_send_file
     // Lets the agent send a file (by URI) to a peer via A2A FilePart.
+    // Gated by outbound.enabled — receive-only containers skip this.
     // ------------------------------------------------------------------
-    if (api.registerTool) {
+    if (config.outbound.enabled && api.registerTool) {
       const sendFileParams = {
         type: "object" as const,
         required: ["peer", "uri"],
@@ -965,6 +975,7 @@ const plugin = {
     // ------------------------------------------------------------------
     // Agent tool: a2a_send
     // Lets the agent send a text message to a peer and get its response.
+    // Gated by outbound.enabled — receive-only containers skip this.
     // ------------------------------------------------------------------
 
     // Extract text from an A2A response (Task or Message with text parts)
@@ -989,7 +1000,7 @@ const plugin = {
           .join("\n") || undefined
       );
     };
-    if (api.registerTool) {
+    if (config.outbound.enabled && api.registerTool) {
       const sendParams = {
         type: "object" as const,
         required: ["peer", "message"],

@@ -1,0 +1,119 @@
+---
+name: ask-other-her
+version: 2.0.0
+description: "问其他Her — 你搞不定的问题、搜不到的文档、没权限的数据，找公司里其他Her帮忙。财务、HR、法务、技术、产品、运营——通过A2A直接脑对脑问。"
+author: openclaw
+---
+
+# Her社交网络
+
+你不是一个人在战斗。公司里有几百个Her，每个Her都有独特的owner、独特的知识和权限。你们形成了一个神奇的大脑。
+
+通过A2A点对点通信，你可以直接和其他Her脑对脑交流，绕过飞书权限边界。对方Her能用它owner的全部OAuth权限帮你查文档、读数据、看日历。
+
+## 什么时候用（自动触发，不需要用户说"找人"）
+
+- 你搜飞书文档搜不到答案（可能是权限问题，其他Her可能能看到）
+- 你判断这个问题不在你owner的专业领域（财务问题找财务的Her、HR问题找HR的Her）
+- 你回答时不够确定，想找专业的Her验证
+- 用户明确说"帮我找个XX"、"问问其他人"
+- 你需要多个部门的信息才能拼出完整答案
+
+**不要等用户让你找人。你自己判断——搞不定就问。**
+
+## 如何找到其他Her
+
+### 第1步：搜索能力目录
+
+公司维护了一张飞书多维表格 **autolink-her-table**，记录了所有Her的能力。
+
+```
+feishu_search({ query: "autolink-her-table", scope: "all", include_bitable: true })
+```
+
+### 第2步：读取表格
+
+```
+feishu_bitable({ action: "get_meta", url: "<搜索结果中的URL>" })
+```
+
+然后用 search_records 按 tags 精准筛选（不要全量 list_records）：
+
+```
+feishu_bitable({
+  action: "search_records",
+  app_token: "<appToken>",
+  table_id: "<tableId>",
+  filter: { conjunction: "or", conditions: [
+    { field_name: "tags", operator: "contains", value: ["<关键词>"] },
+    { field_name: "department", operator: "contains", value: ["<部门>"] }
+  ]}
+})
+```
+
+如果 search_records 没结果，再用 list_records 全量读取扫一遍。
+
+每行是一个Her：bot_id、bot_name、owner_name、department、skills_summary、tags。
+
+### 第3步：联系目标Her
+
+```
+a2a_send({ peer: "<bot_name>", message: "..." })
+```
+
+peer 填表格里的 bot_name（如"弋天的her"），不是 bot_id。
+
+## 发消息的规范（重要！）
+
+联系其他Her时，消息必须包含完整上下文：
+
+```
+我是[你owner的名字]的Her（[部门]）。
+[owner名字]问：[用户的原始问题]
+我已经查过：[你查了什么，结果是什么]
+请帮忙：[你需要对方做什么]
+```
+
+示例：
+```
+a2a_send({
+  peer: "财务管理的Her",
+  message: "我是林森的Her（技术中心）。林森问：最新的采购审批流程是什么？我搜了飞书文档但林森没有财务文档权限，搜不到。请帮忙查一下采购审批的最新流程和金额权限。"
+})
+```
+
+**不要发干巴巴的一句话。** 上下文越完整，对方回复越准确，一次就能解决。
+
+## 发送策略
+
+- **先看能力目录的 tags 和 department，找最匹配的 1-2 个 her**
+- 不要给所有 peer 发同样的问题——浪费资源且增加等待时间
+- 财务问题只找财务标签的 her，HR 问题只找 HR 标签的 her
+- 只有确实需要多个部门的信息时，才发给多个 her
+
+## 超时处理
+
+对方 her 有 120 秒时间限制。可能超时或出错：
+
+- 如果 a2a_send 返回超时或错误，**跳过这个 her，继续处理其他结果**
+- 不要因为一个 her 没回复就放弃整个任务
+- 已经拿到的回复照样综合给用户，标注哪些 her 没有回复
+- 例如："白羽的her回复了XX信息。刘国现的her未能及时回复。综合已有信息如下：..."
+
+## 记住谁靠谱
+
+每次通过A2A和其他Her交互后，把结果记到你的memory里：
+
+```
+"问了财务管理的Her关于报销政策，回复很快且准确。"
+"问了XX的Her，超时没回复。"
+```
+
+下次遇到类似问题，先回忆memory里有没有合适的Her，有的话直接联系，不用再搜目录。
+
+## 规则
+
+- **先尝试自己解决，搞不定再找别人** — 不要所有问题都丢给其他Her
+- **a2a_send({ peer: "?" })** 可以查看当前在线的所有peer
+- 如果能力目录和peer列表都找不到合适的Her，诚实告诉用户
+- 对方Her的回复可能基于它owner的私人文档，注意信息分级

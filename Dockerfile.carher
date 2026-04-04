@@ -29,7 +29,6 @@ WORKDIR /app
 
 # --- Full source copy, then install + build ---
 COPY . .
-
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
     pnpm install --no-frozen-lockfile
 

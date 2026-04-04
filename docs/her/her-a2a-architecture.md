@@ -1,9 +1,9 @@
 # Her A2A 互联互通架构设计
 
-> 日期: 2026-03-28 (创建) / 2026-03-29 (本地验证) / 2026-03-31 (线上灰度通过)
-> 状态: **Grayscale Verified** — 跨 S1/S2/S3 三台服务器，4 bot 灰度测试通过
+> 日期: 2026-03-28 (创建) / 2026-03-29 (本地验证) / 2026-03-31 (线上灰度通过) / 2026-04-03 (Hub-Spoke 本地验证通过)
+> 状态: **Hub-Spoke Local Verified** — 本地 4 容器 (101-104) 验证 Hub-Spoke 隔离架构通过
 > 范围: 3 台服务器、200 个 bot 通过 A2A 协议实现任意互通 + Skills 发现与路由
-> 下一步: 全量上线
+> 下一步: 线上灰度部署 Hub-Spoke 模式（docker13 为 Hub，其余为 Spoke）
 
 ---
 
@@ -1193,3 +1193,71 @@ a2a_send(target: "宏伟的bot", message: "G700项目进展？")
   → 跨部门调用 → Level 0 → 只返回公开信息
   → 信息分级在 a2a_send 阶段执行，不在 discover 阶段
 ```
+
+---
+
+## 12. Hub-Spoke 架构（2026-04-03 本地验证通过）
+
+### 12.1 设计目标
+
+并非所有 bot 都需要主动发起 A2A。Hub-Spoke 模式让指定的 Hub bot 可以主动协调其他 bot，而 Spoke bot 只被动响应，不会自行发起跨 bot 请求。
+
+### 12.2 控制机制
+
+```
+A2A 插件 (a2a-gateway)  → 镜像内置，ALL 容器加载（Dockerfile.carher 安装依赖）
+A2A Skill (ask-other-her) → 仅 A2A_ENABLED=1 的容器通过 temp 目录隔离加载
+```
+
+| 组件                | Hub (A2A_ENABLED=1) | Spoke (无 A2A flag) |
+| ------------------- | ------------------- | ------------------- |
+| a2a-gateway 插件    | 从镜像 /app/ 加载   | 从镜像 /app/ 加载   |
+| a2a_send tool       | 有                  | 有                  |
+| ask-other-her skill | 有（temp dir 隔离） | 无                  |
+| Redis peer 注册     | 是                  | 是                  |
+| 主动发起 A2A        | 是（skill 引导）    | 否（无 skill 引导） |
+| 被动响应 A2A        | 是                  | 是                  |
+
+### 12.3 Skill 隔离机制（修复后）
+
+`start-user.sh` 使用 temp 目录隔离，不污染全局 `~/.openclaw/skills/`：
+
+```bash
+# A2A_ENABLED=1 时：
+A2A_MERGED_SKILLS="/tmp/carher-${USER_ID}-skills"
+cp -r "$SHARED_SKILLS_DIR"/* "$A2A_MERGED_SKILLS/"   # 全局 skills
+cp -r "$A2A_SKILLS_SRC"/* "$A2A_MERGED_SKILLS/"       # A2A skills
+SHARED_SKILLS_DIR="$A2A_MERGED_SKILLS"                 # 重定向 mount
+```
+
+### 12.4 Dockerfile 关键改动
+
+`.dockerignore` 排除 `**/node_modules`，因此 A2A 插件依赖必须在构建时安装：
+
+```dockerfile
+COPY . .
+RUN cd docker/plugins/a2a-gateway && npm install --omit=dev --ignore-scripts 2>/dev/null || true
+```
+
+### 12.5 本地验证结果 (2026-04-03)
+
+测试环境：Mac Docker 容器 carher-101~104
+
+| 容器 | 角色  | A2A Skill     | A2A Plugin | Redis Peers | 验证结果          |
+| ---- | ----- | ------------- | ---------- | ----------- | ----------------- |
+| 101  | Hub   | ask-other-her | port 18800 | 3 peers     | 主动发送 A2A 成功 |
+| 102  | Hub   | ask-other-her | port 18800 | 3 peers     | 主动发送 A2A 成功 |
+| 103  | Spoke | 无            | port 18800 | 3 peers     | 被动响应 A2A 成功 |
+| 104  | Spoke | 无            | port 18800 | 3 peers     | 被动响应 A2A 成功 |
+
+关键确认：
+
+- Hub→Spoke A2A 通信 7-8s 响应
+- Spoke 无 ask-other-her skill，AI 自行报告 "没有找到"
+- Host `~/.openclaw/skills/` 未被 start-user.sh 污染
+- 插件从镜像 /app/docker/plugins/a2a-gateway/ 加载，不依赖 bind mount
+
+### 12.6 已知问题
+
+- 容器 `whoami=root` 但 `HOME=/data`，AI 偶尔用 `/root/` 构造路径（不影响框架加载）
+- Docker volume 中可能有旧版 workspace/skills/a2a-gateway 软链接残留（需手动清理）
