@@ -86,6 +86,55 @@ Bot Registry 复用了 a2a gateway `registry.ts` 的成熟模式（RegistryManag
 
 两套 registry 独立运行，各自维护，互不干扰。
 
-## 灰度测试方案
+## 灰度测试结果（2026-04-04）
 
-见下方"线上灰度测试 TODO"。
+### 灰度容器（7 个，跨 3 台服务器）
+
+| 服务器 | 容器 | 用户 | A2A | 状态 |
+|--------|------|------|-----|------|
+| S1 | carher-12 | test | spoke | ✅ |
+| S1 | carher-13 | 卜弋天 | **hub** (OUTBOUND=1) | ✅ |
+| S2 | carher-42 | 卞曹明 | spoke | ✅ |
+| S2 | carher-43 | 顾然 | spoke | ✅ |
+| S2 | carher-66 | 白羽 | spoke | ✅ |
+| S3 | carher-14 | 刘国现 | spoke | ✅ |
+| S3 | carher-75 | 林森 | spoke | ✅ |
+
+### 验证通过的项目
+
+- Redis `her:bot:index`: 8 bots，跨服务器自动发现 ✅
+- Lease 续期（TTL 在 60-120s 间跳动）✅
+- 消费者零改动，群聊 bot 识别正常 ✅
+- A2A hub-spoke：docker-13 有 ask-other-her skill，其他无 ✅
+- 服务器 dev 分支未被触碰 ✅
+- 独立 worktree (`/tmp/bot-registry-wt/`) + 独立镜像 (`carher:bot-registry`) ✅
+
+### 已知限制（灰度期间）
+
+- 灰度容器只能看到彼此的 bot 名字（7 个），旧镜像的 70 个 bot 不在 Redis 中
+- `detectGroupBots()` 依赖 knownBots 做名字解析，群里旧镜像 bot 的名字无法显示
+- 全量部署后（77 个容器全部自注册）这些限制自动消除
+
+### 灰度操作规范
+
+**铁律：必须用独立 worktree + 独立分支 + 独立镜像**
+
+```bash
+# 服务器上创建 worktree（不碰主仓库 dev）
+git worktree add /tmp/bot-registry-wt origin/feat/dynamic-bot-registry
+cd /tmp/bot-registry-wt
+ln -sf /Data/CarHer/docker/server.env docker/server.env
+ln -sf /Data/CarHer/docker/users.csv docker/users.csv
+
+# 构建独立镜像（不碰 carher:local）
+./build-image.sh --tag=carher:bot-registry
+
+# 启动 spoke（被动接收 a2a）
+A2A_ENABLED=1 ./start-user.sh --id=N --image=carher:bot-registry
+
+# 启动 hub（主动发送 a2a）
+A2A_ENABLED=1 A2A_OUTBOUND=1 ./start-user.sh --id=13 --image=carher:bot-registry
+
+# 回滚（用主仓库的 start-user.sh + carher:local）
+cd /Data/CarHer && ./start-user.sh --id=N
+```
