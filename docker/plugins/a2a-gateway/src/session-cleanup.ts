@@ -1,13 +1,13 @@
 /**
- * A2A session cleanup — delete ephemeral .jsonl transcript files.
+ * A2A session cleanup — delete ephemeral .jsonl files + sessions.json entries.
  *
  * Separated into its own module to avoid jiti transpilation side effects
  * on executor.ts (which caused "sessionKey is not defined" errors when
  * cleanup functions were co-located in the same file).
  *
- * IMPORTANT: Never write sessions.json from this module — the gateway's
- * session store has its own locking mechanism. Bypassing it causes corruption.
- * Only delete .jsonl files; orphan sessions.json entries are harmless.
+ * Security: a2a sessions MUST be fully cleaned (both .jsonl AND sessions.json
+ * entry) to prevent spoke bots from discovering a2a session keys via
+ * sessions_list and bypassing outbound gate via sessions_send.
  */
 
 import fs from "node:fs";
@@ -21,7 +21,7 @@ function resolveSessionsDir(): string {
   return path.join(home, ".openclaw", "agents", "main", "sessions");
 }
 
-/** Delete the .jsonl transcript file for an a2a session. Best-effort, never throws. */
+/** Delete .jsonl file + sessions.json entry for an a2a session. Best-effort, never throws. */
 export function cleanupA2aSessionFile(
   sKey: string,
   logger?: { warn: (msg: string) => void },
@@ -35,10 +35,16 @@ export function cleanupA2aSessionFile(
     const entry = store[sKey];
     if (!entry?.sessionId) return;
 
+    // Delete .jsonl transcript file
     const jsonlPath = path.join(sessionsDir, `${entry.sessionId}.jsonl`);
     if (fs.existsSync(jsonlPath)) {
       fs.unlinkSync(jsonlPath);
     }
+
+    // Remove entry from sessions.json to prevent sessions_list from
+    // exposing a2a session keys (security: blocks sessions_send bypass).
+    delete store[sKey];
+    fs.writeFileSync(storePath, JSON.stringify(store, null, 2), "utf-8");
   } catch (err) {
     logger?.warn(`a2a-gateway: session cleanup failed for ${sKey}: ${String(err).slice(0, 120)}`);
   }
