@@ -44,9 +44,13 @@ export async function registerSelf(redis: Redis, card: A2AAgentCard): Promise<vo
   await redis.sadd(INDEX_KEY, card.id);
 }
 
-export async function renewLease(redis: Redis, botId: string): Promise<void> {
+export async function renewLease(redis: Redis, botId: string, card?: A2AAgentCard): Promise<void> {
   const key = KEY_PREFIX + botId;
-  await redis.expire(key, LEASE_TTL_SECONDS);
+  const renewed = await redis.expire(key, LEASE_TTL_SECONDS);
+  if (renewed === 0 && card) {
+    // Key expired (sleep/restart/Redis flush) — re-register
+    await registerSelf(redis, card);
+  }
 }
 
 export async function unregisterSelf(redis: Redis, botId: string): Promise<void> {
@@ -131,7 +135,7 @@ export class RegistryManager {
 
     this.renewTimer = setInterval(async () => {
       try {
-        await renewLease(this.redis, this.card.id);
+        await renewLease(this.redis, this.card.id, this.card);
       } catch (err) {
         this.log(`a2a-registry: renew failed: ${err}`);
       }
