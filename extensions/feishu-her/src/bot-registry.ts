@@ -166,7 +166,7 @@ export function initBotRegistry(opts: BotRegistryOpts): void {
     };
     await registerSelf(selfEntry);
     registryLog?.info(
-      `[bot-registry] registered self: ${entry.appId} (${entry.name})`,
+      `[bot-registry] registered self: ${selfEntry.appId} (${selfEntry.name})`,
     );
 
     // Initial discovery + sync.
