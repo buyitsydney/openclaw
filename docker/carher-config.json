@@ -8,6 +8,24 @@
       "contextTokens": 400000,
       "model": {
         "primary": "openrouter/anthropic/claude-sonnet-4.6"
+      },
+      "models": {
+        "openrouter/anthropic/claude-opus-4.6": {
+          "params": {
+            "provider": {
+              "order": ["Google", "Anthropic"],
+              "allow_fallbacks": true
+            }
+          }
+        },
+        "openrouter/anthropic/claude-sonnet-4.6": {
+          "params": {
+            "provider": {
+              "order": ["Google", "Anthropic"],
+              "allow_fallbacks": true
+            }
+          }
+        }
       }
     }
   },
