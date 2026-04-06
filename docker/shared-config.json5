@@ -13,7 +13,7 @@
     defaults: {
       contextTokens: 400000,
       userTimezone: "Asia/Shanghai",
-      compaction: { mode: "safeguard" },
+      compaction: { mode: "safeguard", reserveTokens: 100000 },
       // 语义搜索记忆 — apiKey 通过环境变量注入
       memorySearch: {
         provider: "openai",
