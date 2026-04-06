@@ -442,12 +442,13 @@ else:
     agents = {'defaults': {}}
 
 # Per-user model whitelist: both providers available, aliases follow CSV provider
+google_anthropic_routing = {'params': {'provider': {'order': ['Google', 'Anthropic'], 'allow_fallbacks': True}}}
 if provider == 'anthropic':
     agents['defaults']['models'] = {
         'anthropic/claude-opus-4-6': {'alias': 'opus'},
         'anthropic/claude-sonnet-4-6': {'alias': 'sonnet'},
-        'openrouter/anthropic/claude-opus-4.6': {'alias': 'or-opus'},
-        'openrouter/anthropic/claude-sonnet-4.6': {'alias': 'or-sonnet'},
+        'openrouter/anthropic/claude-opus-4.6': {**{'alias': 'or-opus'}, **google_anthropic_routing},
+        'openrouter/anthropic/claude-sonnet-4.6': {**{'alias': 'or-sonnet'}, **google_anthropic_routing},
         'openrouter/google/gemini-3.1-pro-preview': {'alias': 'gemini'},
         'openrouter/minimax/minimax-m2.7': {'alias': 'minimax'},
         'openrouter/z-ai/glm-5': {'alias': 'glm'},
@@ -456,8 +457,8 @@ if provider == 'anthropic':
     }
 else:
     agents['defaults']['models'] = {
-        'openrouter/anthropic/claude-opus-4.6': {'alias': 'opus'},
-        'openrouter/anthropic/claude-sonnet-4.6': {'alias': 'sonnet'},
+        'openrouter/anthropic/claude-opus-4.6': {**{'alias': 'opus'}, **google_anthropic_routing},
+        'openrouter/anthropic/claude-sonnet-4.6': {**{'alias': 'sonnet'}, **google_anthropic_routing},
         'anthropic/claude-opus-4-6': {'alias': 'or-opus'},
         'anthropic/claude-sonnet-4-6': {'alias': 'or-sonnet'},
         'openrouter/google/gemini-3.1-pro-preview': {'alias': 'gemini'},
