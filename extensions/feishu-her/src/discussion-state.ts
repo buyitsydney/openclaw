@@ -454,8 +454,13 @@ export function initDiscussionState(opts: DiscussionStateOpts = {}): void {
   });
 }
 
-function isRedisAvailable(): boolean {
+export function isRedisAvailable(): boolean {
   return redis !== null && redisReady;
+}
+
+/** Expose the shared Redis instance for other modules (e.g. group-mode). */
+export function getSharedRedis(): Redis | null {
+  return isRedisAvailable() ? redis : null;
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -880,14 +885,17 @@ export async function resetDiscussionRoom(params: {
   if (!chatId || !ownerAppId || !chairAppId) {
     return null;
   }
-  if (
-    params.expectedTurnId &&
-    !(await isDiscussionTurnCurrent({ chatId, expectedTurnId: params.expectedTurnId }))
-  ) {
-    stateLog?.info(
-      `[discussion-state] ${chatId.slice(-8)}: rejected stale resetDiscussion for turn=${params.expectedTurnId}`,
-    );
-    return null;
+  // Stale check: reject if expectedTurnId doesn't match current turn.
+  // But allow reset when there's no existing turn (first-time discussion init).
+  if (params.expectedTurnId) {
+    const currentTurn = await getDiscussionTurn(chatId);
+    if (currentTurn && currentTurn.turnId !== params.expectedTurnId) {
+      stateLog?.info(
+        `[discussion-state] ${chatId.slice(-8)}: rejected stale resetDiscussion for turn=${params.expectedTurnId}`,
+      );
+      return null;
+    }
+    // currentTurn is null (no existing discussion) → allow reset.
   }
   const nowMs = params.nowMs ?? Date.now();
   const previousParticipants =
