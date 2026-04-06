@@ -62,7 +62,9 @@
     tts: {
       auto: "inbound",
       provider: "edge",
-      edge: { voice: "zh-CN-XiaoxiaoNeural" },
+      providers: {
+        edge: { voice: "zh-CN-XiaoxiaoNeural" },
+      },
     },
   },
 

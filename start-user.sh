@@ -555,6 +555,7 @@ fi
 # --- Skills dirs (host -> container) ---
 # 全员层: all users share the same company-wide skills
 SHARED_SKILLS_DIR="$HOME/.openclaw/skills"
+ORIG_SHARED_SKILLS_DIR="$SHARED_SKILLS_DIR"
 mkdir -p "$SHARED_SKILLS_DIR"
 echo -e "${GREEN}  ✓ 全员 skills: ${SHARED_SKILLS_DIR}${NC}"
 
@@ -605,6 +606,25 @@ else
     echo -e "  · A2A plugin: 未安装（跳过）"
   else
     echo -e "  · A2A plugin: 未启用（设 A2A_ENABLED=1 开启）"
+  fi
+fi
+
+# --- Merge feishu-her bundled skills into SHARED_SKILLS_DIR ---
+# v2026.4.2 path-security prevents plugins from loading skills outside the configured root.
+# feishu-her bundled skills must be copied into the skills mount directory.
+FEISHU_HER_SKILLS="${SCRIPT_DIR}/extensions/feishu-her/skills"
+if [ -d "$FEISHU_HER_SKILLS" ]; then
+  # If SHARED_SKILLS_DIR is still the original (not yet merged), create a merged copy
+  if [ "$SHARED_SKILLS_DIR" = "$ORIG_SHARED_SKILLS_DIR" ]; then
+    MERGED_SKILLS="/tmp/carher-${USER_ID}-skills"
+    rm -rf "$MERGED_SKILLS"
+    mkdir -p "$MERGED_SKILLS"
+    cp -r "$SHARED_SKILLS_DIR"/* "$MERGED_SKILLS/" 2>/dev/null || true
+    cp -r "$FEISHU_HER_SKILLS"/* "$MERGED_SKILLS/" 2>/dev/null || true
+    SHARED_SKILLS_DIR="$MERGED_SKILLS"
+  else
+    # Already merged (A2A path), just add feishu-her skills
+    cp -r "$FEISHU_HER_SKILLS"/* "$SHARED_SKILLS_DIR/" 2>/dev/null || true
   fi
 fi
 

@@ -58,19 +58,20 @@
   "channels": {
     "feishu": {
       "enabled": true,
-      "appId": "cli_a94e4cee07e69bc2",
-      "appSecret": "yZAbtVFhoIJZ2egnbcBtKb8ijwhJH7Mg",
-      "name": "tester4\u7684her",
+      "appId": "cli_a92c99d102b8dbca",
+      "appSecret": "suBQS4SLSg8OhkFIQPXPHlEG1r7MRiTv",
+      "name": "tester\u7684her",
+      "botOpenId": "ou_1a9c02079fef1f5f0f4daaaaffd2326c",
       "dm": {
         "allowFrom": [
-          "ou_93f297be4daba3e8db17ad3351a2c763"
+          "ou_a7afacbb81237891a181832ac7a76294"
         ]
       },
       "groups": {
         "enabled": true,
         "archive": true
       },
-      "oauthRedirectUri": "https://u104-auth.carher.net/feishu/oauth/callback"
+      "oauthRedirectUri": "https://u101-auth.carher.net/feishu/oauth/callback"
     }
   }
 }

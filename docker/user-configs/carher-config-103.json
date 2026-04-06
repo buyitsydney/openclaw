@@ -3,7 +3,7 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "anthropic/claude-opus-4-6"
+        "primary": "openrouter/minimax/minimax-m2.7"
       },
       "models": {
         "anthropic/claude-opus-4-6": {
@@ -21,7 +21,7 @@
         "openrouter/google/gemini-3.1-pro-preview": {
           "alias": "gemini"
         },
-        "openrouter/minimax/minimax-m2.5": {
+        "openrouter/minimax/minimax-m2.7": {
           "alias": "minimax"
         },
         "openrouter/z-ai/glm-5": {
@@ -54,21 +54,6 @@
       "appId": "cli_a94a51d8873bdbb6",
       "appSecret": "4QEEWmgPdUEPTQ6tMwyTHhicl0dvmbcl",
       "name": "tester3\u7684her",
-      "knownBots": {
-        "cli_a92c9ee95538dbdf": "her\u7684her",
-        "cli_a92c99d102b8dbca": "tester\u7684her",
-        "cli_a9054f702c789bd9": "\u8463\u4e8b\u957f\u7684her",
-        "cli_a93cbff979b89bd8": "tester2\u7684her",
-        "cli_a94a51d8873bdbb6": "tester3\u7684her",
-        "cli_a94e4cee07e69bc2": "tester4\u7684her"
-      },
-      "knownBotOpenIds": {
-        "ou_1fb7eb3ce04e145de925452da2d4cc2f": "cli_a92c9ee95538dbdf",
-        "ou_1a9c02079fef1f5f0f4daaaaffd2326c": "cli_a92c99d102b8dbca",
-        "ou_f56f6a988fd543d9d11cd1736390c41c": "cli_a9054f702c789bd9",
-        "ou_d2dcb5a6c7ad3934861b7120c30c2b1e": "cli_a93cbff979b89bd8",
-        "ou_7a20b02b902b3a45a3184b078f68e43e": "cli_a94a51d8873bdbb6"
-      },
       "botOpenId": "ou_7a20b02b902b3a45a3184b078f68e43e",
       "dm": {
         "allowFrom": [
