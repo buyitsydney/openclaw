@@ -129,7 +129,14 @@ import { fetchChatHistory, getTenantAccessToken } from "./tools/chat-history.js"
 
 const MERGE_FORWARD_DISABLED_TEXT = "[merged forward disabled]";
 
-import { readGroupMode } from "./group-mode.js";
+import {
+  readGroupMode,
+  readGroupModeAsync,
+  setGroupModeAppId,
+  listTrackedGroups,
+  migrateGroupModeFiles,
+  warmGroupModeCache,
+} from "./group-mode.js";
 
 /** Extract bot open_ids from already-fetched group history messages (zero extra API calls).
  * Scans senders + mentions to find known bots active in this group. */
@@ -1024,6 +1031,13 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
 
   initDashboard({ redisUrl: process.env.REDIS_URL, account, log });
 
+  // ── Group mode: set current bot appId, migrate legacy files, pre-warm cache ──
+  setGroupModeAppId(account.appId);
+  await migrateGroupModeFiles(account.appId, log).catch((err) => {
+    log?.warn(`[group-mode] migration error: ${String(err).slice(0, 120)}`);
+  });
+  await warmGroupModeCache(account.appId, log).catch(() => {});
+
   // ── Bot Registry (dynamic knownBots via Redis, replaces static CSV config) ──
   initBotRegistry({ redisUrl: process.env.REDIS_URL, account, log });
 
@@ -1142,18 +1156,12 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
   const TICK_INTERVAL_MS = 10_000;
   const discussionTickTimer = setInterval(async () => {
     try {
-      const stateDir =
-        process.env.OPENCLAW_STATE_DIR?.trim() ||
-        process.env.CLAWDBOT_STATE_DIR?.trim() ||
-        join(homedir(), ".openclaw");
-      const modesDir = join(stateDir, "workspace", "group-modes");
-      if (!existsSync(modesDir)) return;
+      const trackedGroups = await listTrackedGroups();
 
-      const files = readdirSync(modesDir).filter((f) => f.endsWith(".json"));
-      for (const file of files) {
-        const chatId = file.replace(/\.json$/, "").replace(/^feishu:/, "");
+      for (const chatId of trackedGroups) {
         if (!chatId.startsWith("oc_")) continue;
-        const mode = readGroupMode(chatId);
+        // Async read refreshes the in-memory cache from Redis every tick.
+        const mode = await readGroupModeAsync(chatId);
         const isDiscussion = mode.mode === "discussion";
 
         if (!isDiscussion) {
@@ -1232,17 +1240,9 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
         await destroyDashboard().catch(() => {});
         destroyBotRegistry();
         await shutdownBroadcast().catch(() => {});
-        const stateDir =
-          process.env.OPENCLAW_STATE_DIR?.trim() ||
-          process.env.CLAWDBOT_STATE_DIR?.trim() ||
-          join(homedir(), ".openclaw");
-        const modesDir = join(stateDir, "workspace", "group-modes");
-        if (existsSync(modesDir)) {
-          const chatIds = readdirSync(modesDir)
-            .filter((f) => f.endsWith(".json"))
-            .map((f) => f.replace(/\.json$/, "").replace(/^feishu:/, ""))
-            .filter((id) => id.startsWith("oc_"));
-          await shutdownDiscussionState(account.appId, chatIds).catch(() => {});
+        const trackedChatIds = await listTrackedGroups().catch(() => [] as string[]);
+        if (trackedChatIds.length > 0) {
+          await shutdownDiscussionState(account.appId, trackedChatIds).catch(() => {});
         }
         log?.info(`[${account.accountId}] Feishu gateway stopping`);
         setStatus({ running: false, connected: false, lastStopAt: Date.now() });

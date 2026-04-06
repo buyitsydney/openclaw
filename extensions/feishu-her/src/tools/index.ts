@@ -26,6 +26,7 @@ import { registerDiscussionLifecycleTools } from "./discussion-lifecycle.js";
 import { registerFeishuDocCommentsTools } from "./doc-comments.js";
 import { registerFeishuDocTools } from "./docx.js";
 import { registerFeishuDriveTools } from "./drive.js";
+import { registerGroupModeTool } from "./group-mode-tool.js";
 import { registerFeishuKnowledgeQATool, KNOWLEDGE_QA_REQUIRED_SCOPE } from "./knowledge-qa.js";
 import { registerFeishuMessageSearchTool } from "./message-search.js";
 import { registerFeishuMessageTools } from "./message.js";
@@ -62,6 +63,7 @@ export async function registerAllFeishuTools(api: OpenClawPluginApi): Promise<vo
   registerFeishuMinutesTools(api);
   registerDiscussionLeaderTool(api);
   registerDiscussionLifecycleTools(api);
+  registerGroupModeTool(api);
   registerFeishuBotDirectoryTool(api);
   registerFeishuBoardTools(api);
   // Gate knowledge-qa on backend scope availability (auto-detected, no config needed)

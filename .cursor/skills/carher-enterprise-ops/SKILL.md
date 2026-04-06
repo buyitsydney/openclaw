@@ -299,6 +299,95 @@ S1 上有一个**原生 Admin Her**，不是 Docker 容器：
 - **不要**用 `start-user.sh` 管理，不要在 `users.csv` 中添加 Admin Her 行
 - 修改配置后需要重启：先 `tmux kill-session -t admin-her`，再重新创建 tmux session 启动
 
+## 🚫 灰度测试铁律（违反者死）
+
+在服务器做灰度测试，**必须全部满足以下条件**：
+
+1. **必须用自己的 worktree**：`git worktree add /tmp/xxx-wt origin/feat/xxx --detach`
+2. **必须用自己的独立分支**：`feat/xxx`，绝不碰服务器的 dev/main
+3. **必须用 worktree 里面的 start-user.sh 启动容器**：`cd /tmp/xxx-wt && ./start-user.sh --image=carher:xxx`
+4. **必须用独立的 image tag**：如 `carher:bot-registry`，绝不碰 `carher:local`
+5. **绝不在服务器上 checkout dev**，绝不 `git pull` dev，绝不碰 `/Data/CarHer/` 主仓库的分支
+6. **worktree 必须 symlink server.env 和 users.csv**：`ln -sf /Data/CarHer/docker/server.env docker/server.env && ln -sf /Data/CarHer/docker/users.csv docker/users.csv`
+7. **三台服务器必须全部用 worktree**，不能有的用 worktree 有的用主仓库——否则 config 版本不一致
+
+**注意：`build-image.sh --branch=xxx` 完成后会自动清理临时 worktree（trap EXIT）。所以必须手动创建持久化 worktree，不能只依赖 `--branch` 构建。**
+
+**完整灰度流程：**
+
+```bash
+# 1. 本地：push 分支到 remote
+git push carher feat/xxx
+
+# 2. 服务器：创建持久化 worktree（--detach 不影响主仓库分支）
+cd /Data/CarHer
+git fetch origin
+git worktree add /tmp/xxx-wt origin/feat/xxx --detach
+
+# 3. worktree 内 symlink 配置（gitignored 文件不在 worktree 里）
+cd /tmp/xxx-wt
+ln -sf /Data/CarHer/docker/server.env docker/server.env
+ln -sf /Data/CarHer/docker/users.csv docker/users.csv
+
+# 4. 从 worktree 构建独立镜像（SCRIPT_DIR 指向 worktree）
+./build-image.sh --tag=carher:xxx
+
+# 5. 从 worktree 启动容器
+A2A_ENABLED=1 ./start-user.sh --id=N --image=carher:xxx           # spoke
+A2A_ENABLED=1 A2A_OUTBOUND=1 ./start-user.sh --id=N --image=carher:xxx  # hub
+
+# 6. 验证
+docker logs carher-N | grep 'ws client ready'
+```
+
+**更新 worktree（有新 commit 时）：**
+
+```bash
+cd /tmp/xxx-wt
+git fetch origin
+git checkout --detach origin/feat/xxx
+# 重新 symlink（checkout 可能重置）
+ln -sf /Data/CarHer/docker/server.env docker/server.env
+ln -sf /Data/CarHer/docker/users.csv docker/users.csv
+./build-image.sh --tag=carher:xxx
+# 重启需要更新的容器
+```
+
+**回滚（用主仓库的 start-user.sh + carher:local）：**
+
+```bash
+cd /Data/CarHer && ./start-user.sh --id=N
+```
+
+## A2A Hub-Spoke 启动
+
+A2A 通过环境变量控制，有三个级别：
+
+| 级别 | 环境变量 | 效果 |
+|------|---------|------|
+| **无 A2A** | (默认) | 插件从镜像加载（被动响应 a2a 请求），无 skill |
+| **Spoke（被动）** | `A2A_ENABLED=1` | 安装 a2a 插件 + 通用 skills（不含 ask-other-her），只能被动接收 |
+| **Hub（上帝视角）** | `A2A_ENABLED=1 A2A_OUTBOUND=1` | 安装 ask-other-her skill + outbound 权限，可主动调度其他 bot |
+
+**启动示例：**
+
+```bash
+# Spoke（被动接收，大部分容器用这个）
+A2A_ENABLED=1 ./start-user.sh --id=N --image=carher:xxx
+
+# Hub（上帝视角，通常只给一个核心容器）
+A2A_ENABLED=1 A2A_OUTBOUND=1 ./start-user.sh --id=N --image=carher:xxx
+
+# 无 A2A（插件仍从镜像加载，但无 skill 无 outbound）
+./start-user.sh --id=N --image=carher:xxx
+```
+
+**注意：**
+- `A2A_ENABLED` 和 `A2A_OUTBOUND` 是 `start-user.sh` 的 shell 变量，不传入容器
+- 它们控制 skill 复制和 config 注入，在启动时一次性生效
+- Hub 容器拥有 ask-other-her skill，可主动通过 a2a 向任何其他 bot 发请求
+- Spoke 容器没有 ask-other-her skill，AI 不知道 a2a 存在，只能被动响应
+
 ## 安全规则
 
 - **绝不在 skill/文档/git 中写入密码、API Key、飞书 App Secret**
