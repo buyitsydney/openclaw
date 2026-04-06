@@ -1,8 +1,6 @@
-// Dynamic import to avoid rolldown bundling simple-xml-to-json (ESM export issue)
-async function loadOfficeParser() {
-	const mod = await import("officeparser");
-	return mod.parseOfficeAsync;
-}
+// Use require() to avoid rolldown static analysis of officeparser → simple-xml-to-json (ESM export issue in Docker)
+// oxlint-disable-next-line typescript/no-require-imports
+const { parseOfficeAsync } = require("officeparser") as typeof import("officeparser");
 
 export async function sniffMimeFromBase64(base64: string): Promise<string | undefined> {
 	const trimmed = base64.trim();
@@ -26,7 +24,6 @@ export async function extractPdfContent(params: {
 	buffer: Buffer; maxPages: number; maxPixels: number; minTextChars: number;
 	pageNumbers?: number[]; onImageExtractionError?: (error: unknown) => void;
 }): Promise<PdfExtractedContent> {
-	const parseOfficeAsync = await loadOfficeParser();
 	const text = await parseOfficeAsync(params.buffer, { outputFilePath: undefined });
 	return { text: typeof text === "string" ? text : String(text), numPages: 1 };
 }
