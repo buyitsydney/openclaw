@@ -467,8 +467,8 @@ else:
         'openrouter/openai/gpt-5.4': {'alias': 'gpt'},
         'openrouter/openai/gpt-5.3-codex': {'alias': 'codex'},
     }
-# LLM streaming idle timeout: 120s (default 60s is too aggressive for OpenRouter + Opus large context)
-agents['defaults']['llm'] = {'idleTimeoutSeconds': 120}
+# LLM idle timeout is set in shared-config.json5 (120s), not here
+# Setting it here gets overwritten by $include deep merge
 
 if agents['defaults']:
     cfg['agents'] = agents
