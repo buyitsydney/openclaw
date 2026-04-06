@@ -466,6 +466,9 @@ else:
         'openrouter/openai/gpt-5.4': {'alias': 'gpt'},
         'openrouter/openai/gpt-5.3-codex': {'alias': 'codex'},
     }
+# LLM streaming idle timeout: 120s (default 60s is too aggressive for OpenRouter + Opus large context)
+agents['defaults']['llm'] = {'idleTimeoutSeconds': 120}
+
 if agents['defaults']:
     cfg['agents'] = agents
 
