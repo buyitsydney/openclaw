@@ -43,6 +43,7 @@ let redis: Redis | null = null;
 let renewTimer: ReturnType<typeof setInterval> | null = null;
 let discoverTimer: ReturnType<typeof setInterval> | null = null;
 let selfAppId: string | null = null;
+let selfEntry: BotRegistryEntry | null = null;
 let registryLog: BotRegistryOpts["log"] | undefined;
 
 // In-memory cache of discovered bots (used if Redis is temporarily unavailable).
@@ -64,7 +65,12 @@ async function registerSelf(entry: BotRegistryEntry): Promise<void> {
 async function renewLease(appId: string): Promise<void> {
   if (!redis) return;
   try {
-    await redis.expire(KEY_PREFIX + appId, LEASE_TTL_S);
+    const renewed = await redis.expire(KEY_PREFIX + appId, LEASE_TTL_S);
+    if (renewed === 0 && selfEntry) {
+      // Key expired (sleep/restart/Redis flush) — re-register
+      await registerSelf(selfEntry);
+      registryLog?.info(`[bot-registry] re-registered after key expiry: ${appId}`);
+    }
   } catch (err) {
     registryLog?.warn(`[bot-registry] renew failed: ${String(err).slice(0, 120)}`);
   }
@@ -152,15 +158,15 @@ export function initBotRegistry(opts: BotRegistryOpts): void {
     registryLog?.info("[bot-registry] Redis connected");
 
     // Self-register immediately on connect.
-    const entry: BotRegistryEntry = {
+    selfEntry = {
       appId: account.appId,
       name: account.name ?? account.appId,
       botOpenId: account.botOpenId ?? "",
       registeredAt: new Date().toISOString(),
     };
-    await registerSelf(entry);
+    await registerSelf(selfEntry);
     registryLog?.info(
-      `[bot-registry] registered self: ${entry.appId} (${entry.name})`,
+      `[bot-registry] registered self: ${selfEntry.appId} (${selfEntry.name})`,
     );
 
     // Initial discovery + sync.
@@ -205,6 +211,7 @@ export function destroyBotRegistry(): void {
     redis = null;
   }
   selfAppId = null;
+  selfEntry = null;
   cachedBots = [];
   registryLog?.info("[bot-registry] destroyed");
 }

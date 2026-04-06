@@ -26,7 +26,6 @@ function formatTokenCompact(value?: number): string {
 /** Mode label map for group chat footer display. */
 const MODE_LABELS: Record<string, string> = {
   "owner-at": "🔒主人@",
-  owner: "🔒主人",
   "group-at": "👥群@",
   discussion: "🗣️讨论",
 };

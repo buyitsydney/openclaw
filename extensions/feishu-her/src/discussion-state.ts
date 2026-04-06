@@ -479,12 +479,13 @@ export async function discussionTick(params: {
     const now = Math.floor(Date.now() / 1000);
     const pKey = participantsKey(chatId);
 
-    if (shouldRegisterDiscussionParticipant({ isDiscussionMode })) {
-      await redis!.zadd(pKey, now, myAppId);
-    } else {
+    if (!isDiscussionMode) {
+      // Not in discussion mode — unregister and skip leader election entirely.
       await redis!.zrem(pKey, myAppId);
+      return { leader: null, isLeader: false, participants: [] };
     }
 
+    await redis!.zadd(pKey, now, myAppId);
     await redis!.zremrangebyscore(pKey, "-inf", now - LEASE_TTL_S);
     const participants = await redis!.zrangebyscore(pKey, now - LEASE_TTL_S, "+inf");
     const currentLeader = await electDiscussionLeader(chatId, participants);
