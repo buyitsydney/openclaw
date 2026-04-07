@@ -21,9 +21,9 @@ const recordSentMessageMock = vi.hoisted(() => vi.fn());
 const handleDiscussionOutboundMessageMock = vi.hoisted(() => vi.fn());
 const isDiscussionChatTargetMock = vi.hoisted(() => vi.fn(() => false));
 
-vi.mock("openclaw/plugin-sdk/feishu", async () => {
-  const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/feishu")>(
-    "openclaw/plugin-sdk/feishu",
+vi.mock("openclaw/plugin-sdk/web-media", async () => {
+  const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/web-media")>(
+    "openclaw/plugin-sdk/web-media",
   );
   return {
     ...actual,
