@@ -9,6 +9,17 @@ echo "   Frontend: :8000 (WS proxy: :8080)"
 
 # Ensure data directories exist
 mkdir -p /data/.openclaw/workspace
+mkdir -p /data/.openclaw/local/bin
+
+# Persistent local bin: bot-installed CLIs survive container recreation.
+export PATH="/data/.openclaw/local/bin:$PATH"
+export NPM_CONFIG_PREFIX="/data/.openclaw/local"
+if ! command -v lark-cli &>/dev/null; then
+  echo "▶ Installing lark-cli..."
+  npm install -g @larksuite/cli --prefix /data/.openclaw/local 2>&1 | tail -1
+fi
+# Symlink into /usr/local/bin so child processes find it
+ln -sf /data/.openclaw/local/bin/* /usr/local/bin/ 2>/dev/null || true
 
 # Clean stale Chrome singleton locks — hostname changes on container restart,
 # causing Chromium to refuse starting ("profile in use by another computer").
