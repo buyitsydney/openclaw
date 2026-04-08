@@ -21,6 +21,12 @@ fi
 # Symlink into /usr/local/bin so child processes find it
 ln -sf /data/.openclaw/local/bin/* /usr/local/bin/ 2>/dev/null || true
 
+# Auto-install lark-cli skills (persistent in /data/.openclaw/skills/)
+if command -v lark-cli &>/dev/null && [ ! -d "/data/.openclaw/skills/lark-im" ]; then
+  echo "▶ Installing lark-cli skills..."
+  npx skills add larksuite/cli -g -y 2>&1 | tail -3
+fi
+
 # Clean stale Chrome singleton locks — hostname changes on container restart,
 # causing Chromium to refuse starting ("profile in use by another computer").
 find /data/.openclaw/browser -name "SingletonLock" -o -name "SingletonSocket" -o -name "SingletonCookie" 2>/dev/null | xargs rm -f 2>/dev/null || true
