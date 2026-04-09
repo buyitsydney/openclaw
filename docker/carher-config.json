@@ -6,6 +6,7 @@
   "agents": {
     "defaults": {
       "contextTokens": 400000,
+      "compaction": { "mode": "safeguard", "reserveTokens": 100000 },
       "model": {
         "primary": "openrouter/anthropic/claude-sonnet-4.6"
       },
