@@ -704,6 +704,7 @@ docker run -d \
   -p "${PORT_WS}:8080" \
   -p "${PORT_OAUTH}:18891" \
   -p "${PORT_A2A}:18800" \
+  -v "carher-${USER_ID}-home:/data" \
   -v "carher-${USER_ID}-data:/data/.openclaw" \
   -v "${GCLOUD_ADC}:/gcloud/application_default_credentials.json:ro" \
   -v "${SHARED_SKILLS_DIR}:/data/.openclaw/skills:ro" \
