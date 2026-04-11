@@ -322,7 +322,9 @@ const plugin = {
     if (!config.agentCard.url) {
       const lanIp = process.env.CARHER_LAN_IP;
       const a2aPort = process.env.CARHER_A2A_PORT || String(config.server.port);
-      const host = lanIp ? `${lanIp}:${a2aPort}` : `${discoverBotId() || os.hostname()}:${config.server.port}`;
+      const host = lanIp
+        ? `${lanIp}:${a2aPort}`
+        : `${discoverBotId() || os.hostname()}:${config.server.port}`;
       config.agentCard.url = `http://${host}/a2a/jsonrpc`;
       api.logger.info(`a2a-gateway: auto-set agentCard.url to ${config.agentCard.url}`);
     }
@@ -438,7 +440,6 @@ const plugin = {
      * Static peers always take precedence on name collision.
      */
     // _sharedRegistryPeersCache is module-level (_sharedRegistryPeersCache)
-    
 
     const getEffectivePeers = (): PeerConfig[] => {
       let basePeers: PeerConfig[];
@@ -462,7 +463,9 @@ const plugin = {
     // Async registry peer refresh (non-blocking)
     const refreshRegistryPeers = async (): Promise<void> => {
       if (!_sharedRegistryManager) {
-        api.logger.warn?.("a2a-gateway: refreshRegistryPeers skipped (_sharedRegistryManager is null)");
+        api.logger.warn?.(
+          "a2a-gateway: refreshRegistryPeers skipped (_sharedRegistryManager is null)",
+        );
         return;
       }
       try {
@@ -1118,7 +1121,10 @@ const plugin = {
             // ioredis lives in the main app's node_modules (flat or pnpm hoisted)
             const IoRedis = (() => {
               for (const p of ["ioredis", "/app/node_modules/ioredis"]) {
-                try { const m = require(p); return m.default || m; } catch {}
+                try {
+                  const m = require(p);
+                  return m.default || m;
+                } catch {}
               }
               // pnpm hoisted path
               const fs = require("fs");

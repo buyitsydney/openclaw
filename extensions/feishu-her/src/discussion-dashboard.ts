@@ -106,7 +106,9 @@ export function initDashboard(opts: DashboardOpts): void {
       const chatId = channel.slice(BROADCAST_CHANNEL.length + 1);
       if (!chatId.startsWith("oc_")) return;
       knownChatIds.add(chatId);
-      log?.info(`[dashboard] pmessage: chatId=${chatId.slice(-8)} from=${msg.senderAppId?.slice(-8)}`);
+      log?.info(
+        `[dashboard] pmessage: chatId=${chatId.slice(-8)} from=${msg.senderAppId?.slice(-8)}`,
+      );
       if (msg.senderAppId && msg.senderName) {
         void registerName(msg.senderAppId, msg.senderName);
       }
@@ -222,7 +224,9 @@ async function refreshDashboard(chatId: string): Promise<void> {
   }
 
   if (leader !== myAppId) {
-    log?.info(`[dashboard] ${chatId.slice(-8)}: skip refresh (leader=${leader?.slice(-8)} != me=${myAppId.slice(-8)})`);
+    log?.info(
+      `[dashboard] ${chatId.slice(-8)}: skip refresh (leader=${leader?.slice(-8)} != me=${myAppId.slice(-8)})`,
+    );
     return;
   }
 
@@ -240,7 +244,9 @@ async function refreshDashboard(chatId: string): Promise<void> {
   }
 
   if (meta.lastFingerprint !== fp) {
-    log?.info(`[dashboard] ${chatId.slice(-8)}: patching (owner=${turn.ownerAppId.slice(-8)} phase=${turn.phase})`);
+    log?.info(
+      `[dashboard] ${chatId.slice(-8)}: patching (owner=${turn.ownerAppId.slice(-8)} phase=${turn.phase})`,
+    );
     await patchCard(chatId, meta.messageId, turn, participants, leader, fp);
   } else {
     log?.info(`[dashboard] ${chatId.slice(-8)}: no change (fp match)`);
@@ -484,7 +490,9 @@ async function patchCard(
       }
       return;
     }
-    log?.info(`[dashboard] ${chatId.slice(-8)}: patch OK (owner=${turn.ownerAppId.slice(-8)} next=${turn.remainingQueue.find((id) => id !== turn.ownerAppId)?.slice(-8) ?? "none"})`);
+    log?.info(
+      `[dashboard] ${chatId.slice(-8)}: patch OK (owner=${turn.ownerAppId.slice(-8)} next=${turn.remainingQueue.find((id) => id !== turn.ownerAppId)?.slice(-8) ?? "none"})`,
+    );
 
     // Re-pin to force Feishu to refresh the pinned preview
     await setTopNotice(chatId, messageId);

@@ -135,6 +135,7 @@ const NODE_OPTIONS_WITH_FILE_VALUE = new Set([
 ]);
 
 const RUBY_UNSAFE_APPROVAL_FLAGS = new Set(["-I", "-r", "--require"]);
+const PERL_UNSAFE_APPROVAL_FLAGS = new Set(["-I", "-M", "-m"]);
 
 const POSIX_SHELL_OPTIONS_WITH_VALUE = new Set([
   "--init-file",
@@ -163,6 +164,31 @@ const NPM_EXEC_FLAG_OPTIONS = new Set([
   "-q",
   "-y",
 ]);
+
+const PNPM_OPTIONS_WITH_VALUE = new Set([
+  "--config",
+  "--dir",
+  "--filter",
+  "--reporter",
+  "--stream",
+  "--test-pattern",
+  "--workspace-concurrency",
+  "-C",
+]);
+
+const PNPM_FLAG_OPTIONS = new Set([
+  "--aggregate-output",
+  "--color",
+  "--parallel",
+  "--recursive",
+  "--silent",
+  "--workspace-root",
+  "-r",
+  "-s",
+  "-w",
+]);
+
+const PNPM_DLX_OPTIONS_WITH_VALUE = new Set(["--allow-build", "--package", "-p"]);
 
 type FileOperandCollection = {
   hits: number[];
@@ -299,6 +325,8 @@ function normalizePackageManagerExecToken(token: string): string {
   if (!normalized) {
     return normalized;
   }
+  // Approval binding only promises best-effort recovery of the effective runtime
+  // command for common package-manager shims; it is not full package-manager semantics.
   return normalized.replace(/\.(?:c|m)?js$/i, "");
 }
 
@@ -315,17 +343,67 @@ function unwrapPnpmExecInvocation(argv: string[]): string[] | null {
       continue;
     }
     if (!token.startsWith("-")) {
-      if (token !== "exec" || idx + 1 >= argv.length) {
-        return null;
+      if (token === "exec") {
+        if (idx + 1 >= argv.length) {
+          return null;
+        }
+        const tail = argv.slice(idx + 1);
+        return tail[0] === "--" ? (tail.length > 1 ? tail.slice(1) : null) : tail;
       }
-      const tail = argv.slice(idx + 1);
-      return tail[0] === "--" ? (tail.length > 1 ? tail.slice(1) : null) : tail;
+      if (token === "dlx") {
+        return unwrapPnpmDlxInvocation(argv.slice(idx + 1));
+      }
+      if (token === "node") {
+        const tail = argv.slice(idx + 1);
+        const normalizedTail = tail[0] === "--" ? tail.slice(1) : tail;
+        return ["node", ...normalizedTail];
+      }
+      return null;
     }
-    if ((token === "-C" || token === "--dir" || token === "--filter") && !token.includes("=")) {
-      idx += 2;
+    const [flag] = token.toLowerCase().split("=", 2);
+    if (PNPM_OPTIONS_WITH_VALUE.has(flag) || PNPM_DLX_OPTIONS_WITH_VALUE.has(flag)) {
+      idx += token.includes("=") ? 1 : 2;
       continue;
     }
-    idx += 1;
+    if (PNPM_FLAG_OPTIONS.has(flag)) {
+      idx += 1;
+      continue;
+    }
+    return null;
+  }
+  return null;
+}
+
+function unwrapPnpmDlxInvocation(argv: string[]): string[] | null {
+  let idx = 0;
+  while (idx < argv.length) {
+    const token = argv[idx]?.trim() ?? "";
+    if (!token) {
+      idx += 1;
+      continue;
+    }
+    if (token === "--") {
+      const tail = argv.slice(idx + 1);
+      return tail.length > 0 ? tail : null;
+    }
+    if (!token.startsWith("-")) {
+      // Once dlx-specific flags are stripped, the first positional token is the
+      // package binary pnpm will execute inside the temporary environment.
+      return argv.slice(idx);
+    }
+    const [flag] = token.toLowerCase().split("=", 2);
+    if (flag === "-c" || flag === "--shell-mode") {
+      return null;
+    }
+    if (PNPM_OPTIONS_WITH_VALUE.has(flag) || PNPM_DLX_OPTIONS_WITH_VALUE.has(flag)) {
+      idx += token.includes("=") ? 1 : 2;
+      continue;
+    }
+    if (PNPM_FLAG_OPTIONS.has(flag)) {
+      idx += 1;
+      continue;
+    }
+    return null;
   }
   return null;
 }
@@ -633,6 +711,33 @@ function hasRubyUnsafeApprovalFlag(argv: string[]): boolean {
   return false;
 }
 
+function hasPerlUnsafeApprovalFlag(argv: string[]): boolean {
+  let afterDoubleDash = false;
+  for (let i = 1; i < argv.length; i += 1) {
+    const token = argv[i]?.trim() ?? "";
+    if (!token) {
+      continue;
+    }
+    if (afterDoubleDash) {
+      return false;
+    }
+    if (token === "--") {
+      afterDoubleDash = true;
+      continue;
+    }
+    if (token === "-I" || token === "-M" || token === "-m") {
+      return true;
+    }
+    if (token.startsWith("-I") || token.startsWith("-M") || token.startsWith("-m")) {
+      return true;
+    }
+    if (PERL_UNSAFE_APPROVAL_FLAGS.has(token)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function isMutableScriptRunner(executable: string): boolean {
   return GENERIC_MUTABLE_SCRIPT_RUNNERS.has(executable) || isInterpreterLikeSafeBin(executable);
 }
@@ -672,6 +777,9 @@ function resolveMutableFileOperandIndex(argv: string[], cwd: string | undefined)
     }
   }
   if (executable === "ruby" && hasRubyUnsafeApprovalFlag(unwrapped.argv)) {
+    return null;
+  }
+  if (executable === "perl" && hasPerlUnsafeApprovalFlag(unwrapped.argv)) {
     return null;
   }
   if (!isMutableScriptRunner(executable)) {
@@ -714,6 +822,9 @@ function requiresStableInterpreterApprovalBindingWithShellCommand(params: {
   if (params.shellCommand !== null) {
     return shellPayloadNeedsStableBinding(params.shellCommand, params.cwd);
   }
+  if (pnpmDlxInvocationNeedsFailClosedBinding(params.argv, params.cwd)) {
+    return true;
+  }
   const unwrapped = unwrapArgvForMutableOperand(params.argv);
   const executable = normalizeExecutableToken(unwrapped.argv[0] ?? "");
   if (!executable) {
@@ -723,6 +834,84 @@ function requiresStableInterpreterApprovalBindingWithShellCommand(params: {
     return false;
   }
   return isMutableScriptRunner(executable);
+}
+
+function pnpmDlxInvocationNeedsFailClosedBinding(argv: string[], cwd: string | undefined): boolean {
+  if (normalizePackageManagerExecToken(argv[0] ?? "") !== "pnpm") {
+    return false;
+  }
+
+  let idx = 1;
+  while (idx < argv.length) {
+    const token = argv[idx]?.trim() ?? "";
+    if (!token) {
+      idx += 1;
+      continue;
+    }
+    if (token === "--") {
+      idx += 1;
+      continue;
+    }
+    if (!token.startsWith("-")) {
+      if (token !== "dlx") {
+        return false;
+      }
+      return pnpmDlxTailNeedsFailClosedBinding(argv.slice(idx + 1), cwd);
+    }
+    const [flag] = token.toLowerCase().split("=", 2);
+    if (PNPM_OPTIONS_WITH_VALUE.has(flag) || PNPM_DLX_OPTIONS_WITH_VALUE.has(flag)) {
+      idx += token.includes("=") ? 1 : 2;
+      continue;
+    }
+    if (PNPM_FLAG_OPTIONS.has(flag)) {
+      idx += 1;
+      continue;
+    }
+    return true;
+  }
+
+  return false;
+}
+
+function pnpmDlxTailNeedsFailClosedBinding(argv: string[], cwd: string | undefined): boolean {
+  let idx = 0;
+  while (idx < argv.length) {
+    const token = argv[idx]?.trim() ?? "";
+    if (!token) {
+      idx += 1;
+      continue;
+    }
+    if (token === "--") {
+      return pnpmDlxTailMayNeedStableBinding(argv.slice(idx + 1), cwd);
+    }
+    if (!token.startsWith("-")) {
+      return pnpmDlxTailMayNeedStableBinding(argv.slice(idx), cwd);
+    }
+    const [flag] = token.toLowerCase().split("=", 2);
+    if (flag === "-c" || flag === "--shell-mode") {
+      return false;
+    }
+    if (PNPM_OPTIONS_WITH_VALUE.has(flag) || PNPM_DLX_OPTIONS_WITH_VALUE.has(flag)) {
+      idx += token.includes("=") ? 1 : 2;
+      continue;
+    }
+    if (PNPM_FLAG_OPTIONS.has(flag)) {
+      idx += 1;
+      continue;
+    }
+    return true;
+  }
+
+  return true;
+}
+
+function pnpmDlxTailMayNeedStableBinding(argv: string[], cwd: string | undefined): boolean {
+  const snapshot = resolveMutableFileOperandSnapshotSync({
+    argv,
+    cwd,
+    shellCommand: null,
+  });
+  return snapshot.ok && snapshot.snapshot !== null;
 }
 
 export function resolveMutableFileOperandSnapshotSync(params: {
@@ -938,7 +1127,8 @@ export function hardenApprovedExecutionPaths(params: {
     };
   }
 
-  const pinnedExecutable = resolution?.resolvedRealPath ?? resolution?.resolvedPath;
+  const pinnedExecutable =
+    resolution?.execution.resolvedRealPath ?? resolution?.execution.resolvedPath;
   if (!pinnedExecutable) {
     return {
       ok: false,

@@ -1,3 +1,4 @@
+import { normalizeAccountId } from "openclaw/plugin-sdk/core";
 import {
   DEFAULT_ACCOUNT_ID,
   applyAccountNameToChannelSection,
@@ -6,7 +7,6 @@ import {
   deleteAccountFromConfigSection,
   formatPairingApproveHint,
   jsonResult,
-  normalizeAccountId,
   readStringParam,
   setAccountEnabledInConfigSection,
   type ChannelMessageActionName,
@@ -335,7 +335,7 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
       let discussionOutboundText: string | undefined;
       if (mediaUrl) {
         try {
-          const { loadWebMedia } = await import("openclaw/plugin-sdk/feishu");
+          const { loadWebMedia } = await import("openclaw/plugin-sdk/web-media");
           const { readFile } = await import("node:fs/promises");
           const FEISHU_MAX_BYTES = 30 * 1024 * 1024;
           const media = await loadWebMedia(mediaUrl, {

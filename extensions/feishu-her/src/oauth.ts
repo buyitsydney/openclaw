@@ -241,6 +241,20 @@ function invalidateAllUserTokens(): void {
   }
 }
 
+/**
+ * Invalidate a single user token by open_id.
+ * Preferred over invalidateAllUserTokens() when we know which token failed,
+ * to avoid nuking valid tokens for other users.
+ */
+function invalidateUserToken(openId: string): void {
+  const filePath = join(resolveTokenDir(), `${openId}.json`);
+  try {
+    if (existsSync(filePath)) unlinkSync(filePath);
+  } catch {
+    // best-effort
+  }
+}
+
 // Feishu error codes that DEFINITELY mean the token itself is broken.
 // 99991679 (Unauthorized) is intentionally EXCLUDED — it fires for both
 // "token revoked" AND "scope insufficient". Nuking all tokens on a scope
@@ -293,6 +307,15 @@ export async function handleFeishuTokenError(
   }
 
   if (code !== undefined && TOKEN_INVALID_CODES.has(code)) {
+    // Guard: if another concurrent call already refreshed the token successfully
+    // (inflight dedup), the new token is valid — don't nuke it.
+    const currentToken = findAnyUserToken();
+    if (currentToken && Date.now() < currentToken.access_token_expires_at - 60_000) {
+      console.log(
+        `[feishu-oauth] token error (code=${code}) but a fresh token exists (expires ${new Date(currentToken.access_token_expires_at).toISOString()}). Skipping invalidation — likely stale concurrent call.`,
+      );
+      return null; // let the caller retry with the fresh token
+    }
     console.warn(
       `[feishu-oauth] Feishu token error (code=${code}). Deleting local tokens to trigger re-authorization.`,
     );
@@ -352,6 +375,11 @@ export function findAnyUserToken(): FeishuUserToken | null {
 
 // ── Token refresh ──
 
+// Inflight dedup: all concurrent callers share one refresh promise per open_id.
+// Prevents N parallel tool calls from firing N refresh requests, where N-1 fail
+// (Feishu refresh_token is single-use) and trigger invalidateAllUserTokens().
+const inflightRefreshes = new Map<string, Promise<FeishuUserToken | null>>();
+
 async function refreshUserToken(
   client: Lark.Client,
   token: FeishuUserToken,
@@ -386,6 +414,7 @@ async function refreshUserToken(
       updated_at: now,
     };
     saveUserToken(updated);
+    console.log(`[feishu-oauth] token refreshed for ${token.open_id}`);
     return updated;
   } catch {
     return null;
@@ -419,9 +448,20 @@ async function ensureValidUserToken(
   // access_token still valid
   if (now < token.access_token_expires_at - REFRESH_MARGIN_MS) return token;
 
-  // access_token expired or about to expire → refresh
+  // access_token expired or about to expire → refresh with inflight dedup
+  const key = token.open_id;
+  const inflight = inflightRefreshes.get(key);
+  if (inflight) {
+    console.log(`[feishu-oauth] dedup: joining inflight refresh for ${key}`);
+    return inflight;
+  }
+
   const client = getFeishuClient(account);
-  return refreshUserToken(client, token);
+  const promise = refreshUserToken(client, token).finally(() => {
+    inflightRefreshes.delete(key);
+  });
+  inflightRefreshes.set(key, promise);
+  return promise;
 }
 
 /**

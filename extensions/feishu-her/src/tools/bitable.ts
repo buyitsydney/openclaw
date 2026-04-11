@@ -6,7 +6,7 @@
 import type * as Lark from "@larksuiteoapi/node-sdk";
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
-import { stringEnum } from "openclaw/plugin-sdk/feishu";
+import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
   callFeishuApiWithUserToken,
@@ -306,7 +306,12 @@ async function listRecords(
 /** Normalize rich text arrays to plain strings (search API returns [{text:"...",type:"text"}] for Text fields). */
 // oxlint-disable-next-line typescript/no-explicit-any
 function normalizeRichText(value: any): any {
-  if (Array.isArray(value) && value.length > 0 && typeof value[0]?.text === "string" && value[0]?.type === "text") {
+  if (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    typeof value[0]?.text === "string" &&
+    value[0]?.type === "text"
+  ) {
     return value.map((s: { text: string }) => s.text).join("");
   }
   return value;
@@ -469,17 +474,23 @@ async function cleanupNewBitable(
           data: { field_name: tableName.length <= 20 ? tableName : "Name", type: 1 },
         });
         cleanedFields++;
-      } catch { /* non-critical */ }
+      } catch {
+        /* non-critical */
+      }
     }
     // oxlint-disable-next-line typescript/no-explicit-any
-    for (const field of fieldsRes.data.items.filter((f: any) => !f.is_primary && DEFAULT_CLEANUP_FIELD_TYPES.has(f.type ?? 0))) {
+    for (const field of fieldsRes.data.items.filter(
+      (f: any) => !f.is_primary && DEFAULT_CLEANUP_FIELD_TYPES.has(f.type ?? 0),
+    )) {
       if (field.field_id) {
         try {
           await client.bitable.appTableField.delete({
             path: { app_token: appToken, table_id: tableId, field_id: field.field_id },
           });
           cleanedFields++;
-        } catch { /* non-critical */ }
+        } catch {
+          /* non-critical */
+        }
       }
     }
   }
@@ -518,7 +529,9 @@ async function cleanupNewBitable(
               path: { app_token: appToken, table_id: tableId, record_id: id },
             });
             cleanedRows++;
-          } catch { /* skip */ }
+          } catch {
+            /* skip */
+          }
         }
       }
     }
@@ -550,7 +563,9 @@ async function createApp(client: Lark.Client, name: string, folderToken?: string
         cleanedFields = cleanup.cleanedFields;
       }
     }
-  } catch { /* cleanup is non-critical */ }
+  } catch {
+    /* cleanup is non-critical */
+  }
 
   return {
     app_token: appToken,
@@ -615,7 +630,8 @@ async function searchRecordsByUser(
   const body: Record<string, any> = {};
   // Filter: accept structured JSON object (Feishu native format)
   // e.g. { conjunction: "and", conditions: [{ field_name: "Status", operator: "is", value: ["Done"] }] }
-  if (opts.filter) body.filter = typeof opts.filter === "string" ? JSON.parse(opts.filter) : opts.filter;
+  if (opts.filter)
+    body.filter = typeof opts.filter === "string" ? JSON.parse(opts.filter) : opts.filter;
   if (opts.sort?.length) {
     body.sort = opts.sort.map((s) => {
       const [field, order] = s.split(":");
@@ -694,7 +710,8 @@ async function updateField(
     path: { app_token: appToken, table_id: tableId },
   });
   // oxlint-disable-next-line typescript/no-explicit-any
-  const currentField = currentRes.code === 0 ? currentRes.data?.items?.find((f: any) => f.field_id === fieldId) : null;
+  const currentField =
+    currentRes.code === 0 ? currentRes.data?.items?.find((f: any) => f.field_id === fieldId) : null;
   // oxlint-disable-next-line typescript/no-explicit-any
   const data: Record<string, any> = {};
   data.field_name = fieldName ?? currentField?.field_name;
@@ -768,15 +785,46 @@ const FeishuBitableSchema = Type.Object({
   ),
   page_size: Type.Optional(Type.Number({ description: "Records per page 1-500 (default 100)" })),
   page_token: Type.Optional(Type.String({ description: "Pagination token" })),
-  record_ids: Type.Optional(Type.Array(Type.String(), { description: "Record IDs for delete_records" })),
-  records: Type.Optional(Type.Array(Type.Any(), { description: "Array of {fields:{...}} for batch_create or {record_id,fields:{...}} for batch_update (max 500)" })),
-  name: Type.Optional(Type.String({ description: "Name for create_app, or field_name for create_field/update_field" })),
-  folder_token: Type.Optional(Type.String({ description: "Folder token to create app in (optional)" })),
+  record_ids: Type.Optional(
+    Type.Array(Type.String(), { description: "Record IDs for delete_records" }),
+  ),
+  records: Type.Optional(
+    Type.Array(Type.Any(), {
+      description:
+        "Array of {fields:{...}} for batch_create or {record_id,fields:{...}} for batch_update (max 500)",
+    }),
+  ),
+  name: Type.Optional(
+    Type.String({
+      description: "Name for create_app, or field_name for create_field/update_field",
+    }),
+  ),
+  folder_token: Type.Optional(
+    Type.String({ description: "Folder token to create app in (optional)" }),
+  ),
   field_id: Type.Optional(Type.String({ description: "Field ID for update_field/delete_field" })),
-  field_type: Type.Optional(Type.Number({ description: "Field type: 1=Text, 2=Number, 3=SingleSelect, 4=MultiSelect, 5=DateTime, 7=Checkbox, 11=User, 13=Phone, 15=URL, 17=Attachment, 22=Location, 1005=AutoNumber" })),
-  field_property: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "Field property config (e.g. select options)" })),
-  filter: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: 'Filter for search_records. Feishu structured format: { conjunction: "and", conditions: [{ field_name: "Status", operator: "is", value: ["Done"] }] }. Operators: is, isNot, contains, doesNotContain, isEmpty, isNotEmpty, isGreater, isLess, etc.' })),
-  sort: Type.Optional(Type.Array(Type.String(), { description: 'Sort for search_records. Array of "field_name:asc" or "field_name:desc"' })),
+  field_type: Type.Optional(
+    Type.Number({
+      description:
+        "Field type: 1=Text, 2=Number, 3=SingleSelect, 4=MultiSelect, 5=DateTime, 7=Checkbox, 11=User, 13=Phone, 15=URL, 17=Attachment, 22=Location, 1005=AutoNumber",
+    }),
+  ),
+  field_property: Type.Optional(
+    Type.Record(Type.String(), Type.Any(), {
+      description: "Field property config (e.g. select options)",
+    }),
+  ),
+  filter: Type.Optional(
+    Type.Record(Type.String(), Type.Any(), {
+      description:
+        'Filter for search_records. Feishu structured format: { conjunction: "and", conditions: [{ field_name: "Status", operator: "is", value: ["Done"] }] }. Operators: is, isNot, contains, doesNotContain, isEmpty, isNotEmpty, isGreater, isLess, etc.',
+    }),
+  ),
+  sort: Type.Optional(
+    Type.Array(Type.String(), {
+      description: 'Sort for search_records. Array of "field_name:asc" or "field_name:desc"',
+    }),
+  ),
 });
 
 // ── Registration ──
@@ -862,12 +910,17 @@ export function registerFeishuBitableTools(api: OpenClawPluginApi) {
               const guard = await requireReadAccess();
               if (!guard.ok) return guard.authResponse;
               return json(
-                await searchRecordsByUser(guard.token.access_token, params.app_token, params.table_id, {
-                  filter: params.filter,
-                  sort: params.sort,
-                  pageSize: params.page_size,
-                  pageToken: params.page_token,
-                }),
+                await searchRecordsByUser(
+                  guard.token.access_token,
+                  params.app_token,
+                  params.table_id,
+                  {
+                    filter: params.filter,
+                    sort: params.sort,
+                    pageSize: params.page_size,
+                    pageToken: params.page_token,
+                  },
+                ),
               );
             }
             case "batch_create_records":

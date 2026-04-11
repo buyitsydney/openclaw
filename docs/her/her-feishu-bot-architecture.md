@@ -847,23 +847,24 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 
 龙虾是飞书官方 OpenClaw 插件，实测访问控制体验：
 
-| 行为 | 效果 |
-|------|------|
-| 主人私聊龙虾 | ✅ 正常回复 |
-| 非主人搜索龙虾 | ❌ 搜不到（后台只对主人可见，非全员开放） |
-| 群里主人说话（不 @龙虾） | ✅ 自动回复（requireMention=false） |
-| 群里非主人 @龙虾 | ❌ 不回复 |
-| 非主人私聊龙虾 | ❌ 不回复（dmPolicy=allowlist） |
+| 行为                     | 效果                                      |
+| ------------------------ | ----------------------------------------- |
+| 主人私聊龙虾             | ✅ 正常回复                               |
+| 非主人搜索龙虾           | ❌ 搜不到（后台只对主人可见，非全员开放） |
+| 群里主人说话（不 @龙虾） | ✅ 自动回复（requireMention=false）       |
+| 群里非主人 @龙虾         | ❌ 不回复                                 |
+| 非主人私聊龙虾           | ❌ 不回复（dmPolicy=allowlist）           |
 
 龙虾 config 关键字段：
+
 ```json5
 {
-  "dmPolicy": "allowlist",
-  "allowFrom": ["ou_主人"],           // 私聊只允许主人
-  "groupPolicy": "allowlist",
-  "groupSenderAllowFrom": ["ou_主人"], // 群里只响应主人
-  "requireMention": false,             // 主人不需要 @
-  "groups": { "*": { "enabled": true } } // 所有群都开启
+  dmPolicy: "allowlist",
+  allowFrom: ["ou_主人"], // 私聊只允许主人
+  groupPolicy: "allowlist",
+  groupSenderAllowFrom: ["ou_主人"], // 群里只响应主人
+  requireMention: false, // 主人不需要 @
+  groups: { "*": { enabled: true } }, // 所有群都开启
 }
 ```
 
@@ -871,44 +872,47 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 
 #### OpenClaw upstream 完整控制体系（feishu 插件 bot.ts）
 
-| 层 | 配置 | 默认值 | 作用 |
-|----|------|--------|------|
-| **私聊准入** | `dmPolicy` | `"pairing"` | `"pairing"` = 配对码审批；`"allowlist"` = 白名单；`"open"` = 全开 |
-| **私聊白名单** | `allowFrom` | `[]` | `dmPolicy` 非 `"open"` 时，只有列表中的人能私聊 |
-| **私聊配对** | pairing store | 自动 | `dmPolicy="pairing"` 时，陌生人收到配对码，主人 approve 后加入白名单 |
-| **群准入** | `groupPolicy` | `"allowlist"` | `"open"` = 所有群；`"allowlist"` = 白名单群；`"disabled"` = 关闭 |
-| **群白名单** | `groupAllowFrom` | `[]` | 群 ID 白名单（`oc_xxx`） |
-| **群发言人** | `groupSenderAllowFrom` | `[]` | 全局：只有这些人在群里能触发回复 |
-| **per-group 发言人** | `groups.oc_xxx.allowFrom` | `[]` | 特定群里只有这些人能触发回复 |
-| **@要求** | `requireMention` | `true` | 是否需要 @bot 才回复；可 per-group 覆盖 |
+| 层                   | 配置                      | 默认值        | 作用                                                                 |
+| -------------------- | ------------------------- | ------------- | -------------------------------------------------------------------- |
+| **私聊准入**         | `dmPolicy`                | `"pairing"`   | `"pairing"` = 配对码审批；`"allowlist"` = 白名单；`"open"` = 全开    |
+| **私聊白名单**       | `allowFrom`               | `[]`          | `dmPolicy` 非 `"open"` 时，只有列表中的人能私聊                      |
+| **私聊配对**         | pairing store             | 自动          | `dmPolicy="pairing"` 时，陌生人收到配对码，主人 approve 后加入白名单 |
+| **群准入**           | `groupPolicy`             | `"allowlist"` | `"open"` = 所有群；`"allowlist"` = 白名单群；`"disabled"` = 关闭     |
+| **群白名单**         | `groupAllowFrom`          | `[]`          | 群 ID 白名单（`oc_xxx`）                                             |
+| **群发言人**         | `groupSenderAllowFrom`    | `[]`          | 全局：只有这些人在群里能触发回复                                     |
+| **per-group 发言人** | `groups.oc_xxx.allowFrom` | `[]`          | 特定群里只有这些人能触发回复                                         |
+| **@要求**            | `requireMention`          | `true`        | 是否需要 @bot 才回复；可 per-group 覆盖                              |
 
 #### feishu-her 当前实现差距（P0 安全漏洞）
 
-| 功能 | upstream | feishu-her | 差距 |
-|------|----------|-----------|------|
-| 私聊 dmPolicy 检查 | ✅ 三种模式 | ❌ **完全没有检查** | 🔴 **安全漏洞** |
-| 私聊 allowFrom 检查 | ✅ | ❌ 有 config 无代码 | 🔴 |
-| pairing 配对 | ✅ | ❌ | 🟡 企业场景不需要 |
-| groupPolicy 群准入 | ✅ | ❌ 任何群都进 | 🟡 |
-| groupSenderAllowFrom | ✅ | ❌ | 🟡 用 ownerIds 部分替代 |
-| requireMention 可配 | ✅ per-group | ⚠️ 硬编码 true | 🟡 |
-| per-group allowFrom | ✅ | ❌ | 🟡 |
+| 功能                 | upstream     | feishu-her          | 差距                    |
+| -------------------- | ------------ | ------------------- | ----------------------- |
+| 私聊 dmPolicy 检查   | ✅ 三种模式  | ❌ **完全没有检查** | 🔴 **安全漏洞**         |
+| 私聊 allowFrom 检查  | ✅           | ❌ 有 config 无代码 | 🔴                      |
+| pairing 配对         | ✅           | ❌                  | 🟡 企业场景不需要       |
+| groupPolicy 群准入   | ✅           | ❌ 任何群都进       | 🟡                      |
+| groupSenderAllowFrom | ✅           | ❌                  | 🟡 用 ownerIds 部分替代 |
+| requireMention 可配  | ✅ per-group | ⚠️ 硬编码 true      | 🟡                      |
+| per-group allowFrom  | ✅           | ❌                  | 🟡                      |
 
 **feishu-her 的 `dm.allowFrom` 由 `start-user.sh` 从 CSV 正确写入了每个容器的 config，但 gateway.ts 从来不读这个字段做私聊检查。** 全员开放后任何人发私聊都会被处理。
 
 #### 推荐方案（分阶段）
 
 **Phase 1（P0，堵私聊漏洞）**：
+
 - gateway.ts 加 DM sender 检查，读 `dm.allowFrom`
 - 不在列表 → 回复"我只为主人服务"+ 不处理消息
 - 零改 config（`start-user.sh` 已经生成了正确的 `dm.allowFrom`）
 
 **Phase 2（P1，对齐龙虾体验）**：
+
 - 支持 `requireMention` 可配（config 级别，不改代码切换）
 - 支持 `groupSenderAllowFrom`（群里只响应主人，不需要 @）
 - Config 字段对齐 upstream 命名
 
 **Phase 3（P2，全员开放）**：
+
 - Phase 1 完成后，飞书后台可安全改为全员可见
 - 非主人搜到 bot → 发私聊 → 被 dmPolicy 拦住
 - 群里非主人 @bot → 被 ownerIds/groupSenderAllowFrom 拦住

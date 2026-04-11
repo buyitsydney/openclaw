@@ -374,13 +374,13 @@ HER 接入飞书知识空间的进度如下：
 
 ### Phase 1：OAuth scope + 基础工具（可立即开始）
 
-| 项目           | 文件                                  | 说明                                         |
-| -------------- | ------------------------------------- | -------------------------------------------- |
+| 项目           | 文件                                  | 说明                                                                           |
+| -------------- | ------------------------------------- | ------------------------------------------------------------------------------ |
 | 加 OAuth scope | `oauth.ts`                            | `OAUTH_SCOPES` 启用 `search:knowledge_qa:read`（需飞书后台开通"知识问答"能力） |
-| 新建工具       | `tools/knowledge-qa.ts`               | 实现 `feishu_knowledge_qa`，支持流式/非流式  |
-| 注册工具       | `gateway.ts`                          | 在 tool 注册链路中加入 knowledge-qa          |
-| SKILL.md       | `skills/feishu-knowledge-qa/SKILL.md` | 使用指南                                     |
-| 单元测试       | `tools/knowledge-qa.test.ts`          | SSE 解析、质量判断、额度管理                 |
+| 新建工具       | `tools/knowledge-qa.ts`               | 实现 `feishu_knowledge_qa`，支持流式/非流式                                    |
+| 注册工具       | `gateway.ts`                          | 在 tool 注册链路中加入 knowledge-qa                                            |
+| SKILL.md       | `skills/feishu-knowledge-qa/SKILL.md` | 使用指南                                                                       |
+| 单元测试       | `tools/knowledge-qa.test.ts`          | SSE 解析、质量判断、额度管理                                                   |
 
 ### Phase 2：Deep Research 融合（Phase 1 部署验证后）
 
@@ -406,7 +406,7 @@ HER 接入飞书知识空间的进度如下：
 `oauth.ts` 的 `OAUTH_SCOPES` 中 `search:knowledge_qa:read` 已注释掉：
 
 ```typescript
-  // "search:knowledge_qa:read", // requires "飞书知识问答" app capability — only enterprise apps have this
+// "search:knowledge_qa:read", // requires "飞书知识问答" app capability — only enterprise apps have this
 ```
 
 **启用条件**：飞书后台已开通"飞书知识问答"应用能力（非企业版会报错误码 20027）。

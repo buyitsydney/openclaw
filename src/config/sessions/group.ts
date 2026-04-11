@@ -112,10 +112,11 @@ export function resolveGroupSessionKey(ctx: MsgContext): GroupKeyResolution | nu
   const normalizedChatType =
     chatType === "channel" ? "channel" : chatType === "group" ? "group" : undefined;
   const providerHint = ctx.Provider?.trim().toLowerCase();
-  const recipientRaw =
-    normalizedChatType
-      ? (typeof ctx.OriginatingTo === "string" ? ctx.OriginatingTo : ctx.To)
-      : undefined;
+  const recipientRaw = normalizedChatType
+    ? typeof ctx.OriginatingTo === "string"
+      ? ctx.OriginatingTo
+      : ctx.To
+    : undefined;
   const recipientResolution = resolveGroupSessionKeyFromRaw({
     raw: recipientRaw,
     providerHint,

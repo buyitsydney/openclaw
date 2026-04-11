@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import { stringEnum } from "openclaw/plugin-sdk/feishu";
+import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 
 const UPDATE_FIELDS = [
   "summary",

@@ -218,6 +218,55 @@ For actions/directory reads, user token can be preferred when configured. For wr
   - if encoded option values exceed Slack limits, the flow falls back to buttons
 - For long option payloads, Slash command argument menus use a confirm dialog before dispatching a selected value.
 
+## Interactive replies
+
+Slack can render agent-authored interactive reply controls, but this feature is disabled by default.
+
+Enable it globally:
+
+```json5
+{
+  channels: {
+    slack: {
+      capabilities: {
+        interactiveReplies: true,
+      },
+    },
+  },
+}
+```
+
+Or enable it for one Slack account only:
+
+```json5
+{
+  channels: {
+    slack: {
+      accounts: {
+        ops: {
+          capabilities: {
+            interactiveReplies: true,
+          },
+        },
+      },
+    },
+  },
+}
+```
+
+When enabled, agents can emit Slack-only reply directives:
+
+- `[[slack_buttons: Approve:approve, Reject:reject]]`
+- `[[slack_select: Choose a target | Canary:canary, Production:production]]`
+
+These directives compile into Slack Block Kit and route clicks or selections back through the existing Slack interaction event path.
+
+Notes:
+
+- This is Slack-specific UI. Other channels do not translate Slack Block Kit directives into their own button systems.
+- The interactive callback values are OpenClaw-generated opaque tokens, not raw agent-authored values.
+- If generated interactive blocks would exceed Slack Block Kit limits, OpenClaw falls back to the original text reply instead of sending an invalid blocks payload.
+
 Default slash command settings:
 
 - `enabled: false`
@@ -294,6 +343,8 @@ Available action groups in current Slack tooling:
 | pins       | enabled |
 | memberInfo | enabled |
 | emojiList  | enabled |
+
+Current Slack message actions include `send`, `upload-file`, `download-file`, `read`, `edit`, `delete`, `pin`, `unpin`, `list-pins`, `member-info`, and `emoji-list`.
 
 ## Events and operational behavior
 
@@ -430,6 +481,55 @@ Notes:
   </Accordion>
 </AccordionGroup>
 
+## Exec approvals in Slack
+
+Exec approval prompts can route natively through Slack using interactive buttons and interactions, instead of falling back to the Web UI or terminal. Approver authorization is enforced: only users identified as approvers can approve or deny requests through Slack.
+
+This uses the same shared approval button surface as other channels. When `interactivity` is enabled in your Slack app settings, approval prompts render as Block Kit buttons directly in the conversation.
+
+Config path:
+
+- `channels.slack.execApprovals.enabled`
+- `channels.slack.execApprovals.approvers` (optional; falls back to `commands.ownerAllowFrom` when possible)
+- `channels.slack.execApprovals.target` (`dm` | `channel` | `both`, default: `dm`)
+- `agentFilter`, `sessionFilter`
+
+Slack auto-enables native exec approvals when `enabled` is unset or `"auto"` and at least one
+approver resolves. Set `enabled: false` to disable Slack as a native approval client explicitly.
+Set `enabled: true` to force native approvals on when approvers resolve.
+
+Default behavior with no explicit Slack exec approval config:
+
+```json5
+{
+  commands: {
+    ownerAllowFrom: ["slack:U12345678"],
+  },
+}
+```
+
+Explicit Slack-native config is only needed when you want to override approvers, add filters, or
+opt into origin-chat delivery:
+
+```json5
+{
+  channels: {
+    slack: {
+      execApprovals: {
+        enabled: true,
+        approvers: ["U12345678"],
+        target: "both",
+      },
+    },
+  },
+}
+```
+
+Shared `approvals.exec` forwarding is separate. Use it only when approval prompts must also route
+to other chats or explicit out-of-band targets.
+
+Same-chat `/approve` also works in Slack channels and DMs that already support commands. See [Exec approvals](/tools/exec-approvals) for the full approval forwarding model.
+
 ## Troubleshooting
 
 <AccordionGroup>
@@ -548,6 +648,8 @@ Primary reference:
 ## Related
 
 - [Pairing](/channels/pairing)
+- [Groups](/channels/groups)
+- [Security](/gateway/security)
 - [Channel routing](/channels/channel-routing)
 - [Troubleshooting](/channels/troubleshooting)
 - [Configuration](/gateway/configuration)

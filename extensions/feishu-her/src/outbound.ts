@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { writeFileSync, readFileSync, unlinkSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import * as Lark from "@larksuiteoapi/node-sdk";
-import { fetchWithSsrFGuard, resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/feishu";
+import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/feishu";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { buildFeishuSentMessageRef, type FeishuSentMessageRef } from "./message-metadata.js";
 

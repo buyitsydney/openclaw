@@ -13,7 +13,8 @@
     defaults: {
       contextTokens: 400000,
       userTimezone: "Asia/Shanghai",
-      compaction: { mode: "safeguard" },
+      llm: { idleTimeoutSeconds: 300 },
+      compaction: { mode: "safeguard", reserveTokens: 100000 },
       // 语义搜索记忆 — apiKey 通过环境变量注入
       memorySearch: {
         provider: "openai",
@@ -62,7 +63,9 @@
     tts: {
       auto: "inbound",
       provider: "edge",
-      edge: { voice: "zh-CN-XiaoxiaoNeural" },
+      providers: {
+        edge: { voice: "zh-CN-XiaoxiaoNeural" },
+      },
     },
   },
 
@@ -70,6 +73,7 @@
   browser: {
     enabled: true,
     defaultProfile: "openclaw",
+    cdpPortRangeStart: 18900, // avoid conflict with a2a-gateway on 18800
   },
 
   // 插件

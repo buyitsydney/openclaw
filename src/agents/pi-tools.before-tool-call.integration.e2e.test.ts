@@ -1,321 +1,353 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  onDiagnosticEvent,
-  resetDiagnosticEventsForTest,
-  type DiagnosticToolLoopEvent,
-} from "../infra/diagnostic-events.js";
 import { resetDiagnosticSessionStateForTest } from "../logging/diagnostic-session-state.js";
-import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
-import { wrapToolWithBeforeToolCallHook } from "./pi-tools.before-tool-call.js";
-import { CRITICAL_THRESHOLD, GLOBAL_CIRCUIT_BREAKER_THRESHOLD } from "./tool-loop-detection.js";
-import type { AnyAgentTool } from "./tools/common.js";
+import {
+  initializeGlobalHookRunner,
+  resetGlobalHookRunner,
+} from "../plugins/hook-runner-global.js";
+import { addTestHook, createMockPluginRegistry } from "../plugins/hooks.test-helpers.js";
+import { createEmptyPluginRegistry } from "../plugins/registry.js";
+import type { PluginHookRegistration } from "../plugins/types.js";
 
-vi.mock("../plugins/hook-runner-global.js");
+type ToolDefinitionAdapterModule = typeof import("./pi-tool-definition-adapter.js");
+type PiToolsAbortModule = typeof import("./pi-tools.abort.js");
+type BeforeToolCallModule = typeof import("./pi-tools.before-tool-call.js");
 
-const mockGetGlobalHookRunner = vi.mocked(getGlobalHookRunner);
+type ToClientToolDefinitions = ToolDefinitionAdapterModule["toClientToolDefinitions"];
+type ToToolDefinitions = ToolDefinitionAdapterModule["toToolDefinitions"];
+type WrapToolWithAbortSignal = PiToolsAbortModule["wrapToolWithAbortSignal"];
+type BeforeToolCallTesting = BeforeToolCallModule["__testing"];
+type ConsumeAdjustedParamsForToolCall = BeforeToolCallModule["consumeAdjustedParamsForToolCall"];
+type WrapToolWithBeforeToolCallHook = BeforeToolCallModule["wrapToolWithBeforeToolCallHook"];
 
-describe("before_tool_call loop detection behavior", () => {
-  let hookRunner: {
-    hasHooks: ReturnType<typeof vi.fn>;
-    runBeforeToolCall: ReturnType<typeof vi.fn>;
-  };
-  const enabledLoopDetectionContext = {
-    agentId: "main",
-    sessionKey: "main",
-    loopDetection: { enabled: true },
-  };
+let toClientToolDefinitions!: ToClientToolDefinitions;
+let toToolDefinitions!: ToToolDefinitions;
+let wrapToolWithAbortSignal!: WrapToolWithAbortSignal;
+let beforeToolCallTesting!: BeforeToolCallTesting;
+let consumeAdjustedParamsForToolCall!: ConsumeAdjustedParamsForToolCall;
+let wrapToolWithBeforeToolCallHook!: WrapToolWithBeforeToolCallHook;
 
-  const disabledLoopDetectionContext = {
-    agentId: "main",
-    sessionKey: "main",
-    loopDetection: { enabled: false },
-  };
+beforeEach(async () => {
+  if (!wrapToolWithBeforeToolCallHook) {
+    ({ toClientToolDefinitions, toToolDefinitions } =
+      await import("./pi-tool-definition-adapter.js"));
+    ({ wrapToolWithAbortSignal } = await import("./pi-tools.abort.js"));
+    ({
+      __testing: beforeToolCallTesting,
+      consumeAdjustedParamsForToolCall,
+      wrapToolWithBeforeToolCallHook,
+    } = await import("./pi-tools.before-tool-call.js"));
+  }
+});
+
+type BeforeToolCallHandlerMock = ReturnType<typeof vi.fn>;
+
+type BeforeToolCallHookInstall = {
+  pluginId: string;
+  priority?: number;
+  handler: BeforeToolCallHandlerMock;
+};
+
+function installBeforeToolCallHook(params?: {
+  enabled?: boolean;
+  runBeforeToolCallImpl?: (...args: unknown[]) => unknown;
+}): BeforeToolCallHandlerMock {
+  resetGlobalHookRunner();
+  const handler = params?.runBeforeToolCallImpl
+    ? vi.fn(params.runBeforeToolCallImpl)
+    : vi.fn(async () => undefined);
+  if (params?.enabled === false) {
+    return handler;
+  }
+  initializeGlobalHookRunner(createMockPluginRegistry([{ hookName: "before_tool_call", handler }]));
+  return handler;
+}
+
+function installBeforeToolCallHooks(hooks: BeforeToolCallHookInstall[]): void {
+  resetGlobalHookRunner();
+  const registry = createEmptyPluginRegistry();
+  for (const hook of hooks) {
+    addTestHook({
+      registry,
+      pluginId: hook.pluginId,
+      hookName: "before_tool_call",
+      handler: hook.handler as PluginHookRegistration["handler"],
+      priority: hook.priority,
+    });
+  }
+  initializeGlobalHookRunner(registry);
+}
+
+describe("before_tool_call hook integration", () => {
+  let beforeToolCallHook: BeforeToolCallHandlerMock;
 
   beforeEach(() => {
+    resetGlobalHookRunner();
     resetDiagnosticSessionStateForTest();
-    resetDiagnosticEventsForTest();
-    hookRunner = {
-      hasHooks: vi.fn(),
-      runBeforeToolCall: vi.fn(),
-    };
-    // oxlint-disable-next-line typescript/no-explicit-any
-    mockGetGlobalHookRunner.mockReturnValue(hookRunner as any);
-    hookRunner.hasHooks.mockReturnValue(false);
+    beforeToolCallTesting.adjustedParamsByToolCallId.clear();
+    beforeToolCallHook = installBeforeToolCallHook();
   });
 
-  function createWrappedTool(
-    name: string,
-    execute: ReturnType<typeof vi.fn>,
-    loopDetectionContext = enabledLoopDetectionContext,
-  ) {
-    return wrapToolWithBeforeToolCallHook(
-      { name, execute } as unknown as AnyAgentTool,
-      loopDetectionContext,
+  it("executes tool normally when no hook is registered", async () => {
+    beforeToolCallHook = installBeforeToolCallHook({ enabled: false });
+    const execute = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const tool = wrapToolWithBeforeToolCallHook({ name: "Read", execute } as any, {
+      agentId: "main",
+      sessionKey: "main",
+    });
+    const extensionContext = {} as Parameters<typeof tool.execute>[3];
+
+    await tool.execute("call-1", { path: "/tmp/file" }, undefined, extensionContext);
+
+    expect(beforeToolCallHook).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledWith(
+      "call-1",
+      { path: "/tmp/file" },
+      undefined,
+      extensionContext,
     );
-  }
-
-  async function withToolLoopEvents(
-    run: (emitted: DiagnosticToolLoopEvent[]) => Promise<void>,
-    filter: (evt: DiagnosticToolLoopEvent) => boolean = () => true,
-  ) {
-    const emitted: DiagnosticToolLoopEvent[] = [];
-    const stop = onDiagnosticEvent((evt) => {
-      if (evt.type === "tool.loop" && filter(evt)) {
-        emitted.push(evt);
-      }
-    });
-    try {
-      await run(emitted);
-    } finally {
-      stop();
-    }
-  }
-
-  function createPingPongTools(options?: { withProgress?: boolean }) {
-    const readExecute = options?.withProgress
-      ? vi.fn().mockImplementation(async (toolCallId: string) => ({
-          content: [{ type: "text", text: `read ${toolCallId}` }],
-          details: { ok: true },
-        }))
-      : vi.fn().mockResolvedValue({
-          content: [{ type: "text", text: "read ok" }],
-          details: { ok: true },
-        });
-    const listExecute = options?.withProgress
-      ? vi.fn().mockImplementation(async (toolCallId: string) => ({
-          content: [{ type: "text", text: `list ${toolCallId}` }],
-          details: { ok: true },
-        }))
-      : vi.fn().mockResolvedValue({
-          content: [{ type: "text", text: "list ok" }],
-          details: { ok: true },
-        });
-    return {
-      readTool: createWrappedTool("read", readExecute),
-      listTool: createWrappedTool("list", listExecute),
-    };
-  }
-
-  async function runPingPongSequence(
-    readTool: ReturnType<typeof createWrappedTool>,
-    listTool: ReturnType<typeof createWrappedTool>,
-    count: number,
-  ) {
-    for (let i = 0; i < count; i += 1) {
-      if (i % 2 === 0) {
-        await readTool.execute(`read-${i}`, { path: "/a.txt" }, undefined, undefined);
-      } else {
-        await listTool.execute(`list-${i}`, { dir: "/workspace" }, undefined, undefined);
-      }
-    }
-  }
-
-  function createGenericReadRepeatFixture() {
-    const execute = vi.fn().mockResolvedValue({
-      content: [{ type: "text", text: "same output" }],
-      details: { ok: true },
-    });
-    return {
-      tool: createWrappedTool("read", execute),
-      params: { path: "/tmp/file" },
-    };
-  }
-
-  function createNoProgressProcessFixture(sessionId: string) {
-    const execute = vi.fn().mockResolvedValue({
-      content: [{ type: "text", text: "(no new output)\n\nProcess still running." }],
-      details: { status: "running", aggregated: "steady" },
-    });
-    return {
-      tool: createWrappedTool("process", execute),
-      params: { action: "poll", sessionId },
-    };
-  }
-
-  function expectCriticalLoopEvent(
-    loopEvent: DiagnosticToolLoopEvent | undefined,
-    params: {
-      detector: "ping_pong" | "known_poll_no_progress";
-      toolName: string;
-      count?: number;
-    },
-  ) {
-    expect(loopEvent?.type).toBe("tool.loop");
-    expect(loopEvent?.level).toBe("critical");
-    expect(loopEvent?.action).toBe("block");
-    expect(loopEvent?.detector).toBe(params.detector);
-    expect(loopEvent?.count).toBe(params.count ?? CRITICAL_THRESHOLD);
-    expect(loopEvent?.toolName).toBe(params.toolName);
-  }
-
-  it("blocks known poll loops when no progress repeats", async () => {
-    const { tool, params } = createNoProgressProcessFixture("sess-1");
-
-    for (let i = 0; i < CRITICAL_THRESHOLD; i += 1) {
-      await expect(tool.execute(`poll-${i}`, params, undefined, undefined)).resolves.toBeDefined();
-    }
-
-    await expect(
-      tool.execute(`poll-${CRITICAL_THRESHOLD}`, params, undefined, undefined),
-    ).rejects.toThrow("CRITICAL");
   });
 
-  it("does nothing when loopDetection.enabled is false", async () => {
-    const execute = vi.fn().mockResolvedValue({
-      content: [{ type: "text", text: "(no new output)\n\nProcess still running." }],
-      details: { status: "running", aggregated: "steady" },
+  it("allows hook to modify parameters", async () => {
+    beforeToolCallHook = installBeforeToolCallHook({
+      runBeforeToolCallImpl: async () => ({ params: { mode: "safe" } }),
     });
+    const execute = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });
     // oxlint-disable-next-line typescript/no-explicit-any
-    const tool = wrapToolWithBeforeToolCallHook({ name: "process", execute } as any, {
-      ...disabledLoopDetectionContext,
+    const tool = wrapToolWithBeforeToolCallHook({ name: "exec", execute } as any);
+    const extensionContext = {} as Parameters<typeof tool.execute>[3];
+
+    await tool.execute("call-2", { cmd: "ls" }, undefined, extensionContext);
+
+    expect(execute).toHaveBeenCalledWith(
+      "call-2",
+      { cmd: "ls", mode: "safe" },
+      undefined,
+      extensionContext,
+    );
+  });
+
+  it("blocks tool execution when hook returns block=true", async () => {
+    beforeToolCallHook = installBeforeToolCallHook({
+      runBeforeToolCallImpl: async () => ({
+        block: true,
+        blockReason: "blocked",
+      }),
     });
-    const params = { action: "poll", sessionId: "sess-off" };
-
-    for (let i = 0; i < CRITICAL_THRESHOLD; i += 1) {
-      await expect(tool.execute(`poll-${i}`, params, undefined, undefined)).resolves.toBeDefined();
-    }
-  });
-
-  it("does not block known poll loops when output progresses", async () => {
-    const execute = vi.fn().mockImplementation(async (toolCallId: string) => {
-      return {
-        content: [{ type: "text", text: `output ${toolCallId}` }],
-        details: { status: "running", aggregated: `output ${toolCallId}` },
-      };
-    });
-    const tool = createWrappedTool("process", execute);
-    const params = { action: "poll", sessionId: "sess-2" };
-
-    for (let i = 0; i < CRITICAL_THRESHOLD + 5; i += 1) {
-      await expect(
-        tool.execute(`poll-progress-${i}`, params, undefined, undefined),
-      ).resolves.toBeDefined();
-    }
-  });
-
-  it("keeps generic repeated calls warn-only below global breaker", async () => {
-    const { tool, params } = createGenericReadRepeatFixture();
-
-    for (let i = 0; i < CRITICAL_THRESHOLD + 5; i += 1) {
-      await expect(tool.execute(`read-${i}`, params, undefined, undefined)).resolves.toBeDefined();
-    }
-  });
-
-  it("blocks generic repeated no-progress calls at global breaker threshold", async () => {
-    const { tool, params } = createGenericReadRepeatFixture();
-
-    for (let i = 0; i < GLOBAL_CIRCUIT_BREAKER_THRESHOLD; i += 1) {
-      await expect(tool.execute(`read-${i}`, params, undefined, undefined)).resolves.toBeDefined();
-    }
+    const execute = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const tool = wrapToolWithBeforeToolCallHook({ name: "exec", execute } as any);
+    const extensionContext = {} as Parameters<typeof tool.execute>[3];
 
     await expect(
-      tool.execute(`read-${GLOBAL_CIRCUIT_BREAKER_THRESHOLD}`, params, undefined, undefined),
-    ).rejects.toThrow("global circuit breaker");
+      tool.execute("call-3", { cmd: "rm -rf /" }, undefined, extensionContext),
+    ).rejects.toThrow("blocked");
+    expect(execute).not.toHaveBeenCalled();
   });
 
-  it("coalesces repeated generic warning events into threshold buckets", async () => {
-    await withToolLoopEvents(
-      async (emitted) => {
-        const { tool, params } = createGenericReadRepeatFixture();
+  it("does not execute lower-priority hooks after block=true", async () => {
+    const high = vi.fn().mockResolvedValue({ block: true, blockReason: "blocked-high" });
+    const low = vi.fn().mockResolvedValue({ params: { shouldNotApply: true } });
+    installBeforeToolCallHooks([
+      { pluginId: "high", priority: 100, handler: high },
+      { pluginId: "low", priority: 0, handler: low },
+    ]);
 
-        for (let i = 0; i < 21; i += 1) {
-          await tool.execute(`read-bucket-${i}`, params, undefined, undefined);
-        }
+    const execute = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const tool = wrapToolWithBeforeToolCallHook({ name: "exec", execute } as any);
+    const extensionContext = {} as Parameters<typeof tool.execute>[3];
 
-        const genericWarns = emitted.filter((evt) => evt.detector === "generic_repeat");
-        expect(genericWarns.map((evt) => evt.count)).toEqual([10, 20]);
+    await expect(
+      tool.execute("call-stop", { cmd: "rm -rf /" }, undefined, extensionContext),
+    ).rejects.toThrow("blocked-high");
+
+    expect(high).toHaveBeenCalledTimes(1);
+    expect(low).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("continues execution when hook throws", async () => {
+    beforeToolCallHook = installBeforeToolCallHook({
+      runBeforeToolCallImpl: async () => {
+        throw new Error("boom");
       },
-      (evt) => evt.level === "warning",
+    });
+    const execute = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const tool = wrapToolWithBeforeToolCallHook({ name: "read", execute } as any);
+    const extensionContext = {} as Parameters<typeof tool.execute>[3];
+
+    await tool.execute("call-4", { path: "/tmp/file" }, undefined, extensionContext);
+
+    expect(execute).toHaveBeenCalledWith(
+      "call-4",
+      { path: "/tmp/file" },
+      undefined,
+      extensionContext,
     );
   });
 
-  it("emits structured warning diagnostic events for ping-pong loops", async () => {
-    await withToolLoopEvents(async (emitted) => {
-      const { readTool, listTool } = createPingPongTools();
-      await runPingPongSequence(readTool, listTool, 9);
+  it("normalizes non-object params for hook contract", async () => {
+    beforeToolCallHook = installBeforeToolCallHook({
+      runBeforeToolCallImpl: async () => undefined,
+    });
+    const execute = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const tool = wrapToolWithBeforeToolCallHook({ name: "ReAd", execute } as any, {
+      agentId: "main",
+      sessionKey: "main",
+      sessionId: "ephemeral-main",
+      runId: "run-main",
+    });
+    const extensionContext = {} as Parameters<typeof tool.execute>[3];
 
-      await listTool.execute("list-9", { dir: "/workspace" }, undefined, undefined);
-      await readTool.execute("read-10", { path: "/a.txt" }, undefined, undefined);
-      await listTool.execute("list-11", { dir: "/workspace" }, undefined, undefined);
+    await tool.execute("call-5", "not-an-object", undefined, extensionContext);
 
-      const pingPongWarns = emitted.filter(
-        (evt) => evt.level === "warning" && evt.detector === "ping_pong",
-      );
-      expect(pingPongWarns).toHaveLength(1);
-      const loopEvent = pingPongWarns[0];
-      expect(loopEvent?.type).toBe("tool.loop");
-      expect(loopEvent?.level).toBe("warning");
-      expect(loopEvent?.action).toBe("warn");
-      expect(loopEvent?.detector).toBe("ping_pong");
-      expect(loopEvent?.count).toBe(10);
-      expect(loopEvent?.toolName).toBe("list");
+    expect(beforeToolCallHook).toHaveBeenCalledWith(
+      {
+        toolName: "read",
+        params: {},
+        runId: "run-main",
+        toolCallId: "call-5",
+      },
+      {
+        toolName: "read",
+        agentId: "main",
+        sessionKey: "main",
+        sessionId: "ephemeral-main",
+        runId: "run-main",
+        toolCallId: "call-5",
+      },
+    );
+  });
+
+  it("keeps adjusted params isolated per run when toolCallId collides", async () => {
+    beforeToolCallHook = installBeforeToolCallHook({
+      runBeforeToolCallImpl: vi
+        .fn()
+        .mockResolvedValueOnce({ params: { marker: "A" } })
+        .mockResolvedValueOnce({ params: { marker: "B" } }),
+    });
+    const execute = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const toolA = wrapToolWithBeforeToolCallHook({ name: "Read", execute } as any, {
+      runId: "run-a",
+    });
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const toolB = wrapToolWithBeforeToolCallHook({ name: "Read", execute } as any, {
+      runId: "run-b",
+    });
+    const extensionContextA = {} as Parameters<typeof toolA.execute>[3];
+    const extensionContextB = {} as Parameters<typeof toolB.execute>[3];
+    const sharedToolCallId = "shared-call";
+
+    await toolA.execute(sharedToolCallId, { path: "/tmp/a.txt" }, undefined, extensionContextA);
+    await toolB.execute(sharedToolCallId, { path: "/tmp/b.txt" }, undefined, extensionContextB);
+
+    expect(consumeAdjustedParamsForToolCall(sharedToolCallId, "run-a")).toEqual({
+      path: "/tmp/a.txt",
+      marker: "A",
+    });
+    expect(consumeAdjustedParamsForToolCall(sharedToolCallId, "run-b")).toEqual({
+      path: "/tmp/b.txt",
+      marker: "B",
+    });
+    expect(consumeAdjustedParamsForToolCall(sharedToolCallId, "run-a")).toBeUndefined();
+  });
+});
+
+describe("before_tool_call hook deduplication (#15502)", () => {
+  let beforeToolCallHook: BeforeToolCallHandlerMock;
+
+  beforeEach(() => {
+    resetGlobalHookRunner();
+    resetDiagnosticSessionStateForTest();
+    beforeToolCallHook = installBeforeToolCallHook({
+      runBeforeToolCallImpl: async () => undefined,
     });
   });
 
-  it("blocks ping-pong loops at critical threshold and emits critical diagnostic events", async () => {
-    await withToolLoopEvents(async (emitted) => {
-      const { readTool, listTool } = createPingPongTools();
-      await runPingPongSequence(readTool, listTool, CRITICAL_THRESHOLD - 1);
+  it("fires hook exactly once when tool goes through wrap + toToolDefinitions", async () => {
+    const execute = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const baseTool = { name: "web_fetch", execute, description: "fetch", parameters: {} } as any;
 
-      await expect(
-        listTool.execute(
-          `list-${CRITICAL_THRESHOLD - 1}`,
-          { dir: "/workspace" },
-          undefined,
-          undefined,
-        ),
-      ).rejects.toThrow("CRITICAL");
-
-      const loopEvent = emitted.at(-1);
-      expectCriticalLoopEvent(loopEvent, {
-        detector: "ping_pong",
-        toolName: "list",
-      });
+    const wrapped = wrapToolWithBeforeToolCallHook(baseTool, {
+      agentId: "main",
+      sessionKey: "main",
     });
+    const [def] = toToolDefinitions([wrapped]);
+    const extensionContext = {} as Parameters<typeof def.execute>[4];
+    await def.execute(
+      "call-dedup",
+      { url: "https://example.com" },
+      undefined,
+      undefined,
+      extensionContext,
+    );
+
+    expect(beforeToolCallHook).toHaveBeenCalledTimes(1);
   });
 
-  it("does not block ping-pong at critical threshold when outcomes are progressing", async () => {
-    await withToolLoopEvents(async (emitted) => {
-      const { readTool, listTool } = createPingPongTools({ withProgress: true });
-      await runPingPongSequence(readTool, listTool, CRITICAL_THRESHOLD - 1);
+  it("fires hook exactly once when tool goes through wrap + abort + toToolDefinitions", async () => {
+    const execute = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const baseTool = { name: "Bash", execute, description: "bash", parameters: {} } as any;
 
-      await expect(
-        listTool.execute(
-          `list-${CRITICAL_THRESHOLD - 1}`,
-          { dir: "/workspace" },
-          undefined,
-          undefined,
-        ),
-      ).resolves.toBeDefined();
-
-      const criticalPingPong = emitted.find(
-        (evt) => evt.level === "critical" && evt.detector === "ping_pong",
-      );
-      expect(criticalPingPong).toBeUndefined();
-      const warningPingPong = emitted.find(
-        (evt) => evt.level === "warning" && evt.detector === "ping_pong",
-      );
-      expect(warningPingPong).toBeTruthy();
+    const abortController = new AbortController();
+    const wrapped = wrapToolWithBeforeToolCallHook(baseTool, {
+      agentId: "main",
+      sessionKey: "main",
     });
+    const withAbort = wrapToolWithAbortSignal(wrapped, abortController.signal);
+    const [def] = toToolDefinitions([withAbort]);
+    const extensionContext = {} as Parameters<typeof def.execute>[4];
+
+    await def.execute(
+      "call-abort-dedup",
+      { command: "ls" },
+      undefined,
+      undefined,
+      extensionContext,
+    );
+
+    expect(beforeToolCallHook).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("before_tool_call hook integration for client tools", () => {
+  beforeEach(() => {
+    resetGlobalHookRunner();
+    resetDiagnosticSessionStateForTest();
+    installBeforeToolCallHook();
   });
 
-  it("emits structured critical diagnostic events when blocking loops", async () => {
-    await withToolLoopEvents(async (emitted) => {
-      const { tool, params } = createNoProgressProcessFixture("sess-crit");
+  it("passes modified params to client tool callbacks", async () => {
+    installBeforeToolCallHook({
+      runBeforeToolCallImpl: async () => ({ params: { extra: true } }),
+    });
+    const onClientToolCall = vi.fn();
+    const [tool] = toClientToolDefinitions(
+      [
+        {
+          type: "function",
+          function: {
+            name: "client_tool",
+            description: "Client tool",
+            parameters: { type: "object", properties: { value: { type: "string" } } },
+          },
+        },
+      ],
+      onClientToolCall,
+      { agentId: "main", sessionKey: "main" },
+    );
+    const extensionContext = {} as Parameters<typeof tool.execute>[4];
+    await tool.execute("client-call-1", { value: "ok" }, undefined, undefined, extensionContext);
 
-      for (let i = 0; i < CRITICAL_THRESHOLD; i += 1) {
-        await tool.execute(`poll-${i}`, params, undefined, undefined);
-      }
-
-      await expect(
-        tool.execute(`poll-${CRITICAL_THRESHOLD}`, params, undefined, undefined),
-      ).rejects.toThrow("CRITICAL");
-
-      const loopEvent = emitted.at(-1);
-      expectCriticalLoopEvent(loopEvent, {
-        detector: "known_poll_no_progress",
-        toolName: "process",
-      });
+    expect(onClientToolCall).toHaveBeenCalledWith("client_tool", {
+      value: "ok",
+      extra: true,
     });
   });
 });

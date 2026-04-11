@@ -10,7 +10,7 @@ const getValidUserTokenMock = vi.hoisted(() => vi.fn());
 const getValidUserTokenForOpenIdMock = vi.hoisted(() => vi.fn());
 const requireUserTokenMock = vi.hoisted(() => vi.fn());
 const resolveOAuthRedirectUriMock = vi.hoisted(() => vi.fn());
-const getFeishuClientMock = vi.hoisted(() => vi.fn());
+  handleFeishuTokenError: vi.fn(() => null),const getFeishuClientMock = vi.hoisted(() => vi.fn());
 const downloadFeishuFileMock = vi.hoisted(() => vi.fn());
 const downloadFeishuImageMock = vi.hoisted(() => vi.fn());
 const parseOfficeMock = vi.hoisted(() => vi.fn());

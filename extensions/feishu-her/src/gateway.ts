@@ -20,9 +20,9 @@ import type {
 import {
   extractReasoningDirective,
   normalizeReasoningLevel,
-  readSessionStoreJson5,
   type ReasoningLevel,
-} from "openclaw/plugin-sdk/feishu";
+} from "./reasoning-helpers.js";
+import { readSessionStoreJson5 } from "./session-store-helpers.js";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { resolveGroupOwnerIds } from "./accounts.js";
 import { initBotRegistry, destroyBotRegistry } from "./bot-registry.js";
@@ -33,6 +33,7 @@ import {
 } from "./discussion-outbound.js";
 import {
   initDiscussionState,
+  isRedisAvailable,
   initBroadcast,
   discussionTick,
   subscribeBotMessages,
@@ -1032,7 +1033,12 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
   initDashboard({ redisUrl: process.env.REDIS_URL, account, log });
 
   // ── Group mode: set current bot appId, migrate legacy files, pre-warm cache ──
+  // Wait for Redis to be ready (initDiscussionState connects async).
+  // Without this, migrateGroupModeFiles and warmGroupModeCache silently skip.
   setGroupModeAppId(account.appId);
+  for (let i = 0; i < 50 && !isRedisAvailable(); i++) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
   await migrateGroupModeFiles(account.appId, log).catch((err) => {
     log?.warn(`[group-mode] migration error: ${String(err).slice(0, 120)}`);
   });
