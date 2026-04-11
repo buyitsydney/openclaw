@@ -7,8 +7,8 @@
 
 import type * as Lark from "@larksuiteoapi/node-sdk";
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
   callFeishuApiWithUserToken,
@@ -32,6 +32,12 @@ function json(data: unknown) {
 // Time conversion: use shared time-utils (toUnixSecondsStr, toRfc3339)
 const toTimestamp = toUnixSecondsStr;
 
+/** Convert a Feishu calendar timestamp to human-readable ISO 8601. */
+function humanizeTimestamp(t: { timestamp?: string; timezone?: string } | undefined) {
+  if (!t?.timestamp) return t;
+  return { ...t, datetime: new Date(Number(t.timestamp) * 1000).toISOString() };
+}
+
 /** Extract useful fields from a raw calendar event. */
 // oxlint-disable-next-line typescript/no-explicit-any
 function formatEvent(e: any) {
@@ -39,8 +45,8 @@ function formatEvent(e: any) {
     event_id: e.event_id,
     summary: e.summary,
     description: e.description,
-    start_time: e.start_time,
-    end_time: e.end_time,
+    start_time: humanizeTimestamp(e.start_time),
+    end_time: humanizeTimestamp(e.end_time),
     status: e.status,
     location: e.location,
     organizer: e.event_organizer,
