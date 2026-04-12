@@ -9,13 +9,11 @@ echo "   Frontend: :8000 (WS proxy: :8080)"
 
 # Ensure data directories exist
 mkdir -p /data/.openclaw/workspace
+mkdir -p /data/.openclaw/local/bin
 
-# Third-party CLIs (lark-cli etc): Her installs and manages them herself.
-# If Her previously installed to /data/.openclaw/local/bin, make them available.
-if [ -d /data/.openclaw/local/bin ]; then
-  export PATH="/data/.openclaw/local/bin:$PATH"
-  ln -sf /data/.openclaw/local/bin/* /usr/local/bin/ 2>/dev/null || true
-fi
+# Symlink persistent CLI binaries into /usr/local/bin so all processes find them.
+# NPM_CONFIG_PREFIX and PATH are set in Dockerfile ENV (survives docker exec too).
+ln -sf /data/.openclaw/local/bin/* /usr/local/bin/ 2>/dev/null || true
 
 # Clean stale Chrome singleton locks — hostname changes on container restart,
 # causing Chromium to refuse starting ("profile in use by another computer").
