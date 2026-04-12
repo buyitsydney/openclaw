@@ -1,0 +1,10 @@
+# Skill source directories (relative to repo root)
+# deploy-skills.sh scans each directory for subdirs containing SKILL.md
+# and syncs them to ~/.openclaw/skills/
+#
+# To add a new skill source, just add a line here. No script changes needed.
+#
+# Note: docker/skills/ is NOT listed here intentionally.
+# Skills there (always-alive, ask-other-her) are for grayscale/personal install,
+# not global deployment. Her installs them to personal layer when needed.
+extensions/feishu-her/skills
