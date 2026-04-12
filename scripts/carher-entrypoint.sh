@@ -71,6 +71,14 @@ WRAP
 }
 SETTINGS
 
+  # Generate credentials.json so Claude Code can authenticate without interactive login
+  cat > /data/.claude/.credentials.json <<CREDS
+{
+  "apiKey": "${ANTHROPIC_AUTH_TOKEN:-}",
+  "baseURL": "${ANTHROPIC_BASE_URL:-}"
+}
+CREDS
+
   # Fix dist-runtime symlink issue: replace SKILL.md symlinks with real files
   # so the skill loader's realpath check passes
   find /app/dist-runtime/extensions -name "SKILL.md" -type l 2>/dev/null | while read -r link; do
