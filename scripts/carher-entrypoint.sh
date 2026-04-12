@@ -20,12 +20,7 @@ if ! command -v lark-cli &>/dev/null; then
 fi
 # Symlink into /usr/local/bin so child processes find it
 ln -sf /data/.openclaw/local/bin/* /usr/local/bin/ 2>/dev/null || true
-
-# Auto-install lark-cli skills (persistent in /data/.openclaw/skills/)
-if command -v lark-cli &>/dev/null && [ ! -d "/data/.openclaw/skills/lark-im" ]; then
-  echo "▶ Installing lark-cli skills..."
-  npx skills add larksuite/cli -g -y 2>&1 | tail -3
-fi
+# lark-cli skills are managed by deploy-skills.sh (global layer), not entrypoint.
 
 # Clean stale Chrome singleton locks — hostname changes on container restart,
 # causing Chromium to refuse starting ("profile in use by another computer").
