@@ -201,8 +201,24 @@
       "dangerouslyAllowHostHeaderOriginFallback": true
     }
   },
+  "acp": {
+    "enabled": false,
+    "backend": "acpx",
+    "defaultAgent": "claude",
+    "allowedAgents": ["claude"],
+    "maxConcurrentSessions": 2,
+    "dispatch": { "enabled": true },
+    "runtime": { "ttlMinutes": 120 }
+  },
   "plugins": {
     "entries": {
+      "acpx": {
+        "enabled": false,
+        "config": {
+          "permissionMode": "approve-all",
+          "nonInteractivePermissions": "deny"
+        }
+      },
       "realtime": {
         "enabled": true,
         "config": {

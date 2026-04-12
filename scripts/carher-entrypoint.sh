@@ -15,6 +15,78 @@ mkdir -p /data/.openclaw/local/bin
 # NPM_CONFIG_PREFIX and PATH are set in Dockerfile ENV (survives docker exec too).
 ln -sf /data/.openclaw/local/bin/* /usr/local/bin/ 2>/dev/null || true
 
+# ACP: install Claude Code CLI + acpx on first startup (only if ACP enabled)
+if [ "${CARHER_ACP_ENABLED:-}" = "1" ]; then
+  if ! command -v claude &>/dev/null; then
+    echo "▶ Installing Claude Code CLI..."
+    npm install -g @anthropic-ai/claude-code --prefix /data/.openclaw/local 2>&1 | tail -1
+  fi
+  if ! command -v acpx &>/dev/null; then
+    echo "▶ Installing acpx..."
+    npm install -g acpx@0.5.3 --prefix /data/.openclaw/local 2>&1 | tail -1
+  fi
+  ln -sf /data/.openclaw/local/bin/* /usr/local/bin/ 2>/dev/null || true
+
+  # Wrap claude binary to inject API credentials (acpx strips provider env vars)
+  CLAUDE_REAL="/data/.openclaw/local/bin/claude-real"
+  CLAUDE_BIN="/data/.openclaw/local/bin/claude"
+  if [ -x "$CLAUDE_BIN" ] && [ ! -x "$CLAUDE_REAL" ]; then
+    mv "$CLAUDE_BIN" "$CLAUDE_REAL"
+  fi
+  # Always regenerate wrapper (env vars may change between restarts)
+  cat > "$CLAUDE_BIN" <<WRAP
+#!/usr/bin/env bash
+[ -n "\${ANTHROPIC_BASE_URL:-}" ] || export ANTHROPIC_BASE_URL="\${CARHER_ANTHROPIC_BASE_URL:-}"
+[ -n "\${ANTHROPIC_AUTH_TOKEN:-}" ] || export ANTHROPIC_AUTH_TOKEN="\${CARHER_ANTHROPIC_AUTH_TOKEN:-}"
+export ANTHROPIC_MODEL="\${ANTHROPIC_MODEL:-anthropic.claude-opus-4-6}"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="\${ANTHROPIC_DEFAULT_SONNET_MODEL:-anthropic.claude-opus-4-6}"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="\${ANTHROPIC_DEFAULT_OPUS_MODEL:-anthropic.claude-opus-4-6}"
+export DISABLE_INTERLEAVED_THINKING=1
+export CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1
+exec "${CLAUDE_REAL}" "\$@"
+WRAP
+  chmod +x "$CLAUDE_BIN"
+  ln -sf "$CLAUDE_BIN" /usr/local/bin/claude
+
+  # Generate Claude Code settings.json (survives container recreation via volume)
+  mkdir -p /data/.claude
+  cat > /data/.claude/settings.json <<SETTINGS
+{
+  "model": "anthropic.claude-opus-4-6",
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": ["Bash(*)", "Read(*)", "Write(*)", "Edit(*)", "Glob(*)", "Grep(*)", "WebSearch(*)", "WebFetch(*)"]
+  },
+  "env": {
+    "ANTHROPIC_BASE_URL": "${ANTHROPIC_BASE_URL:-}",
+    "ANTHROPIC_AUTH_TOKEN": "${ANTHROPIC_AUTH_TOKEN:-}",
+    "ANTHROPIC_MODEL": "anthropic.claude-opus-4-6",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "anthropic.claude-opus-4-6",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "anthropic.claude-opus-4-6",
+    "DISABLE_INTERLEAVED_THINKING": "1",
+    "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1"
+  }
+}
+SETTINGS
+
+  # Fix dist-runtime symlink issue: replace SKILL.md symlinks with real files
+  # so the skill loader's realpath check passes
+  find /app/dist-runtime/extensions -name "SKILL.md" -type l 2>/dev/null | while read -r link; do
+    target=$(readlink -f "$link" 2>/dev/null)
+    if [ -f "$target" ]; then
+      rm "$link" && cp "$target" "$link"
+    fi
+  done
+
+  # Clear stale acpx sessions (but keep config)
+  rm -rf /data/.acpx/sessions /data/.acpx/queues 2>/dev/null || true
+  rm -rf /data/.openclaw/agents/claude 2>/dev/null || true
+
+  # Clean acpx config (use default npx @agentclientprotocol/claude-agent-acp adapter)
+  rm -f /data/.acpx/config.json 2>/dev/null || true
+
+  echo "  ✓ ACP ready (Claude Code + acpx + wrapper + settings + skill)"
+fi
 # Clean stale Chrome singleton locks — hostname changes on container restart,
 # causing Chromium to refuse starting ("profile in use by another computer").
 find /data/.openclaw/browser -name "SingletonLock" -o -name "SingletonSocket" -o -name "SingletonCookie" 2>/dev/null | xargs rm -f 2>/dev/null || true

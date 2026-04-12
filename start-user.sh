@@ -500,6 +500,12 @@ a2a_outbound = os.environ.get('A2A_OUTBOUND', '0')
 if a2a_outbound == '1':
     cfg.setdefault('plugins', {}).setdefault('entries', {}).setdefault('a2a-gateway', {}).setdefault('config', {})['outbound'] = {'enabled': True}
 
+# ACP — enable Claude Code via ACP when CARHER_ACP_ENABLED=1
+acp_enabled = os.environ.get('CARHER_ACP_ENABLED', '0')
+if acp_enabled == '1':
+    cfg['acp'] = {'enabled': True, 'backend': 'acpx', 'defaultAgent': 'claude', 'allowedAgents': ['claude'], 'maxConcurrentSessions': 2, 'dispatch': {'enabled': True}, 'runtime': {'ttlMinutes': 120}}
+    cfg.setdefault('plugins', {}).setdefault('entries', {}).setdefault('acpx', {})['enabled'] = True
+
 # Feishu credentials from users.csv
 feishu_name = '${CSV_NAME}'
 feishu_id = '${CSV_FEISHU_ID}'
@@ -636,7 +642,7 @@ docker run -d \
   --name "$CONTAINER_NAME" \
   --init \
   --restart unless-stopped \
-  --memory=2g \
+  --memory=${CARHER_MEMORY_LIMIT:-2g} \
   --network carher-net \
   -e HOME=/data \
   -e OPENCLAW_INSTANCE_ID="${INSTANCE_ID}" \
@@ -651,6 +657,11 @@ docker run -d \
   -e CARHER_SERVER="${CARHER_SERVER:-local}" \
   -e CARHER_LAN_IP="${CARHER_LAN_IP:-}" \
   -e CARHER_A2A_PORT="${PORT_A2A}" \
+  ${CARHER_ACP_ENABLED:+-e CARHER_ACP_ENABLED="$CARHER_ACP_ENABLED"} \
+  ${ANTHROPIC_BASE_URL:+-e ANTHROPIC_BASE_URL="$ANTHROPIC_BASE_URL"} \
+  ${ANTHROPIC_AUTH_TOKEN:+-e ANTHROPIC_AUTH_TOKEN="$ANTHROPIC_AUTH_TOKEN"} \
+  ${ANTHROPIC_BASE_URL:+-e CARHER_ANTHROPIC_BASE_URL="$ANTHROPIC_BASE_URL"} \
+  ${ANTHROPIC_AUTH_TOKEN:+-e CARHER_ANTHROPIC_AUTH_TOKEN="$ANTHROPIC_AUTH_TOKEN"} \
   -p "${PORT_GW}:18789" \
   -p "${PORT_FE}:8000" \
   -p "${PORT_WS}:8080" \
