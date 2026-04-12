@@ -557,80 +557,32 @@ else
 fi
 
 # --- Skills dirs (host -> container) ---
-# 全员层: all users share the same company-wide skills
+# Two-layer architecture:
+#   Global layer: ~/.openclaw/skills/ → all bots, real-time (bind mount)
+#   Personal layer: /data/.openclaw/workspace/.agents/skills/ → per-bot (persistent volume)
 SHARED_SKILLS_DIR="$HOME/.openclaw/skills"
-ORIG_SHARED_SKILLS_DIR="$SHARED_SKILLS_DIR"
 mkdir -p "$SHARED_SKILLS_DIR"
 echo -e "${GREEN}  ✓ 全员 skills: ${SHARED_SKILLS_DIR}${NC}"
 
-# 部门层: per-department skills (default dept unless configured)
-DEPT_NAME="${CARHER_DEPT:-default}"
-DEPT_SKILLS_DIR="$HOME/.openclaw/dept-skills/${DEPT_NAME}"
-mkdir -p "$DEPT_SKILLS_DIR"
-echo -e "${GREEN}  ✓ 部门 skills: ${DEPT_SKILLS_DIR} (dept=${DEPT_NAME})${NC}"
-
-# A2A Gateway plugin (optional, from repo docker/plugins/)
-# Default: OFF. Set A2A_ENABLED=1 to enable for this container.
+# A2A Gateway plugin (always enabled, like feishu)
 A2A_PLUGIN_DIR="${SCRIPT_DIR}/docker/plugins/a2a-gateway"
-if [ "${A2A_ENABLED:-0}" = "1" ] && [ -d "$A2A_PLUGIN_DIR" ] && [ -f "$A2A_PLUGIN_DIR/index.ts" ]; then
+if [ -d "$A2A_PLUGIN_DIR" ] && [ -f "$A2A_PLUGIN_DIR/index.ts" ]; then
   if [ ! -d "$A2A_PLUGIN_DIR/node_modules" ]; then
     echo -e "${YELLOW}  ⟳ A2A plugin: installing dependencies...${NC}"
     (cd "$A2A_PLUGIN_DIR" && npm install --omit=dev --ignore-scripts 2>&1 | tail -1)
   fi
   echo -e "${GREEN}  ✓ A2A plugin: ${A2A_PLUGIN_DIR}${NC}"
-  # A2A skills: prepare merged skills dir (global + a2a-specific)
-  A2A_SKILLS_SRC="${SCRIPT_DIR}/docker/skills"
-  if [ -d "$A2A_SKILLS_SRC" ]; then
-    A2A_MERGED_SKILLS="/tmp/carher-${USER_ID}-skills"
-    rm -rf "$A2A_MERGED_SKILLS"
-    mkdir -p "$A2A_MERGED_SKILLS"
-    # Copy global skills (may be empty, || true prevents set -e exit)
-    cp -r "$SHARED_SKILLS_DIR"/* "$A2A_MERGED_SKILLS/" 2>/dev/null || true
-    # Selectively copy A2A skills: ask-other-her only when outbound enabled
-    for skill_dir in "$A2A_SKILLS_SRC"/*/; do
-      skill_name=$(basename "$skill_dir")
-      if [ "$skill_name" = "ask-other-her" ] && [ "${A2A_OUTBOUND:-0}" != "1" ]; then
-        echo -e "  · A2A skill '${skill_name}': 跳过（outbound 未启用）"
-        continue
-      fi
-      cp -r "${skill_dir%/}" "$A2A_MERGED_SKILLS/" 2>/dev/null || true
-    done
-    SHARED_SKILLS_DIR="$A2A_MERGED_SKILLS"
-    echo -e "${GREEN}  ✓ A2A skills: merged into ${A2A_MERGED_SKILLS}${NC}"
-  fi
-  # Outbound status
   if [ "${A2A_OUTBOUND:-0}" = "1" ]; then
-    echo -e "${GREEN}  ✓ A2A outbound: 已启用（可主动发送）${NC}"
+    echo -e "${GREEN}  ✓ A2A outbound: 已启用${NC}"
   else
-    echo -e "  · A2A outbound: 仅接收（设 A2A_OUTBOUND=1 开启发送）"
+    echo -e "  · A2A outbound: 仅接收"
   fi
 else
   A2A_PLUGIN_DIR=""
-  if [ "${A2A_ENABLED:-0}" = "1" ]; then
-    echo -e "  · A2A plugin: 未安装（跳过）"
-  else
-    echo -e "  · A2A plugin: 未启用（设 A2A_ENABLED=1 开启）"
-  fi
+  echo -e "  · A2A plugin: 未安装"
 fi
-
-# --- Merge feishu-her bundled skills into SHARED_SKILLS_DIR ---
-# v2026.4.2 path-security prevents plugins from loading skills outside the configured root.
-# feishu-her bundled skills must be copied into the skills mount directory.
-FEISHU_HER_SKILLS="${SCRIPT_DIR}/extensions/feishu-her/skills"
-if [ -d "$FEISHU_HER_SKILLS" ]; then
-  # If SHARED_SKILLS_DIR is still the original (not yet merged), create a merged copy
-  if [ "$SHARED_SKILLS_DIR" = "$ORIG_SHARED_SKILLS_DIR" ]; then
-    MERGED_SKILLS="/tmp/carher-${USER_ID}-skills"
-    rm -rf "$MERGED_SKILLS"
-    mkdir -p "$MERGED_SKILLS"
-    cp -r "$SHARED_SKILLS_DIR"/* "$MERGED_SKILLS/" 2>/dev/null || true
-    cp -r "$FEISHU_HER_SKILLS"/* "$MERGED_SKILLS/" 2>/dev/null || true
-    SHARED_SKILLS_DIR="$MERGED_SKILLS"
-  else
-    # Already merged (A2A path), just add feishu-her skills
-    cp -r "$FEISHU_HER_SKILLS"/* "$SHARED_SKILLS_DIR/" 2>/dev/null || true
-  fi
-fi
+# Skills are synced by deploy-skills.sh (run once per server, not per container).
+# SHARED_SKILLS_DIR is bind-mounted directly — no /tmp/ copy, no merge.
 
 # --- Compute webchat URL from token + port (before docker run) ---
 AUTH_TOKEN=$(python3 -c "
@@ -708,7 +660,6 @@ docker run -d \
   -v "carher-${USER_ID}-data:/data/.openclaw" \
   -v "${GCLOUD_ADC}:/gcloud/application_default_credentials.json:ro" \
   -v "${SHARED_SKILLS_DIR}:/data/.openclaw/skills:ro" \
-  -v "${DEPT_SKILLS_DIR}:/data/.agents/skills:ro" \
   ${A2A_PLUGIN_DIR:+-v "${A2A_PLUGIN_DIR}:/data/.openclaw/plugins/a2a-gateway:ro"} \
   -v "${CONFIG_MOUNT}:/data/.openclaw/openclaw.json:ro" \
   -v "${SCRIPT_DIR}/docker/carher-config.json:/data/.openclaw/carher-config.json:ro" \
