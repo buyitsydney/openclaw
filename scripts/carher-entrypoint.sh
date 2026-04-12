@@ -21,9 +21,11 @@ if [ "${CARHER_ACP_ENABLED:-}" = "1" ]; then
     echo "▶ Installing Claude Code CLI..."
     npm install -g @anthropic-ai/claude-code --prefix /data/.openclaw/local 2>&1 | tail -1
   fi
-  if ! command -v acpx &>/dev/null; then
-    echo "▶ Installing acpx..."
-    npm install -g acpx@0.5.3 --prefix /data/.openclaw/local 2>&1 | tail -1
+  ACPX_WANT="0.5.3"
+  ACPX_HAVE=$(acpx --version 2>/dev/null || echo "none")
+  if [ "$ACPX_HAVE" != "$ACPX_WANT" ]; then
+    echo "▶ Installing acpx@${ACPX_WANT} (current: ${ACPX_HAVE})..."
+    npm install -g acpx@${ACPX_WANT} --prefix /data/.openclaw/local 2>&1 | tail -1
   fi
   ln -sf /data/.openclaw/local/bin/* /usr/local/bin/ 2>/dev/null || true
 
