@@ -9,24 +9,12 @@ echo "   Frontend: :8000 (WS proxy: :8080)"
 
 # Ensure data directories exist
 mkdir -p /data/.openclaw/workspace
-mkdir -p /data/.openclaw/local/bin
 
-# Persistent local bin: bot-installed CLIs survive container recreation.
-export PATH="/data/.openclaw/local/bin:$PATH"
-export NPM_CONFIG_PREFIX="/data/.openclaw/local"
-if ! command -v lark-cli &>/dev/null; then
-  echo "▶ Installing lark-cli..."
-  npm install -g @larksuite/cli --prefix /data/.openclaw/local 2>&1 | tail -1
-fi
-# Symlink into /usr/local/bin so child processes find it
-ln -sf /data/.openclaw/local/bin/* /usr/local/bin/ 2>/dev/null || true
-
-# lark-cli skills: install to personal layer on first boot.
-# `npx skills add -g` installs to ~/.agents/skills/ (= /data/.agents/skills/).
-# Per-bot, writable, persistent volume. Her can self-update later.
-if command -v lark-cli &>/dev/null && [ ! -d "/data/.agents/skills/lark-im" ]; then
-  echo "▶ Installing lark-cli skills..."
-  npx skills add larksuite/cli -g -y 2>&1 | tail -3 || true
+# Third-party CLIs (lark-cli etc): Her installs and manages them herself.
+# If Her previously installed to /data/.openclaw/local/bin, make them available.
+if [ -d /data/.openclaw/local/bin ]; then
+  export PATH="/data/.openclaw/local/bin:$PATH"
+  ln -sf /data/.openclaw/local/bin/* /usr/local/bin/ 2>/dev/null || true
 fi
 
 # Clean stale Chrome singleton locks — hostname changes on container restart,
