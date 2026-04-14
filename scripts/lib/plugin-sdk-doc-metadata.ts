@@ -20,6 +20,24 @@ export const pluginSdkDocMetadata = {
   core: {
     category: "core",
   },
+  "approval-runtime": {
+    category: "runtime",
+  },
+  "approval-auth-runtime": {
+    category: "runtime",
+  },
+  "approval-client-runtime": {
+    category: "runtime",
+  },
+  "approval-delivery-runtime": {
+    category: "runtime",
+  },
+  "approval-native-runtime": {
+    category: "runtime",
+  },
+  "approval-reply-runtime": {
+    category: "runtime",
+  },
   "plugin-entry": {
     category: "core",
   },
@@ -43,6 +61,12 @@ export const pluginSdkDocMetadata = {
   },
   "command-auth": {
     category: "channel",
+  },
+  "command-status": {
+    category: "channel",
+  },
+  "command-status-runtime": {
+    category: "runtime",
   },
   "secret-input": {
     category: "channel",

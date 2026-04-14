@@ -1,5 +1,6 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { mockPinnedHostnameResolution } from "../../../src/test-helpers/ssrf.js";
 import {
   DEFAULT_FIRECRAWL_BASE_URL,
   DEFAULT_FIRECRAWL_MAX_AGE_MS,
@@ -35,9 +36,9 @@ describe("firecrawl tools", () => {
   let createFirecrawlSearchTool: typeof import("./firecrawl-search-tool.js").createFirecrawlSearchTool;
   let createFirecrawlScrapeTool: typeof import("./firecrawl-scrape-tool.js").createFirecrawlScrapeTool;
   let firecrawlClientTesting: typeof import("./firecrawl-client.js").__testing;
+  let ssrfMock: { mockRestore: () => void } | undefined;
 
   beforeAll(async () => {
-    vi.resetModules();
     ({ fetchFirecrawlContent } = await import("../api.js"));
     ({ createFirecrawlWebFetchProvider } = await import("./firecrawl-fetch-provider.js"));
     ({ createFirecrawlWebSearchProvider } = await import("./firecrawl-search-provider.js"));
@@ -48,6 +49,7 @@ describe("firecrawl tools", () => {
   });
 
   beforeEach(() => {
+    ssrfMock = mockPinnedHostnameResolution();
     runFirecrawlSearch.mockReset();
     runFirecrawlSearch.mockImplementation(async (params: Record<string, unknown>) => params);
     runFirecrawlScrape.mockReset();
@@ -59,6 +61,8 @@ describe("firecrawl tools", () => {
   });
 
   afterEach(() => {
+    ssrfMock?.mockRestore();
+    ssrfMock = undefined;
     global.fetch = priorFetch;
   });
 
@@ -177,6 +181,32 @@ describe("firecrawl tools", () => {
     ).rejects.toThrow(/<<<EXTERNAL_UNTRUSTED_CONTENT id="[a-f0-9]{16}">>>/);
   });
 
+  it("normalizes Firecrawl authorization headers before requests", async () => {
+    let capturedInit: RequestInit | undefined;
+    const fetchSpy = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      capturedInit = init;
+      return new Response(JSON.stringify({ success: true, data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    global.fetch = fetchSpy as typeof fetch;
+
+    await firecrawlClientTesting.postFirecrawlJson(
+      {
+        url: "https://api.firecrawl.dev/v2/search",
+        timeoutSeconds: 5,
+        apiKey: "firecrawl-test-\r\nkey",
+        body: { query: "openclaw" },
+        errorLabel: "Firecrawl search",
+      },
+      async () => "ok",
+    );
+
+    const authHeader = new Headers(capturedInit?.headers).get("Authorization");
+    expect(authHeader).toBe("Bearer firecrawl-test-key");
+  });
+
   it("maps generic provider args into firecrawl search params", async () => {
     const provider = createFirecrawlWebSearchProvider();
     const tool = provider.createTool({
@@ -260,7 +290,6 @@ describe("firecrawl tools", () => {
   });
 
   it("passes proxy and storeInCache through the fetch provider tool", async () => {
-    const { createFirecrawlWebFetchProvider } = await import("./firecrawl-fetch-provider.js");
     const provider = createFirecrawlWebFetchProvider();
     const tool = provider.createTool({
       config: { test: true },
