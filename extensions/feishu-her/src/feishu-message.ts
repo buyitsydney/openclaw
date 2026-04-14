@@ -4,28 +4,30 @@ import { formatFeishuAtText } from "./mention-text.js";
 import { getFeishuClient } from "./outbound.js";
 import { callChatApi } from "./tools/chat-api.js";
 
-export type FeishuMessageCoverage = "full" | "partial" | "none";
-export type FeishuActorIdType = "open_id" | "app_id" | "user_id" | "unknown";
-export type FeishuActorKind = "human" | "bot" | "system" | "unknown";
-export type FeishuResolutionSource =
-  | "event"
-  | "history_api"
-  | "chat_member"
-  | "directory"
-  | "config"
-  | "archive"
-  | "cache";
+// Re-export shared types from feishu-types.ts (extracted to break circular dep)
+export type {
+  FeishuMessageCoverage,
+  FeishuActorIdType,
+  FeishuActorKind,
+  FeishuResolutionSource,
+  FeishuActorRef,
+  FeishuAttachmentKind,
+  FeishuAttachmentRef,
+  FeishuTextPayload,
+  FeishuReplyRef,
+} from "./feishu-types.js";
 
-export type FeishuActorRef = {
-  canonicalId: string;
-  canonicalIdType: FeishuActorIdType;
-  senderType: string;
-  actorKind: FeishuActorKind;
-  displayName?: string;
-  rawIds: Partial<Record<"open_id" | "user_id" | "union_id" | "app_id", string>>;
-  resolutionSource: FeishuResolutionSource;
-  resolved: boolean;
-};
+import type {
+  FeishuActorRef,
+  FeishuActorIdType,
+  FeishuActorKind,
+  FeishuAttachmentKind,
+  FeishuAttachmentRef,
+  FeishuMessageCoverage,
+  FeishuReplyRef,
+  FeishuResolutionSource,
+  FeishuTextPayload,
+} from "./feishu-types.js";
 
 export type FeishuMentionRef = {
   key: string;
@@ -33,47 +35,6 @@ export type FeishuMentionRef = {
   name?: string;
   renderedText: string;
   actor: FeishuActorRef;
-};
-
-export type FeishuAttachmentKind =
-  | "image"
-  | "file"
-  | "audio"
-  | "video"
-  | "post_image"
-  | "post_media";
-
-export type FeishuAttachmentRef = {
-  kind: FeishuAttachmentKind;
-  fileKey?: string;
-  imageKey?: string;
-  fileName?: string;
-  durationSec?: number;
-  coverImageKey?: string;
-  localPath?: string;
-  extractedText?: string;
-  coverage: FeishuMessageCoverage;
-};
-
-export type FeishuTextPayload = {
-  raw: string;
-  normalized: string;
-  withoutFooter: string;
-  footer?: string;
-};
-
-export type FeishuReplyRef = {
-  parentId?: string;
-  rootId?: string;
-  threadId?: string;
-  hasThread?: boolean;
-  quoted?: {
-    messageId: string;
-    messageType: string;
-    sender: FeishuActorRef;
-    text: FeishuTextPayload;
-    attachments: FeishuAttachmentRef[];
-  };
 };
 
 export type FeishuCanonicalMessage = {
@@ -139,11 +100,21 @@ function trimIfString(value: unknown): string {
 }
 
 function detectActorKind(senderType: string, canonicalIdType: FeishuActorIdType): FeishuActorKind {
-  if (senderType === "app" || senderType === "bot") return "bot";
-  if (senderType === "user") return "human";
-  if (senderType === "system") return "system";
-  if (canonicalIdType === "app_id") return "bot";
-  if (canonicalIdType === "open_id" || canonicalIdType === "user_id") return "human";
+  if (senderType === "app" || senderType === "bot") {
+    return "bot";
+  }
+  if (senderType === "user") {
+    return "human";
+  }
+  if (senderType === "system") {
+    return "system";
+  }
+  if (canonicalIdType === "app_id") {
+    return "bot";
+  }
+  if (canonicalIdType === "open_id" || canonicalIdType === "user_id") {
+    return "human";
+  }
   return "unknown";
 }
 
@@ -161,10 +132,18 @@ function buildActor(params: {
   const appId = trimIfString(params.appId);
   const userId = trimIfString(params.userId);
   const unionId = trimIfString(params.unionId);
-  if (openId) rawIds.open_id = openId;
-  if (appId) rawIds.app_id = appId;
-  if (userId) rawIds.user_id = userId;
-  if (unionId) rawIds.union_id = unionId;
+  if (openId) {
+    rawIds.open_id = openId;
+  }
+  if (appId) {
+    rawIds.app_id = appId;
+  }
+  if (userId) {
+    rawIds.user_id = userId;
+  }
+  if (unionId) {
+    rawIds.union_id = unionId;
+  }
   const canonicalId = openId || appId || userId || "";
   const canonicalIdType: FeishuActorIdType = openId
     ? "open_id"
@@ -213,12 +192,22 @@ function extractActorIdFromUnknownId(value: unknown): {
   userId?: string;
   unionId?: string;
 } {
-  if (typeof value !== "string") return {};
+  if (typeof value !== "string") {
+    return {};
+  }
   const id = value.trim();
-  if (!id) return {};
-  if (id.startsWith("ou_")) return { openId: id };
-  if (id.startsWith("cli_")) return { appId: id };
-  if (id.startsWith("on_")) return { unionId: id };
+  if (!id) {
+    return {};
+  }
+  if (id.startsWith("ou_")) {
+    return { openId: id };
+  }
+  if (id.startsWith("cli_")) {
+    return { appId: id };
+  }
+  if (id.startsWith("on_")) {
+    return { unionId: id };
+  }
   return { userId: id };
 }
 
@@ -272,7 +261,9 @@ function resolveKnownFeishuBotDisplayName(
   appId: string,
 ): string | undefined {
   const normalizedAppId = trimIfString(appId);
-  if (!normalizedAppId) return undefined;
+  if (!normalizedAppId) {
+    return undefined;
+  }
   if (normalizedAppId === account.appId) {
     return resolveFeishuAccountLabel(account);
   }
@@ -284,7 +275,9 @@ function resolveKnownFeishuBotOpenId(
   appId: string,
 ): string | undefined {
   const normalizedAppId = trimIfString(appId);
-  if (!normalizedAppId) return undefined;
+  if (!normalizedAppId) {
+    return undefined;
+  }
   if (normalizedAppId === account.appId) {
     return trimIfString(account.botOpenId) || undefined;
   }
@@ -320,7 +313,9 @@ export function applyFeishuKnownBotDisplayName(
     ...(knownOpenId && { open_id: knownOpenId }),
   };
 
-  if (!knownAppId && !displayName && !knownOpenId) return actor;
+  if (!knownAppId && !displayName && !knownOpenId) {
+    return actor;
+  }
   if (knownAppId && !displayName) {
     return {
       ...actor,
@@ -367,17 +362,23 @@ function applyFeishuKnownBotMentionDisplayNames(
 }
 
 export function parseFeishuMentions(rawMentions: unknown): FeishuMentionRef[] {
-  if (!Array.isArray(rawMentions)) return [];
+  if (!Array.isArray(rawMentions)) {
+    return [];
+  }
   const mentions: FeishuMentionRef[] = [];
   for (const raw of rawMentions) {
-    if (!raw || typeof raw !== "object") continue;
+    if (!raw || typeof raw !== "object") {
+      continue;
+    }
     const mention = raw as {
       key?: string;
       name?: string;
       id?: string | { open_id?: string; app_id?: string; user_id?: string; union_id?: string };
     };
     const key = trimIfString(mention.key);
-    if (!key) continue;
+    if (!key) {
+      continue;
+    }
     const name = trimIfString(mention.name) || undefined;
     const idValue = mention.id;
     const ids =
@@ -431,24 +432,34 @@ function unescapeHtmlEntities(text: string): string {
 const FEISHU_SCHEMA2_AT_TAG_RE = /<at\s+id="?([^"\s>]+)"?\s*><\/at>/gi;
 
 function resolvePostBody(parsed: Record<string, unknown>): Record<string, unknown> | null {
-  if (Array.isArray(parsed.content)) return parsed;
+  if (Array.isArray(parsed.content)) {
+    return parsed;
+  }
   const zhCn = parsed.zh_cn as Record<string, unknown> | undefined;
   const enUs = parsed.en_us as Record<string, unknown> | undefined;
   const first = Object.values(parsed)[0];
-  if (zhCn && typeof zhCn === "object") return zhCn;
-  if (enUs && typeof enUs === "object") return enUs;
+  if (zhCn && typeof zhCn === "object") {
+    return zhCn;
+  }
+  if (enUs && typeof enUs === "object") {
+    return enUs;
+  }
   return first && typeof first === "object" ? (first as Record<string, unknown>) : null;
 }
 
 function extractSchema2TextNodeContent(node: unknown): string {
-  if (!node || typeof node !== "object") return "";
+  if (!node || typeof node !== "object") {
+    return "";
+  }
   const textNode = node as Record<string, unknown>;
   return trimIfString(textNode.content) || trimIfString(textNode.text) || "";
 }
 
 function extractSchema2HeaderTitle(parsed: Record<string, unknown>): string {
   const header = parsed.header;
-  if (!header || typeof header !== "object") return "";
+  if (!header || typeof header !== "object") {
+    return "";
+  }
   const title = (header as Record<string, unknown>).title;
   return extractSchema2TextNodeContent(title);
 }
@@ -474,13 +485,17 @@ function flattenFeishuSchema2InteractiveElement(
     case "div": {
       const parts: string[] = [];
       const directText = extractSchema2TextNodeContent(element.text);
-      if (directText) parts.push(directText);
+      if (directText) {
+        parts.push(directText);
+      }
       const fields = Array.isArray(element.fields)
         ? (element.fields as Array<Record<string, unknown>>)
         : [];
       for (const field of fields) {
         const fieldText = extractSchema2TextNodeContent(field.text);
-        if (fieldText) parts.push(fieldText);
+        if (fieldText) {
+          parts.push(fieldText);
+        }
       }
       return parts.join("\n");
     }
@@ -518,7 +533,9 @@ function flattenFeishuSchema2InteractiveElement(
       const labels = actions
         .map((action) => flattenFeishuSchema2InteractiveElement(action, acc))
         .filter(Boolean);
-      if (labels.length === 0) return "";
+      if (labels.length === 0) {
+        return "";
+      }
       acc.coverage = "partial";
       return `[actions: ${labels.join(" | ")}]`;
     }
@@ -529,7 +546,9 @@ function flattenFeishuSchema2InteractiveElement(
     }
     case "img": {
       const imageKey = trimIfString(element.img_key) || trimIfString(element.image_key);
-      if (imageKey) acc.imageKeys.push(imageKey);
+      if (imageKey) {
+        acc.imageKeys.push(imageKey);
+      }
       acc.attachments.push({
         kind: "image",
         ...(imageKey && { imageKey }),
@@ -565,11 +584,15 @@ function parseFeishuSchema2InteractiveText(
   },
 ): ParsedFeishuContent | null {
   const body = parsed.body;
-  if (!body || typeof body !== "object") return null;
+  if (!body || typeof body !== "object") {
+    return null;
+  }
   const elements = Array.isArray((body as Record<string, unknown>).elements)
     ? ((body as Record<string, unknown>).elements as Array<Record<string, unknown>>)
     : null;
-  if (!elements) return null;
+  if (!elements) {
+    return null;
+  }
   const imagePlaceholder = options?.imagePlaceholder ?? "[image]";
   const acc: InteractiveParseAccumulator = {
     attachments: [],
@@ -580,10 +603,14 @@ function parseFeishuSchema2InteractiveText(
   };
   const lines: string[] = [];
   const title = extractSchema2HeaderTitle(parsed);
-  if (title) lines.push(title);
+  if (title) {
+    lines.push(title);
+  }
   for (const element of elements) {
     const text = flattenFeishuSchema2InteractiveElement(element, acc).trim();
-    if (text) lines.push(text);
+    if (text) {
+      lines.push(text);
+    }
   }
   let rawText = lines.join("\n\n").trim();
   if (options?.unescapeEntities !== false) {
@@ -636,14 +663,16 @@ export function parseFeishuPostText(
     const parts: string[] = [];
     for (const el of paragraph) {
       if (el.tag === "text") {
-        parts.push(String(el.text ?? ""));
+        parts.push(trimIfString(el.text));
       } else if (el.tag === "a") {
-        parts.push(`[${el.text ?? ""}](${el.href ?? ""})`);
+        parts.push(`[${trimIfString(el.text)}](${trimIfString(el.href)})`);
       } else if (el.tag === "at") {
         parts.push(formatFeishuAtText({ userId: el.user_id, userName: el.user_name }));
       } else if (el.tag === "img") {
         const imageKey = trimIfString(el.image_key);
-        if (imageKey) imageKeys.push(imageKey);
+        if (imageKey) {
+          imageKeys.push(imageKey);
+        }
         attachments.push({
           kind: "post_image",
           ...(imageKey && { imageKey }),
@@ -662,14 +691,16 @@ export function parseFeishuPostText(
           ...(coverImageKey && { coverImageKey }),
           coverage: "partial",
         });
-        if (coverImageKey) imageKeys.push(coverImageKey);
+        if (coverImageKey) {
+          imageKeys.push(coverImageKey);
+        }
         if (fileKey && options?.collectEmbeddedFiles !== false) {
           fileInfo.push({ kind: "video", fileKey, fileName });
         }
         parts.push(mediaPlaceholder === "[video]" ? `[video:${fileName}]` : mediaPlaceholder);
         coverage = "partial";
       } else if (el.tag === "emotion") {
-        parts.push(el.emoji_type ? `[${String(el.emoji_type)}]` : "[emotion]");
+        parts.push(el.emoji_type ? `[${trimIfString(el.emoji_type)}]` : "[emotion]");
       } else if (typeof el.tag === "string" && el.tag) {
         coverage = "partial";
       }
@@ -733,10 +764,14 @@ export function parseFeishuInteractiveText(
     };
     const lines: string[] = [];
     const title = extractSchema2HeaderTitle(parsed);
-    if (title) lines.push(title);
+    if (title) {
+      lines.push(title);
+    }
     for (const element of topElements as Array<Record<string, unknown>>) {
       const text = flattenFeishuSchema2InteractiveElement(element, acc).trim();
-      if (text) lines.push(text);
+      if (text) {
+        lines.push(text);
+      }
     }
     let rawText = lines.join("\n\n").trim();
     if (options?.unescapeEntities !== false) {
@@ -761,16 +796,20 @@ export function parseFeishuInteractiveText(
   const imageKeys: string[] = [];
   const lines: string[] = [];
   for (const row of rows) {
-    if (!Array.isArray(row)) continue;
+    if (!Array.isArray(row)) {
+      continue;
+    }
     const parts: string[] = [];
     for (const el of row) {
       if (el.tag === "text" || el.tag === "a") {
-        parts.push(String(el.text ?? ""));
+        parts.push(trimIfString(el.text));
       } else if (el.tag === "at") {
         parts.push(formatFeishuAtText({ userId: el.user_id, userName: el.user_name }));
       } else if (el.tag === "img") {
         const imageKey = trimIfString(el.image_key);
-        if (imageKey) imageKeys.push(imageKey);
+        if (imageKey) {
+          imageKeys.push(imageKey);
+        }
         attachments.push({
           kind: "image",
           ...(imageKey && { imageKey }),
@@ -780,7 +819,9 @@ export function parseFeishuInteractiveText(
       }
     }
     const line = parts.join("").trim();
-    if (line) lines.push(line);
+    if (line) {
+      lines.push(line);
+    }
   }
   const title = trimIfString(parsed.title);
   let rawText = `${title ? `${title}\n` : ""}${lines.join("\n")}`.trim();
@@ -1027,7 +1068,9 @@ export function renderFeishuTextWithMentions(params: {
 }): string {
   let rendered = params.text;
   for (const mention of params.mentions ?? []) {
-    if (!mention.key) continue;
+    if (!mention.key) {
+      continue;
+    }
     rendered = rendered.replaceAll(mention.key, mention.renderedText);
   }
   return rendered;
@@ -1148,14 +1191,18 @@ export function applyFeishuActorDisplayName(
   actor: FeishuActorRef,
   nameMaps: FeishuChatMemberNameMaps,
 ): FeishuActorRef {
-  if (actor.displayName) return actor;
+  if (actor.displayName) {
+    return actor;
+  }
   const openId =
     actor.rawIds.open_id ?? (actor.canonicalIdType === "open_id" ? actor.canonicalId : "");
   const appId =
     actor.rawIds.app_id ?? (actor.canonicalIdType === "app_id" ? actor.canonicalId : "");
   const displayName =
     (openId && nameMaps.openIdToName.get(openId)) || (appId && nameMaps.appIdToName.get(appId));
-  if (!displayName) return actor;
+  if (!displayName) {
+    return actor;
+  }
   return {
     ...actor,
     displayName,
@@ -1189,7 +1236,9 @@ export async function resolveFeishuDirectActorDisplayName(params: {
     return params.actor;
   }
   const senderOpenId = params.actor.canonicalId.trim();
-  if (!senderOpenId) return params.actor;
+  if (!senderOpenId) {
+    return params.actor;
+  }
   const cacheKey = `${params.account.accountId}:${senderOpenId}`;
   const cached = directSenderNameCache.get(cacheKey);
   const now = Date.now();
@@ -1210,7 +1259,9 @@ export async function resolveFeishuDirectActorDisplayName(params: {
     });
     const user = res?.data?.user;
     const name = trimIfString(user?.name || user?.display_name || user?.nickname || user?.en_name);
-    if (!name) return params.actor;
+    if (!name) {
+      return params.actor;
+    }
     directSenderNameCache.set(cacheKey, { name, expireAt: now + SENDER_NAME_TTL_MS });
     return {
       ...params.actor,

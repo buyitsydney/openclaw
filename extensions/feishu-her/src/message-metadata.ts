@@ -1,4 +1,4 @@
-import type { FeishuReplyRef } from "./feishu-message.js";
+import type { FeishuReplyRef } from "./feishu-types.js";
 
 function trimIfString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
