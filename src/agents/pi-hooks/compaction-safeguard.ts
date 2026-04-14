@@ -867,6 +867,9 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
             "was not called and model was not passed through runtime registry.",
         );
       }
+      console.error(
+        `COMPACTION_DEBUG: cancel reason=model_undefined, ctx.model=${!!ctx.model}, runtime.model=${!!runtime?.model}`,
+      );
       setCompactionSafeguardCancelReason(
         ctx.sessionManager,
         "Compaction safeguard could not resolve a summarization model.",
@@ -1107,6 +1110,9 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       const bodyToCap = lastHistorySummary || summary;
       summary = capCompactionSummaryPreservingSuffix(bodyToCap, suffix);
 
+      console.error(
+        `COMPACTION_DEBUG: summary_generated, length=${summary.length}, model=${model.provider}/${model.id}, tokensBefore=${preparation.tokensBefore}`,
+      );
       return {
         compaction: {
           summary,
@@ -1117,6 +1123,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       };
     } catch (error) {
       const message = formatErrorMessage(error);
+      console.error(`COMPACTION_DEBUG: cancel reason=summarization_failed, error=${message}`);
       log.warn(
         `Compaction summarization failed; cancelling compaction to preserve history: ${message}`,
       );

@@ -386,14 +386,19 @@ export async function runPreflightCompactionIfNeeded(params: {
   const softThresholdTokens = memoryFlushPlan?.softThresholdTokens ?? 4_000;
   const freshPersistedTokens = resolveFreshSessionTotalTokens(entry);
   const persistedTotalTokens = entry.totalTokens;
-  const hasPersistedTotalTokens =
+  const _hasPersistedTotalTokens =
     typeof persistedTotalTokens === "number" &&
     Number.isFinite(persistedTotalTokens) &&
     persistedTotalTokens > 0;
-  const shouldUseTranscriptFallback = entry.totalTokensFresh === false || !hasPersistedTotalTokens;
-  if (!shouldUseTranscriptFallback) {
-    return entry ?? params.sessionEntry;
-  }
+  // NOTE: Previously there was an early return here when totalTokensFresh was
+  // true, which meant preflight compaction was NEVER evaluated for sessions
+  // with fresh API-reported token counts — effectively disabling preflight
+  // compaction for all active sessions.  (ref: upstream #65600)
+  //
+  // Now we always fall through to the threshold check.  When fresh persisted
+  // tokens exist (line below), the expensive transcript estimation is already
+  // skipped, and resolveMemoryFlushGateState() picks up the persisted total
+  // via resolveFreshSessionTotalTokens(entry) when tokenCount is undefined.
   const promptTokenEstimate = estimatePromptTokensForMemoryFlush(
     params.promptForEstimate ?? params.followupRun.prompt,
   );

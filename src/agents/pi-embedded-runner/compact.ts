@@ -71,6 +71,7 @@ import {
   setCompactionSafeguardCancelReason,
 } from "../pi-hooks/compaction-safeguard-runtime.js";
 import { createPreparedEmbeddedPiSettingsManager } from "../pi-project-settings.js";
+import { applyPiCompactionSettingsFromConfig } from "../pi-settings.js";
 import { createOpenClawCodingTools } from "../pi-tools.js";
 import { wrapStreamFnTextTransforms } from "../plugin-text-transforms.js";
 import { registerProviderStreamForModel } from "../provider-stream.js";
@@ -807,6 +808,13 @@ export async function compactEmbeddedPiSessionDirect(
           extensionFactories,
         });
         await resourceLoader.reload();
+        // Defense-in-depth: re-apply compaction settings after reload to guard
+        // against any future SDK change where reload() might reset
+        // settingsManager overrides (ref: upstream #65672).
+        applyPiCompactionSettingsFromConfig({
+          settingsManager,
+          cfg: params.config,
+        });
       }
 
       const { builtInTools, customTools } = splitSdkTools({

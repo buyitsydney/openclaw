@@ -52,6 +52,9 @@ export function handleAutoCompactionEnd(
   const hasResult = evt.result != null;
   const wasAborted = Boolean(evt.aborted);
   if (hasResult && !wasAborted) {
+    console.error(
+      `COMPACTION_DEBUG: count_incremented, willRetry=${willRetry}, hasResult=${hasResult}`,
+    );
     ctx.incrementCompactionCount();
     const observedCompactionCount = ctx.getCompactionCount();
     void reconcileSessionStoreCompactionCountAfterSuccess({

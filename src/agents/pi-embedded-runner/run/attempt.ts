@@ -85,7 +85,10 @@ import {
 } from "../../pi-embedded-helpers.js";
 import { subscribeEmbeddedPiSession } from "../../pi-embedded-subscribe.js";
 import { createPreparedEmbeddedPiSettingsManager } from "../../pi-project-settings.js";
-import { applyPiAutoCompactionGuard } from "../../pi-settings.js";
+import {
+  applyPiAutoCompactionGuard,
+  applyPiCompactionSettingsFromConfig,
+} from "../../pi-settings.js";
 import { toClientToolDefinitions } from "../../pi-tool-definition-adapter.js";
 import { createOpenClawCodingTools, resolveToolLoopDetectionConfig } from "../../pi-tools.js";
 import { wrapStreamFnTextTransforms } from "../../plugin-text-transforms.js";
@@ -939,6 +942,13 @@ export async function runEmbeddedAttempt(
           extensionFactories,
         });
         await resourceLoader.reload();
+        // Defense-in-depth: re-apply compaction settings after reload to guard
+        // against any future SDK change where reload() might reset
+        // settingsManager overrides (ref: upstream #65672).
+        applyPiCompactionSettingsFromConfig({
+          settingsManager,
+          cfg: params.config,
+        });
       }
 
       // Get hook runner early so it's available when creating tools
