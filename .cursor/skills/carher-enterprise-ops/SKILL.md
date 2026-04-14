@@ -363,11 +363,11 @@ cd /Data/CarHer && ./start-user.sh --id=N
 
 A2A 通过环境变量控制，有三个级别：
 
-| 级别 | 环境变量 | 效果 |
-|------|---------|------|
-| **无 A2A** | (默认) | 插件从镜像加载（被动响应 a2a 请求），无 skill |
-| **Spoke（被动）** | `A2A_ENABLED=1` | 安装 a2a 插件 + 通用 skills（不含 ask-other-her），只能被动接收 |
-| **Hub（上帝视角）** | `A2A_ENABLED=1 A2A_OUTBOUND=1` | 安装 ask-other-her skill + outbound 权限，可主动调度其他 bot |
+| 级别                | 环境变量                       | 效果                                                            |
+| ------------------- | ------------------------------ | --------------------------------------------------------------- |
+| **无 A2A**          | (默认)                         | 插件从镜像加载（被动响应 a2a 请求），无 skill                   |
+| **Spoke（被动）**   | `A2A_ENABLED=1`                | 安装 a2a 插件 + 通用 skills（不含 ask-other-her），只能被动接收 |
+| **Hub（上帝视角）** | `A2A_ENABLED=1 A2A_OUTBOUND=1` | 安装 ask-other-her skill + outbound 权限，可主动调度其他 bot    |
 
 **启动示例：**
 
@@ -383,10 +383,38 @@ A2A_ENABLED=1 A2A_OUTBOUND=1 ./start-user.sh --id=N --image=carher:xxx
 ```
 
 **注意：**
+
 - `A2A_ENABLED` 和 `A2A_OUTBOUND` 是 `start-user.sh` 的 shell 变量，不传入容器
 - 它们控制 skill 复制和 config 注入，在启动时一次性生效
 - Hub 容器拥有 ask-other-her skill，可主动通过 a2a 向任何其他 bot 发请求
 - Spoke 容器没有 ask-other-her skill，AI 不知道 a2a 存在，只能被动响应
+
+## ACP (Claude Code) 启动
+
+ACP 让 Her 调度 Claude Code 子进程执行代码任务。通过 `CARHER_ACP_ENABLED=1` 按需开启，不影响未开启的容器。
+
+**前提**：server.env 需要有 API 凭证（`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`），start-user.sh 自动读取。
+
+```bash
+# 开启 ACP（建议 4-8G 内存）
+CARHER_ACP_ENABLED=1 CARHER_MEMORY_LIMIT=8g ./start-user.sh --id=N --image=carher:xxx
+
+# ACP + A2A Hub（docker-13）
+CARHER_ACP_ENABLED=1 CARHER_MEMORY_LIMIT=8g A2A_OUTBOUND=1 ./start-user.sh --id=13 --image=carher:xxx
+
+# 无 ACP（默认，零影响）
+./start-user.sh --id=N --image=carher:xxx
+```
+
+**验证**：`docker logs carher-N | grep "acpx.*ready"`
+
+**已知问题**：
+
+- WebFetch 401：litellm 代理不认 `claude-haiku-4-5-20251001`（带日期后缀），需加别名映射
+- `sandbox.enabled: false` 必须设（Docker 内无 bubblewrap），entrypoint 已自动配
+- ACP 进程泄漏：监控 `docker exec carher-N ps aux | grep claude | wc -l`
+
+**详细文档**：`docs/her/acp-claude-code-setup.md`
 
 ## 安全规则
 
@@ -405,3 +433,4 @@ A2A_ENABLED=1 A2A_OUTBOUND=1 ./start-user.sh --id=N --image=carher:xxx
 | `docker/users.csv`                             | 本地 Mac 用户表（和服务器独立）                 |
 | `start-user.sh`                                | 容器管理脚本（启动、停止、列表）                |
 | `.cursor/rules/production-containers.mdc`      | 生产容器操作禁令                                |
+| `docs/her/acp-claude-code-setup.md`            | ACP (Claude Code) 开启指南                      |
