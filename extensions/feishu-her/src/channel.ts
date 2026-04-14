@@ -1,18 +1,14 @@
-import { normalizeAccountId } from "openclaw/plugin-sdk/core";
+import { createActionGate, jsonResult, readStringParam } from "openclaw/plugin-sdk/channel-actions";
 import {
   DEFAULT_ACCOUNT_ID,
   applyAccountNameToChannelSection,
-  buildChannelConfigSchema,
-  createActionGate,
   deleteAccountFromConfigSection,
   formatPairingApproveHint,
-  jsonResult,
-  readStringParam,
   setAccountEnabledInConfigSection,
-  type ChannelMessageActionName,
   type ChannelPlugin,
-  type OpenClawConfig,
-} from "openclaw/plugin-sdk/feishu";
+} from "openclaw/plugin-sdk/channel-plugin-common";
+import { normalizeAccountId } from "openclaw/plugin-sdk/core";
+import type { ChannelMessageActionName } from "openclaw/plugin-sdk/feishu";
 import {
   listFeishuAccountIds,
   resolveDefaultFeishuAccountId,
@@ -209,7 +205,9 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
   },
   actions: {
     describeMessageTool: ({ cfg }) => {
-      if (!cfg.channels?.["feishu"]) return null;
+      if (!cfg.channels?.["feishu"]) {
+        return null;
+      }
       const section = cfg.channels["feishu"] as Record<string, unknown> | undefined;
       const gate = createActionGate(section?.actions as Record<string, boolean> | undefined);
       const actions = new Set<ChannelMessageActionName>();
@@ -492,7 +490,7 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
             msg.includes("upload failed") ||
             msg.includes("230055")
           ) {
-            throw new Error(msg);
+            throw new Error(msg, { cause: err });
           }
           const mid = await sendFeishuText({
             account,
