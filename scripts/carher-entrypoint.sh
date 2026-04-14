@@ -55,6 +55,9 @@ WRAP
   cat > /data/.claude/settings.json <<SETTINGS
 {
   "model": "anthropic.claude-opus-4-6",
+  "sandbox": {
+    "enabled": false
+  },
   "permissions": {
     "defaultMode": "acceptEdits",
     "allow": ["Bash(*)", "Read(*)", "Write(*)", "Edit(*)", "Glob(*)", "Grep(*)", "WebSearch(*)", "WebFetch(*)"]
