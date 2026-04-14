@@ -114,11 +114,13 @@ export function createEmbeddedPiSessionEventHandler(ctx: EmbeddedPiSubscribeCont
         });
         return;
       case "auto_compaction_start":
+      case "compaction_start":
         scheduleEvent(evt, () => {
           handleAutoCompactionStart(ctx);
         });
         return;
       case "auto_compaction_end":
+      case "compaction_end":
         scheduleEvent(evt, () => {
           handleAutoCompactionEnd(ctx, evt as never);
         });

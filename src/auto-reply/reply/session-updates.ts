@@ -13,6 +13,7 @@ import {
 import {
   resolveSessionFilePath,
   resolveSessionFilePathOptions,
+  resolveStorePath,
   type SessionEntry,
   updateSessionStore,
 } from "../../config/sessions.js";
@@ -232,10 +233,14 @@ export async function incrementCompactionCount(params: {
     newSessionId,
   } = params;
   if (!sessionStore || !sessionKey) {
+    logVerbose(
+      `[compaction-counter] skip: sessionStore=${!!sessionStore} sessionKey=${sessionKey ?? "undefined"}`,
+    );
     return undefined;
   }
   const entry = sessionStore[sessionKey] ?? sessionEntry;
   if (!entry) {
+    logVerbose(`[compaction-counter] skip: no entry for sessionKey=${sessionKey}`);
     return undefined;
   }
   const incrementBy = Math.max(0, amount);
@@ -268,13 +273,19 @@ export async function incrementCompactionCount(params: {
     ...entry,
     ...updates,
   };
-  if (storePath) {
-    await updateSessionStore(storePath, (store) => {
+  const effectiveStorePath =
+    storePath || resolveStorePath(undefined, { agentId: resolveAgentIdFromSessionKey(sessionKey) });
+  if (effectiveStorePath) {
+    await updateSessionStore(effectiveStorePath, (store) => {
       store[sessionKey] = {
         ...store[sessionKey],
         ...updates,
       };
     });
+  } else {
+    logVerbose(
+      `[compaction-counter] memory-only: no storePath resolved for sessionKey=${sessionKey}`,
+    );
   }
   if (newSessionId && newSessionId !== entry.sessionId && cfg) {
     emitCompactionSessionLifecycleHooks({
@@ -285,6 +296,9 @@ export async function incrementCompactionCount(params: {
       nextEntry: sessionStore[sessionKey],
     });
   }
+  logVerbose(
+    `[compaction-counter] incremented: sessionKey=${sessionKey} count=${nextCount} persisted=${!!effectiveStorePath}`,
+  );
   return nextCount;
 }
 
