@@ -38,7 +38,8 @@ resolve_model() {
   local provider="${2:-openrouter}"
   case "$1" in
     sonnet|sonnet-4.6)     [ "$provider" = "anthropic" ] && echo "anthropic/claude-sonnet-4-6" || echo "openrouter/anthropic/claude-sonnet-4.6" ;;
-    opus|opus-4.6)         [ "$provider" = "anthropic" ] && echo "anthropic/claude-opus-4-6"   || echo "openrouter/anthropic/claude-opus-4.6" ;;
+    opus|opus-4.7)         [ "$provider" = "anthropic" ] && echo "anthropic/claude-opus-4-7"   || echo "openrouter/anthropic/claude-opus-4.7" ;;
+    opus46|opus-4.6)       [ "$provider" = "anthropic" ] && echo "anthropic/claude-opus-4-6"   || echo "openrouter/anthropic/claude-opus-4.6" ;;
     haiku|haiku-3.5)       echo "openrouter/anthropic/claude-3.5-haiku" ;;
     gemini-3.1|gemini-3.1-pro) echo "openrouter/google/gemini-3.1-pro-preview" ;;
     gemini-2.5|gemini-pro) echo "openrouter/google/gemini-2.5-pro-preview" ;;
@@ -105,7 +106,8 @@ for arg in "$@"; do
       echo ""
       echo "模型快捷名:"
       echo "  sonnet       → claude-sonnet-4.6 (默认)"
-      echo "  opus         → claude-opus-4.6 (最强，贵)"
+      echo "  opus         → claude-opus-4.7 (最强，贵)"
+      echo "  opus46       → claude-opus-4.6 (备选)"
       echo "  haiku        → claude-3.5-haiku (最省)"
       echo "  gemini-2.5   → gemini-2.5-pro-preview"
       echo "  gemini-flash → gemini-2.0-flash"
@@ -445,9 +447,11 @@ else:
 google_anthropic_routing = {'params': {'provider': {'order': ['Google', 'Anthropic'], 'allow_fallbacks': True}}}
 if provider == 'anthropic':
     agents['defaults']['models'] = {
-        'anthropic/claude-opus-4-6': {'alias': 'opus'},
+        'anthropic/claude-opus-4-7': {'alias': 'opus'},
+        'anthropic/claude-opus-4-6': {'alias': 'opus46'},
         'anthropic/claude-sonnet-4-6': {'alias': 'sonnet'},
-        'openrouter/anthropic/claude-opus-4.6': {**{'alias': 'or-opus'}, **google_anthropic_routing},
+        'openrouter/anthropic/claude-opus-4.7': {**{'alias': 'or-opus'}, **google_anthropic_routing},
+        'openrouter/anthropic/claude-opus-4.6': {**{'alias': 'or-opus46'}, **google_anthropic_routing},
         'openrouter/anthropic/claude-sonnet-4.6': {**{'alias': 'or-sonnet'}, **google_anthropic_routing},
         'openrouter/google/gemini-3.1-pro-preview': {'alias': 'gemini'},
         'openrouter/minimax/minimax-m2.7': {'alias': 'minimax'},
@@ -457,9 +461,11 @@ if provider == 'anthropic':
     }
 else:
     agents['defaults']['models'] = {
-        'openrouter/anthropic/claude-opus-4.6': {**{'alias': 'opus'}, **google_anthropic_routing},
+        'openrouter/anthropic/claude-opus-4.7': {**{'alias': 'opus'}, **google_anthropic_routing},
+        'openrouter/anthropic/claude-opus-4.6': {**{'alias': 'opus46'}, **google_anthropic_routing},
         'openrouter/anthropic/claude-sonnet-4.6': {**{'alias': 'sonnet'}, **google_anthropic_routing},
-        'anthropic/claude-opus-4-6': {'alias': 'or-opus'},
+        'anthropic/claude-opus-4-7': {'alias': 'or-opus'},
+        'anthropic/claude-opus-4-6': {'alias': 'or-opus46'},
         'anthropic/claude-sonnet-4-6': {'alias': 'or-sonnet'},
         'openrouter/google/gemini-3.1-pro-preview': {'alias': 'gemini'},
         'openrouter/minimax/minimax-m2.7': {'alias': 'minimax'},
