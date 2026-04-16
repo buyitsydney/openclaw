@@ -287,6 +287,9 @@ export async function incrementCompactionCount(params: {
       `[compaction-counter] memory-only: no storePath resolved for sessionKey=${sessionKey}`,
     );
   }
+  logVerbose(
+    `[compaction-counter] incremented: sessionKey=${sessionKey} count=${nextCount} persisted=${!!effectiveStorePath}`,
+  );
   if (newSessionId && newSessionId !== entry.sessionId && cfg) {
     emitCompactionSessionLifecycleHooks({
       cfg,

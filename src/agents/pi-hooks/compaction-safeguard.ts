@@ -207,6 +207,9 @@ async function resolveModelAuth(
     requestAuth = await modelRegistry.getApiKeyAndHeaders(model);
   } catch (err) {
     const error = formatErrorMessage(err);
+    console.error(
+      `COMPACTION_DEBUG: cancel reason=auth_failed, stage=getApiKeyAndHeaders_threw, provider=${model.provider}/${model.id}, error=${error}`,
+    );
     log.warn(
       `Compaction safeguard: request credentials unavailable; cancelling compaction. ${error}`,
     );
@@ -216,6 +219,9 @@ async function resolveModelAuth(
     };
   }
   if (!requestAuth.ok) {
+    console.error(
+      `COMPACTION_DEBUG: cancel reason=auth_failed, stage=requestAuth_not_ok, provider=${model.provider}/${model.id}, error=${requestAuth.error}`,
+    );
     log.warn(
       `Compaction safeguard: request credential resolution failed for ${model.provider}/${model.id}: ${requestAuth.error}`,
     );
@@ -225,6 +231,9 @@ async function resolveModelAuth(
     };
   }
   if (!requestAuth.apiKey && !requestAuth.headers) {
+    console.error(
+      `COMPACTION_DEBUG: cancel reason=auth_failed, stage=no_credentials, provider=${model.provider}/${model.id}, apiKey=${!!requestAuth.apiKey}, headers=${!!requestAuth.headers}`,
+    );
     log.warn(
       "Compaction safeguard: no request credentials available; cancelling compaction to preserve history.",
     );
