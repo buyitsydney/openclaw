@@ -174,7 +174,7 @@ function extractGroupBotOpenIds(
     // Check mentions: @bot references also reveal bots in the group
     for (const mention of m.mentions ?? []) {
       const id = mention.id?.trim();
-      if (!id) continue;
+      if (!id) {continue;}
       if (id.startsWith("cli_") && id in knownBots) {
         for (const [openId, appId] of Object.entries(knownOpenIds)) {
           if (appId === id) {
@@ -219,10 +219,10 @@ function isRateLimited(chatId: string): boolean {
   const now = Date.now();
   // Error cooldown takes precedence
   const errorCooldownUntil = groupErrorCooldowns.get(chatId) ?? 0;
-  if (now < errorCooldownUntil) return true;
+  if (now < errorCooldownUntil) {return true;}
 
   const timestamps = groupReplyTimestamps.get(chatId);
-  if (!timestamps) return false;
+  if (!timestamps) {return false;}
   // Prune old entries outside the window
   const recent = timestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
   groupReplyTimestamps.set(chatId, recent);
@@ -295,7 +295,7 @@ function resolveEffectiveReasoningMode(params: {
 // headers that Anthropic returns on every response.
 
 function formatResetTime(unixStr: string | null): string {
-  if (!unixStr) return "未知";
+  if (!unixStr) {return "未知";}
   const d = new Date(parseInt(unixStr) * 1000);
   const now = Date.now();
   const diffMin = Math.round((d.getTime() - now) / 60000);
@@ -303,11 +303,11 @@ function formatResetTime(unixStr: string | null): string {
   const mm = d.getMinutes().toString().padStart(2, "0");
   const md = String(d.getMonth() + 1) + "/" + String(d.getDate());
   const time = `${hh}:${mm}`;
-  if (diffMin <= 0) return `${md} ${time}（已过）`;
-  if (diffMin < 60) return `${time}（${diffMin}分钟后）`;
+  if (diffMin <= 0) {return `${md} ${time}（已过）`;}
+  if (diffMin < 60) {return `${time}（${diffMin}分钟后）`;}
   const diffH = Math.floor(diffMin / 60);
   const remMin = diffMin % 60;
-  if (diffH < 24) return `${time}（${diffH}h${remMin > 0 ? `${remMin}m` : ""}后）`;
+  if (diffH < 24) {return `${time}（${diffH}h${remMin > 0 ? `${remMin}m` : ""}后）`;}
   const diffDays = Math.floor(diffH / 24);
   const remH = diffH % 24;
   return `${md} ${time}（${diffDays}天${remH > 0 ? `${remH}h` : ""}后）`;
@@ -315,7 +315,7 @@ function formatResetTime(unixStr: string | null): string {
 
 async function checkAnthropicQuota(): Promise<string | null> {
   const token = process.env.ANTHROPIC_OAUTH_TOKEN;
-  if (!token) return null;
+  if (!token) {return null;}
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -394,16 +394,16 @@ async function checkAnthropicQuota(): Promise<string | null> {
 type PermissionError = { code: number; message: string; grantUrl?: string };
 
 export function extractPermissionError(err: unknown): PermissionError | null {
-  if (!err || typeof err !== "object") return null;
+  if (!err || typeof err !== "object") {return null;}
   const axiosErr = err as { response?: { data?: unknown } };
   const data = axiosErr.response?.data;
-  if (!data || typeof data !== "object") return null;
+  if (!data || typeof data !== "object") {return null;}
   const feishuErr = data as {
     code?: number;
     msg?: string;
     error?: { permission_violations?: Array<{ uri?: string }> };
   };
-  if (feishuErr.code !== 99991672) return null;
+  if (feishuErr.code !== 99991672) {return null;}
   const msg = feishuErr.msg ?? "";
   const urlMatch = msg.match(/https:\/\/[^\s,]+\/app\/[^\s,]+/);
   return { code: feishuErr.code, message: msg, grantUrl: urlMatch?.[0] };
@@ -428,10 +428,10 @@ async function resolveFeishuSenderName(params: {
   log?: ChannelLogSink;
 }): Promise<SenderNameResult> {
   const { account, senderOpenId, log } = params;
-  if (!senderOpenId) return {};
+  if (!senderOpenId) {return {};}
   const cached = senderNameCache.get(senderOpenId);
   const now = Date.now();
-  if (cached && cached.expireAt > now) return { name: cached.name };
+  if (cached && cached.expireAt > now) {return { name: cached.name };}
   try {
     const client = getFeishuClient(account);
     // oxlint-disable-next-line typescript/no-explicit-any
@@ -481,10 +481,10 @@ const CARD_CACHE_FILE = join(homedir(), ".openclaw", "feishu-card-text-cache.jso
 let cardCacheDiskLoaded = false;
 
 function loadCardCacheFromDisk(): void {
-  if (cardCacheDiskLoaded) return;
+  if (cardCacheDiskLoaded) {return;}
   cardCacheDiskLoaded = true;
   try {
-    if (!existsSync(CARD_CACHE_FILE)) return;
+    if (!existsSync(CARD_CACHE_FILE)) {return;}
     const raw = readFileSync(CARD_CACHE_FILE, "utf-8");
     const entries: Array<[string, { text: string; ts: number }]> = JSON.parse(raw);
     const now = Date.now();
@@ -510,7 +510,7 @@ function flushCardCacheToDisk(): void {
       }
     }
     const dir = dirname(CARD_CACHE_FILE);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    if (!existsSync(dir)) {mkdirSync(dir, { recursive: true });}
     const entries = [...cardTextCache.entries()];
     writeFileSync(CARD_CACHE_FILE, JSON.stringify(entries), "utf-8");
   } catch {
@@ -519,7 +519,7 @@ function flushCardCacheToDisk(): void {
 }
 
 function scheduleCardCacheFlush(): void {
-  if (cardCacheFlushTimer) return;
+  if (cardCacheFlushTimer) {return;}
   cardCacheFlushTimer = setTimeout(() => {
     cardCacheFlushTimer = undefined;
     flushCardCacheToDisk();
@@ -539,7 +539,7 @@ function cacheCardText(messageId: string, text: string): void {
     }
     // Second pass: if still over limit, drop oldest entries.
     if (cardTextCache.size >= CARD_CACHE_MAX) {
-      const sorted = [...cardTextCache.entries()].sort((a, b) => a[1].ts - b[1].ts);
+      const sorted = [...cardTextCache.entries()].toSorted((a, b) => a[1].ts - b[1].ts);
       const toDrop = sorted.slice(0, sorted.length - CARD_CACHE_MAX + 1);
       for (const [k] of toDrop) {
         cardTextCache.delete(k);
@@ -627,7 +627,7 @@ async function buildMergeForwardSourceAccess(params: {
   senderOpenId: string;
   log?: ChannelLogSink;
 }): Promise<MergeForwardSourceAccess | undefined> {
-  if (!params.senderOpenId) return undefined;
+  if (!params.senderOpenId) {return undefined;}
   const token = await getValidUserTokenForOpenId(params.account, params.senderOpenId);
   if (!token) {
     params.log?.info?.(
@@ -692,10 +692,10 @@ async function getQuotedMessageContent(params: {
       code?: number;
       data?: { items?: FeishuFetchedMessageItem[] };
     };
-    if (response?.code !== 0) return null;
+    if (response?.code !== 0) {return null;}
     const items = Array.isArray(response?.data?.items) ? response.data.items : [];
     const item = items[0];
-    if (!item) return null;
+    if (!item) {return null;}
     let msgType = item.msg_type ?? "text";
     let parsedContent = parseFeishuMessageContent({
       content: item.body?.content ?? "",
@@ -861,7 +861,7 @@ const MAX_RECENT = 500;
 function resolveWebchatUrl(config: OpenClawConfig): string | undefined {
   // Docker / explicit override takes priority
   const envUrl = process.env.WEBCHAT_URL;
-  if (envUrl) return envUrl;
+  if (envUrl) {return envUrl;}
 
   // Auto-compute from gateway config
   const port = config.gateway?.port ?? 18789;
@@ -881,7 +881,7 @@ function ensureVoiceToken(reset = false): string {
   if (!reset) {
     try {
       const existing = readFileSync(VOICE_TOKEN_PATH, "utf-8").trim();
-      if (existing) return existing;
+      if (existing) {return existing;}
     } catch {
       /* file doesn't exist, generate */
     }
@@ -921,7 +921,7 @@ function trackMessageId(messageId: string): boolean {
   recentMessageIds.add(messageId);
   if (recentMessageIds.size > MAX_RECENT) {
     const first = recentMessageIds.values().next().value;
-    if (first) recentMessageIds.delete(first);
+    if (first) {recentMessageIds.delete(first);}
   }
   return true;
 }
@@ -940,8 +940,8 @@ function extractPostText(
     imagePlaceholder: "<media:image>",
     mediaPlaceholder: "[video]",
   });
-  if (imageKeys) imageKeys.push(...parsedContent.imageKeys);
-  if (fileInfo) fileInfo.push(...parsedContent.fileInfo);
+  if (imageKeys) {imageKeys.push(...parsedContent.imageKeys);}
+  if (fileInfo) {fileInfo.push(...parsedContent.fileInfo);}
   return parsedContent.text.withoutFooter || null;
 }
 
@@ -955,7 +955,7 @@ function flattenInteractiveBody(parsed: any, imageKeys?: string[]): string | nul
   const parsedContent = parseFeishuInteractiveText(parsed, {
     imagePlaceholder: "<media:image>",
   });
-  if (imageKeys) imageKeys.push(...parsedContent.imageKeys);
+  if (imageKeys) {imageKeys.push(...parsedContent.imageKeys);}
   if (parsedContent.coverage === "none") {
     return null;
   }
@@ -983,8 +983,8 @@ function extractTextContent(
     imagePlaceholder: "<media:image>",
     mediaPlaceholder: "[video]",
   });
-  if (imageKeys) imageKeys.push(...parsedContent.imageKeys);
-  if (fileInfo) fileInfo.push(...parsedContent.fileInfo);
+  if (imageKeys) {imageKeys.push(...parsedContent.imageKeys);}
+  if (fileInfo) {fileInfo.push(...parsedContent.fileInfo);}
   if (msgType === "image" || msgType === "file" || msgType === "media" || msgType === "audio") {
     return null;
   }
@@ -1136,7 +1136,7 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
         nowMs: Date.now(),
       })
         .then((claimedTurn) => {
-          if (!claimedTurn || discussionTurnActive.has(broadcastChatId)) return;
+          if (!claimedTurn || discussionTurnActive.has(broadcastChatId)) {return;}
           log?.info(
             `[${account.accountId}] [turn] fast-claim via broadcast: chat=${broadcastChatId.slice(-8)} turn=${claimedTurn.turnId} owner=${claimedTurn.ownerAppId.slice(-8)}`,
           );
@@ -1165,7 +1165,7 @@ export async function startFeishuGateway(opts: FeishuGatewayOptions): Promise<vo
       const trackedGroups = await listTrackedGroups();
 
       for (const chatId of trackedGroups) {
-        if (!chatId.startsWith("oc_")) continue;
+        if (!chatId.startsWith("oc_")) {continue;}
         // Async read refreshes the in-memory cache from Redis every tick.
         const mode = await readGroupModeAsync(chatId);
         const isDiscussion = mode.mode === "discussion";
@@ -1547,10 +1547,10 @@ export function shouldProcessDiscussionMessage(params: {
   isDiscussionTurn: boolean;
   isHumanSelectedTarget: boolean;
 }): boolean {
-  if (params.isSelfBot) return false;
-  if (params.isDiscussionTurn) return true;
-  if (params.isSyntheticMessage) return false;
-  if (params.isBotSender) return false;
+  if (params.isSelfBot) {return false;}
+  if (params.isDiscussionTurn) {return true;}
+  if (params.isSyntheticMessage) {return false;}
+  if (params.isBotSender) {return false;}
   return params.isHumanSelectedTarget;
 }
 
@@ -1803,10 +1803,10 @@ const botNameToOpenId = new Map<string, string>();
  * Only converts names present in the registry (no guessing).
  */
 function resolveAtMentions(text: string): string {
-  if (botNameToOpenId.size === 0) return text;
+  if (botNameToOpenId.size === 0) {return text;}
   return text.replace(/@(\S+)/g, (match, name) => {
     const openId = botNameToOpenId.get(name.toLowerCase());
-    if (!openId) return match;
+    if (!openId) {return match;}
     return `<at user_id="${openId}">${name}</at>`;
   });
 }
@@ -1817,7 +1817,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   const message = data.message;
   const sender = data.sender;
 
-  if (!message || !sender) return;
+  if (!message || !sender) {return;}
 
   // Leader heartbeat: synthetic message from poller. Mark as bot sender
   // and set flag to skip all Feishu API calls (ACK, card stream, sender resolve).
@@ -1825,11 +1825,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   if (isSyntheticMessage) {
     sender.sender_type = "bot";
   }
-  const syntheticSender = sender as typeof sender & {
-    _syntheticKind?: string;
-    _discussionTurnId?: string;
-    _broadcastSenderName?: string;
-  };
+  const syntheticSender = sender;
   const isDiscussionTurnSynthetic = syntheticSender._syntheticKind === "discussion-turn";
 
   const messageId: string = message.message_id ?? "";
@@ -1848,7 +1844,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // For group chats, bot messages still need archiving + pending history buffering
   // so other bots' replies are visible in injected context.
   // For DMs, skip bot messages entirely (no self-reply loops).
-  if (isBotSender && !isGroup) return;
+  if (isBotSender && !isGroup) {return;}
 
   // Debug: log raw inbound for diagnosis (create_time helps detect replayed messages).
   const createTime: string = message.create_time ?? "";
@@ -1857,7 +1853,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   );
 
   // Deduplicate.
-  if (messageId && !trackMessageId(messageId)) return;
+  if (messageId && !trackMessageId(messageId)) {return;}
 
   // ── Extract text, collect embedded image keys and file attachment info ──
   const imageKeys: string[] = [];
@@ -2004,8 +2000,8 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
               feishuMsg = d.msg;
             } else {
               let raw: string | undefined;
-              if (Buffer.isBuffer(d)) raw = d.toString("utf-8");
-              else if (typeof d === "string") raw = d;
+              if (Buffer.isBuffer(d)) {raw = d.toString("utf-8");}
+              else if (typeof d === "string") {raw = d;}
               else if (d && typeof d[Symbol.asyncIterator] === "function") {
                 const chunks: Buffer[] = [];
                 for await (const chunk of d as AsyncIterable<Buffer>) {
@@ -2021,17 +2017,17 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
                 } catch {}
               }
             }
-            if (code === 234037) reason = "file too large (Feishu limits downloads to 100 MB)";
-            else if (code === 234001) reason = "invalid request parameters";
-            else if (code === 234003) reason = "resource does not belong to this message";
-            else if (code === 234004) reason = "bot is not in the chat";
-            else if (code) reason = feishuMsg ?? `Feishu error ${code}`;
-            else reason = `download failed (HTTP ${resp.status ?? "?"})`;
+            if (code === 234037) {reason = "file too large (Feishu limits downloads to 100 MB)";}
+            else if (code === 234001) {reason = "invalid request parameters";}
+            else if (code === 234003) {reason = "resource does not belong to this message";}
+            else if (code === 234004) {reason = "bot is not in the chat";}
+            else if (code) {reason = feishuMsg ?? `Feishu error ${code}`;}
+            else {reason = `download failed (HTTP ${resp.status ?? "?"})`;}
           }
         } catch {
           // Parsing failed; keep generic reason.
         }
-        if (msg.includes("exceeds")) reason = msg.replace(/^Error:\s*/, "");
+        if (msg.includes("exceeds")) {reason = msg.replace(/^Error:\s*/, "");}
         fileErrors.push({ name: fi.fileName, reason });
       }
     }
@@ -2050,7 +2046,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     let savedIdx = imageKeys.length;
     for (const fi of fileInfo) {
       const savedPath = mediaPaths[savedIdx];
-      if (!savedPath) continue;
+      if (!savedPath) {continue;}
       savedIdx++;
       fallbackParts.push(`${fi.fileName} saved at ${savedPath}`);
     }
@@ -2111,7 +2107,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // Allow through if: has text, is a reply (quoted msg context will be injected),
   // or is a group @mention (bot will respond based on context).
   // Only drop truly empty non-reply, non-mention messages.
-  if (!cleanText && !parentId && !isGroup) return;
+  if (!cleanText && !parentId && !isGroup) {return;}
 
   log?.info(
     `[${account.accountId}] inbound: chat=${chatId} from=${senderId} type=${chatType}${mediaPath ? (isAudioMedia ? " +audio" : " +image") : ""}`,
@@ -2138,7 +2134,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   } else if (isBotSender && syntheticSender._broadcastSenderName) {
     senderDisplayName = syntheticSender._broadcastSenderName;
   } else
-    try {
+    {try {
       const nameResult = await resolveFeishuSenderName({ account, senderOpenId: senderId, log });
       senderDisplayName = nameResult.name;
       if (nameResult.permissionError) {
@@ -2156,7 +2152,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       }
     } catch {
       // Best-effort — continue without display name.
-    }
+    }}
   if (senderDisplayName) {
     currentMessageActor = {
       ...currentMessageActor,
@@ -2196,8 +2192,8 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   const ACK_EMOJI = "Get";
   let ackReactionId: string | null = null;
   const addAckReaction = async () => {
-    if (isSyntheticMessage || isBotSender || isCommand) return;
-    if (ackReactionId) return;
+    if (isSyntheticMessage || isBotSender || isCommand) {return;}
+    if (ackReactionId) {return;}
     try {
       ackReactionId = await addFeishuReaction({ account, messageId, emoji: ACK_EMOJI });
       if (ackReactionId) {
@@ -2208,7 +2204,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     }
   };
   const removeAckReaction = async () => {
-    if (!ackReactionId) return;
+    if (!ackReactionId) {return;}
     try {
       await removeFeishuReaction({ account, messageId, reactionId: ackReactionId });
       log?.info(`[${account.accountId}] removed ACK reaction from ${messageId}`);
@@ -2221,7 +2217,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // ── Group chat handling: archive + owner-only reply gating ──
   if (isGroup) {
     const groupConfig = account.config.groups;
-    const groupsEnabled = groupConfig?.enabled === true;
+    // groupPolicy from feishu core config; groups.enabled from legacy feishu-her config
+    const coreGroupPolicy = (account.config as Record<string, unknown>).groupPolicy as string | undefined;
+    const groupsEnabled = groupConfig?.enabled === true || (coreGroupPolicy != null && coreGroupPolicy !== "disabled");
 
     if (!groupsEnabled) {
       log?.info(`[${account.accountId}] group chat disabled, ignoring group message`);
@@ -2599,14 +2597,14 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
       const sessionsDir = join(homedir(), ".openclaw", "agents", "main", "sessions");
       const findSessionFile = (): string | undefined => {
-        if (!existsSync(sessionsDir)) return undefined;
+        if (!existsSync(sessionsDir)) {return undefined;}
         const jsonls = readdirSync(sessionsDir).filter((f) => f === "main.jsonl");
-        if (jsonls.length > 0) return join(sessionsDir, jsonls[0]!);
+        if (jsonls.length > 0) {return join(sessionsDir, jsonls[0]);}
         const all = readdirSync(sessionsDir)
           .filter((f) => f.endsWith(".jsonl"))
-          .sort()
-          .reverse();
-        return all.length > 0 ? join(sessionsDir, all[0]!) : undefined;
+          .toSorted()
+          .toReversed();
+        return all.length > 0 ? join(sessionsDir, all[0]) : undefined;
       };
 
       if (cleanText === "/summary all") {
@@ -2616,7 +2614,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           for (const f of savedFiles.slice(0, 20)) {
             lines.push(`- \`${f}\``);
           }
-          if (savedFiles.length > 20) lines.push(`\n... and ${savedFiles.length - 20} more`);
+          if (savedFiles.length > 20) {lines.push(`\n... and ${savedFiles.length - 20} more`);}
           await sendFeishuRichText({ account, chatId, text: lines.join("\n") });
         } else {
           const sf = findSessionFile();
@@ -2637,7 +2635,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           const sf = findSessionFile();
           if (sf) {
             const report = buildReportFromSessionFile(sf, reportOpts);
-            if (report) content = formatMarkdown(report);
+            if (report) {content = formatMarkdown(report);}
           }
         }
         if (!content) {
@@ -2797,7 +2795,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         limit: GROUP_INJECT_LIMIT,
       });
       if (result.messages.length > 0) {
-        const chronological = [...result.messages].reverse();
+        const chronological = [...result.messages].toReversed();
         // Extract active bots from history (zero extra API calls)
         const groupBotOpenIds = extractGroupBotOpenIds(result.messages, account);
         const lines = chronological.map((m) => {
@@ -2853,7 +2851,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
             discussionHumanRoutingMode === "direct" &&
             discussionHumanRoutingTargetAppId === account.appId;
           const resolveNameFromKnown = (appId: string): string =>
-            (account.knownBots as Record<string, string>)?.[appId] ?? appId.slice(-8);
+            (account.knownBots)?.[appId] ?? appId.slice(-8);
           const leaderName = dLeader ? resolveNameFromKnown(dLeader) : "未选出";
           const participantNames = dParticipants.map((id) => resolveNameFromKnown(id)).join(", ");
           const currentOwnerName = dTurn ? resolveNameFromKnown(dTurn.ownerAppId) : "未分配";
@@ -3018,7 +3016,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       cardStream ||
       cardStreamCreating
     )
-      return;
+      {return;}
     cardStreamCreating = true;
     try {
       cardStream = await createFeishuCardStream({
@@ -3062,9 +3060,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
   const updateCardStream = (text?: string) =>
     queueCardStreamUpdate(async () => {
-      if (!text || !(await canEmitVisibleDiscussionReply())) return;
+      if (!text || !(await canEmitVisibleDiscussionReply())) {return;}
       await startCardStream();
-      if (!cardStream?.started) return;
+      if (!cardStream?.started) {return;}
       // Detect paragraph boundary: if text doesn't start with the previous partial,
       // it means deltaBuffer was reset (new assistant message). Freeze the previous
       // paragraph into the prefix.
@@ -3082,9 +3080,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
 
   const updateReasoningCardStream = (text?: string) =>
     queueCardStreamUpdate(async () => {
-      if (!text || !(await canEmitVisibleDiscussionReply())) return;
+      if (!text || !(await canEmitVisibleDiscussionReply())) {return;}
       await startCardStream();
-      if (!cardStream?.started) return;
+      if (!cardStream?.started) {return;}
       // Flush reasoning immediately so the first visible card frame is the
       // reasoning preview, even if answer partials arrive in the same throttle window.
       cardStream.update(text);
@@ -3093,7 +3091,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     });
 
   const stopCardStream = async () => {
-    if (!cardStream?.started) return;
+    if (!cardStream?.started) {return;}
     await cardStreamUpdateChain;
     const stillAllowed = await canEmitVisibleDiscussionReply();
     const finalVisibleText = cardStreamFinalText || cardStreamVisibleText;
@@ -3184,7 +3182,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           log?.info(
             `[${account.accountId}] deliver: suppressing visible reply for stale discussion turn`,
           );
-          if (info.kind === "final") resolveDeliverGate?.();
+          if (info.kind === "final") {resolveDeliverGate?.();}
           return;
         }
         if (!deliverFired) {
@@ -3197,7 +3195,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
         // Filter already-delivered media (same pattern as filterMessagingToolDuplicates for text).
         const rawMediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
         const mediaUrls = rawMediaUrls.filter((u) => !sentMediaUrls.has(u));
-        for (const u of mediaUrls) sentMediaUrls.add(u);
+        for (const u of mediaUrls) {sentMediaUrls.add(u);}
         const hasMedia = mediaUrls.length > 0;
         const skippedMedia = rawMediaUrls.length - mediaUrls.length;
 
@@ -3249,7 +3247,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
               core,
             });
           }
-          if (info.kind === "final") resolveDeliverGate?.();
+          if (info.kind === "final") {resolveDeliverGate?.();}
           return;
         }
 
@@ -3288,7 +3286,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
                 core,
               });
             }
-            if (info.kind === "final") resolveDeliverGate?.();
+            if (info.kind === "final") {resolveDeliverGate?.();}
             return;
           }
 
@@ -3320,11 +3318,11 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
           core,
         });
 
-        if (info.kind === "final") resolveDeliverGate?.();
+        if (info.kind === "final") {resolveDeliverGate?.();}
       },
       onSkip: (_payload, { kind, reason }) => {
         log?.info(`[${account.accountId}] dispatch skip: kind=${kind} reason=${reason}`);
-        if (kind === "final") resolveDeliverGate?.();
+        if (kind === "final") {resolveDeliverGate?.();}
       },
       onError: (err, info) => {
         log?.error(`[${account.accountId}] Feishu ${info.kind} reply failed: ${String(err)}`);
@@ -3397,7 +3395,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
       core,
     });
     // Record group reply for manager mode rate limiting
-    if (isGroup) recordGroupReply(chatId);
+    if (isGroup) {recordGroupReply(chatId);}
   }
   await cardStreamUpdateChain;
 
