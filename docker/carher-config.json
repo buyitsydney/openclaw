@@ -5,7 +5,7 @@
   },
   "agents": {
     "defaults": {
-      "contextTokens": 400000,
+      "contextTokens": 1000000,
       "compaction": { "mode": "safeguard", "reserveTokens": 100000 },
       "model": {
         "primary": "openrouter/anthropic/claude-sonnet-4.6"
@@ -57,7 +57,7 @@
             "api": "anthropic-messages",
             "reasoning": true,
             "input": ["text", "image"],
-            "contextWindow": 400000,
+            "contextWindow": 1000000,
             "maxTokens": 128000,
             "cost": {
               "input": 5,
@@ -107,7 +107,7 @@
             "api": "openai-completions",
             "reasoning": true,
             "input": ["text", "image"],
-            "contextWindow": 400000,
+            "contextWindow": 1000000,
             "maxTokens": 128000,
             "cost": {
               "input": 5,
