@@ -518,11 +518,19 @@ if feishu_id and feishu_secret:
         'enabled': True,
         'appId': feishu_id,
         'appSecret': feishu_secret,
+        'groupPolicy': 'open',
     }
     if feishu_owner:
         owner_list = [x.strip() for x in feishu_owner.split('|') if x.strip()]
         feishu_cfg['allowFrom'] = owner_list
-    feishu_cfg['groupPolicy'] = 'open'
+    # Per-account config for fields supported by FeishuAccountConfigSchema
+    account_cfg = {}
+    if feishu_name:
+        account_cfg['name'] = feishu_name + '的her'
+    if feishu_owner:
+        account_cfg['allowFrom'] = owner_list
+    if account_cfg:
+        feishu_cfg['accounts'] = {'default': account_cfg}
     cfg.setdefault('channels', {})['feishu'] = feishu_cfg
 
 # commands.ownerAllowFrom from CSV (pipe-separated open_ids)
