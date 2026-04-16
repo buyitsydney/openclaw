@@ -91,6 +91,50 @@
           limits: { maxConcurrentTasks: 8 },
         },
       },
+      "memory-core": {
+        config: {
+          dreaming: {
+            enabled: true,
+            timezone: "Asia/Shanghai",
+            frequency: "0 3 * * *",
+          },
+        },
+      },
+      "active-memory": {
+        enabled: true,
+        config: {
+          enabled: true,
+          agents: ["main"],
+          allowedChatTypes: ["direct"],
+          queryMode: "recent",
+          promptStyle: "balanced",
+          timeoutMs: 60000,
+          maxSummaryChars: 220,
+          logging: true,
+        },
+      },
+      "memory-wiki": {
+        enabled: true,
+        config: {
+          vaultMode: "bridge",
+          bridge: {
+            enabled: true,
+            readMemoryArtifacts: true,
+            indexDreamReports: true,
+            indexDailyNotes: true,
+            indexMemoryRoot: true,
+            followMemoryEvents: true,
+          },
+          ingest: {
+            autoCompile: true,
+            allowUrlIngest: true,
+          },
+          search: {
+            backend: "shared",
+            corpus: "all",
+          },
+        },
+      },
     },
   },
 
@@ -98,10 +142,7 @@
   channels: {
     feishu: {
       enabled: true,
-      groups: { enabled: true, archive: true },
-      // "v1" = inline card + im.message.patch (safe, readable via API)
-      // "v2" = CardKit streaming (typewriter animation, full markdown, requires local cache for readback)
-      cardStreamVersion: "v1",
+      groupPolicy: "open",
     },
   },
 }

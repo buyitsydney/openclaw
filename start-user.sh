@@ -519,22 +519,10 @@ if feishu_id and feishu_secret:
         'appId': feishu_id,
         'appSecret': feishu_secret,
     }
-    if feishu_name:
-        feishu_cfg['name'] = feishu_name + '的her'
-    # knownBots/knownBotOpenIds removed — now populated dynamically via Redis bot-registry.
-    if feishu_bot_open_id:
-        feishu_cfg['botOpenId'] = feishu_bot_open_id
     if feishu_owner:
         owner_list = [x.strip() for x in feishu_owner.split('|') if x.strip()]
-        feishu_cfg['dm'] = {'allowFrom': owner_list}
-    feishu_cfg['groups'] = {
-        'enabled': True,
-        'archive': True,
-    }
-    # OAuth redirect URI (unified, used by all tools needing user_access_token)
-    auth_host = '${NAMED_AUTH_HOST}'
-    if auth_host:
-        feishu_cfg['oauthRedirectUri'] = f'https://{auth_host}/feishu/oauth/callback'
+        feishu_cfg['allowFrom'] = owner_list
+    feishu_cfg['groupPolicy'] = 'open'
     cfg.setdefault('channels', {})['feishu'] = feishu_cfg
 
 # commands.ownerAllowFrom from CSV (pipe-separated open_ids)
