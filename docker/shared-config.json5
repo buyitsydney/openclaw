@@ -14,7 +14,7 @@
       contextTokens: 1000000,
       userTimezone: "Asia/Shanghai",
       llm: { idleTimeoutSeconds: 300 },
-      compaction: { mode: "safeguard", reserveTokens: 100000 },
+      compaction: { mode: "safeguard", reserveTokens: 200000 },
       // 语义搜索记忆 — apiKey 通过环境变量注入
       memorySearch: {
         provider: "openai",
