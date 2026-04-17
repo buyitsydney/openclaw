@@ -14,6 +14,9 @@
       userTimezone: "Asia/Shanghai",
       llm: { idleTimeoutSeconds: 300 },
       compaction: { mode: "safeguard", reserveTokens: 200000 },
+      // 并发上限（10 群并行深度研究场景）
+      maxConcurrent: 16,
+      subagents: { maxConcurrent: 64 },
       // 语义搜索记忆 — apiKey 通过环境变量注入
       memorySearch: {
         provider: "openai",
@@ -87,7 +90,7 @@
         enabled: true,
         config: {
           routing: { defaultAgentId: "main" },
-          limits: { maxConcurrentTasks: 8 },
+          limits: { maxConcurrentTasks: 16 },
         },
       },
       "memory-core": {
