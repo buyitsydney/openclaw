@@ -538,6 +538,9 @@ if feishu_id and feishu_secret:
     if account_cfg:
         feishu_cfg['accounts'] = {'default': account_cfg}
     cfg.setdefault('channels', {})['feishu'] = feishu_cfg
+    # A2A agentCard.name — use feishu bot name so peers see the right label
+    if feishu_name:
+        cfg.setdefault('plugins', {}).setdefault('entries', {}).setdefault('a2a-gateway', {}).setdefault('config', {}).setdefault('agentCard', {})['name'] = feishu_name + '的her'
 
 # commands.ownerAllowFrom from CSV (pipe-separated open_ids)
 if owner_allow_from_raw:

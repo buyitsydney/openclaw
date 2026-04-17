@@ -347,11 +347,12 @@ const plugin = {
 
     // Redis registry is initialized lazily in service start (async context)
     const redisUrl = process.env.REDIS_URL;
-    // Resolve bot name: feishu channel name (from config) > IDENTITY.md > container hostname
+    // Resolve bot name: feishu channel name (from config) > agentCard.name > IDENTITY.md > container hostname
     const feishuChannelName = asString(
       (asObject((asObject(api.config) as any)?.channels)?.feishu as any)?.name,
     );
-    const resolvedBotName = feishuChannelName || discoverBotName();
+    const agentCardName = config.agentCard.name !== "OpenClaw A2A Gateway" ? config.agentCard.name : "";
+    const resolvedBotName = feishuChannelName || agentCardName || discoverBotName();
 
     const registryInitConfig = redisUrl
       ? {
