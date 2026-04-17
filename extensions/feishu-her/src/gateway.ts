@@ -2217,7 +2217,6 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // ── Group chat handling: archive + owner-only reply gating ──
   if (isGroup) {
     const groupConfig = account.config.groups;
-    // groupPolicy from feishu core config; groups.enabled from legacy feishu-her config
     const coreGroupPolicy = (account.config as Record<string, unknown>).groupPolicy as string | undefined;
     const groupsEnabled = groupConfig?.enabled === true || (coreGroupPolicy != null && coreGroupPolicy !== "disabled");
 

@@ -3399,7 +3399,7 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
               enum: ["native", "ascii", "simple"],
             },
           },
-          additionalProperties: false,
+          additionalProperties: {},
         },
         configWrites: {
           type: "boolean",
@@ -3462,74 +3462,90 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
           type: "boolean",
         },
         groups: {
-          type: "object",
-          propertyNames: {
-            type: "string",
-          },
-          additionalProperties: {
-            type: "object",
-            properties: {
-              requireMention: {
-                type: "boolean",
+          anyOf: [
+            {
+              type: "object",
+              properties: {
+                enabled: {
+                  type: "boolean",
+                },
+                archive: {
+                  type: "boolean",
+                },
               },
-              tools: {
+              additionalProperties: {},
+            },
+            {
+              type: "object",
+              propertyNames: {
+                type: "string",
+              },
+              additionalProperties: {
                 type: "object",
                 properties: {
-                  allow: {
+                  requireMention: {
+                    type: "boolean",
+                  },
+                  tools: {
+                    type: "object",
+                    properties: {
+                      allow: {
+                        type: "array",
+                        items: {
+                          type: "string",
+                        },
+                      },
+                      deny: {
+                        type: "array",
+                        items: {
+                          type: "string",
+                        },
+                      },
+                    },
+                    additionalProperties: {},
+                  },
+                  skills: {
                     type: "array",
                     items: {
                       type: "string",
                     },
                   },
-                  deny: {
+                  enabled: {
+                    type: "boolean",
+                  },
+                  allowFrom: {
                     type: "array",
                     items: {
-                      type: "string",
+                      anyOf: [
+                        {
+                          type: "string",
+                        },
+                        {
+                          type: "number",
+                        },
+                      ],
                     },
                   },
+                  systemPrompt: {
+                    type: "string",
+                  },
+                  groupSessionScope: {
+                    type: "string",
+                    enum: ["group", "group_sender", "group_topic", "group_topic_sender"],
+                  },
+                  topicSessionMode: {
+                    type: "string",
+                    enum: ["disabled", "enabled"],
+                  },
+                  replyInThread: {
+                    type: "string",
+                    enum: ["disabled", "enabled"],
+                  },
                 },
-                additionalProperties: false,
-              },
-              skills: {
-                type: "array",
-                items: {
-                  type: "string",
-                },
-              },
-              enabled: {
-                type: "boolean",
-              },
-              allowFrom: {
-                type: "array",
-                items: {
-                  anyOf: [
-                    {
-                      type: "string",
-                    },
-                    {
-                      type: "number",
-                    },
-                  ],
-                },
-              },
-              systemPrompt: {
-                type: "string",
-              },
-              groupSessionScope: {
-                type: "string",
-                enum: ["group", "group_sender", "group_topic", "group_topic_sender"],
-              },
-              topicSessionMode: {
-                type: "string",
-                enum: ["disabled", "enabled"],
-              },
-              replyInThread: {
-                type: "string",
-                enum: ["disabled", "enabled"],
+                additionalProperties: {},
               },
             },
-            additionalProperties: false,
-          },
+          ],
         },
         historyLimit: {
           type: "integer",
@@ -3556,7 +3572,7 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
                 type: "string",
               },
             },
-            additionalProperties: false,
+            additionalProperties: {},
           },
         },
         textChunkLimit: {
@@ -3585,7 +3601,7 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
               maximum: 9007199254740991,
             },
           },
-          additionalProperties: false,
+          additionalProperties: {},
         },
         mediaMaxMb: {
           type: "number",
@@ -3609,7 +3625,7 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
               maximum: 9007199254740991,
             },
           },
-          additionalProperties: false,
+          additionalProperties: {},
         },
         renderMode: {
           type: "string",
@@ -3640,7 +3656,7 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
               type: "boolean",
             },
           },
-          additionalProperties: false,
+          additionalProperties: {},
         },
         actions: {
           type: "object",
@@ -3649,7 +3665,7 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
               type: "boolean",
             },
           },
-          additionalProperties: false,
+          additionalProperties: {},
         },
         replyInThread: {
           type: "string",
@@ -3694,7 +3710,7 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
               maximum: 9007199254740991,
             },
           },
-          additionalProperties: false,
+          additionalProperties: {},
         },
         accounts: {
           type: "object",
@@ -3957,7 +3973,7 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
                     enum: ["native", "ascii", "simple"],
                   },
                 },
-                additionalProperties: false,
+                additionalProperties: {},
               },
               configWrites: {
                 type: "boolean",
@@ -4018,74 +4034,90 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
                 type: "boolean",
               },
               groups: {
-                type: "object",
-                propertyNames: {
-                  type: "string",
-                },
-                additionalProperties: {
-                  type: "object",
-                  properties: {
-                    requireMention: {
-                      type: "boolean",
+                anyOf: [
+                  {
+                    type: "object",
+                    properties: {
+                      enabled: {
+                        type: "boolean",
+                      },
+                      archive: {
+                        type: "boolean",
+                      },
                     },
-                    tools: {
+                    additionalProperties: {},
+                  },
+                  {
+                    type: "object",
+                    propertyNames: {
+                      type: "string",
+                    },
+                    additionalProperties: {
                       type: "object",
                       properties: {
-                        allow: {
+                        requireMention: {
+                          type: "boolean",
+                        },
+                        tools: {
+                          type: "object",
+                          properties: {
+                            allow: {
+                              type: "array",
+                              items: {
+                                type: "string",
+                              },
+                            },
+                            deny: {
+                              type: "array",
+                              items: {
+                                type: "string",
+                              },
+                            },
+                          },
+                          additionalProperties: {},
+                        },
+                        skills: {
                           type: "array",
                           items: {
                             type: "string",
                           },
                         },
-                        deny: {
+                        enabled: {
+                          type: "boolean",
+                        },
+                        allowFrom: {
                           type: "array",
                           items: {
-                            type: "string",
+                            anyOf: [
+                              {
+                                type: "string",
+                              },
+                              {
+                                type: "number",
+                              },
+                            ],
                           },
                         },
+                        systemPrompt: {
+                          type: "string",
+                        },
+                        groupSessionScope: {
+                          type: "string",
+                          enum: ["group", "group_sender", "group_topic", "group_topic_sender"],
+                        },
+                        topicSessionMode: {
+                          type: "string",
+                          enum: ["disabled", "enabled"],
+                        },
+                        replyInThread: {
+                          type: "string",
+                          enum: ["disabled", "enabled"],
+                        },
                       },
-                      additionalProperties: false,
-                    },
-                    skills: {
-                      type: "array",
-                      items: {
-                        type: "string",
-                      },
-                    },
-                    enabled: {
-                      type: "boolean",
-                    },
-                    allowFrom: {
-                      type: "array",
-                      items: {
-                        anyOf: [
-                          {
-                            type: "string",
-                          },
-                          {
-                            type: "number",
-                          },
-                        ],
-                      },
-                    },
-                    systemPrompt: {
-                      type: "string",
-                    },
-                    groupSessionScope: {
-                      type: "string",
-                      enum: ["group", "group_sender", "group_topic", "group_topic_sender"],
-                    },
-                    topicSessionMode: {
-                      type: "string",
-                      enum: ["disabled", "enabled"],
-                    },
-                    replyInThread: {
-                      type: "string",
-                      enum: ["disabled", "enabled"],
+                      additionalProperties: {},
                     },
                   },
-                  additionalProperties: false,
-                },
+                ],
               },
               historyLimit: {
                 type: "integer",
@@ -4112,7 +4144,7 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
                       type: "string",
                     },
                   },
-                  additionalProperties: false,
+                  additionalProperties: {},
                 },
               },
               textChunkLimit: {
@@ -4141,7 +4173,7 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
                     maximum: 9007199254740991,
                   },
                 },
-                additionalProperties: false,
+                additionalProperties: {},
               },
               mediaMaxMb: {
                 type: "number",
@@ -4165,7 +4197,7 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
                     maximum: 9007199254740991,
                   },
                 },
-                additionalProperties: false,
+                additionalProperties: {},
               },
               renderMode: {
                 type: "string",
@@ -4196,7 +4228,7 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
                     type: "boolean",
                   },
                 },
-                additionalProperties: false,
+                additionalProperties: {},
               },
               actions: {
                 type: "object",
@@ -4205,7 +4237,7 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
                     type: "boolean",
                   },
                 },
-                additionalProperties: false,
+                additionalProperties: {},
               },
               replyInThread: {
                 type: "string",
@@ -4230,7 +4262,7 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
                 enum: ["disabled", "enabled"],
               },
             },
-            additionalProperties: false,
+            additionalProperties: {},
           },
         },
       },
@@ -4244,7 +4276,7 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
         "typingIndicator",
         "resolveSenderNames",
       ],
-      additionalProperties: false,
+      additionalProperties: {},
     },
   },
   {

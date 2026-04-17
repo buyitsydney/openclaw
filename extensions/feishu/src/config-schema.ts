@@ -7,7 +7,7 @@ const ChannelActionsSchema = z
   .object({
     reactions: z.boolean().optional(),
   })
-  .strict()
+  .passthrough()
   .optional();
 
 const DmPolicySchema = z.enum(["open", "pairing", "allowlist"]);
@@ -26,7 +26,7 @@ const ToolPolicySchema = z
     allow: z.array(z.string()).optional(),
     deny: z.array(z.string()).optional(),
   })
-  .strict()
+  .passthrough()
   .optional();
 
 const DmConfigSchema = z
@@ -34,7 +34,7 @@ const DmConfigSchema = z
     enabled: z.boolean().optional(),
     systemPrompt: z.string().optional(),
   })
-  .strict()
+  .passthrough()
   .optional();
 
 const MarkdownConfigSchema = z
@@ -42,7 +42,7 @@ const MarkdownConfigSchema = z
     mode: z.enum(["native", "escape", "strip"]).optional(),
     tableMode: z.enum(["native", "ascii", "simple"]).optional(),
   })
-  .strict()
+  .passthrough()
   .optional();
 
 // Message render mode: auto (default) = detect markdown, raw = plain text, card = always card
@@ -58,7 +58,7 @@ const BlockStreamingCoalesceSchema = z
     minDelayMs: z.number().int().positive().optional(),
     maxDelayMs: z.number().int().positive().optional(),
   })
-  .strict()
+  .passthrough()
   .optional();
 
 const ChannelHeartbeatVisibilitySchema = z
@@ -66,7 +66,7 @@ const ChannelHeartbeatVisibilitySchema = z
     visibility: z.enum(["visible", "hidden"]).optional(),
     intervalMs: z.number().int().positive().optional(),
   })
-  .strict()
+  .passthrough()
   .optional();
 
 /**
@@ -80,7 +80,7 @@ const DynamicAgentCreationSchema = z
     agentDirTemplate: z.string().optional(),
     maxAgents: z.number().int().positive().optional(),
   })
-  .strict()
+  .passthrough()
   .optional();
 
 /**
@@ -100,7 +100,7 @@ const FeishuToolsConfigSchema = z
     perm: z.boolean().optional(), // Permission management (default: false, sensitive)
     scopes: z.boolean().optional(), // App scopes diagnostic (default: true)
   })
-  .strict()
+  .passthrough()
   .optional();
 
 /**
@@ -150,7 +150,7 @@ export const FeishuGroupSchema = z
     topicSessionMode: TopicSessionModeSchema,
     replyInThread: ReplyInThreadSchema,
   })
-  .strict();
+  .passthrough();
 
 const FeishuSharedConfigShape = {
   webhookHost: z.string().optional(),
@@ -164,7 +164,10 @@ const FeishuSharedConfigShape = {
   groupAllowFrom: z.array(z.union([z.string(), z.number()])).optional(),
   groupSenderAllowFrom: z.array(z.union([z.string(), z.number()])).optional(),
   requireMention: z.boolean().optional(),
-  groups: z.record(z.string(), FeishuGroupSchema.optional()).optional(),
+  groups: z.union([
+    z.object({ enabled: z.boolean().optional(), archive: z.boolean().optional() }).passthrough(),
+    z.record(z.string(), FeishuGroupSchema.optional()),
+  ]).optional(),
   historyLimit: z.number().int().min(0).optional(),
   dmHistoryLimit: z.number().int().min(0).optional(),
   dms: z.record(z.string(), DmConfigSchema).optional(),
@@ -203,7 +206,7 @@ export const FeishuAccountConfigSchema = z
     groupSessionScope: GroupSessionScopeSchema,
     topicSessionMode: TopicSessionModeSchema,
   })
-  .strict();
+  .passthrough();
 
 export const FeishuConfigSchema = z
   .object({
@@ -232,7 +235,7 @@ export const FeishuConfigSchema = z
     // Multi-account configuration
     accounts: z.record(z.string(), FeishuAccountConfigSchema.optional()).optional(),
   })
-  .strict()
+  .passthrough()
   .superRefine((value, ctx) => {
     const defaultAccount = value.defaultAccount?.trim();
     if (defaultAccount && value.accounts && Object.keys(value.accounts).length > 0) {

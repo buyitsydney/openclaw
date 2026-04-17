@@ -31,15 +31,11 @@ export type FeishuAccountConfig = {
 };
 
 /** Resolve owner IDs for group chat gating.
- *  Priority: groups.ownerIds > dm.allowFrom > allowFrom (feishu core). */
+ *  Priority: groups.ownerIds > dm.allowFrom. */
 export function resolveGroupOwnerIds(accountConfig: FeishuAccountConfig): string[] {
   const groupOwners = accountConfig.groups?.ownerIds;
   if (groupOwners && groupOwners.length > 0) return groupOwners;
-  const dmAllow = accountConfig.dm?.allowFrom;
-  if (dmAllow && dmAllow.length > 0) return dmAllow;
-  // Fallback to top-level allowFrom (feishu core schema)
-  const topAllow = (accountConfig as Record<string, unknown>).allowFrom as string[] | undefined;
-  return topAllow ?? [];
+  return accountConfig.dm?.allowFrom ?? [];
 }
 
 export type ResolvedFeishuAccount = {

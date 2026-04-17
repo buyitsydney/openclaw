@@ -524,23 +524,16 @@ if feishu_id and feishu_secret:
         'enabled': True,
         'appId': feishu_id,
         'appSecret': feishu_secret,
-        'groupPolicy': 'open',
     }
+    if feishu_name:
+        feishu_cfg['name'] = feishu_name + '的her'
+    if feishu_bot_open_id:
+        feishu_cfg['botOpenId'] = feishu_bot_open_id
     if feishu_owner:
         owner_list = [x.strip() for x in feishu_owner.split('|') if x.strip()]
-        feishu_cfg['allowFrom'] = owner_list
-    # Per-account config for fields supported by FeishuAccountConfigSchema
-    account_cfg = {}
-    if feishu_name:
-        account_cfg['name'] = feishu_name + '的her'
-    if feishu_owner:
-        account_cfg['allowFrom'] = owner_list
-    if account_cfg:
-        feishu_cfg['accounts'] = {'default': account_cfg}
+        feishu_cfg['dm'] = {'allowFrom': owner_list}
+    feishu_cfg['groupPolicy'] = 'open'
     cfg.setdefault('channels', {})['feishu'] = feishu_cfg
-    # A2A agentCard.name — use feishu bot name so peers see the right label
-    if feishu_name:
-        cfg.setdefault('plugins', {}).setdefault('entries', {}).setdefault('a2a-gateway', {}).setdefault('config', {}).setdefault('agentCard', {})['name'] = feishu_name + '的her'
 
 # commands.ownerAllowFrom from CSV (pipe-separated open_ids)
 if owner_allow_from_raw:
