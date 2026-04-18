@@ -103,17 +103,7 @@
         },
       },
       "active-memory": {
-        enabled: true,
-        config: {
-          enabled: true,
-          agents: ["main"],
-          allowedChatTypes: ["direct"],
-          queryMode: "recent",
-          promptStyle: "balanced",
-          timeoutMs: 60000,
-          maxSummaryChars: 220,
-          logging: true,
-        },
+        enabled: false,
       },
       "memory-wiki": {
         enabled: true,
