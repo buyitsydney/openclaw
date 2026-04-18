@@ -105,6 +105,10 @@ package-lock.json
 .agent/
 skills-lock.json
 
+# Docker runtime configs (host-specific, NEVER COMMIT)
+docker/server.env
+docker/users.csv
+
 # Local iOS signing overrides
 apps/ios/LocalSigning.xcconfig
 
