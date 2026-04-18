@@ -96,7 +96,7 @@
       "memory-core": {
         config: {
           dreaming: {
-            enabled: true,
+            enabled: false,
             timezone: "Asia/Shanghai",
             frequency: "0 3 * * *",
           },
