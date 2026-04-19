@@ -11,10 +11,12 @@
   // Agent 默认配置
   agents: {
     defaults: {
-      contextTokens: 400000,
       userTimezone: "Asia/Shanghai",
       llm: { idleTimeoutSeconds: 300 },
-      compaction: { mode: "safeguard", reserveTokens: 100000 },
+      compaction: { mode: "safeguard", reserveTokens: 200000 },
+      // 并发上限（10 群并行深度研究场景）
+      maxConcurrent: 16,
+      subagents: { maxConcurrent: 64 },
       // 语义搜索记忆 — apiKey 通过环境变量注入
       memorySearch: {
         provider: "openai",
@@ -88,7 +90,41 @@
         enabled: true,
         config: {
           routing: { defaultAgentId: "main" },
-          limits: { maxConcurrentTasks: 8 },
+          limits: { maxConcurrentTasks: 16 },
+        },
+      },
+      "memory-core": {
+        config: {
+          dreaming: {
+            enabled: false,
+            timezone: "Asia/Shanghai",
+            frequency: "0 3 * * *",
+          },
+        },
+      },
+      "active-memory": {
+        enabled: false,
+      },
+      "memory-wiki": {
+        enabled: true,
+        config: {
+          vaultMode: "bridge",
+          bridge: {
+            enabled: true,
+            readMemoryArtifacts: true,
+            indexDreamReports: true,
+            indexDailyNotes: true,
+            indexMemoryRoot: true,
+            followMemoryEvents: true,
+          },
+          ingest: {
+            autoCompile: true,
+            allowUrlIngest: true,
+          },
+          search: {
+            backend: "shared",
+            corpus: "all",
+          },
         },
       },
     },
@@ -98,10 +134,7 @@
   channels: {
     feishu: {
       enabled: true,
-      groups: { enabled: true, archive: true },
-      // "v1" = inline card + im.message.patch (safe, readable via API)
-      // "v2" = CardKit streaming (typewriter animation, full markdown, requires local cache for readback)
-      cardStreamVersion: "v1",
+      groupPolicy: "open",
     },
   },
 }

@@ -7,7 +7,8 @@
 
 import os from "node:os";
 import path from "node:path";
-import { normalizeAgentId, type OpenClawPluginApi } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import { normalizeAgentId } from "openclaw/plugin-sdk/feishu";
 import { loadCoreAgentDeps, type CoreConfig } from "./src/core-bridge.js";
 import { setupFileWatcher, type FileWatcher } from "./src/file-watcher.js";
 import { buildBackendModePrompt } from "./src/prompt.js";
@@ -25,7 +26,7 @@ export interface RealtimeConfig {
 
 // Singleton state - persists across plugin loads
 let server: RealtimeServer | null = null;
-let fileWatcher: FileWatcher | null = null;
+let _fileWatcher: FileWatcher | null = null;
 let serverStarting = false;
 
 type RealtimeAgentListEntry = {
@@ -100,7 +101,7 @@ const realtimePlugin = {
       });
 
       // Setup file watcher for USER.md and MEMORY.md
-      fileWatcher = setupFileWatcher({
+      _fileWatcher = setupFileWatcher({
         server,
         api,
         defaultAgentId,

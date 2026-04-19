@@ -5,8 +5,7 @@
   },
   "agents": {
     "defaults": {
-      "contextTokens": 400000,
-      "compaction": { "mode": "safeguard", "reserveTokens": 100000 },
+      "compaction": { "mode": "safeguard", "reserveTokens": 200000 },
       "model": {
         "primary": "openrouter/anthropic/claude-sonnet-4.6"
       },
@@ -37,12 +36,27 @@
         "apiKey": "sk-ant-not-used-on-server",
         "models": [
           {
+            "id": "claude-opus-4-7",
+            "name": "Claude Opus 4.7",
+            "api": "anthropic-messages",
+            "reasoning": true,
+            "input": ["text", "image"],
+            "contextWindow": 1000000,
+            "maxTokens": 128000,
+            "cost": {
+              "input": 5,
+              "output": 25,
+              "cacheRead": 0.5,
+              "cacheWrite": 6.25
+            }
+          },
+          {
             "id": "claude-opus-4-6",
             "name": "Claude Opus 4.6",
             "api": "anthropic-messages",
             "reasoning": true,
             "input": ["text", "image"],
-            "contextWindow": 400000,
+            "contextWindow": 1000000,
             "maxTokens": 128000,
             "cost": {
               "input": 5,
@@ -72,12 +86,27 @@
         "baseUrl": "https://openrouter.ai/api/v1",
         "models": [
           {
+            "id": "anthropic/claude-opus-4.7",
+            "name": "Claude Opus 4.7",
+            "api": "openai-completions",
+            "reasoning": true,
+            "input": ["text", "image"],
+            "contextWindow": 1000000,
+            "maxTokens": 128000,
+            "cost": {
+              "input": 5,
+              "output": 25,
+              "cacheRead": 0.5,
+              "cacheWrite": 6.25
+            }
+          },
+          {
             "id": "anthropic/claude-opus-4.6",
             "name": "Claude Opus 4.6",
             "api": "openai-completions",
             "reasoning": true,
             "input": ["text", "image"],
-            "contextWindow": 400000,
+            "contextWindow": 1000000,
             "maxTokens": 128000,
             "cost": {
               "input": 5,
