@@ -37,9 +37,9 @@ sha256() { command -v sha256sum &>/dev/null && sha256sum || shasum -a 256; }
 resolve_model() {
   local provider="${2:-openrouter}"
   case "$1" in
-    sonnet|sonnet-4.6)     [ "$provider" = "anthropic" ] && echo "anthropic/claude-sonnet-4-6" || echo "openrouter/anthropic/claude-sonnet-4.6" ;;
-    opus|opus-4.7)         [ "$provider" = "anthropic" ] && echo "anthropic/claude-opus-4-7"   || echo "openrouter/anthropic/claude-opus-4.7" ;;
-    opus46|opus-4.6)       [ "$provider" = "anthropic" ] && echo "anthropic/claude-opus-4-6"   || echo "openrouter/anthropic/claude-opus-4.6" ;;
+    sonnet|sonnet-4.6)     [ "$provider" = "anthropic" ] && echo "anthropic/anthropic.claude-sonnet-4-6" || echo "openrouter/anthropic/claude-sonnet-4.6" ;;
+    opus|opus-4.7)         [ "$provider" = "anthropic" ] && echo "anthropic/anthropic.claude-opus-4-7"   || echo "openrouter/anthropic/claude-opus-4.7" ;;
+    opus46|opus-4.6)       [ "$provider" = "anthropic" ] && echo "anthropic/anthropic.claude-opus-4-6"   || echo "openrouter/anthropic/claude-opus-4.6" ;;
     haiku|haiku-3.5)       echo "openrouter/anthropic/claude-3.5-haiku" ;;
     gemini-3.1|gemini-3.1-pro) echo "openrouter/google/gemini-3.1-pro-preview" ;;
     gemini-2.5|gemini-pro) echo "openrouter/google/gemini-2.5-pro-preview" ;;
