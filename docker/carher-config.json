@@ -40,12 +40,12 @@
   "models": {
     "providers": {
       "anthropic": {
-        "baseUrl": "https://api.anthropic.com",
+        "baseUrl": "https://litellm.carher.net",
         "apiKey": "sk-ant-not-used-on-server",
         "models": [
           {
-            "id": "claude-opus-4-7",
-            "name": "Claude Opus 4.7",
+            "id": "anthropic.claude-opus-4-7",
+            "name": "Claude Opus 4.7 (Wangsu)",
             "api": "anthropic-messages",
             "reasoning": true,
             "input": ["text", "image"],
@@ -59,8 +59,8 @@
             }
           },
           {
-            "id": "claude-opus-4-6",
-            "name": "Claude Opus 4.6",
+            "id": "anthropic.claude-opus-4-6",
+            "name": "Claude Opus 4.6 (Wangsu)",
             "api": "anthropic-messages",
             "reasoning": true,
             "input": ["text", "image"],
@@ -74,8 +74,8 @@
             }
           },
           {
-            "id": "claude-sonnet-4-6",
-            "name": "Claude Sonnet 4.6",
+            "id": "anthropic.claude-sonnet-4-6",
+            "name": "Claude Sonnet 4.6 (Wangsu)",
             "api": "anthropic-messages",
             "reasoning": true,
             "input": ["text", "image"],

@@ -331,9 +331,15 @@ echo -e "${GREEN}  ✓ Google Cloud 凭证${NC}"
 
 # Auto-read ALL env.vars from ~/.openclaw/openclaw.json (single source of truth).
 # Propagates every API key (OPENROUTER, GROQ, DEEPGRAM, etc.) to Docker.
+# EXCLUDE: ANTHROPIC_OAUTH_TOKEN — carher uses LiteLLM wangsu path via API key,
+# not native Anthropic OAuth. Leaking OAuth token would make OpenClaw prefer
+# oauth → bypass LiteLLM → hit api.anthropic.com directly (needs VPN in CN).
 ENV_ARGS=()
 while IFS='=' read -r key val; do
   [ -n "$key" ] || continue
+  case "$key" in
+    ANTHROPIC_OAUTH_TOKEN) continue ;;
+  esac
   ENV_ARGS+=(-e "${key}=${val}")
 done < <(python3 -c "
 import json, os
@@ -343,6 +349,12 @@ try:
         print(f'{k}={v}')
 except: pass
 " 2>/dev/null)
+
+# Inject ANTHROPIC_API_KEY = ANTHROPIC_AUTH_TOKEN so OpenClaw's anthropic
+# provider authenticates via LiteLLM virtual key (same token Claude Code uses).
+if [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
+  ENV_ARGS+=(-e "ANTHROPIC_API_KEY=${ANTHROPIC_AUTH_TOKEN}")
+fi
 
 # Verify OPENROUTER_API_KEY is present (required for AI models).
 HAS_OPENROUTER=""
@@ -443,16 +455,17 @@ if model:
 else:
     agents = {'defaults': {}}
 
-# Per-user model whitelist: both providers available, aliases follow CSV provider
-google_anthropic_routing = {'params': {'provider': {'order': ['Google', 'Anthropic'], 'allow_fallbacks': True}}}
+# Per-user model whitelist: both providers available, aliases follow CSV provider.
+# Provider routing (order/ignore/allow_fallbacks) lives in base carher-config.json
+# only; $include deep-merge preserves those params when per-user sets alias.
 if provider == 'anthropic':
     agents['defaults']['models'] = {
-        'anthropic/claude-opus-4-7': {'alias': 'opus'},
-        'anthropic/claude-opus-4-6': {'alias': 'opus46'},
-        'anthropic/claude-sonnet-4-6': {'alias': 'sonnet'},
-        'openrouter/anthropic/claude-opus-4.7': {**{'alias': 'or-opus'}, **google_anthropic_routing},
-        'openrouter/anthropic/claude-opus-4.6': {**{'alias': 'or-opus46'}, **google_anthropic_routing},
-        'openrouter/anthropic/claude-sonnet-4.6': {**{'alias': 'or-sonnet'}, **google_anthropic_routing},
+        'anthropic/anthropic.claude-opus-4-7': {'alias': 'opus'},
+        'anthropic/anthropic.claude-opus-4-6': {'alias': 'opus46'},
+        'anthropic/anthropic.claude-sonnet-4-6': {'alias': 'sonnet'},
+        'openrouter/anthropic/claude-opus-4.7': {'alias': 'or-opus'},
+        'openrouter/anthropic/claude-opus-4.6': {'alias': 'or-opus46'},
+        'openrouter/anthropic/claude-sonnet-4.6': {'alias': 'or-sonnet'},
         'openrouter/google/gemini-3.1-pro-preview': {'alias': 'gemini'},
         'openrouter/minimax/minimax-m2.7': {'alias': 'minimax'},
         'openrouter/z-ai/glm-5': {'alias': 'glm'},
@@ -461,12 +474,12 @@ if provider == 'anthropic':
     }
 else:
     agents['defaults']['models'] = {
-        'openrouter/anthropic/claude-opus-4.7': {**{'alias': 'opus'}, **google_anthropic_routing},
-        'openrouter/anthropic/claude-opus-4.6': {**{'alias': 'opus46'}, **google_anthropic_routing},
-        'openrouter/anthropic/claude-sonnet-4.6': {**{'alias': 'sonnet'}, **google_anthropic_routing},
-        'anthropic/claude-opus-4-7': {'alias': 'or-opus'},
-        'anthropic/claude-opus-4-6': {'alias': 'or-opus46'},
-        'anthropic/claude-sonnet-4-6': {'alias': 'or-sonnet'},
+        'openrouter/anthropic/claude-opus-4.7': {'alias': 'opus'},
+        'openrouter/anthropic/claude-opus-4.6': {'alias': 'opus46'},
+        'openrouter/anthropic/claude-sonnet-4.6': {'alias': 'sonnet'},
+        'anthropic/anthropic.claude-opus-4-7': {'alias': 'or-opus'},
+        'anthropic/anthropic.claude-opus-4-6': {'alias': 'or-opus46'},
+        'anthropic/anthropic.claude-sonnet-4-6': {'alias': 'or-sonnet'},
         'openrouter/google/gemini-3.1-pro-preview': {'alias': 'gemini'},
         'openrouter/minimax/minimax-m2.7': {'alias': 'minimax'},
         'openrouter/z-ai/glm-5': {'alias': 'glm'},
