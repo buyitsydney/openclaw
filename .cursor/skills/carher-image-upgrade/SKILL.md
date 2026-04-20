@@ -67,74 +67,144 @@ git branch --show-current
 
 架构文件只在 `feat/carher-a-b-decouple` 分支（已 push 到 `carher` remote）。
 
-## 升级执行 — 4 条命令
+---
+
+## 兼容性三道 Gate(必须全过才能 docker build)
+
+这三道 gate 在 **docker build 之前**拦住编译期 SDK drift。
+跳过任一道都可能导致 build 成功但容器运行时炸(历史教训:`TypeError: xxx.yyy is not a function`)。
+
+### Gate 1: `tsc --noEmit` 预飞 — 编译期抓 SDK drift
 
 ```bash
+scripts/carher-preflight.sh --tag=2026.X.Y
+```
+
+这会:
+
+1. `docker pull ghcr.io/openclaw/openclaw:2026.X.Y`
+2. 在该镜像里对 `docker/plugins/feishu-her` 和 `docker/plugins/a2a-gateway` 各跑 `npx --no tsc --noEmit`
+3. 如有编译错误(SDK 接口漂移),打印详细错误并 exit 3
+
+**出错怎么办**:
+
+- 看 tsc 报哪个符号找不到(例:`Property 'ChannelLogSink' does not exist on 'openclaw/plugin-sdk'`)
+- 按 `patches/drift-fix/README.md` 流程生成 patch,放到 `patches/drift-fix/<plugin>-v<TAG>-drift-fix.git.patch`
+- 重新跑 preflight,直到退出码 0
+
+### Gate 2: `peerDependencies` 范围保险
+
+两个 plugin 的 `package.json` 都声明了:
+
+```json
+"peerDependencies": {
+  "openclaw": ">=2026.1.26 <2026.5.0"
+}
+```
+
+这是 **npm install 期的保险**。如果 base image 里 openclaw 版本超出该范围,`docker build` 会因 `npm install` ERESOLVE 失败。
+
+**跨上界(比如升到 2026.5.x)时**:
+
+- 先跑 Gate 1 confirm 兼容
+- 真的兼容就把上界放宽到 `<2026.6.0`,否则停在旧版保护用户
+- 改 plugin 的 `package.json` 版本也记得同步 plugin 自身的 semver
+
+### Gate 3: 查 drift-fix patch 库
+
+```bash
+ls patches/drift-fix/feishu-her-v2026.X.Y*.patch 2>/dev/null
+ls patches/drift-fix/a2a-gateway-v2026.X.Y*.patch 2>/dev/null
+```
+
+- 有文件 = 这个版本有已知漂移,Dockerfile build 会应用 patch
+- 无文件 + Gate 1 通过 = 没有已知漂移,直接 build
+- 无文件 + Gate 1 失败 = 未知漂移,**先补 patch 再 build**
+
+## 升级执行 — 5 条命令
+
+```bash
+# 0. 【强制】兼容性预飞(Gate 1-3 见上节) — 编译期抓 SDK drift
+scripts/carher-preflight.sh --tag=2026.X.Y
+#    退出码 0 才能继续。3 = 编译失败,先补 drift-fix patch
+
 # 1. 改 Dockerfile.carher.v2 第 9 行
 #    ARG OPENCLAW_TAG=2026.X.OLD  →  ARG OPENCLAW_TAG=2026.X.NEW
 
-# 2. 构建新镜像（起独立 tag，永远不覆盖旧的）
-docker build -f Dockerfile.carher.v2 \
+# 2. 构建新镜像(起独立 tag,永远不覆盖旧的)
+DOCKER_BUILDKIT=1 docker build -f Dockerfile.carher.v2 \
   --build-arg OPENCLAW_TAG=2026.X.Y \
   -t carher-core:<MMDD>-ab-v2 .
+#    BuildKit 必须开(cache mount 依赖)。npm 包命中 cache 后升级降到 30-60s
 
-# 3. 停旧容器 + 用新 tag 起（canary 先切 102）
+# 3. 停旧容器 + 用新 tag 起(canary 先切 102)
 docker rm -f carher-102
 CARHER_ACP_ENABLED=1 ./start-user.sh --id=102 --image=carher-core:<MMDD>-ab-v2
 
-# 4. 等 gateway ready（~25-30s）再验证
-docker logs carher-102 2>&1 | grep -E "gateway\] ready|WSClient connected|acpx runtime backend ready|refreshRegistryPeers found"
+# 4. 自动自检(10 gate)— 失败立刻回滚
+scripts/carher-verify.sh --id=102 --wait=60
+#    exit 0 = 全过  /  exit 3 = 有 FAIL,按提示回滚
 ```
 
 ### 预期时间成本
 
-| 步骤                     | 冷（首次官方 tag）               | 热（镜像已在本地） |
-| ------------------------ | -------------------------------- | ------------------ |
-| `docker pull`            | 30s - 5min                       | 0s                 |
-| `docker build`           | 10-14 min（base 变，缓存全失效） | < 10s              |
-| `docker rm + start-user` | 40-90s                           | 40-90s             |
-| Gateway ready            | ~25-30s                          | ~25-30s            |
-| **总停机**               | ~1-2 min                         | ~1-2 min           |
+| 步骤                         | 冷(首次官方 tag)                | 热(镜像已在本地) |
+| ---------------------------- | ------------------------------- | ---------------- |
+| `carher-preflight.sh`        | 30s-5min(含 docker pull)        | 15-30s           |
+| `docker pull`                | 30s-5min                        | 0s               |
+| `docker build`(+cache mount) | 3-5 min(base 变,npm cache 命中) | <10s             |
+| `docker rm + start-user`     | 40-90s                          | 40-90s           |
+| Gateway ready                | ~25-30s                         | ~25-30s          |
+| `carher-verify.sh`           | ~30-60s(等 gateway ready)       | ~10-20s          |
+| **总停机**                   | ~2-3 min                        | ~1-2 min         |
 
-注：Dockerfile 当前**没加** `--mount=type=cache,target=/root/.npm`，加上之后 build 耗时可降到 3-5 min。属下一轮优化。
+注:当前 Dockerfile.carher.v2 **已加** `--mount=type=cache,target=/root/.npm` (2026-04-20)。
+Pip 依赖也有 cache mount。base image tag 变时 FROM 层以下全失效,但 npm/pip 包缓存仍保留。
 
-## 升级后 — 必须全过的 5 个验证点
+## 升级后 — 自动自检(10 gate,脚本化)
 
 ```bash
-docker logs carher-102 2>&1 | tail -100
+scripts/carher-verify.sh --id=102 --wait=60
 ```
 
-### 日志层（看 docker logs）
+10 个 gate,全过退出码 0,任一失败退出码 3 并打印建议回滚命令。
 
-```
-✅ [gateway] ready (7 plugins: a2a-gateway, acpx, device-pair,
-                    feishu-her, memory-wiki, phone-control, talk-voice; ~25s)
-✅ [feishu] [default] Feishu WSClient connected
-✅ [plugins] a2a-gateway: refreshRegistryPeers found 3 peers
-✅ [plugins] embedded acpx runtime backend ready
-```
+### 10 个 Gate 一览
 
-任一缺失或变成 `error/failed/exception` 都是**回滚信号**。特别警惕：
+| #   | Gate                | 关键日志/检查                                        | 失败含义                                                                             |
+| --- | ------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| 1   | gateway ready       | `[gateway] ready (N plugins...)`                     | 容器没起来,升级彻底失败                                                              |
+| 2   | plugin 数量         | `N plugins` 中 N ≥ 7                                 | A+B 架构缺插件(a2a/acpx/device-pair/feishu-her/memory-wiki/phone-control/talk-voice) |
+| 3   | feishu WSClient     | `[feishu] WSClient connected`                        | tenant_access_token 失效或 appId/botOpenId 错                                        |
+| 4   | A2A peers           | `refreshRegistryPeers found N peers`,N>0             | Redis 连不上或 A2A 没启用(警告,非失败)                                               |
+| 5   | acpx runtime        | `embedded acpx runtime backend ready`                | ACP 未启用或冷启动还没完(警告)                                                       |
+| 6   | 无 plugin 契约错误  | 无 `plugin validation/schema failed`                 | **SDK drift 运行时暴露** — 立刻回滚 + 补 drift-fix patch                             |
+| 7   | bundled feishu 清理 | `/app/{extensions,dist,dist-runtime}/feishu/` 不存在 | Dockerfile rm -rf 不全,官方挪了目录                                                  |
+| 8   | a2a-gateway ioredis | `node_modules/ioredis/package.json` 存在             | npm install 失败被忽略,peers 会为 0                                                  |
+| 9   | feishu-her 依赖     | `node_modules/@larksuiteoapi` 存在                   | feishu 连不上                                                                        |
+| 10  | 无严重运行时错误    | 无 `FATAL/uncaughtException/crash`                   | 运行期炸了,立刻回滚                                                                  |
 
-- `plugin validation failed` / `schema mismatch` — Plugin SDK 漂移
-- `channel config rejected` — Channel contract 变了
-- bundled feishu 冒出来 — 官方挪了目录，得更新 `rm -rf` 清理位置
+### 脚本返回码
 
-### 用户层（真人验收）
+- `0` — 全部通过,可以继续推广
+- `3` — 有 FAIL,建议立即回滚(脚本会打印回滚命令)
+- `2` — 容器不存在或未运行
 
-挂 monitor 盯 `deliver:` 事件后，请真人（102 是 tester2）在飞书私聊发一句：
+### 真人验收(10 gate 之外,必做)
+
+挂 monitor 盯 `deliver:` 事件后,请真人(102 是 tester2)在飞书私聊发一句:
 
 ```
 你好。检查下 A2A 和 ACP 状态？
 ```
 
-期望：
+期望:
 
 - 飞书看到回复
 - 日志出现 `deliver: kind=final hasText=true`
-- bot 回复里应包含 `A2A ✅` 和 `ACP` 两个关键词（bot 自检）
+- bot 回复里应包含 `A2A ✅` 和 `ACP` 两个关键词(bot 自检)
 
-### Monitor 模板（Claude 的 Monitor 工具）
+### Monitor 模板(Claude 的 Monitor 工具)
 
 ```bash
 docker logs -f --since=1s carher-102 2>&1 | grep --line-buffered -E \
@@ -208,15 +278,22 @@ docker exec carher-102 ps auxf | grep claude-agent-acp
 
 ### 踩坑 4：plugin 契约变了，feishu-her 运行时炸
 
-**当前防御**：只有运行时 smoke（canary 真人消息）。**没有编译期/启动期的契约检查**。
+**纵深防御(2026-04-20 后)**:
 
-出现下面 stack trace 立刻回滚：
+1. **编译期**:`carher-preflight.sh` 的 `tsc --noEmit` 抓接口漂移(Gate 1)
+2. **包管理器期**:`peerDependencies: ">=2026.1.26 <2026.5.0"` 拦跨代(Gate 2)
+3. **构建期**:`patches/drift-fix/` 应用已知漂移 patch(Gate 3)
+4. **启动期**:`carher-verify.sh` 的 Gate 6 查 `plugin validation/schema` 错误
+5. **运行期**:canary 真人消息
+
+出现下面 stack trace 立刻回滚,并**回去补 Gate 1 的 drift-fix patch**:
 
 - `TypeError: xxx.yyy is not a function` 来自 `@openclaw/` 任何包
 - `manifest validation failed`
 - `schema: additionalProperties not allowed`
+- `Cannot find module 'openclaw/plugin-sdk/<某符号>'`
 
-同时开 issue 跟踪：是我们 fork 的插件要适配，还是官方 regression。
+历史常见漂移参考 `patches/drift-fix/README.md` 的"已知漂移清单"。
 
 ### 踩坑 5：本地 worktree push 被 pre-push hook 挡住
 
@@ -247,3 +324,8 @@ pnpm install   # 一次性，后续 push 都通
   - 升级停机 ~113s，回滚停机 ~68s
   - 7 plugins 全绿，A2A 3 peers，ACP 派发成功
   - 真人验收：飞书私聊 "A2A ✅ 在线，ACP 任务已派发" 返回正常
+- **2026-04-20 晚**: 加纵深防御(preflight + peerDependencies 上界 + drift-fix 库 + verify 10 gate)
+  - `scripts/carher-preflight.sh` — 编译期 SDK drift 检查
+  - `scripts/carher-verify.sh` — 升级后 10 gate 自动自检(SIGPIPE fix 后 10/10 PASS 实测)
+  - `patches/drift-fix/` — 每版本已知漂移 patch 库
+  - Dockerfile 加 npm cache mount → 预期 build 时间 14min → 3-5min

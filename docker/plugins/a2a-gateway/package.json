@@ -12,6 +12,7 @@
     "@bufbuild/protobuf": "^2.11.0",
     "@grpc/grpc-js": "^1.14.3",
     "express": "^4.21.2",
+    "ioredis": "^5.10.1",
     "multicast-dns": "^7.2.5",
     "uuid": "^9.0.1"
   },
@@ -24,6 +25,9 @@
     "supertest": "^7.1.4",
     "tsx": "^4.19.0",
     "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.3.2 <2026.5.0"
   },
   "openclaw": {
     "extensions": [
