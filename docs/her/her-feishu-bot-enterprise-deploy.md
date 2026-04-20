@@ -333,11 +333,14 @@ source ~/.bashrc
 
 ```
 仓库根目录/
-├── start-user.sh               ← 用户容器管理主脚本（启动/停止/日志/列表）
-├── Dockerfile.carher            ← Docker 镜像构建文件
+├── start-user.sh                ← 用户容器管理主脚本（启动/停止/日志/列表）
+├── Dockerfile.carher.v2         ← Docker 镜像构建文件（A+B 三轴解耦架构）
 ├── scripts/
 │   └── carher-entrypoint.sh     ← 容器入口脚本
 └── docker/
+    ├── plugins/                 ← CarHer 自有插件（独立 npm package，独立 semver）
+    │   ├── feishu-her/          ← Feishu 插件 fork（channel id=feishu）
+    │   └── a2a-gateway/         ← A2A gateway 插件
     ├── users.csv                ← 用户注册表（飞书凭证，.gitignore 不入库）
     ├── servers.txt              ← 服务器凭证 + token 集中管理（.gitignore 不入库）
     ├── server.env               ← 服务器本地环境变量（.gitignore 不入库，见下方说明）
@@ -346,6 +349,8 @@ source ~/.bashrc
     ├── user-configs/            ← start-user.sh 自动生成的 per-user 配置（.gitignore 不入库）
     └── workspace/               ← workspace 模板文件（SOUL.md 等，启动时自动同步到容器）
 ```
+
+> **镜像架构细节**见 [`her-image-architecture.md`](./her-image-architecture.md)（三轴解耦：官方 openclaw base + feishu-her + a2a-gateway 独立升级/回滚）。
 
 #### 配置架构（单一来源 Single Source of Truth）
 
@@ -383,8 +388,6 @@ per-user.json / openclaw.json ← 每个环境的最终配置（+ secrets/channe
 
 **设计原则**：代码统一（`start-user.sh` 入 git），配置分离（`server.env` 不入 git）。Mac 是**代码**的唯一源头（通过 git push/pull 同步）。`users.csv`、`servers.txt`、`server.env` 等含密钥的配置文件 **不入 git**，各服务器独立维护。
 
-> **重要**：realtime 插件的 Gemini 配置（`plugins.entries.realtime.config.gemini`）必须作为 sibling key 写在 per-user 配置主文件中（不能放在被 `$include` 的文件里），因为 realtime 插件的 bootstrap 接口直接用 `JSON.parse()` 读取主配置文件。`start-user.sh` 已自动处理此约束。
-
 ### 重建/重启安全规则
 
 > **铁律：重建任何生产容器前，必须确认最近 15 分钟无用户交互。**
@@ -399,22 +402,26 @@ per-user.json / openclaw.json ← 每个环境的最终配置（+ secrets/channe
 
 ### 升级/回滚
 
-```bash
-# 拉取最新代码
-git pull
+> **详细方案**见 [`her-image-architecture.md`](./her-image-architecture.md#四升级与回滚流程)。以下是简版命令：
 
-# 滚动升级（start-user.sh 自动检测代码变更并重建镜像，每次只影响 1 人 2-3 秒）
+```bash
+# 跟官方 OpenClaw 发版：改 Dockerfile.carher.v2 的 ARG OPENCLAW_TAG
+# 然后构建新 tag 的镜像（不覆盖旧 tag），灰度切换：
+docker build -f Dockerfile.carher.v2 \
+  --build-arg OPENCLAW_TAG=<新 tag> -t carher-core:<日期>-ab-v2 .
+
+# 滚动升级（每次只动 1 个用户，停旧容器 + 用新镜像起）
 for i in $(seq 1 200); do
-  ./start-user.sh --id=$i --local
+  docker rm -f carher-$i
+  ./start-user.sh --id=$i --image=carher-core:<日期>-ab-v2
   sleep 10
 done
 
 # 跳过镜像重建（仅重启容器，用于配置变更）
-./start-user.sh --id=1 --local --no-rebuild
+./start-user.sh --id=1 --no-rebuild
 
-# 回滚：checkout 旧版本代码后重新启动（镜像会自动重建为旧版本）
-git checkout v旧版本
-./start-user.sh --id=1 --local
+# 回滚：用旧镜像 tag 重新起，不用回滚代码
+./start-user.sh --id=1 --image=carher-core:<旧日期>-ab-v2
 ```
 
 ---

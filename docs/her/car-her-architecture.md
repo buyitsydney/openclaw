@@ -1,5 +1,14 @@
 # Car Her 架构设计：从旁路集成到主干道集成
 
+> **⚠️ DEPRECATED (2026-04-20)**
+>
+> 本文档所描述的 realtime 插件（Gemini Live 语音）已于 2026-04 从 CarHer 产品线正式移除。
+> 文档主题"realtime 插件从旁路集成重构为主干道集成"因此不再适用，仅作历史参考。
+>
+> 现行镜像架构见 [`her-image-architecture.md`](./her-image-architecture.md)。
+
+---
+
 ## 背景
 
 Car Her 是基于 OpenClaw realtime 插件的车载语音助手产品。Her 作为前台快思考语音界面，与 OpenClaw 慢思考大脑配合。
