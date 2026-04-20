@@ -82,7 +82,10 @@
   plugins: {
     deny: ["feishu"],
     load: {
-      paths: ["/app/docker/plugins/a2a-gateway"],
+      paths: [
+        "/app/docker/plugins/feishu-her",
+        "/app/docker/plugins/a2a-gateway",
+      ],
     },
     entries: {
       "feishu-her": { enabled: true },

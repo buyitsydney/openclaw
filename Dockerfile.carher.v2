@@ -1,0 +1,61 @@
+# Car Her v2 — A+B 架构：openclaw 官方镜像作为 base，feishu-her/a2a-gateway 作为独立插件
+#
+# 升级 openclaw：只改 FROM 行一个 tag
+# 升级 feishu-her：只重装 /app/docker/plugins/feishu-her (独立语义化版本)
+# 升级 a2a-gateway：只重装 /app/docker/plugins/a2a-gateway (独立语义化版本)
+#
+# 三条轴独立，互不耦合。
+
+ARG OPENCLAW_TAG=2026.4.14
+FROM ghcr.io/openclaw/openclaw:${OPENCLAW_TAG}
+
+# Base 镜像默认 USER=node，apt/pip/npm 操作需要 root
+USER root
+
+# CarHer 运行时依赖（官方镜像未包含）：
+#   python3 + ffmpeg  → live-frontend 代理
+#   chromium + 字体   → browser 工具 + 中文/emoji 渲染
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      python3 python3-pip python3-venv ffmpeg \
+      chromium fonts-liberation fonts-noto-cjk fonts-noto-color-emoji && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Live Frontend Python 依赖
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install --break-system-packages \
+      -r /app/extensions/realtime/live-frontend/requirements.txt requests
+
+# 独立插件 —— 拷贝 + npm install --omit=dev（每个插件各自一层，缓存友好）
+WORKDIR /app
+
+# 官方 image 内可能打包了 bundled feishu-her（版本跟着 openclaw 走）。
+# 我们用自己 fork 的 feishu-her，所以先把 bundled 版本清掉，避免重复加载冲突。
+RUN rm -rf /app/extensions/feishu-her
+
+COPY docker/plugins/feishu-her  /app/docker/plugins/feishu-her
+RUN cd /app/docker/plugins/feishu-her && \
+    npm install --omit=dev --ignore-scripts 2>/dev/null || true
+
+COPY docker/plugins/a2a-gateway /app/docker/plugins/a2a-gateway
+RUN cd /app/docker/plugins/a2a-gateway && \
+    npm install --omit=dev --ignore-scripts 2>/dev/null || true
+
+# CarHer 共享配置（shared-config.json5 + 用户 overlay）
+COPY docker/shared-config.json5 /app/docker/shared-config.json5
+COPY docker/user-configs         /app/docker/user-configs
+
+# Entrypoint
+COPY scripts/carher-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# 全局 npm 安装去到持久卷（Her 的 CLI 安装跨重启保留）
+ENV NPM_CONFIG_PREFIX="/data/.openclaw/local"
+ENV PATH="/data/.openclaw/local/bin:${PATH}"
+ENV NODE_ENV=production
+
+ARG BUILD_HASH=unknown
+LABEL carher.build.hash=$BUILD_HASH
+
+EXPOSE 18789 18790 8000 8080
+CMD ["/entrypoint.sh"]
