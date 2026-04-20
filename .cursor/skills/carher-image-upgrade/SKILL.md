@@ -69,30 +69,12 @@ git branch --show-current
 
 ---
 
-## 兼容性三道 Gate(必须全过才能 docker build)
+## 兼容性两道 Gate(必须全过才能 docker build)
 
-这三道 gate 在 **docker build 之前**拦住编译期 SDK drift。
-跳过任一道都可能导致 build 成功但容器运行时炸(历史教训:`TypeError: xxx.yyy is not a function`)。
+这两道 gate 在 **docker build 之前/期间**拦住已知 SDK drift。
+编译期零误报的 preflight 已砍掉 —— 实测维护成本太高,真的 drift 还是 verify Gate 6/10 运行期抓最可靠。
 
-### Gate 1: `tsc --noEmit` 预飞 — 编译期抓 SDK drift
-
-```bash
-scripts/carher-preflight.sh --tag=2026.X.Y
-```
-
-这会:
-
-1. `docker pull ghcr.io/openclaw/openclaw:2026.X.Y`
-2. 在该镜像里对 `docker/plugins/feishu-her` 和 `docker/plugins/a2a-gateway` 各跑 `npx --no tsc --noEmit`
-3. 如有编译错误(SDK 接口漂移),打印详细错误并 exit 3
-
-**出错怎么办**:
-
-- 看 tsc 报哪个符号找不到(例:`Property 'ChannelLogSink' does not exist on 'openclaw/plugin-sdk'`)
-- 按 `patches/drift-fix/README.md` 流程生成 patch,放到 `patches/drift-fix/<plugin>-v<TAG>-drift-fix.git.patch`
-- 重新跑 preflight,直到退出码 0
-
-### Gate 2: `peerDependencies` 范围保险
+### Gate 1: `peerDependencies` 范围保险
 
 两个 plugin 的 `package.json` 都声明了:
 
@@ -102,15 +84,15 @@ scripts/carher-preflight.sh --tag=2026.X.Y
 }
 ```
 
-这是 **npm install 期的保险**。如果 base image 里 openclaw 版本超出该范围,`docker build` 会因 `npm install` ERESOLVE 失败。
+这是 **npm install 期的保险**。如果 base image 里 openclaw 版本超出该范围,`docker build` 会因 `npm install` ERESOLVE 失败,直接拦住跨代升级。
 
 **跨上界(比如升到 2026.5.x)时**:
 
-- 先跑 Gate 1 confirm 兼容
+- 先手动在新版 base image 里跑 `docker run --rm ghcr.io/openclaw/openclaw:<新tag> sh -c "cd /app && node -e 'require(\"openclaw/plugin-sdk\")'"` 冒一下烟
 - 真的兼容就把上界放宽到 `<2026.6.0`,否则停在旧版保护用户
 - 改 plugin 的 `package.json` 版本也记得同步 plugin 自身的 semver
 
-### Gate 3: 查 drift-fix patch 库
+### Gate 2: 查 drift-fix patch 库
 
 ```bash
 ls patches/drift-fix/feishu-her-v2026.X.Y*.patch 2>/dev/null
@@ -118,16 +100,11 @@ ls patches/drift-fix/a2a-gateway-v2026.X.Y*.patch 2>/dev/null
 ```
 
 - 有文件 = 这个版本有已知漂移,Dockerfile build 会应用 patch
-- 无文件 + Gate 1 通过 = 没有已知漂移,直接 build
-- 无文件 + Gate 1 失败 = 未知漂移,**先补 patch 再 build**
+- 无文件 = 没有已知漂移,直接 build;真踩到未知漂移会被 `carher-verify.sh` Gate 6(plugin validation)或 Gate 10(fatal)抓到
 
-## 升级执行 — 5 条命令
+## 升级执行 — 4 条命令
 
 ```bash
-# 0. 【强制】兼容性预飞(Gate 1-3 见上节) — 编译期抓 SDK drift
-scripts/carher-preflight.sh --tag=2026.X.Y
-#    退出码 0 才能继续。3 = 编译失败,先补 drift-fix patch
-
 # 1. 改 Dockerfile.carher.v2 第 9 行
 #    ARG OPENCLAW_TAG=2026.X.OLD  →  ARG OPENCLAW_TAG=2026.X.NEW
 
@@ -280,13 +257,12 @@ docker exec carher-102 ps auxf | grep claude-agent-acp
 
 **纵深防御(2026-04-20 后)**:
 
-1. **编译期**:`carher-preflight.sh` 的 `tsc --noEmit` 抓接口漂移(Gate 1)
-2. **包管理器期**:`peerDependencies: ">=2026.1.26 <2026.5.0"` 拦跨代(Gate 2)
-3. **构建期**:`patches/drift-fix/` 应用已知漂移 patch(Gate 3)
-4. **启动期**:`carher-verify.sh` 的 Gate 6 查 `plugin validation/schema` 错误
-5. **运行期**:canary 真人消息
+1. **包管理器期**:`peerDependencies: ">=2026.1.26 <2026.5.0"` 拦跨代(Gate 1)
+2. **构建期**:`patches/drift-fix/` 应用已知漂移 patch(Gate 2)
+3. **启动期**:`carher-verify.sh` 的 Gate 6 查 `plugin validation/schema` 错误
+4. **运行期**:canary 真人消息
 
-出现下面 stack trace 立刻回滚,并**回去补 Gate 1 的 drift-fix patch**:
+出现下面 stack trace 立刻回滚,并**补 drift-fix patch**:
 
 - `TypeError: xxx.yyy is not a function` 来自 `@openclaw/` 任何包
 - `manifest validation failed`
@@ -324,8 +300,8 @@ pnpm install   # 一次性，后续 push 都通
   - 升级停机 ~113s，回滚停机 ~68s
   - 7 plugins 全绿，A2A 3 peers，ACP 派发成功
   - 真人验收：飞书私聊 "A2A ✅ 在线，ACP 任务已派发" 返回正常
-- **2026-04-20 晚**: 加纵深防御(preflight + peerDependencies 上界 + drift-fix 库 + verify 10 gate)
-  - `scripts/carher-preflight.sh` — 编译期 SDK drift 检查
+- **2026-04-20 晚**: 加纵深防御(peerDependencies 上界 + drift-fix 库 + verify 10 gate + npm cache mount)
   - `scripts/carher-verify.sh` — 升级后 10 gate 自动自检(SIGPIPE fix 后 10/10 PASS 实测)
   - `patches/drift-fix/` — 每版本已知漂移 patch 库
   - Dockerfile 加 npm cache mount → 预期 build 时间 14min → 3-5min
+  - 编译期 preflight 尝试后砍掉 —— 复现 plugin tsc 环境复杂度过高,真 drift verify Gate 6/10 抓更可靠

@@ -1,6 +1,6 @@
 # CarHer SDK Drift Fix Patches
 
-跟官方 OpenClaw 升级时,如果 `scripts/carher-preflight.sh` 的 `tsc --noEmit` 报错,说明 upstream 改了 plugin SDK 接口(`src/plugin-sdk/*`),我们的 `docker/plugins/feishu-her` 或 `docker/plugins/a2a-gateway` 跟不上。
+跟官方 OpenClaw 升级时,如果 `docker build` 失败(npm install ERESOLVE 或 tsc/jiti 报错)或 `carher-verify.sh` Gate 6 报 plugin contract 错误,说明 upstream 改了 plugin SDK 接口(`src/plugin-sdk/*`),我们的 `docker/plugins/feishu-her` 或 `docker/plugins/a2a-gateway` 跟不上。
 
 此目录放每个受影响 OpenClaw 版本的**已知漂移修复** patch,在 `Dockerfile.carher.v2` build 时自动应用。
 
@@ -17,8 +17,8 @@
 
 ## Patch 生成流程
 
-1. 确认 `scripts/carher-preflight.sh --tag=<新 tag>` 报了哪些 tsc 错误
-2. 在 plugin 目录直接改代码让 tsc 过(不要改 OpenClaw SDK 本身)
+1. 升级 docker build 或运行时报错(看 tsc stderr / `carher-verify.sh` Gate 6 输出)
+2. 在 plugin 目录直接改代码让错误消失(不要改 OpenClaw SDK 本身)
 3. 生成 patch:
    ```bash
    cd docker/plugins/<plugin-name>
