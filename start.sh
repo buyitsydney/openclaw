@@ -122,6 +122,14 @@ if known_bot_open_ids:
 if host_app_id and host_bot_open_id:
     feishu["botOpenId"] = host_bot_open_id
 
+# OAuth redirect URI — feishu-her resolveOAuthRedirectUri() reads this.
+# 不显式写会回落到硬编码 auth.carher.net/feishu/oauth/callback；
+# 在非本地 Mac 的原生部署（例如 S1 yitian-her → s1-u13-auth.carher.net）
+# 必须通过 CARHER_AUTH_HOST env 覆盖，否则飞书 OAuth 回调会 20029/404。
+auth_host = os.environ.get("CARHER_AUTH_HOST", "auth.carher.net").strip()
+if auth_host:
+    feishu["oauthRedirectUri"] = f"https://{auth_host}/feishu/oauth/callback"
+
 config_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
 echo -e "${GREEN}  ✓ Feishu bot identity 已同步（host=${CARHER_HOST_FEISHU_NAME}）${NC}"
