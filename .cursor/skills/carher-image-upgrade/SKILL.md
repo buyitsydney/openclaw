@@ -125,18 +125,20 @@ scripts/carher-verify.sh --id=102 --wait=60
 
 ### 预期时间成本
 
-| 步骤                         | 冷(首次官方 tag)                | 热(镜像已在本地) |
-| ---------------------------- | ------------------------------- | ---------------- |
-| `carher-preflight.sh`        | 30s-5min(含 docker pull)        | 15-30s           |
-| `docker pull`                | 30s-5min                        | 0s               |
-| `docker build`(+cache mount) | 3-5 min(base 变,npm cache 命中) | <10s             |
-| `docker rm + start-user`     | 40-90s                          | 40-90s           |
-| Gateway ready                | ~25-30s                         | ~25-30s          |
-| `carher-verify.sh`           | ~30-60s(等 gateway ready)       | ~10-20s          |
-| **总停机**                   | ~2-3 min                        | ~1-2 min         |
+| 步骤                     | 冷(首次新 base tag)                 | 热(same base,改 plugin) |
+| ------------------------ | ----------------------------------- | ----------------------- |
+| `docker pull` 新 base    | 30s-5min                            | 0s                      |
+| `docker build`           | **~30 min**(2026-04-20 实测 34m26s) | 3-5 min                 |
+| `docker rm + start-user` | ~90s                                | ~90s                    |
+| Gateway ready            | ~25-30s                             | ~25-30s                 |
+| `carher-verify.sh`       | 0-2s(gateway 已 ready)              | 0-2s                    |
+| **总停机**(不含 build)   | **~90s + 25s ≈ 2 min**              | **~90s + 25s ≈ 2 min**  |
 
-注:当前 Dockerfile.carher.v2 **已加** `--mount=type=cache,target=/root/.npm` (2026-04-20)。
-Pip 依赖也有 cache mount。base image tag 变时 FROM 层以下全失效,但 npm/pip 包缓存仍保留。
+**重要更正(2026-04-20 演练后)**:冷 build 实测 **~30min**,不是旧版 skill 估的 3-5min。
+原因:base tag 变 → FROM 层失效 → apt/pip/npm/COPY 全部重跑。`--mount=type=cache,target=/root/.npm`
+只救 npm 包下载段(30s),apt 系仍全量。规划时间时按 **30min** 准备。
+
+注:build 时间 ≠ 停机时间。新 image 后台构建,`docker rm -f` 那一刻才开始停机。
 
 ## 升级后 — 自动自检(10 gate,脚本化)
 
@@ -188,16 +190,42 @@ docker logs -f --since=1s carher-102 2>&1 | grep --line-buffered -E \
   "(deliver:|gateway\] ready|WSClient connected|acpx runtime backend ready|refreshRegistryPeers found|Error|FAILED|exception|plugin (validation|schema))"
 ```
 
-## 回滚 — 只换 tag，不 checkout
+## 回滚 — 同大版本换 tag,不 checkout
 
 ```bash
 docker rm -f carher-102
 CARHER_ACP_ENABLED=1 ./start-user.sh --id=102 --image=carher-core:<旧日期>-ab-v2
 ```
 
-**旧 image 要保留**。每次升级产出的 tag 至少保留 30 天，不要 `docker rmi` 清。
+**旧 image 要保留**。每次升级产出的 tag 至少保留 30 天,不要 `docker rmi` 清。
 
-**回滚比升级快** — 镜像已在本地，省掉 build 和 pull，~60-70s 搞定。
+**回滚比升级快** — 镜像已在本地,省掉 build 和 pull,~60-70s 搞定。
+
+### ⚠️ 跨 schema 版本回滚(4.x → 3.x 这类)不无缝
+
+2026-04-20 演练发现:直接把 102 从 4.x 回到 2026.3.12,容器 restart loop:
+
+```
+Invalid config at /data/.openclaw/openclaw.json:
+- agents.defaults: Unrecognized key: "llm"
+- messages.tts: Unrecognized key: "providers"
+```
+
+**根因**:`docker/shared-config.json5` 写了 4.x 才引入的 schema 键,3.x 的 strict schema 不认。
+
+**回滚流程**(跨 schema 时):
+
+```bash
+# 1) 先注释掉 shared-config.json5 里 4.x-only 的 key
+#    agents.defaults.llm、messages.tts.providers、其他由 openclaw doctor 列出
+# 2) 清掉持久 config
+docker rm -f carher-102
+docker run --rm -v carher-102-data:/data alpine rm -f /data/openclaw.json
+# 3) 再起旧 image
+CARHER_ACP_ENABLED=1 ./start-user.sh --id=102 --image=carher-core:<老 tag>
+```
+
+**经验法则**:同大版本(4.x 之间)来回换无脑 swap 即可。跨代的回滚按上面流程。
 
 ## 全量推广（canary 102 → 全 200 用户）
 
@@ -296,12 +324,17 @@ pnpm install   # 一次性，后续 push 都通
 
 ## 历史演练记录
 
-- **2026-04-20**：0414 → 0415 → 回滚 0414 全链路实测通过（102 canary）
-  - 升级停机 ~113s，回滚停机 ~68s
-  - 7 plugins 全绿，A2A 3 peers，ACP 派发成功
-  - 真人验收：飞书私聊 "A2A ✅ 在线，ACP 任务已派发" 返回正常
+- **2026-04-20**:0414 → 0415 → 回滚 0414 全链路实测通过(102 canary)
+  - 升级停机 ~113s,回滚停机 ~68s
+  - 7 plugins 全绿,A2A 3 peers,ACP 派发成功
+  - 真人验收:飞书私聊 "A2A ✅ 在线,ACP 任务已派发" 返回正常
 - **2026-04-20 晚**: 加纵深防御(peerDependencies 上界 + drift-fix 库 + verify 10 gate + npm cache mount)
   - `scripts/carher-verify.sh` — 升级后 10 gate 自动自检(SIGPIPE fix 后 10/10 PASS 实测)
   - `patches/drift-fix/` — 每版本已知漂移 patch 库
   - Dockerfile 加 npm cache mount → 预期 build 时间 14min → 3-5min
   - 编译期 preflight 尝试后砍掉 —— 复现 plugin tsc 环境复杂度过高,真 drift verify Gate 6/10 抓更可靠
+- **2026-04-21 夜间演练**(生产级 playbook 定稿,详见 `UPGRADE_DRILL_REPORT.md`):
+  - **冷 build 实测 ~30min**(34m26s),比原估 3-5min 长 10 倍 — 原因:FROM 变动下游层全部失效,npm cache mount 只救 npm 段
+  - **跨 schema 回滚不无缝**:4.x → 3.12 restart loop,因 `shared-config.json5` 有 4.x-only key(`agents.defaults.llm`、`messages.tts.providers`)。同大版本回滚仍秒级
+  - 热 swap(0414 → 0415,image 已 build)实测 90s + verify 0s + 10/10 绿
+  - 产出:`UPGRADE_DRILL_REPORT.md` 含全量推广脚本、紧急回滚脚本、时间预算
