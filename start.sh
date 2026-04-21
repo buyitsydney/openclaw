@@ -11,6 +11,16 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# 加载服务器本地配置（ANTHROPIC_AUTH_TOKEN / OPENROUTER_API_KEY / TUNNEL_HOST_PREFIX / CARHER_AUTH_HOST 等）
+# gitignored，各服务器独立。与 start-user.sh 用法对齐。
+# set -a 保证变量导出到子进程（node gateway / tmux 内的 shell）。
+if [ -f "$SCRIPT_DIR/docker/server.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/docker/server.env"
+  set +a
+fi
+
 # --- 自动 tmux 包裹：不在 tmux 内时，自动进入 tmux 会话 "her" ---
 if [ -z "$TMUX" ] && command -v tmux &>/dev/null; then
   tmux kill-session -t her 2>/dev/null || true
@@ -28,6 +38,9 @@ REALTIME_PORT=18790
 LIVE_UI_PORT=8000
 LIVE_PROXY_PORT=8080
 GATEWAY_STOP_TIMEOUT_SEC=20
+# loopback 适合 Mac（只给本机 UI/tunnel 用）；lan 给服务器 host-native admin her
+# 暴露给跨机 A2A（carher-14/75 → yitian-her）。通过 docker/server.env 注入。
+GATEWAY_BIND="${OPENCLAW_GATEWAY_BIND:-loopback}"
 
 listener_pids() {
   local port="$1"
@@ -174,6 +187,14 @@ if known_bot_open_ids:
 if host_app_id and host_bot_open_id:
     feishu["botOpenId"] = host_bot_open_id
 
+# OAuth redirect URI — feishu-her resolveOAuthRedirectUri() reads this.
+# 不显式写会回落到硬编码 auth.carher.net/feishu/oauth/callback；
+# 在非本地 Mac 的原生部署（例如 S1 yitian-her → s1-u13-auth.carher.net）
+# 必须通过 CARHER_AUTH_HOST env 覆盖，否则飞书 OAuth 回调会 20029/404。
+auth_host = os.environ.get("CARHER_AUTH_HOST", "auth.carher.net").strip()
+if auth_host:
+    feishu["oauthRedirectUri"] = f"https://{auth_host}/feishu/oauth/callback"
+
 config_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
 echo -e "${GREEN}  ✓ Feishu bot identity 已同步（host=${CARHER_HOST_FEISHU_NAME}）${NC}"
@@ -287,7 +308,7 @@ export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--dns-result-order=ipv4first
 export OPENCLAW_INSTANCE_ID="local-her-$(date +%Y%m%d%H%M%S)-$$"
 
 # 直接运行已编译的 dist，避免再次经过 run-node freshness 检查触发二次构建。
-node dist/index.js gateway run --port "$GATEWAY_PORT" --force &
+node dist/index.js gateway run --port "$GATEWAY_PORT" --bind "$GATEWAY_BIND" --force &
 GATEWAY_PID=$!
 
 # 启动 Live Frontend Proxy（后台运行）
