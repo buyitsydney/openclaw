@@ -492,28 +492,6 @@ else:
 if agents['defaults']:
     cfg['agents'] = agents
 
-# Gemini config for realtime plugin
-# Priority: env var > host openclaw.json (gemini is a sibling key, JSON.parse reads it) > error
-gemini_project = os.environ.get('GEMINI_PROJECT_ID', '')
-gemini_model = os.environ.get('GEMINI_MODEL', '')
-if not gemini_project:
-    host_cfg_path = pathlib.Path.home() / '.openclaw' / 'openclaw.json'
-    if host_cfg_path.exists():
-        with open(host_cfg_path) as hf:
-            host_cfg = json.load(hf)
-        host_gemini = host_cfg.get('plugins', {}).get('entries', {}).get('realtime', {}).get('config', {}).get('gemini', {})
-        gemini_project = host_gemini.get('projectId', '')
-        if not gemini_model:
-            gemini_model = host_gemini.get('model', '')
-if not gemini_model:
-    gemini_model = 'gemini-live-2.5-flash-native-audio'
-if gemini_project:
-    cfg.setdefault('plugins', {}).setdefault('entries', {}).setdefault('realtime', {}).setdefault('config', {})['gemini'] = {
-        'projectId': gemini_project, 'model': gemini_model
-    }
-else:
-    print('WARNING: GEMINI_PROJECT_ID not found (env / ~/.openclaw/openclaw.json)', file=sys.stderr)
-
 # A2A outbound permission — inject plugin config override when enabled
 a2a_outbound = os.environ.get('A2A_OUTBOUND', '0')
 if a2a_outbound == '1':
