@@ -5,22 +5,31 @@ description: CarHer 企业 Docker 容器运维操作。Use when the user mention
 
 # CarHer 企业容器运维
 
-## ⚠️ 容器身份映射（Mac 本地 vs 服务器 ID 不同！）
+## ⚠️ 当前部署真相（2026-04-20 大迁移之后）
 
-**Mac 本地**（`docker/users.csv`）：
+**只剩 3 个用户的 bot 在服务器上运行；其他历史容器（carher-1..78）全部下线。**
 
-- `carher-101` = **tester**（测试容器）→ 可随意实验
-- `carher-102` = **tester2**（测试容器）→ 可随意实验
-- `carher-103` = **tester3**（测试容器）→ 可随意实验
-- `carher-3` = **董事长**（`cli_a9054f702c789bd9`）→ 🚫 禁止操作
+| 位置              | 容器        | 用户        | Bot App ID             |
+| ----------------- | ----------- | ----------- | ---------------------- |
+| S1 (10.68.13.186) | `carher-12` | 卜弋天 test | `cli_a917fa892ff91bb5` |
+| S1 (10.68.13.186) | `carher-13` | 卜弋天      | `cli_a917e5525178dbb3` |
+| S3 (10.68.13.188) | `carher-14` | 刘国现      | `cli_a91569fab9b81bc6` |
+| S3 (10.68.13.188) | `carher-75` | 林森        | `cli_a94a0b73a878dbcb` |
 
-**服务器 S1**（10.68.13.186，CSV 在服务器本地）：
+**已迁出服务器**：
 
-- `carher-1` = **董事长老杨**（`cli_a9054f702c789bd9`）→ 🚫 禁止操作
-- `carher-12` = 测试容器（卜弋天）
-- `carher-13` = **卜弋天个人**（`cli_a917e5525178dbb3`）
+- 董事长（`cli_a9054f702c789bd9` / 旧 `carher-1`）— S1 上残留 exited 容器，未经用户指令不清理也不启动
+- S2 所有 32 个容器已下线，只剩 `carher-fallback`
+- S3 原有 14 容器也只剩上表里的 2 个
 
-**关键区别**：Mac 测试容器已迁移到 101-103 ID 段，服务器的 docker1 是董事长！
+**Mac 本地测试容器**（`docker/users.csv` id=101/102/103）：
+
+- `carher-101` = tester
+- `carher-102` = tester2
+- `carher-103` = tester3
+  以及 `carher-3`（董事长身份注册行，不对应实际运行容器）。
+
+**行动原则**：不要假设任何 carher-1..78 容器存在。用户提到某个容器时先 `docker ps -a --filter name=carher-N` 确认实际状态。`docker/servers.txt` 是手动维护的真相表。
 
 **跨服务器 bot open_id 同步铁律**：`feishu_bot_open_id`（CSV 第 10 列）必须在 **所有服务器的 CSV** 上同步。S1/S2/S3 各有独立 CSV 副本。如果只在 S1 更新了 bot A 的 open_id，S2/S3 上的容器就无法识别 bot A。批量获取 open_id 后，必须同步到所有 3 台服务器的 CSV。
 
@@ -290,14 +299,50 @@ with open("/Data/CarHer/docker/users.csv") as f:
 - session unique senders = 1 → 单聊，用 `feishu_owner_open_id`
 - session unique senders >> 1 → 群聊或被拉群，需确认
 
-## Admin Her（原生进程，非 Docker）
+## yitian-her（S1 原生进程，非 Docker）
 
-S1 上有一个**原生 Admin Her**，不是 Docker 容器：
+S1 上有一个 host-native yitian-her（`10.68.13.186` / 弋天自用），**不是 Docker 容器**，而是直接跑在 host 上的 gateway 进程。
 
-- 配置文件：`~/.openclaw/openclaw.json`（S1 上）
-- 运行方式：tmux session `admin-her`，`node dist/index.js gateway run --port 18789 --bind lan --force`
-- **不要**用 `start-user.sh` 管理，不要在 `users.csv` 中添加 Admin Her 行
-- 修改配置后需要重启：先 `tmux kill-session -t admin-her`，再重新创建 tmux session 启动
+### 启动 / 重启
+
+统一用 `./start.sh`（和 Mac 本地 her 是**同一个脚本**），从 S1 的主仓库 `/Data/CarHer/` 跑：
+
+```bash
+sshpass -p '<pwd>' ssh cltx@10.68.13.186 \
+  "tmux kill-session -t her 2>/dev/null || true; \
+   sleep 2; \
+   tmux new-session -d -s her 'cd /Data/CarHer && ./start.sh 2>&1 | tee -a ~/logs/yitian-her.log'"
+```
+
+- tmux session 名：**`her`**（`start.sh` 第 27 行硬编码）
+- 端口：18789
+- bind：**lan**（从 `/Data/CarHer/docker/server.env` 的 `OPENCLAW_GATEWAY_BIND=lan` 自动注入，**不用手动传 --bind**）
+- 凭据、Feishu bot identity、Anthropic token 全部从 `server.env` + `shared-config.json5` + `~/.openclaw/openclaw.json` 三层 config 合并
+
+### 运行时 config 放哪
+
+| 配置项                                                                | 位置                                      | 是否 git 追踪              |
+| --------------------------------------------------------------------- | ----------------------------------------- | -------------------------- |
+| bind / auth host / API keys                                           | `/Data/CarHer/docker/server.env`          | ❌ gitignored              |
+| 插件默认 config（a2a-gateway enabled 等）                             | `/Data/CarHer/docker/shared-config.json5` | ✅                         |
+| ACP enabled / A2A hub（`outbound.enabled=true`）/ sessions.visibility | `/home/cltx/.openclaw/openclaw.json`      | ❌ host-local runtime 文件 |
+
+### 验证
+
+```bash
+sshpass -p '<pwd>' ssh cltx@10.68.13.186 \
+  "sudo ss -tlnp | grep 18789; \
+   grep -E 'outbound\.enabled|Gateway 已启动' ~/logs/yitian-her.log | tail -3"
+```
+
+期望看到：`0.0.0.0:18789` + `a2a-gateway: outbound.enabled=true` + `Gateway 已启动`。
+
+### ❌ 不要做
+
+- **不要**用 `start-user.sh` 管理 yitian-her（那是 docker 容器专用）
+- **不要**在 `docker/users.csv` 添加 yitian-her 行
+- **不要**手动跑 `node dist/index.js gateway run ...`——用 `./start.sh`，它会处理 build、旧进程清理、config 同步
+- **不要**在 tmux 外跑 start.sh——它会自动 exec 进 tmux session `her`
 
 ## 🚫 灰度测试铁律（违反者死）
 
