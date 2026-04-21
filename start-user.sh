@@ -546,6 +546,13 @@ if feishu_id and feishu_secret:
         owner_list = [x.strip() for x in feishu_owner.split('|') if x.strip()]
         feishu_cfg['dm'] = {'allowFrom': owner_list}
     feishu_cfg['groupPolicy'] = 'open'
+    # OAuth redirect URI — feishu-her resolveOAuthRedirectUri() reads this.
+    # 没填会回落到硬编码 https://auth.carher.net/feishu/oauth/callback (DNS 不存在) → 20029。
+    # NAMED_AUTH_HOST = \${TUNNEL_HOST_PREFIX}u\${USER_ID}-auth.carher.net
+    # 本地 → uN-auth, S1 → s1-uN-auth, S3 → s3-uN-auth，各走各 tunnel 不冲突。
+    auth_host = '${NAMED_AUTH_HOST}'
+    if auth_host:
+        feishu_cfg['oauthRedirectUri'] = f'https://{auth_host}/feishu/oauth/callback'
     cfg.setdefault('channels', {})['feishu'] = feishu_cfg
 
 # commands.ownerAllowFrom from CSV (pipe-separated open_ids)
