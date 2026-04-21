@@ -6,7 +6,7 @@
 #
 # 三条轴独立，互不耦合。
 
-ARG OPENCLAW_TAG=2026.4.15
+ARG OPENCLAW_TAG=2026.4.20
 FROM ghcr.io/openclaw/openclaw:${OPENCLAW_TAG}
 
 # Base 镜像默认 USER=node，apt/pip/npm 操作需要 root

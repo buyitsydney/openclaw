@@ -80,8 +80,7 @@
 
   // 插件
   plugins: {
-    // feishu-her 占用 channel.id=feishu；禁用 bundled 的 feishu 防冲突。
-    deny: ["feishu"],
+    // A+B v2: Dockerfile rm -rf 了 bundled feishu；不再需要 deny。
     // 相对 cwd 解析：docker 启动 cwd=/app，host 启动 cwd=<worktree>，两边都能命中。
     load: {
       paths: [
