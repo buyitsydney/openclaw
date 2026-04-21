@@ -38,6 +38,9 @@ REALTIME_PORT=18790
 LIVE_UI_PORT=8000
 LIVE_PROXY_PORT=8080
 GATEWAY_STOP_TIMEOUT_SEC=20
+# loopback 适合 Mac（只给本机 UI/tunnel 用）；lan 给服务器 host-native admin her
+# 暴露给跨机 A2A（carher-14/75 → yitian-her）。通过 docker/server.env 注入。
+GATEWAY_BIND="${OPENCLAW_GATEWAY_BIND:-loopback}"
 
 listener_pids() {
   local port="$1"
@@ -253,7 +256,7 @@ export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--dns-result-order=ipv4first
 export OPENCLAW_INSTANCE_ID="local-her-$(date +%Y%m%d%H%M%S)-$$"
 
 # 直接运行已编译的 dist，避免再次经过 run-node freshness 检查触发二次构建。
-node dist/index.js gateway run --port "$GATEWAY_PORT" --force &
+node dist/index.js gateway run --port "$GATEWAY_PORT" --bind "$GATEWAY_BIND" --force &
 GATEWAY_PID=$!
 
 # 启动 Live Frontend Proxy（后台运行）
