@@ -80,11 +80,13 @@
 
   // 插件
   plugins: {
+    // feishu-her 占用 channel.id=feishu；禁用 bundled 的 feishu 防冲突。
     deny: ["feishu"],
+    // 相对 cwd 解析：docker 启动 cwd=/app，host 启动 cwd=<worktree>，两边都能命中。
     load: {
       paths: [
-        "/app/docker/plugins/feishu-her",
-        "/app/docker/plugins/a2a-gateway",
+        "docker/plugins/feishu-her",
+        "docker/plugins/a2a-gateway",
       ],
     },
     entries: {
