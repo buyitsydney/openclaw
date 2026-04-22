@@ -20,6 +20,66 @@ carher-core:<TAG>-ab-v2
 
 完整架构见 [`docs/her/her-image-architecture.md`](../../docs/her/her-image-architecture.md)。
 
+## Her 可读 openclaw upstream src（架构扩展，2026-04-22 加入）
+
+A+B 解耦后，官方 runtime image **只 ship `/app/dist/*.js`（minify + hash chunk，几乎不可读），不 ship `/app/src/`**。Her 要 debug openclaw core（auto-reply、compaction 等）时没有源码可查，debug 能力相对 native 架构退化。
+
+**补救**：Dockerfile.carher.v2 多加一个 builder stage，从 GitHub clone 对应 tag 的 openclaw 源码，只 COPY `src/` 进最终镜像（+58MB），放在 `/app/openclaw-src/src/` 只读位置。
+
+### Dockerfile 片段（`FROM ghcr.io/openclaw/...` 之前）
+
+```dockerfile
+# Her 可读的 upstream src（只读、不参与 runtime）
+# 3 层 fallback: v 前缀 → bare → 空目录（GitHub 挂了不阻塞 build）
+FROM alpine/git:latest AS openclaw-src-fetcher
+ARG OPENCLAW_TAG
+RUN set -e; \
+    (git clone --depth=1 --branch v${OPENCLAW_TAG} \
+        https://github.com/openclaw/openclaw.git /src 2>/dev/null \
+     || git clone --depth=1 --branch ${OPENCLAW_TAG} \
+        https://github.com/openclaw/openclaw.git /src 2>/dev/null \
+     || mkdir -p /src/src); \
+    echo "openclaw-src-fetcher: ls /src/src → $(ls /src/src 2>/dev/null | head -5 | tr '\n' ' ')"
+```
+
+主 stage 末尾：
+
+```dockerfile
+COPY --from=openclaw-src-fetcher /src/src /app/openclaw-src/src
+```
+
+### Tag 格式注意
+
+openclaw 官方 **git tag = `v${OPENCLAW_TAG}`**（有 `v` 前缀，实测 `v2026.3.12` / `v2026.4.14` / `v2026.4.20`），**docker tag = `${OPENCLAW_TAG}`**（无前缀）。Dockerfile 里先试 `v` 主路径，再试 bare 兼容，最后空目录兜底。
+
+### 实测（2026-04-22）
+
+| 环境               | `ls-remote` | shallow clone v2026.4.20 | 仓库总大小 | `src/` 大小 |
+| ------------------ | ----------- | ------------------------ | ---------- | ----------- |
+| 本地 Mac           | 5.7s        | 40s                      | 198MB      | 58MB        |
+| S1（10.68.13.186） | 0.9s        | **12.8s**                | 142MB      | 59MB        |
+
+只 COPY `src/` 进最终 image → **镜像增加 ~58MB**。`src/` 含 6745 个 `.ts` 文件，Her 可直接 grep。
+
+### Her 使用姿势
+
+```bash
+# 查 upstream core 逻辑（注意路径不是 /app/src 而是 /app/openclaw-src/src）
+grep -r 'shouldReplyToUser' /app/openclaw-src/src/
+grep -r 'compaction' /app/openclaw-src/src/auto-reply/
+
+# B 侧插件源码路径不变
+grep -r 'WSClient' /app/docker/plugins/feishu-her/src/
+```
+
+### 设计哲学
+
+A 侧（openclaw）源码 **只读可查阅**，**不参与 runtime**（runtime 始终走 `/app/dist/*.js`）。改 A 侧必须回 openclaw 官方提 PR，**不在 CarHer 容器内直接改** —— 那样会破坏 A+B 解耦，升级时必丢失。
+
+### GitHub 挂了怎么办
+
+3 层 fallback 最后会 `mkdir -p /src/src` 兜底，build 不失败，但 `/app/openclaw-src/src` 将是空目录。Her 提示空目录时，告诉用户"build 时 GitHub 不可达，升级完后可用 `docker cp <host>/openclaw-src/. <container>:/app/openclaw-src/` 手动补"。
+
 ## 升级前 — 检查清单
 
 ### 1. 查官方发了哪些新 tag
@@ -309,6 +369,20 @@ pnpm install   # 一次性，后续 push 都通
 
 或（用户授权时）`git push --no-verify`。
 
+### 踩坑 6：`build-image.sh` 是旧 v1 架构
+
+`build-image.sh` 用的是旧 `Dockerfile.carher`（单一镜像 monorepo 编译），**不是 A+B**，不支持 `--build-arg OPENCLAW_TAG`。A+B 升级必须走 raw `docker build -f Dockerfile.carher.v2`，**不要用 `build-image.sh`**。（未来可能让 `build-image.sh` 加 `--v2` flag 自动转发，目前还没做。）
+
+### 踩坑 7：`openclaw-src-fetcher` stage clone 失败
+
+3 层 fallback 兜底后 `/app/openclaw-src/src` 可能是空目录。Her 自查：
+
+```bash
+docker exec carher-<id> ls /app/openclaw-src/src | head -5
+# 正常: abort-cutoff.ts  abort-primitives.ts  abort.runtime.ts ... (6745 个 .ts)
+# 异常: 空 → GitHub 在 build 时不可达，按上面"GitHub 挂了怎么办"手动补
+```
+
 ## Worktree + Branch 注意
 
 - 这套架构文件活在 **`feat/carher-a-b-decouple` 分支**（worktree `.claude/worktrees/carher-ab-decouple/`）
@@ -338,3 +412,7 @@ pnpm install   # 一次性，后续 push 都通
   - **跨 schema 回滚不无缝**:4.x → 3.12 restart loop,因 `shared-config.json5` 有 4.x-only key(`agents.defaults.llm`、`messages.tts.providers`)。同大版本回滚仍秒级
   - 热 swap(0414 → 0415,image 已 build)实测 90s + verify 0s + 10/10 绿
   - 产出:`UPGRADE_DRILL_REPORT.md` 含全量推广脚本、紧急回滚脚本、时间预算
+- **2026-04-22 架构补强**:加 `openclaw-src-fetcher` stage,让 Her 在容器里能读 upstream src(填补 A 侧黑盒 debug 缺口)
+  - shallow clone v2026.4.20 本地 40s / S1 13s,镜像膨胀 +58MB
+  - 3 层 fallback: `v${TAG}` → `${TAG}` → 空目录,GitHub 挂了不阻塞 build
+  - 路径: `/app/openclaw-src/src/`(只读,不影响 runtime — runtime 走 `/app/dist/`)
