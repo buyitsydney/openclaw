@@ -1,6 +1,22 @@
 ---
 name: upgrade-upstream
-description: Upgrade OpenClaw to a newer upstream version (merge upstream tags/commits). Use when the user asks to upgrade, sync, merge upstream, pull latest openclaw version, or mentions upstream alignment.
+description: DEPRECATED — 旧流程，通过 git merge upstream tag 合入官方代码。当前 CarHer 已改为 A+B 架构（只换 base image tag，不合代码），升级请用 `carher-image-upgrade` skill。本 skill 仅在需要改 OpenClaw core 代码（例如给 upstream 提 PR 前本地验证）时使用。
+---
+
+> ## ⚠️ DEPRECATED (2026-04-20)
+>
+> 本 skill 描述的"git merge upstream → 本地全量编译"流程已被 **A+B 三轴解耦架构** 取代。
+>
+> 日常"跟官方发版"请用 **`carher-image-upgrade`** skill —— 只改 `Dockerfile.carher.v2` 的 `ARG OPENCLAW_TAG` 一个字符串，不 git pull、不编译。
+>
+> 本 skill 仅在以下场景使用：
+>
+> - 给 openclaw upstream 提 PR 前，本地验证改动
+> - 调试 upstream 某版本的 bug 需要改 core 代码
+> - 架构回迁（极不推荐）
+>
+> 架构背景见 [`docs/her/her-image-architecture.md`](../../docs/her/her-image-architecture.md)。
+
 ---
 
 # Upgrade OpenClaw to Upstream
