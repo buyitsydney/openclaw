@@ -28,18 +28,23 @@ A+B 解耦后，官方 runtime image **只 ship `/app/dist/*.js`（minify + hash
 
 ### Dockerfile 片段（`FROM ghcr.io/openclaw/...` 之前）
 
+**为什么用 openclaw 官方 image 做 fetcher**：docker.io（含 `alpine/git`）在大陆常常 TLS 握手超时，S1 上还遇到过 `x509: certificate is valid for *.extern.facebook.com, not registry-1.docker.io` 的劫持证书。ghcr.io 稳定可达，且 openclaw image 自带 `git 2.39.5`，直接复用最省事，不引入新依赖。
+
 ```dockerfile
 # Her 可读的 upstream src（只读、不参与 runtime）
+# 用 openclaw 官方 image 本身作 builder —— 它已经装了 git 2.39，省掉 docker.io 依赖
+# （docker.io 在大陆常有 TLS 握手超时，ghcr.io 稳定可达）
 # 3 层 fallback: v 前缀 → bare → 空目录（GitHub 挂了不阻塞 build）
-FROM alpine/git:latest AS openclaw-src-fetcher
+FROM ghcr.io/openclaw/openclaw:${OPENCLAW_TAG} AS openclaw-src-fetcher
 ARG OPENCLAW_TAG
+USER root
 RUN set -e; \
     (git clone --depth=1 --branch v${OPENCLAW_TAG} \
         https://github.com/openclaw/openclaw.git /src 2>/dev/null \
      || git clone --depth=1 --branch ${OPENCLAW_TAG} \
         https://github.com/openclaw/openclaw.git /src 2>/dev/null \
      || mkdir -p /src/src); \
-    echo "openclaw-src-fetcher: ls /src/src → $(ls /src/src 2>/dev/null | head -5 | tr '\n' ' ')"
+    echo "openclaw-src-fetcher: $(ls /src/src 2>/dev/null | wc -l) entries in /src/src"
 ```
 
 主 stage 末尾：
@@ -54,12 +59,12 @@ openclaw 官方 **git tag = `v${OPENCLAW_TAG}`**（有 `v` 前缀，实测 `v202
 
 ### 实测（2026-04-22）
 
-| 环境               | `ls-remote` | shallow clone v2026.4.20 | 仓库总大小 | `src/` 大小 |
-| ------------------ | ----------- | ------------------------ | ---------- | ----------- |
-| 本地 Mac           | 5.7s        | 40s                      | 198MB      | 58MB        |
-| S1（10.68.13.186） | 0.9s        | **12.8s**                | 142MB      | 59MB        |
+| 环境               | `ls-remote` | shallow clone v2026.4.20         | 仓库总大小 | `src/` 大小 |
+| ------------------ | ----------- | -------------------------------- | ---------- | ----------- |
+| 本地 Mac           | 5.7s        | 64s（fetcher 用 openclaw image） | 198MB      | 58MB        |
+| S1（10.68.13.186） | 0.9s        | **12.8s**                        | 142MB      | 59MB        |
 
-只 COPY `src/` 进最终 image → **镜像增加 ~58MB**。`src/` 含 6745 个 `.ts` 文件，Her 可直接 grep。
+本地 Mac clone 较慢是因为 fetcher 复用的是已 pull 好的 openclaw image（阿里云镜像也会重新装 git 索引），跟 docker.io 的不可达无关；S1 因为 git proxy 更快。最终 image `/app/openclaw-src/src` 含 **6745 个 `.ts` 文件**，Her 可直接 grep。
 
 ### Her 使用姿势
 
