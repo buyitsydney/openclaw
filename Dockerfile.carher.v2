@@ -7,6 +7,22 @@
 # 三条轴独立，互不耦合。
 
 ARG OPENCLAW_TAG=2026.4.20
+
+# Her 可读的 upstream openclaw src（只读、不参与 runtime）
+# 用 openclaw 官方 image 本身作 builder —— 它已经装了 git 2.39，省掉 docker.io 依赖
+# （docker.io 在大陆常有 TLS 握手超时，ghcr.io 稳定可达）
+# 3 层 fallback: v 前缀 → bare → 空目录（GitHub 挂了不阻塞 build）
+FROM ghcr.io/openclaw/openclaw:${OPENCLAW_TAG} AS openclaw-src-fetcher
+ARG OPENCLAW_TAG
+USER root
+RUN set -e; \
+    (git clone --depth=1 --branch v${OPENCLAW_TAG} \
+        https://github.com/openclaw/openclaw.git /src 2>/dev/null \
+     || git clone --depth=1 --branch ${OPENCLAW_TAG} \
+        https://github.com/openclaw/openclaw.git /src 2>/dev/null \
+     || mkdir -p /src/src); \
+    echo "openclaw-src-fetcher: $(ls /src/src 2>/dev/null | wc -l) entries in /src/src"
+
 FROM ghcr.io/openclaw/openclaw:${OPENCLAW_TAG}
 
 # Base 镜像默认 USER=node，apt/pip/npm 操作需要 root
@@ -52,6 +68,10 @@ RUN --mount=type=cache,target=/root/.npm \
 # CarHer 共享配置（shared-config.json5 + 用户 overlay）
 COPY docker/shared-config.json5 /app/docker/shared-config.json5
 COPY docker/user-configs         /app/docker/user-configs
+
+# Her 可读的 upstream openclaw 源码（只读，不参与 runtime）
+# runtime 走 /app/dist/；查源码走 /app/openclaw-src/src/
+COPY --from=openclaw-src-fetcher /src/src /app/openclaw-src/src
 
 # Entrypoint
 COPY scripts/carher-entrypoint.sh /entrypoint.sh
