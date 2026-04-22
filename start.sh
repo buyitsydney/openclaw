@@ -199,6 +199,55 @@ config_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", enc
 PY
 echo -e "${GREEN}  ✓ Feishu bot identity 已同步（host=${CARHER_HOST_FEISHU_NAME}）${NC}"
 
+# 当 ACP 开启时，确保 ~/.claude/settings.json 有 ACP 非交互模式所需的 sandbox/permissions。
+# 否则 (1) claude 要权限 prompt，但 ACP 无 TTY → AcpRuntimeError: Permission prompt unavailable；
+# (2) 无 sandbox.enabled:false 时 claude harness 拒绝写 $SCRIPT_DIR 等目录。
+# 与 Docker entrypoint 的 CARHER_ACP_ENABLED=1 分支等价。详见 docs/her/acp-claude-code-setup.md。
+python3 - <<'PY'
+import json
+import pathlib
+
+oc_path = pathlib.Path.home() / ".openclaw" / "openclaw.json"
+claude_settings = pathlib.Path.home() / ".claude" / "settings.json"
+
+if not oc_path.exists():
+    raise SystemExit(0)
+cfg = json.loads(oc_path.read_text(encoding="utf-8"))
+
+# Gate: ACP 开启时才同步。兼容两个 key：
+#   - plugins.entries.acpx.enabled  (S1 runtime 当前事实)
+#   - acp.enabled                   (新版 start.sh 注入的顶层 key)
+plugins_entries = (cfg.get("plugins") or {}).get("entries", {}) or {}
+acpx = plugins_entries.get("acpx") or {}
+acp_top = cfg.get("acp") or {}
+if not (acpx.get("enabled") or acp_top.get("enabled")):
+    raise SystemExit(0)
+
+settings = {}
+if claude_settings.exists():
+    try:
+        settings = json.loads(claude_settings.read_text(encoding="utf-8"))
+    except Exception:
+        settings = {}
+
+sandbox = settings.setdefault("sandbox", {})
+if sandbox.get("enabled") is not False:
+    sandbox["enabled"] = False
+
+perms = settings.setdefault("permissions", {})
+perms.setdefault("defaultMode", "acceptEdits")
+required_allow = ["Bash(*)", "Read(*)", "Write(*)", "Edit(*)",
+                  "Glob(*)", "Grep(*)", "WebSearch(*)", "WebFetch(*)"]
+existing = perms.get("allow") or []
+merged = list(dict.fromkeys([*existing, *required_allow]))
+if merged != existing:
+    perms["allow"] = merged
+
+claude_settings.parent.mkdir(parents=True, exist_ok=True)
+claude_settings.write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+echo -e "${GREEN}  ✓ Claude ACP settings 已同步 (sandbox=false, permissions.allow)${NC}"
+
 # 基于完整工作区快照决定是否需要重新编译（包含 tracked + untracked 文件）
 WORKSPACE_BUILD_HASH=$(node scripts/workspace-build-hash.mjs)
 BUILD_CACHE_DIR="$HOME/.openclaw/.cache"
