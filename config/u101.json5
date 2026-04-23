@@ -1,19 +1,14 @@
-// config/users/101.json5 — Docker carher-101 identity (Layer 3)
+// config/u101.json5 — Docker carher-101 identity (Layer 3)
 //
-// $include's env/docker.json5 → base.json5. Final file mounted into the
-// container at /data/.openclaw/openclaw.json.
+// $include's docker.json5 → base.json5. Mounted into the container at
+// /data/.openclaw/config/u101.json5 and read via OPENCLAW_CONFIG_PATH.
 //
-// Only per-user identity fields. Real appSecret comes from
-// docker/users/101.env via --env-file on docker run.
+// Only per-user feishu identity. Primary model + all other behavior
+// comes from docker.json5 / base.json5. Real appSecret is injected via
+// -e FEISHU_APP_SECRET on docker run (from users.csv).
 
 {
   "$include": "./docker.json5",
-
-  agents: {
-    defaults: {
-      model: { primary: "openrouter/minimax/minimax-m2.7" },
-    },
-  },
 
   channels: {
     feishu: {

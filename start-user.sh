@@ -578,8 +578,9 @@ docker run -d \
   -v "${GCLOUD_ADC}:/gcloud/application_default_credentials.json:ro" \
   -v "${SHARED_SKILLS_DIR}:/data/.openclaw/skills:ro" \
   ${A2A_PLUGIN_DIR:+-v "${A2A_PLUGIN_DIR}:/data/.openclaw/plugins/a2a-gateway:ro"} \
-  -v "${SCRIPT_DIR}/config:/data/.openclaw/config:ro" \
-  -e OPENCLAW_CONFIG_PATH="/data/.openclaw/config/u${USER_ID}.json5" \
+  -v "${SCRIPT_DIR}/config/u${USER_ID}.json5:/data/.openclaw/openclaw.json:ro" \
+  -v "${SCRIPT_DIR}/config/base.json5:/data/.openclaw/base.json5:ro" \
+  -v "${SCRIPT_DIR}/config/docker.json5:/data/.openclaw/docker.json5:ro" \
   -e FEISHU_APP_SECRET="${CSV_FEISHU_SECRET:-}" \
   -e CARHER_GATEWAY_TOKEN="${AUTH_TOKEN}" \
   "${DEV_MOUNTS[@]}" \

@@ -44,6 +44,10 @@
 
   agents: {
     defaults: {
+      // All docker users default to Wangsu opus-4-7 as primary. Override
+      // per-user in config/u${N}.json5 if needed (e.g., users with CSV
+      // provider=openrouter may want openrouter/anthropic/claude-opus-4.7).
+      model: { primary: "anthropic/anthropic.claude-opus-4-7" },
       models: {
         // Wangsu (anthropic-messages API) aliases.
         // Keys MUST match the model ids declared in
