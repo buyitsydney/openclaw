@@ -45,11 +45,17 @@
   agents: {
     defaults: {
       models: {
-        // Wangsu (anthropic-messages API) aliases — docker uses the
-        // non-"anthropic." prefixed ids. Host has its own Wangsu aliases
-        // with the "anthropic." prefix in users/admin.json5.
-        "anthropic/claude-opus-4-6": { alias: "opus" },
-        "anthropic/claude-sonnet-4-6": { alias: "sonnet" },
+        // Wangsu (anthropic-messages API) aliases.
+        // Keys MUST match the model ids declared in
+        // models.providers.anthropic.models below — Wangsu requires the
+        // "anthropic." prefix; non-prefixed ids are rejected with 401
+        // "key not allowed to access model". These cover the default
+        // docker user (CSV provider=anthropic, which is 4/6 of the fleet).
+        // Users with CSV provider=openrouter override these in their
+        // config/u${N}.json5 to point "opus"/"sonnet" at openrouter/* ids.
+        "anthropic/anthropic.claude-opus-4-7": { alias: "opus" },
+        "anthropic/anthropic.claude-opus-4-6": { alias: "opus46" },
+        "anthropic/anthropic.claude-sonnet-4-6": { alias: "sonnet" },
 
         // OpenRouter aliases (match the pre-rebuild docker aliases so users
         // don't have to relearn; host uses its own set in users/admin.json5).
