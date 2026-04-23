@@ -1,0 +1,32 @@
+// config/base.json5 — all-agent shared behavior
+//
+// Layer 1/3 of the config tree. This file is $include'd by every environment
+// overlay (env/host-mac.json5, env/docker.json5) and therefore reaches every
+// agent: admin Mac Her + every Docker carher-{N}.
+//
+// Scope: fields whose value is truly identical across all 3 environments.
+// Classified by the Phase 1 diagnostic as "base" (66 fields, see commit msg).
+//
+// What goes here:
+//   - agents.defaults.compaction / memorySearch / userTimezone / llm / maxConcurrent
+//   - browser.enabled / defaultProfile / cdpPortRangeStart
+//   - channels.feishu.enabled / groups
+//   - gateway.mode / port          (NOT bind/auth — those differ per env)
+//   - messages.ackReactionScope / tts shared settings
+//   - plugins.entries.* functional toggles and config that every agent needs
+//   - plugins.deny
+//   - tools.sessions.visibility / tools.web.search.provider
+//   - Model ALIASES that every agent uses (but not per-provider apiKeys/models)
+//
+// What does NOT go here:
+//   - Any secret or apiKey (use ${VAR_NAME} in the overlay that needs it)
+//   - Environment-specific fields (gateway.bind, browser.headless, auth token)
+//   - Per-user identity (feishu appId/secret, primary model)
+//   - plugins.load.paths — path differs between Docker (cwd=/app) and host
+//
+// Array-field rule: arrays in this file MUST NOT be duplicated in any overlay.
+// Deep-merge concatenates arrays, so redeclaring an array in an overlay
+// appends, not replaces. To "replace", model the data as an object keyed by id.
+
+{
+}

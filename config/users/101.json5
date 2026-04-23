@@ -1,0 +1,31 @@
+// config/users/101.json5 — Docker carher-101 identity overlay
+//
+// Layer 3/3 of the config tree. This file becomes /data/.openclaw/openclaw.json
+// inside carher-101 container via bind mount. It $include's env/docker.json5,
+// which $include's base.json5.
+//
+// Scope: identity of carher-101 only. Everything else comes from the includes.
+// Reference diagnostic: Phase 1 "idUserDiff" = 6 feishu fields per user.
+//
+// What goes here:
+//   - channels.feishu.appId
+//   - channels.feishu.appSecret      → MUST be "${FEISHU_APP_SECRET_101}"
+//   - channels.feishu.name
+//   - channels.feishu.botOpenId
+//   - channels.feishu.oauthRedirectUri
+//   - channels.feishu.dm.allowFrom   (if user-specific)
+//   - agents.defaults.model.primary  (per-user preferred main model)
+//   - agents.defaults.models.*.alias (if this user needs user-specific aliases)
+//
+// What does NOT go here:
+//   - Anything identical to carher-102 → push to env/docker.json5 or base.json5
+//   - Any plaintext secret → ${VAR} + docker/users/101.env (--env-file)
+//
+// Injection:
+//   docker run --env-file docker/users/101.env ... \
+//     -v config/users/101.json5:/data/.openclaw/openclaw.json:ro \
+//     -v config:/data/config:ro
+
+{
+  "$include": "../env/docker.json5",
+}

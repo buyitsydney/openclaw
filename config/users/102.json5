@@ -1,0 +1,9 @@
+// config/users/102.json5 — Docker carher-102 identity overlay
+//
+// Same structure as 101.json5. See that file for per-field guidance.
+// Only the identity values (appId, appSecret ref, name, botOpenId,
+// oauthRedirectUri, dm.allowFrom, primary model) differ.
+
+{
+  "$include": "../env/docker.json5",
+}

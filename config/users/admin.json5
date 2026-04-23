@@ -1,0 +1,38 @@
+// config/users/admin.json5 — admin Her identity overlay (Mac native)
+//
+// Layer 3/3 of the config tree. This is the final overlay that becomes the
+// admin's openclaw.json (via symlink or direct path). It $include's
+// env/host-mac.json5, which $include's base.json5.
+//
+// Scope: "who is this agent"? Fields that identify the admin, their
+// credentials, their personal preferences, and their personal bot registry.
+//
+// What goes here:
+//   - channels.feishu.{appId, appSecret, name, oauthRedirectUri, botOpenId, dm.allowFrom}
+//     → appSecret MUST use ${FEISHU_APP_SECRET_ADMIN}
+//   - channels.feishu.{knownBots, knownBotOpenIds}  (admin maintains the bot registry)
+//   - channels.imessage.*  (admin has iMessage access on the Mac)
+//   - commands.{ownerAllowFrom, ownerDisplay}
+//   - models.providers.anthropic.apiKey = "${ANTHROPIC_API_KEY}"
+//   - models.providers.shanxia.apiKey = "${SHANXIA_API_KEY}"
+//   - models.providers.openrouter.apiKey = "${OPENROUTER_API_KEY}"
+//   - agents.defaults.model.primary  (admin's preferred main model)
+//   - agents.defaults.models.*.alias (admin-specific aliases like opus/sonnet)
+//   - plugins.entries.{imessage, anthropic, openrouter, acpx, browser}.enabled
+//   - env.vars.*  (default env-var fallbacks; real secrets go in ~/.openclaw/.env)
+//   - acp.enabled, session.*, skills.limits.*, tools.agentToAgent.*
+//
+// What does NOT go here:
+//   - Anything that belongs on every agent → push to base.json5
+//   - Anything that is Mac-specific but not admin-specific → env/host-mac.json5
+//   - ⚠️ ANY PLAINTEXT SECRET. Every token/key/password uses ${VAR_NAME}.
+//
+// Secrets resolution:
+//   - ${VAR} is resolved at config load by src/config/env-substitution.ts.
+//   - Missing vars throw MissingEnvVarError — fail fast, not silent empty.
+//   - Real values live in ~/.openclaw/.env (chmod 600, gitignored by default).
+//   - Load before running openclaw: `set -a; source ~/.openclaw/.env; set +a`
+
+{
+  "$include": "../env/host-mac.json5",
+}

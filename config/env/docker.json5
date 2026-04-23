@@ -1,0 +1,31 @@
+// config/env/docker.json5 — Docker carher-{N} environment overlay
+//
+// Layer 2/3 of the config tree. $include's base.json5 and layers on fields
+// that are specific to the Docker container environment but shared by every
+// docker user (101, 102, ...).
+//
+// Scope: things that differ between "running on Mac" vs "running in Docker"
+// AND are the same across all docker users.
+//
+// What goes here:
+//   - gateway.bind = "lan"              (exposed to host for UI proxying)
+//   - gateway.auth.mode = "token"       (secret check; token is injected)
+//   - gateway.auth.token = "${CARHER_GATEWAY_TOKEN}"
+//   - gateway.controlUi.* dangerous toggles that only make sense in isolated container
+//   - browser.headless = true / noSandbox = true
+//   - plugins.load.paths: container-relative (docker/plugins/a2a-gateway)
+//   - meta.lastTouchedVersion (carher image version pin, if kept)
+//   - models.providers.anthropic.models  (docker uses Wangsu / litellm; apiKey via ${VAR})
+//   - models.providers.openrouter.models (docker-specific model set)
+//   - tools.media.audio.models           (docker-specific if differs)
+//
+// What does NOT go here:
+//   - Per-user feishu credentials / primary model → users/{N}.json5
+//   - Admin-only things (imessage, shanxia, knownBots on the host)
+//   - Any secret — use ${VAR} and inject via --env-file docker/users/{N}.env
+//
+// Usage: each docker user overlay ($include'd by users/{N}.json5).
+
+{
+  "$include": "../base.json5",
+}
