@@ -7,7 +7,7 @@
 // docker/users/102.env via --env-file on docker run.
 
 {
-  "$include": "../env/docker.json5",
+  "$include": "./docker.json5",
 
   agents: {
     defaults: {

@@ -429,13 +429,13 @@ else
   MODEL_FULL=""
 fi
 
-# --- Config: use git-tracked config/users/${USER_ID}.json5 (Phase 5 rebuild) ---
+# --- Config: use git-tracked config/u${USER_ID}.json5 (Phase 5 rebuild) ---
 # Pre-rebuild, start-user.sh python3-generated a per-user openclaw.json that
 # $include'd docker/carher-config.json → docker/shared-config.json5 (3 layers,
 # shelled plaintext secrets into json, and rewrote on every start).
 #
 # Post-rebuild: the per-user file is a static git artifact at
-# config/users/${USER_ID}.json5. It $includes config/env/docker.json5 which
+# config/u${USER_ID}.json5. It $includes config/env/docker.json5 which
 # $includes config/base.json5 — 2 layers, no generation, no plaintext. All
 # secrets are \${VAR} resolved at openclaw load time via env vars injected
 # below with -e.
@@ -444,13 +444,13 @@ fi
 # template) + add the row to docker/users.csv (for --id resolution + secret
 # pass-through).
 
-CONFIG_MOUNT="${SCRIPT_DIR}/config/users/${USER_ID}.json5"
+CONFIG_MOUNT="${SCRIPT_DIR}/config/u${USER_ID}.json5"
 if [ ! -f "$CONFIG_MOUNT" ]; then
-  echo -e "${RED}✗ config/users/${USER_ID}.json5 not found.${NC}"
-  echo -e "${YELLOW}  Create it (copy config/users/101.json5 as template) and commit. See docker/users/template.env.example for the secret env vars referenced by \${VAR}.${NC}"
+  echo -e "${RED}✗ config/u${USER_ID}.json5 not found.${NC}"
+  echo -e "${YELLOW}  Create it (copy config/u101.json5 as template) and commit. See docker/users/template.env.example for the secret env vars referenced by \${VAR}.${NC}"
   exit 1
 fi
-echo -e "${GREEN}  ✓ Config: config/users/${USER_ID}.json5${NC}"
+echo -e "${GREEN}  ✓ Config: config/u${USER_ID}.json5${NC}"
 
 # Display model + feishu from the per-user config (for operator readback)
 DISPLAY_MODEL=$(node -e "
@@ -579,7 +579,7 @@ docker run -d \
   -v "${SHARED_SKILLS_DIR}:/data/.openclaw/skills:ro" \
   ${A2A_PLUGIN_DIR:+-v "${A2A_PLUGIN_DIR}:/data/.openclaw/plugins/a2a-gateway:ro"} \
   -v "${SCRIPT_DIR}/config:/data/.openclaw/config:ro" \
-  -e OPENCLAW_CONFIG_PATH="/data/.openclaw/config/users/${USER_ID}.json5" \
+  -e OPENCLAW_CONFIG_PATH="/data/.openclaw/config/u${USER_ID}.json5" \
   -e FEISHU_APP_SECRET="${CSV_FEISHU_SECRET:-}" \
   -e CARHER_GATEWAY_TOKEN="${AUTH_TOKEN}" \
   "${DEV_MOUNTS[@]}" \

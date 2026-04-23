@@ -7,7 +7,7 @@
 // browser.headless=false because Mac has a display.
 
 {
-  "$include": "../base.json5",
+  "$include": "./base.json5",
 
   acp: { enabled: true },
 

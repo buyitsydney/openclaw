@@ -8,7 +8,7 @@
 // Missing ${VAR} is fatal (MissingEnvVarError) — no silent empty fallback.
 
 {
-  "$include": "../env/host-mac.json5",
+  "$include": "./host-mac.json5",
 
   agents: {
     defaults: {

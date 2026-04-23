@@ -85,11 +85,14 @@
   },
 
   plugins: {
-    // Array declared here once; overlays MUST NOT redeclare this key.
-    // Relative path resolves under docker cwd=/app and host cwd=worktree root.
-    deny: ["feishu"],
+    // A+B v2 (2026-04): bundled feishu plugin removed; no deny needed.
+    // Both feishu-her and a2a-gateway ship under docker/plugins/ and are
+    // loaded via this path (relative to cwd — docker cwd=/app, host cwd=repo).
     load: {
-      paths: ["docker/plugins/a2a-gateway"],
+      paths: [
+        "docker/plugins/feishu-her",
+        "docker/plugins/a2a-gateway",
+      ],
     },
     entries: {
       "feishu-her": { enabled: true },
@@ -127,16 +130,6 @@
           },
           ingest: { autoCompile: true, allowUrlIngest: true },
           search: { backend: "shared", corpus: "all" },
-        },
-      },
-      realtime: {
-        enabled: true,
-        config: {
-          port: 18790,
-          gemini: {
-            model: "gemini-live-2.5-flash-native-audio",
-            projectId: "gen-lang-client-0519229117",
-          },
         },
       },
     },
