@@ -51,6 +51,12 @@
         models: [{ provider: "groq" }],
       },
     },
+    agentToAgent: {
+      enabled: true,
+    },
+    sessions: {
+      visibility: "all",
+    },
   },
 
   // 命令（环境特有的 restart 由各自 overlay 设置）
