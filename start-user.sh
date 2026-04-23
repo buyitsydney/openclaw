@@ -429,131 +429,42 @@ else
   MODEL_FULL=""
 fi
 
-# --- Generate per-user config (model + feishu from CSV) ---
-# Per-user config uses $include to reference Docker base config (which itself
-# $includes shared-config.json5). This ensures all environments share the same
-# functional config and only per-user/per-env overrides live here.
-CUSTOM_CONFIG="${SCRIPT_DIR}/docker/user-configs/carher-config-${USER_ID}.json"
-mkdir -p "${SCRIPT_DIR}/docker/user-configs"
+# --- Config: use git-tracked config/users/${USER_ID}.json5 (Phase 5 rebuild) ---
+# Pre-rebuild, start-user.sh python3-generated a per-user openclaw.json that
+# $include'd docker/carher-config.json → docker/shared-config.json5 (3 layers,
+# shelled plaintext secrets into json, and rewrote on every start).
+#
+# Post-rebuild: the per-user file is a static git artifact at
+# config/users/${USER_ID}.json5. It $includes config/env/docker.json5 which
+# $includes config/base.json5 — 2 layers, no generation, no plaintext. All
+# secrets are \${VAR} resolved at openclaw load time via env vars injected
+# below with -e.
+#
+# To add a new user: create config/users/${N}.json5 (see users/101.json5 as
+# template) + add the row to docker/users.csv (for --id resolution + secret
+# pass-through).
 
-# Pre-compute auth hostname (needed by Python config below, before full domain resolution)
-NAMED_AUTH_HOST="${TUNNEL_HOST_PREFIX:-}u${USER_ID}-auth.carher.net"
+CONFIG_MOUNT="${SCRIPT_DIR}/config/users/${USER_ID}.json5"
+if [ ! -f "$CONFIG_MOUNT" ]; then
+  echo -e "${RED}✗ config/users/${USER_ID}.json5 not found.${NC}"
+  echo -e "${YELLOW}  Create it (copy config/users/101.json5 as template) and commit. See docker/users/template.env.example for the secret env vars referenced by \${VAR}.${NC}"
+  exit 1
+fi
+echo -e "${GREEN}  ✓ Config: config/users/${USER_ID}.json5${NC}"
 
-# Always generate a per-user config (may inject feishu credentials)
-python3 -c "
-import base64, json, sys, os, pathlib
-
-cfg = {
-    '\$include': './carher-config.json',
-}
-
-# Model override
-model = '${MODEL_FULL}'
-provider = '${USER_PROVIDER}'
-if model:
-    agents = {'defaults': {'model': {'primary': model}}}
-else:
-    agents = {'defaults': {}}
-
-# Per-user model whitelist: both providers available, aliases follow CSV provider.
-# Provider routing (order/ignore/allow_fallbacks) lives in base carher-config.json
-# only; $include deep-merge preserves those params when per-user sets alias.
-if provider == 'anthropic':
-    agents['defaults']['models'] = {
-        'anthropic/anthropic.claude-opus-4-7': {'alias': 'opus'},
-        'anthropic/anthropic.claude-opus-4-6': {'alias': 'opus46'},
-        'anthropic/anthropic.claude-sonnet-4-6': {'alias': 'sonnet'},
-        'openrouter/anthropic/claude-opus-4.7': {'alias': 'or-opus'},
-        'openrouter/anthropic/claude-opus-4.6': {'alias': 'or-opus46'},
-        'openrouter/anthropic/claude-sonnet-4.6': {'alias': 'or-sonnet'},
-        'openrouter/google/gemini-3.1-pro-preview': {'alias': 'gemini'},
-        'openrouter/minimax/minimax-m2.7': {'alias': 'minimax'},
-        'openrouter/z-ai/glm-5': {'alias': 'glm'},
-        'openrouter/openai/gpt-5.4': {'alias': 'gpt'},
-        'openrouter/openai/gpt-5.3-codex': {'alias': 'codex'},
-    }
-else:
-    agents['defaults']['models'] = {
-        'openrouter/anthropic/claude-opus-4.7': {'alias': 'opus'},
-        'openrouter/anthropic/claude-opus-4.6': {'alias': 'opus46'},
-        'openrouter/anthropic/claude-sonnet-4.6': {'alias': 'sonnet'},
-        'anthropic/anthropic.claude-opus-4-7': {'alias': 'or-opus'},
-        'anthropic/anthropic.claude-opus-4-6': {'alias': 'or-opus46'},
-        'anthropic/anthropic.claude-sonnet-4-6': {'alias': 'or-sonnet'},
-        'openrouter/google/gemini-3.1-pro-preview': {'alias': 'gemini'},
-        'openrouter/minimax/minimax-m2.7': {'alias': 'minimax'},
-        'openrouter/z-ai/glm-5': {'alias': 'glm'},
-        'openrouter/openai/gpt-5.4': {'alias': 'gpt'},
-        'openrouter/openai/gpt-5.3-codex': {'alias': 'codex'},
-    }
-# LLM idle timeout is set in shared-config.json5 (120s), not here
-# Setting it here gets overwritten by $include deep merge
-
-if agents['defaults']:
-    cfg['agents'] = agents
-
-# A2A outbound permission — inject plugin config override when enabled
-a2a_outbound = os.environ.get('A2A_OUTBOUND', '0')
-if a2a_outbound == '1':
-    cfg.setdefault('plugins', {}).setdefault('entries', {}).setdefault('a2a-gateway', {}).setdefault('config', {})['outbound'] = {'enabled': True}
-
-# ACP — enable Claude Code via ACP when CARHER_ACP_ENABLED=1
-acp_enabled = os.environ.get('CARHER_ACP_ENABLED', '0')
-if acp_enabled == '1':
-    cfg['acp'] = {'enabled': True, 'backend': 'acpx', 'defaultAgent': 'claude', 'allowedAgents': ['claude'], 'maxConcurrentSessions': 2, 'dispatch': {'enabled': True}, 'runtime': {'ttlMinutes': 120}}
-    cfg.setdefault('plugins', {}).setdefault('entries', {}).setdefault('acpx', {})['enabled'] = True
-
-# Feishu credentials from users.csv
-feishu_name = '${CSV_NAME}'
-feishu_id = '${CSV_FEISHU_ID}'
-feishu_secret = '${CSV_FEISHU_SECRET}'
-feishu_owner = '${CSV_FEISHU_OWNER}'
-feishu_bot_open_id = '${CSV_FEISHU_BOT_OPEN_ID}'
-owner_allow_from_raw = '${CSV_OWNER_ALLOW_FROM}'
-if feishu_id and feishu_secret:
-    feishu_cfg = {
-        'enabled': True,
-        'appId': feishu_id,
-        'appSecret': feishu_secret,
-    }
-    if feishu_name:
-        feishu_cfg['name'] = feishu_name + '的her'
-    if feishu_bot_open_id:
-        feishu_cfg['botOpenId'] = feishu_bot_open_id
-    if feishu_owner:
-        owner_list = [x.strip() for x in feishu_owner.split('|') if x.strip()]
-        feishu_cfg['dm'] = {'allowFrom': owner_list}
-    feishu_cfg['groupPolicy'] = 'open'
-    # OAuth redirect URI — feishu-her resolveOAuthRedirectUri() reads this.
-    # 没填会回落到硬编码 https://auth.carher.net/feishu/oauth/callback (DNS 不存在) → 20029。
-    # NAMED_AUTH_HOST = \${TUNNEL_HOST_PREFIX}u\${USER_ID}-auth.carher.net
-    # 本地 → uN-auth, S1 → s1-uN-auth, S3 → s3-uN-auth，各走各 tunnel 不冲突。
-    auth_host = '${NAMED_AUTH_HOST}'
-    if auth_host:
-        feishu_cfg['oauthRedirectUri'] = f'https://{auth_host}/feishu/oauth/callback'
-    cfg.setdefault('channels', {})['feishu'] = feishu_cfg
-
-# commands.ownerAllowFrom from CSV (pipe-separated open_ids)
-if owner_allow_from_raw:
-    owner_ids = [x.strip() for x in owner_allow_from_raw.split('|') if x.strip()]
-    if owner_ids:
-        cfg.setdefault('commands', {})['ownerAllowFrom'] = owner_ids
-
-json.dump(cfg, sys.stdout, indent=2)
-" > "$CUSTOM_CONFIG"
-
-CONFIG_MOUNT="$CUSTOM_CONFIG"
-
-# Display config summary
-DISPLAY_MODEL=$(python3 -c "
-import json
-with open('${CUSTOM_CONFIG}') as f:
-    print(json.load(f)['agents']['defaults']['model']['primary'])
-" 2>/dev/null || echo "sonnet")
-echo -e "${GREEN}  ✓ 模型: ${DISPLAY_MODEL} (provider: ${USER_PROVIDER})${NC}"
+# Display model + feishu from the per-user config (for operator readback)
+DISPLAY_MODEL=$(node -e "
+const JSON5 = require('${SCRIPT_DIR}/node_modules/json5');
+const fs = require('fs');
+try {
+  const c = JSON5.parse(fs.readFileSync('${CONFIG_MOUNT}', 'utf-8'));
+  console.log(((c.agents||{}).defaults||{}).model?.primary || '(inherited from env/docker.json5)');
+} catch (e) { console.log('(parse error)'); }
+" 2>/dev/null || echo "(unknown)")
+echo -e "${GREEN}  ✓ 模型: ${DISPLAY_MODEL}${NC}"
 
 if [ -n "$CSV_FEISHU_ID" ] && [ -n "$CSV_FEISHU_SECRET" ]; then
-  echo -e "${GREEN}  ✓ 飞书: ${CSV_FEISHU_ID}${NC}"
+  echo -e "${GREEN}  ✓ 飞书: ${CSV_FEISHU_ID} (secret via \$FEISHU_APP_SECRET)${NC}"
 else
   echo -e "  · 飞书: 未配置"
 fi
@@ -587,11 +498,9 @@ fi
 # SHARED_SKILLS_DIR is bind-mounted directly — no /tmp/ copy, no merge.
 
 # --- Compute webchat URL from token + port (before docker run) ---
-AUTH_TOKEN=$(python3 -c "
-import json
-with open('${SCRIPT_DIR}/docker/carher-config.json') as f:
-    print(json.load(f)['gateway']['auth']['token'])
-")
+# Gateway token now comes from ${CARHER_GATEWAY_TOKEN} env (via docker/server.env
+# or shell), not from a config file. Falls back to a default for dev.
+AUTH_TOKEN="${CARHER_GATEWAY_TOKEN:-carher-container-token}"
 WEBCHAT_URL="http://localhost:${PORT_GW}#token=${AUTH_TOKEN}"
 
 # --- Always clean start: stop old container if exists ---
@@ -669,9 +578,10 @@ docker run -d \
   -v "${GCLOUD_ADC}:/gcloud/application_default_credentials.json:ro" \
   -v "${SHARED_SKILLS_DIR}:/data/.openclaw/skills:ro" \
   ${A2A_PLUGIN_DIR:+-v "${A2A_PLUGIN_DIR}:/data/.openclaw/plugins/a2a-gateway:ro"} \
-  -v "${CONFIG_MOUNT}:/data/.openclaw/openclaw.json:ro" \
-  -v "${SCRIPT_DIR}/docker/carher-config.json:/data/.openclaw/carher-config.json:ro" \
-  -v "${SCRIPT_DIR}/docker/shared-config.json5:/data/.openclaw/shared-config.json5:ro" \
+  -v "${SCRIPT_DIR}/config:/data/.openclaw/config:ro" \
+  -e OPENCLAW_CONFIG_PATH="/data/.openclaw/config/users/${USER_ID}.json5" \
+  -e FEISHU_APP_SECRET="${CSV_FEISHU_SECRET:-}" \
+  -e CARHER_GATEWAY_TOKEN="${AUTH_TOKEN}" \
   "${DEV_MOUNTS[@]}" \
   "$RUNTIME_IMAGE"
 
