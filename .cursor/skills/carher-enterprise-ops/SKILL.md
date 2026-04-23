@@ -299,50 +299,60 @@ with open("/Data/CarHer/docker/users.csv") as f:
 - session unique senders = 1 → 单聊，用 `feishu_owner_open_id`
 - session unique senders >> 1 → 群聊或被拉群，需确认
 
-## yitian-her（S1 原生进程，非 Docker）
+## Admin 容器 carher-198（研究1，yitian-her 的继任者）
 
-S1 上有一个 host-native yitian-her（`10.68.13.186` / 弋天自用），**不是 Docker 容器**，而是直接跑在 host 上的 gateway 进程。
+**历史**：`yitian-her` 曾是 S1 裸机 gateway 进程（tmux session `her`，跑在 `/home/cltx/.openclaw/` 下）。2026-04-23 rebuild 后**裸机 yitian-her 已下线**，**由 docker 容器 `carher-198`（研究1 身份）充任 admin**，放弃裸机路径。
 
-### 启动 / 重启
+### 为什么换成 docker？
 
-统一用 `./start.sh`（和 Mac 本地 her 是**同一个脚本**），从 S1 的主仓库 `/Data/CarHer/` 跑：
+裸机 yitian-her 的 openclaw 版本**绑定 `/Data/CarHer` repo**（升级 = merge upstream 2000+ commits，太重）。改成 docker 后，升级 = 换 image tag（分钟级）。详见 `.cursor/skills/carher-image-upgrade/SKILL.md`。
 
-```bash
-sshpass -p '<pwd>' ssh cltx@10.68.13.186 \
-  "tmux kill-session -t her 2>/dev/null || true; \
-   sleep 2; \
-   tmux new-session -d -s her 'cd /Data/CarHer && ./start.sh 2>&1 | tee -a ~/logs/yitian-her.log'"
-```
-
-- tmux session 名：**`her`**（`start.sh` 第 27 行硬编码）
-- 端口：18789
-- bind：**lan**（从 `/Data/CarHer/docker/server.env` 的 `OPENCLAW_GATEWAY_BIND=lan` 自动注入，**不用手动传 --bind**）
-- 凭据、Feishu bot identity、Anthropic token 全部从 `server.env` + `shared-config.json5` + `~/.openclaw/openclaw.json` 三层 config 合并
-
-### 运行时 config 放哪
-
-| 配置项                                                                | 位置                                      | 是否 git 追踪              |
-| --------------------------------------------------------------------- | ----------------------------------------- | -------------------------- |
-| bind / auth host / API keys                                           | `/Data/CarHer/docker/server.env`          | ❌ gitignored              |
-| 插件默认 config（a2a-gateway enabled 等）                             | `/Data/CarHer/docker/shared-config.json5` | ✅                         |
-| ACP enabled / A2A hub（`outbound.enabled=true`）/ sessions.visibility | `/home/cltx/.openclaw/openclaw.json`      | ❌ host-local runtime 文件 |
-
-### 验证
+### 启动 admin（两步）
 
 ```bash
-sshpass -p '<pwd>' ssh cltx@10.68.13.186 \
-  "sudo ss -tlnp | grep 18789; \
-   grep -E 'outbound\.enabled|Gateway 已启动' ~/logs/yitian-her.log | tail -3"
+cd /Data/CarHer
+
+# Step 1: 和其他 her 一样用 start-user.sh
+CARHER_ACP_ENABLED=1 CARHER_MEMORY_LIMIT=16g A2A_ENABLED=1 A2A_OUTBOUND=1 \
+  ./start-user.sh --id=198 --image=carher-core:0421-ab-v2
+
+# Step 2: admin 特权 bootstrap (只有她需要)
+./bootstrap-admin.sh carher-198
 ```
 
-期望看到：`0.0.0.0:18789` + `a2a-gateway: outbound.enabled=true` + `Gateway 已启动`。
+**Step 1** 和其他 her 完全一样，只换 `--id`。  
+**Step 2** 是 admin 专属（`bootstrap-admin.sh` 在 repo root，git tracked），给她装 4 层特权：
+
+| # | 资产 | docker rm 后 |
+|---|---|---|
+| 1 | `sshpass + openssh-client` | 丢（writable layer） |
+| 2 | `/data/.openclaw/servers.txt` | 保留（volume）但每次 cp 是 idempotent |
+| 3 | 8 个 admin 运维 skill 到 host `~/.openclaw/skills/` | 可能丢（host 目录可能被污染） |
+| 4 | `docker update --cpus=10` | 丢（重启不继承） |
+
+### Admin 特权工具（bootstrap 完成后她有的）
+
+- `/usr/bin/sshpass` + `/usr/bin/ssh` — 跨机 ssh cltx@<S1/S2/S3> 跑 docker
+- `/data/.openclaw/servers.txt` — 三台服务器 IP + 密码
+- 8 个 skills：`docker-fleet` / `carher-image-upgrade` / `carher-enterprise-ops`（这个） / `carher-a2a-topology` / `carher-shared-skills` / `cloudflare-tunnel` / `openclaw-gateway` / `openclaw-logs`
+
+### 诊断（怎么知道 admin 特权是否完整）
+
+```bash
+docker exec carher-198 which sshpass ssh                     # 空 = 丢了
+docker exec carher-198 ls /data/.openclaw/servers.txt        # not found = 丢了
+docker exec carher-198 ls /data/.openclaw/skills/docker-fleet # not found = 丢了
+docker inspect carher-198 --format '{{.HostConfig.NanoCpus}}' # 0 = cpu 限制丢了
+```
+
+**任一项丢** → 跑 `./bootstrap-admin.sh carher-198` 一键全修。
 
 ### ❌ 不要做
 
-- **不要**用 `start-user.sh` 管理 yitian-her（那是 docker 容器专用）
-- **不要**在 `docker/users.csv` 添加 yitian-her 行
-- **不要**手动跑 `node dist/index.js gateway run ...`——用 `./start.sh`，它会处理 build、旧进程清理、config 同步
-- **不要**在 tmux 外跑 start.sh——它会自动 exec 进 tmux session `her`
+- **不要**擅自 `docker rm carher-198`（她是运维管家，要 rebuild 让 owner 发指令）
+- **不要**再启动裸机 yitian-her（她已退役，再启会和 docker-198 抢研究1 bot 的 feishu WebSocket）
+- **不要**把 admin 的 cpu 设 16（fleet 标准 admin + 主 her 都 10 cores）
+- **不要**把 bootstrap 内容 per-container config 化（走 `bootstrap-admin.sh` 而非 user-config-198.json）
 
 ## 🚫 灰度测试铁律（违反者死）
 
