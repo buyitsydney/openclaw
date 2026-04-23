@@ -1,6 +1,9 @@
 node_modules
 **/node_modules/
 .env
+# Per-user docker env files (contain per-user secrets); commit only the .example template
+docker/users/*.env
+!docker/users/*.env.example
 docker-compose.override.yml
 docker-compose.extra.yml
 dist
