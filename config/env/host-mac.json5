@@ -1,30 +1,52 @@
 // config/env/host-mac.json5 — host macOS environment overlay
 //
-// Layer 2/3 of the config tree. $include's base.json5 and layers on fields
-// that are specific to the macOS-native admin Her environment but not to any
-// particular admin identity.
+// $include's base.json5. Overrides/adds fields that differ for Mac-native
+// admin Her but are not admin-identity-specific (those live in users/admin).
 //
-// Scope: things that differ between "running on Mac" vs "running in Docker"
-// AND are the same regardless of who the admin is.
-//
-// What goes here:
-//   - gateway.bind = "loopback"      (Mac: local only; Docker: lan)
-//   - gateway.auth.mode = "none"     (Mac: trusted; Docker: token-gated)
-//   - browser.headless = false       (Mac has a display; Docker does not)
-//   - browser.noSandbox              (Mac: default; Docker: enabled)
-//   - plugins.load.paths: host-relative path to a2a-gateway
-//   - commands.restart:true policy for the host
-//   - models.providers.shanxia.*     (Mac-only China proxy provider)
-//   - tools.media.audio.models       (host-specific if differs)
-//
-// What does NOT go here:
-//   - Admin identity fields (imessage allowlist, commands.ownerAllowFrom,
-//     feishu knownBots) — those belong in users/admin.json5
-//   - Any secret — use ${VAR} in users/admin.json5 instead
-//   - Anything that is also identical on Docker — push up to base.json5
-//
-// Usage: admin overlay ($include'd by users/admin.json5).
+// ACP and acpx are host-specific because only the Mac admin runs ACP.
+// browser.headless=false because Mac has a display.
 
 {
   "$include": "../base.json5",
+
+  acp: { enabled: true },
+
+  browser: {
+    headless: false,
+  },
+
+  commands: {
+    restart: true,
+  },
+
+  gateway: {
+    bind: "loopback",
+    auth: {
+      mode: "none",
+      // Token is defined so loopback can still be token-gated if the user
+      // opts in; when mode=none the token is unused.
+      token: "${CARHER_GATEWAY_TOKEN_HOST}",
+    },
+  },
+
+  agents: {
+    defaults: {
+      // Contextual tokens for host admin workloads (overrides nothing on the
+      // docker side since docker does not redeclare this). Default keeps the
+      // old behavior; removing this field later is fine once tested.
+      contextTokens: 200000,
+      heartbeat: { every: "0" },
+      workspace: "~/.openclaw/workspace",
+    },
+  },
+
+  plugins: {
+    entries: {
+      // Host-specific plugins; docker side does not enable these.
+      acpx: { enabled: true },
+      anthropic: { enabled: true },
+      browser: { enabled: true },
+      openrouter: { enabled: true },
+    },
+  },
 }

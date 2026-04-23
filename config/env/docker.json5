@@ -1,31 +1,201 @@
 // config/env/docker.json5 — Docker carher-{N} environment overlay
 //
-// Layer 2/3 of the config tree. $include's base.json5 and layers on fields
-// that are specific to the Docker container environment but shared by every
-// docker user (101, 102, ...).
+// $include's base.json5. Overrides/adds fields that differ for every docker
+// container but are identical across docker users.
 //
-// Scope: things that differ between "running on Mac" vs "running in Docker"
-// AND are the same across all docker users.
+// Do NOT put per-user identity here (feishu appId, primary model, etc.) —
+// those live in users/{N}.json5.
 //
-// What goes here:
-//   - gateway.bind = "lan"              (exposed to host for UI proxying)
-//   - gateway.auth.mode = "token"       (secret check; token is injected)
-//   - gateway.auth.token = "${CARHER_GATEWAY_TOKEN}"
-//   - gateway.controlUi.* dangerous toggles that only make sense in isolated container
-//   - browser.headless = true / noSandbox = true
-//   - plugins.load.paths: container-relative (docker/plugins/a2a-gateway)
-//   - meta.lastTouchedVersion (carher image version pin, if kept)
-//   - models.providers.anthropic.models  (docker uses Wangsu / litellm; apiKey via ${VAR})
-//   - models.providers.openrouter.models (docker-specific model set)
-//   - tools.media.audio.models           (docker-specific if differs)
-//
-// What does NOT go here:
-//   - Per-user feishu credentials / primary model → users/{N}.json5
-//   - Admin-only things (imessage, shanxia, knownBots on the host)
-//   - Any secret — use ${VAR} and inject via --env-file docker/users/{N}.env
-//
-// Usage: each docker user overlay ($include'd by users/{N}.json5).
+// All secrets are ${VAR_NAME}; real values come from docker/server.env
+// (shared) or docker/users/{N}.env (per-user, injected via --env-file).
 
 {
   "$include": "../base.json5",
+
+  browser: {
+    headless: true,
+    noSandbox: true,
+  },
+
+  channels: {
+    feishu: {
+      // Docker users default to open group policy; admin host defaults to
+      // allowlist in users/admin.json5.
+      groupPolicy: "open",
+    },
+  },
+
+  commands: {
+    restart: false,
+  },
+
+  gateway: {
+    bind: "lan",
+    auth: {
+      mode: "token",
+      token: "${CARHER_GATEWAY_TOKEN}",
+    },
+    controlUi: {
+      allowInsecureAuth: true,
+      dangerouslyAllowHostHeaderOriginFallback: true,
+      dangerouslyDisableDeviceAuth: true,
+    },
+  },
+
+  agents: {
+    defaults: {
+      models: {
+        // Wangsu (anthropic-messages API) aliases — docker uses the
+        // non-"anthropic." prefixed ids. Host has its own Wangsu aliases
+        // with the "anthropic." prefix in users/admin.json5.
+        "anthropic/claude-opus-4-6": { alias: "opus" },
+        "anthropic/claude-sonnet-4-6": { alias: "sonnet" },
+
+        // OpenRouter aliases (match the pre-rebuild docker aliases so users
+        // don't have to relearn; host uses its own set in users/admin.json5).
+        "openrouter/anthropic/claude-opus-4.7": {
+          // No alias in the pre-rebuild config for 4.7; keep that (opus-4.6
+          // still owns "or-opus").
+          params: { provider: { allow_fallbacks: true, ignore: ["Google"] } },
+        },
+        "openrouter/anthropic/claude-opus-4.6": {
+          alias: "or-opus",
+          params: { provider: { allow_fallbacks: true, ignore: ["Google"] } },
+        },
+        "openrouter/anthropic/claude-sonnet-4.6": {
+          alias: "or-sonnet",
+          params: { provider: { allow_fallbacks: true, ignore: ["Google"] } },
+        },
+        "openrouter/google/gemini-3.1-pro-preview": { alias: "gemini" },
+        "openrouter/minimax/minimax-m2.7": { alias: "minimax" },
+        "openrouter/openai/gpt-5.4": { alias: "gpt" },
+        "openrouter/openai/gpt-5.3-codex": { alias: "codex" },
+      },
+    },
+  },
+
+  models: {
+    providers: {
+      anthropic: {
+        apiKey: "${ANTHROPIC_AUTH_TOKEN}",
+        models: [
+          {
+            id: "anthropic.claude-opus-4-7",
+            name: "Claude Opus 4.7 (Wangsu)",
+            api: "anthropic-messages",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 1000000,
+            maxTokens: 128000,
+            cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+          },
+          {
+            id: "anthropic.claude-opus-4-6",
+            name: "Claude Opus 4.6 (Wangsu)",
+            api: "anthropic-messages",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 1000000,
+            maxTokens: 128000,
+            cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+          },
+          {
+            id: "anthropic.claude-sonnet-4-6",
+            name: "Claude Sonnet 4.6 (Wangsu)",
+            api: "anthropic-messages",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 400000,
+            maxTokens: 64000,
+            cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+          },
+        ],
+      },
+      openrouter: {
+        apiKey: "${OPENROUTER_API_KEY}",
+        models: [
+          {
+            id: "anthropic/claude-opus-4.7",
+            name: "Claude Opus 4.7",
+            api: "openai-completions",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 1000000,
+            maxTokens: 128000,
+            cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+          },
+          {
+            id: "anthropic/claude-opus-4.6",
+            name: "Claude Opus 4.6",
+            api: "openai-completions",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 1000000,
+            maxTokens: 128000,
+            cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+          },
+          {
+            id: "anthropic/claude-sonnet-4.6",
+            name: "Claude Sonnet 4.6",
+            api: "openai-completions",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 400000,
+            maxTokens: 64000,
+            cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+          },
+          {
+            id: "google/gemini-3.1-pro-preview",
+            name: "Gemini 3.1 Pro",
+            api: "openai-completions",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 400000,
+            maxTokens: 65536,
+            cost: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 0.375 },
+          },
+          {
+            id: "minimax/minimax-m2.7",
+            name: "MiniMax M2.7",
+            api: "openai-completions",
+            reasoning: false,
+            input: ["text"],
+            contextWindow: 400000,
+            maxTokens: 16384,
+            cost: { input: 0.3, output: 1.1, cacheRead: 0.15 },
+          },
+          {
+            id: "z-ai/glm-5",
+            name: "GLM-5",
+            api: "openai-completions",
+            reasoning: true,
+            input: ["text"],
+            contextWindow: 400000,
+            maxTokens: 131072,
+            cost: { input: 0.95, output: 2.55 },
+          },
+          {
+            id: "openai/gpt-5.3-codex",
+            name: "GPT-5.3 Codex",
+            api: "openai-completions",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 400000,
+            maxTokens: 128000,
+            cost: { input: 1.75, output: 14, cacheRead: 0.175 },
+          },
+          {
+            id: "openai/gpt-5.4",
+            name: "OpenAI: GPT-5.4",
+            api: "openai-completions",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 400000,
+            maxTokens: 128000,
+            cost: { input: 2.5, output: 15, cacheRead: 0.25 },
+          },
+        ],
+      },
+    },
+  },
 }

@@ -1,38 +1,252 @@
-// config/users/admin.json5 — admin Her identity overlay (Mac native)
+// config/users/admin.json5 — admin Mac Her identity (Layer 3)
 //
-// Layer 3/3 of the config tree. This is the final overlay that becomes the
-// admin's openclaw.json (via symlink or direct path). It $include's
-// env/host-mac.json5, which $include's base.json5.
+// $include's env/host-mac.json5 → base.json5. Final file that becomes the
+// admin's openclaw.json (symlink target or direct path).
 //
-// Scope: "who is this agent"? Fields that identify the admin, their
-// credentials, their personal preferences, and their personal bot registry.
-//
-// What goes here:
-//   - channels.feishu.{appId, appSecret, name, oauthRedirectUri, botOpenId, dm.allowFrom}
-//     → appSecret MUST use ${FEISHU_APP_SECRET_ADMIN}
-//   - channels.feishu.{knownBots, knownBotOpenIds}  (admin maintains the bot registry)
-//   - channels.imessage.*  (admin has iMessage access on the Mac)
-//   - commands.{ownerAllowFrom, ownerDisplay}
-//   - models.providers.anthropic.apiKey = "${ANTHROPIC_API_KEY}"
-//   - models.providers.shanxia.apiKey = "${SHANXIA_API_KEY}"
-//   - models.providers.openrouter.apiKey = "${OPENROUTER_API_KEY}"
-//   - agents.defaults.model.primary  (admin's preferred main model)
-//   - agents.defaults.models.*.alias (admin-specific aliases like opus/sonnet)
-//   - plugins.entries.{imessage, anthropic, openrouter, acpx, browser}.enabled
-//   - env.vars.*  (default env-var fallbacks; real secrets go in ~/.openclaw/.env)
-//   - acp.enabled, session.*, skills.limits.*, tools.agentToAgent.*
-//
-// What does NOT go here:
-//   - Anything that belongs on every agent → push to base.json5
-//   - Anything that is Mac-specific but not admin-specific → env/host-mac.json5
-//   - ⚠️ ANY PLAINTEXT SECRET. Every token/key/password uses ${VAR_NAME}.
-//
-// Secrets resolution:
-//   - ${VAR} is resolved at config load by src/config/env-substitution.ts.
-//   - Missing vars throw MissingEnvVarError — fail fast, not silent empty.
-//   - Real values live in ~/.openclaw/.env (chmod 600, gitignored by default).
-//   - Load before running openclaw: `set -a; source ~/.openclaw/.env; set +a`
+// Contains admin identity + admin-maintained registries + ${VAR} secrets.
+// Real secret values come from ~/.openclaw/.env (chmod 600, gitignored).
+// Missing ${VAR} is fatal (MissingEnvVarError) — no silent empty fallback.
 
 {
   "$include": "../env/host-mac.json5",
+
+  agents: {
+    defaults: {
+      model: { primary: "anthropic/anthropic.claude-opus-4-7" },
+      models: {
+        "anthropic/anthropic.claude-opus-4-7": { alias: "opus" },
+        "anthropic/anthropic.claude-opus-4-6": { alias: "opus46" },
+        "anthropic/anthropic.claude-sonnet-4-6": { alias: "sonnet" },
+        "openrouter/anthropic/claude-opus-4.7": { alias: "or-opus" },
+        "openrouter/anthropic/claude-opus-4.6": { alias: "or-opus46" },
+        "openrouter/anthropic/claude-sonnet-4.6": { alias: "or-sonnet" },
+        "openrouter/minimax/minimax-m2.5": { alias: "minimax" },
+        "openrouter/google/gemini-3.1-pro-preview": { alias: "gemini" },
+        "openrouter/openai/gpt-5.4": { alias: "gpt" },
+        "openrouter/openai/gpt-5.3-codex": { alias: "codex" },
+        "shanxia/claude-opus-4-6": { alias: "sx-opus" },
+        "shanxia/claude-sonnet-4-6": { alias: "sx-sonnet" },
+      },
+    },
+  },
+
+  channels: {
+    feishu: {
+      name: "her",
+      appId: "cli_a92c9ee95538dbdf",
+      appSecret: "${FEISHU_APP_SECRET_ADMIN}",
+      botOpenId: "ou_1fb7eb3ce04e145de925452da2d4cc2f",
+      oauthRedirectUri: "https://auth.carher.net/feishu/oauth/callback",
+      dm: {
+        policy: "allowlist",
+        allowFrom: ["ou_66ec5b886d937f62ee6cdb8bbb11ba65"],
+      },
+      dmPolicy: "pairing",
+      domain: "feishu",
+      groupPolicy: "allowlist",
+      webhookPath: "/feishu/events",
+      connectionMode: "websocket",
+      cardStreamVersion: "v1",
+      typingIndicator: true,
+      resolveSenderNames: true,
+      reactionNotifications: "own",
+      // Admin maintains the fleet bot registry; used for cross-bot routing.
+      knownBots: {
+        cli_a9054f702c789bd9: "董事长",
+        cli_a92c99d102b8dbca: "tester",
+        cli_a92c9ee95538dbdf: "her",
+        cli_a93cbff979b89bd8: "tester2",
+        cli_a94a51d8873bdbb6: "tester3",
+        cli_a94e4cee07e69bc2: "tester4",
+      },
+      knownBotOpenIds: {
+        ou_1a9c02079fef1f5f0f4daaaaffd2326c: "cli_a92c99d102b8dbca",
+        ou_1d0d43e68209ecb3936d636400aa430b: "cli_a94e4cee07e69bc2",
+        ou_1fb7eb3ce04e145de925452da2d4cc2f: "cli_a92c9ee95538dbdf",
+        ou_7a20b02b902b3a45a3184b078f68e43e: "cli_a94a51d8873bdbb6",
+        ou_d2dcb5a6c7ad3934861b7120c30c2b1e: "cli_a93cbff979b89bd8",
+      },
+    },
+    imessage: {
+      enabled: true,
+      dmPolicy: "pairing",
+      groupPolicy: "allowlist",
+      // Admin's own iMessage contact.
+      allowFrom: ["+8618967126000"],
+    },
+  },
+
+  commands: {
+    ownerAllowFrom: ["ou_66ec5b886d937f62ee6cdb8bbb11ba65"],
+    ownerDisplay: "raw",
+  },
+
+  messages: {
+    tts: { edge: { voice: "zh-CN-XiaoxiaoNeural" } },
+  },
+
+  models: {
+    providers: {
+      anthropic: {
+        apiKey: "${ANTHROPIC_AUTH_TOKEN}",
+        models: [
+          {
+            id: "anthropic.claude-opus-4-7",
+            name: "Claude Opus 4.7 (Wangsu)",
+            api: "anthropic-messages",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 1000000,
+            maxTokens: 128000,
+            cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+          },
+          {
+            id: "anthropic.claude-opus-4-6",
+            name: "Claude Opus 4.6 (Wangsu)",
+            api: "anthropic-messages",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 1000000,
+            maxTokens: 128000,
+            cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+          },
+          {
+            id: "anthropic.claude-sonnet-4-6",
+            name: "Claude Sonnet 4.6 (Wangsu)",
+            api: "anthropic-messages",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 400000,
+            maxTokens: 64000,
+            cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+          },
+        ],
+      },
+      openrouter: {
+        apiKey: "${OPENROUTER_API_KEY}",
+        models: [
+          {
+            id: "anthropic/claude-opus-4.7",
+            name: "Claude Opus 4.7",
+            api: "openai-completions",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 1000000,
+            maxTokens: 128000,
+            cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+          },
+          {
+            id: "anthropic/claude-opus-4.6",
+            name: "Claude Opus 4.6",
+            api: "openai-completions",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 100000,
+            maxTokens: 128000,
+            cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+          },
+          {
+            id: "anthropic/claude-sonnet-4.6",
+            name: "Claude Sonnet 4.6",
+            api: "openai-completions",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 100000,
+            maxTokens: 64000,
+            cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+          },
+          {
+            id: "minimax/minimax-m2.5",
+            name: "MiniMax M2.5",
+            api: "openai-completions",
+            reasoning: false,
+            input: ["text"],
+            contextWindow: 200000,
+            maxTokens: 16384,
+            cost: { input: 0.8, output: 4 },
+          },
+          {
+            id: "google/gemini-3.1-pro-preview",
+            name: "Gemini 3.1 Pro",
+            api: "openai-completions",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 200000,
+            maxTokens: 65536,
+            cost: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 0.375 },
+          },
+          {
+            id: "z-ai/glm-5",
+            name: "GLM-5",
+            api: "openai-completions",
+            reasoning: true,
+            input: ["text"],
+            contextWindow: 200000,
+            maxTokens: 131072,
+            cost: { input: 0.95, output: 2.55 },
+          },
+          {
+            id: "openai/gpt-5.4",
+            name: "OpenAI: GPT-5.4",
+            api: "openai-completions",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 200000,
+            maxTokens: 128000,
+            cost: { input: 2.5, output: 15, cacheRead: 0.25 },
+          },
+          {
+            id: "openai/gpt-5.3-codex",
+            name: "GPT-5.3 Codex",
+            api: "openai-completions",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 200000,
+            maxTokens: 128000,
+            cost: { input: 1.75, output: 14, cacheRead: 0.175 },
+          },
+        ],
+      },
+      shanxia: {
+        apiKey: "${SHANXIA_API_KEY}",
+        baseUrl: "https://chat.shanxia.dev",
+        headers: {
+          "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
+          "x-shanxia-device": "d435197502d4db54e409445c8109de89",
+        },
+        models: [
+          {
+            id: "claude-opus-4-6",
+            name: "Claude Opus 4.6 (Shanxia)",
+            api: "anthropic-messages",
+            reasoning: true,
+            input: ["text"],
+            contextWindow: 100000,
+            maxTokens: 128000,
+          },
+        ],
+      },
+    },
+  },
+
+  plugins: {
+    entries: {
+      imessage: { enabled: true },
+      // Host admin acts as A2A hub; docker users stay as spokes
+      // (they inherit outbound.enabled from base but the hub behavior comes
+      //  from this admin instance having outbound wired to actual bots).
+    },
+  },
+
+  session: {
+    agentToAgent: { maxPingPongTurns: 0 },
+  },
+
+  skills: {
+    limits: { maxSkillsInPrompt: 64, maxSkillsPromptChars: 30000 },
+  },
+
+  tools: {
+    agentToAgent: { enabled: true, allow: ["main"] },
+  },
 }

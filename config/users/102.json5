@@ -1,9 +1,30 @@
-// config/users/102.json5 — Docker carher-102 identity overlay
+// config/users/102.json5 — Docker carher-102 identity (Layer 3)
 //
-// Same structure as 101.json5. See that file for per-field guidance.
-// Only the identity values (appId, appSecret ref, name, botOpenId,
-// oauthRedirectUri, dm.allowFrom, primary model) differ.
+// $include's env/docker.json5 → base.json5. Final file mounted into the
+// container at /data/.openclaw/openclaw.json.
+//
+// Only per-user identity fields. Real appSecret comes from
+// docker/users/102.env via --env-file on docker run.
 
 {
   "$include": "../env/docker.json5",
+
+  agents: {
+    defaults: {
+      model: { primary: "openrouter/minimax/minimax-m2.7" },
+    },
+  },
+
+  channels: {
+    feishu: {
+      name: "tester2的her",
+      appId: "cli_a93cbff979b89bd8",
+      appSecret: "${FEISHU_APP_SECRET}",
+      botOpenId: "ou_d2dcb5a6c7ad3934861b7120c30c2b1e",
+      oauthRedirectUri: "https://u102-auth.carher.net/feishu/oauth/callback",
+      dm: {
+        allowFrom: ["ou_7ec6c07f195f970e08eefc63f007dd93"],
+      },
+    },
+  },
 }

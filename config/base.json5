@@ -1,32 +1,151 @@
 // config/base.json5 — all-agent shared behavior
 //
-// Layer 1/3 of the config tree. This file is $include'd by every environment
-// overlay (env/host-mac.json5, env/docker.json5) and therefore reaches every
-// agent: admin Mac Her + every Docker carher-{N}.
+// Layer 1/3 of the config tree. $include'd (transitively) by every agent.
+// Do not add env-specific or identity-specific fields here.
 //
-// Scope: fields whose value is truly identical across all 3 environments.
-// Classified by the Phase 1 diagnostic as "base" (66 fields, see commit msg).
-//
-// What goes here:
-//   - agents.defaults.compaction / memorySearch / userTimezone / llm / maxConcurrent
-//   - browser.enabled / defaultProfile / cdpPortRangeStart
-//   - channels.feishu.enabled / groups
-//   - gateway.mode / port          (NOT bind/auth — those differ per env)
-//   - messages.ackReactionScope / tts shared settings
-//   - plugins.entries.* functional toggles and config that every agent needs
-//   - plugins.deny
-//   - tools.sessions.visibility / tools.web.search.provider
-//   - Model ALIASES that every agent uses (but not per-provider apiKeys/models)
-//
-// What does NOT go here:
-//   - Any secret or apiKey (use ${VAR_NAME} in the overlay that needs it)
-//   - Environment-specific fields (gateway.bind, browser.headless, auth token)
-//   - Per-user identity (feishu appId/secret, primary model)
-//   - plugins.load.paths — path differs between Docker (cwd=/app) and host
-//
-// Array-field rule: arrays in this file MUST NOT be duplicated in any overlay.
-// Deep-merge concatenates arrays, so redeclaring an array in an overlay
-// appends, not replaces. To "replace", model the data as an object keyed by id.
+// Array-field rule: arrays in this file MUST NOT be redeclared in any
+// overlay (deep-merge concatenates, not replaces). The existing concat
+// bugs this rebuild fixes:
+//   - memorySearch.sources was ["memory","sessions"] × 3
+//   - plugins.load.paths was ["/app/docker/…","docker/…"]
+//   - tools.media.audio.models was [{groq}] × 3
+// Each array below appears here once and only once.
 
 {
+  agents: {
+    defaults: {
+      userTimezone: "Asia/Shanghai",
+      llm: { idleTimeoutSeconds: 300 },
+      maxConcurrent: 16,
+      subagents: { maxConcurrent: 64 },
+      compaction: { mode: "safeguard", reserveTokens: 200000 },
+      memorySearch: {
+        provider: "openai",
+        model: "BAAI/bge-m3",
+        // Array is declared here once. No overlay may redeclare this key.
+        sources: ["memory", "sessions"],
+        experimental: { sessionMemory: true },
+        remote: {
+          baseUrl: "https://openrouter.ai/api/v1/",
+          apiKey: "${OPENROUTER_API_KEY}",
+        },
+        query: {
+          minScore: 0.25,
+          maxResults: 8,
+          hybrid: {
+            vectorWeight: 0.7,
+            textWeight: 0.3,
+            mmr: { enabled: true, lambda: 0.4 },
+          },
+        },
+      },
+      models: {
+        "openrouter/z-ai/glm-5": { alias: "glm" },
+      },
+    },
+  },
+
+  browser: {
+    enabled: true,
+    defaultProfile: "openclaw",
+    cdpPortRangeStart: 18900,
+  },
+
+  channels: {
+    feishu: {
+      enabled: true,
+      groups: { enabled: true, archive: true },
+    },
+  },
+
+  commands: {
+    native: "auto",
+    nativeSkills: "auto",
+  },
+
+  gateway: {
+    mode: "local",
+    port: 18789,
+  },
+
+  messages: {
+    ackReactionScope: "group-mentions",
+    tts: {
+      auto: "inbound",
+      provider: "edge",
+      providers: { edge: { voice: "zh-CN-XiaoxiaoNeural" } },
+    },
+  },
+
+  models: {
+    providers: {
+      anthropic: { baseUrl: "https://litellm.carher.net" },
+      openrouter: { baseUrl: "https://openrouter.ai/api/v1" },
+    },
+  },
+
+  plugins: {
+    // Array declared here once; overlays MUST NOT redeclare this key.
+    // Relative path resolves under docker cwd=/app and host cwd=worktree root.
+    deny: ["feishu"],
+    load: {
+      paths: ["docker/plugins/a2a-gateway"],
+    },
+    entries: {
+      "feishu-her": { enabled: true },
+      "a2a-gateway": {
+        enabled: true,
+        config: {
+          routing: { defaultAgentId: "main" },
+          limits: { maxConcurrentTasks: 16 },
+          // Overridden per-user in users/admin.json5 (hub) and left default
+          // (spoke) in users/{101,102}.json5.
+          outbound: { enabled: true },
+        },
+      },
+      "active-memory": { enabled: false },
+      "memory-core": {
+        config: {
+          dreaming: {
+            enabled: false,
+            timezone: "Asia/Shanghai",
+            frequency: "0 3 * * *",
+          },
+        },
+      },
+      "memory-wiki": {
+        enabled: true,
+        config: {
+          vaultMode: "bridge",
+          bridge: {
+            enabled: true,
+            readMemoryArtifacts: true,
+            indexDreamReports: true,
+            indexDailyNotes: true,
+            indexMemoryRoot: true,
+            followMemoryEvents: true,
+          },
+          ingest: { autoCompile: true, allowUrlIngest: true },
+          search: { backend: "shared", corpus: "all" },
+        },
+      },
+      realtime: {
+        enabled: true,
+        config: {
+          port: 18790,
+          gemini: {
+            model: "gemini-live-2.5-flash-native-audio",
+            projectId: "gen-lang-client-0519229117",
+          },
+        },
+      },
+    },
+  },
+
+  tools: {
+    sessions: { visibility: "agent" },
+    web: { search: { provider: "perplexity" } },
+    // Array declared here once; overlays MUST NOT redeclare this key.
+    media: { audio: { models: [{ provider: "groq" }] } },
+  },
 }
