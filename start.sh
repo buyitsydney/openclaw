@@ -68,9 +68,20 @@ wait_for_port_free() {
 echo -e "${YELLOW}🚀 CarHer Gateway 启动脚本${NC}"
 echo ""
 
-# 同步 shared config 到 ~/.openclaw/（upstream v2026.2.17 安全策略要求 $include 在 config 目录内）
-cp "$SCRIPT_DIR/docker/shared-config.json5" "$HOME/.openclaw/shared-config.json5"
-echo -e "${GREEN}  ✓ shared-config.json5 已同步到 ~/.openclaw/${NC}"
+# Sync config/ tree into ~/.openclaw/ (macOS bind-mount equivalent for the
+# flat-layout that openclaw's include-resolver requires — cross-dir symlinks
+# hit the realpath security check in src/config/includes.ts).
+# Source-of-truth stays in the repo's config/ directory; ~/.openclaw/*.json5
+# are derived copies overwritten on every start.
+mkdir -p "$HOME/.openclaw"
+for f in admin.json5 base.json5 host-mac.json5; do
+  cp "$SCRIPT_DIR/config/$f" "$HOME/.openclaw/$f"
+done
+# openclaw defaults to reading ~/.openclaw/openclaw.json. Point it at the
+# freshly-copied admin.json5 via a same-directory symlink (passes rootRealDir
+# check because target's realpath stays inside ~/.openclaw/).
+ln -sfn "./admin.json5" "$HOME/.openclaw/openclaw.json"
+echo -e "${GREEN}  ✓ config/{admin,base,host-mac}.json5 → ~/.openclaw/ (openclaw.json -> admin.json5)${NC}"
 
 # 把本地 Her 的 Feishu 名称与多 bot 注册表显式同步进运行时配置。
 export CARHER_HOST_FEISHU_NAME="${CARHER_HOST_FEISHU_NAME:-her}"
