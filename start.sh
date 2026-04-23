@@ -72,58 +72,6 @@ echo ""
 cp "$SCRIPT_DIR/docker/shared-config.json5" "$HOME/.openclaw/shared-config.json5"
 echo -e "${GREEN}  ✓ shared-config.json5 已同步到 ~/.openclaw/${NC}"
 
-# 确保 ~/.openclaw/openclaw.json 正确配置：
-# 1. $include: "./shared-config.json5" — 否则 shared-config 的 plugins.load.paths 不生效
-# 2. plugins.entries.a2a-gateway.config.outbound.enabled = true — 本地 Her 默认 A2A hub
-# 3. acp.enabled = true — 默认开启 ACP
-python3 - <<'PY'
-import json
-import pathlib
-
-config_path = pathlib.Path.home() / ".openclaw" / "openclaw.json"
-if not config_path.exists():
-    raise SystemExit(0)
-
-cfg = json.loads(config_path.read_text(encoding="utf-8"))
-changed = False
-
-# 1. $include
-if cfg.get("$include") != "./shared-config.json5" and "$include" not in cfg:
-    plugins = cfg.get("plugins")
-    if isinstance(plugins, dict) and plugins.get("deny") == ["feishu"]:
-        plugins = dict(plugins)
-        del plugins["deny"]
-        cfg["plugins"] = plugins
-    new_cfg = {"$include": "./shared-config.json5"}
-    for k, v in cfg.items():
-        if k != "$include":
-            new_cfg[k] = v
-    cfg = new_cfg
-    changed = True
-
-# 2. A2A hub (outbound.enabled=true)
-plugins = cfg.setdefault("plugins", {})
-entries = plugins.setdefault("entries", {})
-a2a = entries.setdefault("a2a-gateway", {})
-a2a["enabled"] = True
-a2a_cfg = a2a.setdefault("config", {})
-outbound = a2a_cfg.setdefault("outbound", {})
-if outbound.get("enabled") is not True:
-    outbound["enabled"] = True
-    changed = True
-
-# 3. ACP enabled
-acp = cfg.setdefault("acp", {})
-if acp.get("enabled") is not True:
-    acp["enabled"] = True
-    changed = True
-
-if changed:
-    config_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print("updated")
-PY
-echo -e "${GREEN}  ✓ openclaw.json: \$include + A2A hub + ACP 默认开启${NC}"
-
 # 把本地 Her 的 Feishu 名称与多 bot 注册表显式同步进运行时配置。
 export CARHER_HOST_FEISHU_NAME="${CARHER_HOST_FEISHU_NAME:-her}"
 python3 - "$SCRIPT_DIR" <<'PY'
