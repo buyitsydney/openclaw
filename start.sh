@@ -73,10 +73,20 @@ echo ""
 # hit the realpath security check in src/config/includes.ts).
 # Source-of-truth stays in the repo's config/ directory; ~/.openclaw/*.json5
 # are derived copies overwritten on every start.
+#
+# We convert JSON5 → JSON on copy so the downstream python3 sync step
+# (knownBots/oauthRedirectUri) can use the stdlib json module. openclaw's
+# own include-resolver uses JSON5.parse, which accepts plain JSON, so the
+# .json5 file extension stays correct for \$include lookup.
 mkdir -p "$HOME/.openclaw"
-for f in admin.json5 base.json5 host-mac.json5; do
-  cp "$SCRIPT_DIR/config/$f" "$HOME/.openclaw/$f"
-done
+node -e "
+const JSON5 = require('$SCRIPT_DIR/node_modules/json5');
+const fs = require('fs');
+for (const f of ['admin.json5', 'base.json5', 'host-mac.json5']) {
+  const parsed = JSON5.parse(fs.readFileSync('$SCRIPT_DIR/config/' + f, 'utf-8'));
+  fs.writeFileSync('$HOME/.openclaw/' + f, JSON.stringify(parsed, null, 2) + '\n');
+}
+"
 # openclaw defaults to reading ~/.openclaw/openclaw.json. Point it at the
 # freshly-copied admin.json5 via a same-directory symlink (passes rootRealDir
 # check because target's realpath stays inside ~/.openclaw/).

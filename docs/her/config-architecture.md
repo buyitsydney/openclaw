@@ -1,290 +1,370 @@
 # CarHer 配置架构
 
-> 日期: 2026-02-27
-> 状态: 现状记录 + 改进建议
+> 状态：已落地（2026-04-23 rebuild）
+> 单一真源：`config/*.json5`（git tracked）
+> 部署目标：admin Mac Her + S1/S3 docker 容器
 
 ---
 
-## 1. 概述
+## 1. 架构总览
 
-CarHer 有 3 类运行环境，共 4 个配置层级。所有环境通过 `$include` 指令共享同一份基础功能配置（`shared-config.json5`），各自只覆盖环境特有的部分。
+```
+config/
+├── base.json5         所有 agent 共享的行为（Behavior）
+├── host-mac.json5     $include base.json5 — macOS 环境差异（非 admin 身份）
+├── docker.json5       $include base.json5 — docker 容器环境差异
+├── admin.json5        $include host-mac.json5 — admin 身份（Mac 上 admin her）
+├── u101.json5         $include docker.json5 — carher-101 身份
+├── u102.json5         同上
+└── u{N}.json5         同上 — 一个 docker 用户一个文件
+```
 
-| 环境           | 实例数 | 说明                            |
-| -------------- | ------ | ------------------------------- |
-| Mac 本地 Her   | 1      | 管理员日常使用，macOS 原生进程  |
-| S1 Admin Her   | 1      | 服务器上的管理员 Her，tmux 进程 |
-| S1 Docker 容器 | 8-14   | 每个员工一个独立容器            |
+三条 include 链，每条恰好 2 层：
+
+| Agent         | 链路                                            |
+| ------------- | ----------------------------------------------- |
+| admin Mac Her | `admin.json5` → `host-mac.json5` → `base.json5` |
+| docker user N | `u{N}.json5` → `docker.json5` → `base.json5`    |
+| 任何新用户    | `u{N}.json5` → `docker.json5` → `base.json5`    |
+
+`config/` 整棵树是 git-tracked 的**唯一真源**。所有其他位置（`~/.openclaw/*.json5`、容器内 `/data/.openclaw/*.json5`）都是启动时从 `config/` 派生的副本。
 
 ---
 
-## 2. `$include` 合并机制
+## 2. Include 合并机制（openclaw 引擎）
 
-OpenClaw 配置支持 `$include` 指令，合并规则（源码: `src/config/includes.ts`）:
+引擎只做两件事（源码：`src/config/includes.ts`、`src/config/env-substitution.ts`）：
+
+### 2.1 `$include` + deep merge
 
 ```
-included file (被包含文件) → 先加载
-including file (包含文件) → 后加载，同名 key 覆盖 included 的值
+被 include 的文件 → 先加载
+include 它的文件 → 后加载，同 key 覆盖
 ```
 
-**关键规则: sibling keys override included values（同级 key 覆盖被包含的值）**
+规则按值类型分三种：
 
-示例：
+| 两侧值类型                | 行为                          |
+| ------------------------- | ----------------------------- |
+| object `{}` + object `{}` | 递归 deep merge               |
+| array `[]` + array `[]`   | **concat 追加**（不是替换！） |
+| primitive + primitive     | overlay 方覆盖 included 方    |
 
-```json5
-// base.json (被包含)
-{ "a": 1, "b": 2 }
+**数组 concat 陷阱——头号坑。** rebuild 前的老 config 撞过三次：
 
-// overlay.json (包含方)
-{ "$include": "./base.json", "b": 99 }
+| 字段                                   | 旧状态                                                                         | 新状态                          |
+| -------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------- |
+| `agents.defaults.memorySearch.sources` | `[memory,sessions]` 被 shared/host/docker 各写一份 → 实际 6 元素               | 只写 `base.json5` 一次 → 2 元素 |
+| `plugins.load.paths`                   | `["/app/docker/...", "docker/..."]`（shared + host 拼接，host 上 /app 不存在） | 只写 `base.json5` 一次          |
+| `tools.media.audio.models`             | `[{groq},{groq},{groq}]` 叠加 3 次                                             | 只写 `base.json5` 一次          |
 
-// 合并结果
-{ "a": 1, "b": 99 }  // b 被 overlay 覆盖
-```
+铁律：**任何数组字段，在整条 include 链上只能出现一次**。overlay 想"替换"数组，要么改成带 key 的 object，要么不碰。
 
-对于嵌套对象，执行 deep merge:
+### 2.2 路径安全限制（macOS + docker 都生效）
 
-```json5
-// base.json
-{ "agents": { "defaults": { "contextTokens": 200000, "compaction": { "mode": "safeguard" } } } }
+include resolver 在解析 `$include` 路径时会做 rootDir 逃逸检查：
 
-// overlay.json
-{ "$include": "./base.json", "agents": { "defaults": { "model": { "primary": "opus" } } } }
+- rootDir 固定为 `basePath` 的 dirname
+- rootRealDir 是 rootDir 的 realpath
+- `$include` 的目标文件 realpath 必须仍在 rootRealDir 里，否则拒绝
 
-// 合并结果 — deep merge，不同 key 合并，同名 key 覆盖
-{ "agents": { "defaults": { "contextTokens": 200000, "compaction": { "mode": "safeguard" }, "model": { "primary": "opus" } } } }
-```
+这个限制决定了两件事：
+
+1. **include 路径必须同目录内**（`./xxx.json5`），不能用 `../` 跨目录 → config 是扁平结构，不分 subdir
+2. **跨目录 symlink 会被拒绝**（realpath 校验会穿过 symlink 解析真实位置）→ host 侧用 cp（JSON5→JSON）而不是 symlink 把 `config/*` 同步到 `~/.openclaw/`
+
+### 2.3 `${VAR}` env 替换
+
+字符串值里的 `${UPPERCASE_NAME}` 在 config 加载完之后用 `process.env` 替换。
+
+- 缺变量直接 throw `MissingEnvVarError`（fail-fast，不会静默变空串）
+- `$${VAR}` 是转义，输出字面量 `${VAR}`
+- 只匹配全大写 `[A-Z_][A-Z0-9_]*` 形式
+
+**所有 secret 在 config 里都写 `${VAR}`**，真值来自 env file，不进 git。
 
 ---
 
-## 3. 配置文件清单
+## 3. 文件职责
 
-### 3.1 repo 管控的配置文件（Git truth source）
+### 3.1 `config/base.json5`（layer 1，所有 agent 共享）
 
-| 文件                | 路径                                         | 用途                                                     |
-| ------------------- | -------------------------------------------- | -------------------------------------------------------- |
-| shared-config.json5 | `docker/shared-config.json5`                 | 所有环境共享的功能配置                                   |
-| carher-config.json  | `docker/carher-config.json`                  | Docker 容器共享的中间层                                  |
-| user-configs/       | `docker/user-configs/carher-config-{N}.json` | 每个 Docker 用户的个性化配置（`start-user.sh` 自动生成） |
+放：
 
-### 3.2 运行时配置文件（不在 Git 中）
+- `agents.defaults` 里跨环境一致的 — `userTimezone`、`llm.idleTimeoutSeconds`、`maxConcurrent`、`subagents.maxConcurrent`、`compaction`、`memorySearch`
+- `browser.{enabled, defaultProfile, cdpPortRangeStart}`
+- `channels.feishu.{enabled, groups}`
+- `commands.{native, nativeSkills}`
+- `gateway.{mode, port}`（只放 mode 和 port；bind/auth 放 env 层）
+- `messages.{ackReactionScope, tts 共享}`
+- `models.providers.{anthropic,openrouter}.baseUrl`（URL 共享；apiKey 放 env 层）
+- `plugins.{load.paths, entries}` 所有 agent 都需要的 plugin 功能配置
+- `tools.{sessions.visibility, agentToAgent.enabled, web, media}`
 
-| 文件                         | 位置                                       | 用途                                        |
-| ---------------------------- | ------------------------------------------ | ------------------------------------------- |
-| Mac 本地 Her openclaw.json   | `~/.openclaw/openclaw.json`                | Mac 本地 Her 主配置                         |
-| Mac 本地 shared-config.json5 | `~/.openclaw/shared-config.json5`          | Mac 本地 shared-config 副本（当前未被引用） |
-| S1 Admin openclaw.json       | `/home/cltx/.openclaw/openclaw.json`       | S1 Admin Her 主配置                         |
-| S1 Admin shared-config.json5 | `/home/cltx/.openclaw/shared-config.json5` | S1 Admin Her 的 shared-config 副本          |
+不放：
 
----
+- 任何 secret（`${VAR}` 也只用在 `memorySearch.remote.apiKey` 这样每 agent 都需要的字段）
+- 环境差异字段（gateway.bind、browser.headless、commands.restart）
+- 身份字段（feishu appId、primary model、imessage）
 
-## 4. 三类环境的配置层级
+### 3.2 `config/host-mac.json5`（layer 2，macOS 原生环境）
 
-### 4.1 Mac 本地 Her（当前: 不使用 $include）
+加 / 覆盖：
 
-```
-~/.openclaw/openclaw.json    ← 独立配置，所有内容直写
-```
-
-- 直写了 `contextTokens: 200000`、`compaction`、`memorySearch`、`models`、`tools`、`messages` 等全部配置
-- 不使用 `$include`，与 `shared-config.json5` 完全独立
-- `~/.openclaw/shared-config.json5` 存在但未被引用
-
-**特有配置:**
-
-- `env.vars` (Anthropic/OpenRouter/Groq API keys)
-- `models.providers.anthropic.apiKey` (直连 Anthropic API)
-- `browser.headless: false`
-- `gateway.bind: loopback`, `gateway.auth.mode: none`
-- `channels.telegram`, `channels.imessage`
+- `acp.enabled: true`（只有 Mac 上跑 ACP Claude）
+- `browser.headless: false`（Mac 有显示器）
 - `commands.restart: true`
+- `gateway.bind: "loopback"`
+- `gateway.auth.mode: "none"`（Mac 本机，不做 token 校验）
+- `gateway.auth.token: "${CARHER_GATEWAY_TOKEN_HOST}"`（mode=none 时不读，但保留以备切换）
+- `agents.defaults.{contextTokens, heartbeat, workspace}`
+- `plugins.entries.{acpx, anthropic, browser, openrouter}.enabled: true`
 
-### 4.2 S1 Admin Her（使用 $include → shared-config.json5）
+### 3.3 `config/docker.json5`（layer 2，docker 容器环境）
+
+加 / 覆盖：
+
+- `browser.{headless: true, noSandbox: true}`
+- `channels.feishu.groupPolicy: "open"`（docker 默认开放群策略；admin 在 allowlist）
+- `commands.restart: false`
+- `gateway.bind: "lan"`
+- `gateway.auth.{mode: "token", token: "${CARHER_GATEWAY_TOKEN}"}`
+- `gateway.controlUi.*`（容器隔离下允许 dangerous 开关）
+- `agents.defaults.model.primary: "anthropic/anthropic.claude-opus-4-7"`（所有 docker 默认 Wangsu opus-4-7）
+- `agents.defaults.models` 的 alias 表（Wangsu + OpenRouter 两套）
+- `models.providers.anthropic.{apiKey: "${ANTHROPIC_AUTH_TOKEN}", models: [...]}` — Wangsu 4 个 model（opus-4-7/opus-4-6/sonnet-4-6/haiku-4-5），id 必须带 `anthropic.` 前缀
+- `models.providers.openrouter.{apiKey: "${OPENROUTER_API_KEY}", models: [...]}` — 8 个 OpenRouter 可用 model
+
+**docker 的 anthropic apiKey 用 `${ANTHROPIC_AUTH_TOKEN}`**（docker/server.env 注入），Wangsu 的 LiteLLM 要求带前缀的 model id；不带前缀会返回 401 `key_model_access_denied`。
+
+### 3.4 `config/admin.json5`（layer 3，admin 身份）
+
+Admin 的身份 + 私人凭证：
+
+- `channels.feishu.{name, appId, appSecret: "${FEISHU_APP_SECRET_ADMIN}", botOpenId, oauthRedirectUri, dm.allowFrom}`
+- `channels.feishu.{knownBots, knownBotOpenIds}` — admin 维护的 bot 注册表（snapshot；start.sh 每次从 `docker/users.csv` 覆盖派生副本）
+- `channels.imessage.*`（Mac 上 iMessage 访问）
+- `commands.{ownerAllowFrom, ownerDisplay}`
+- `models.providers.anthropic.apiKey: "${ANTHROPIC_AUTH_TOKEN}"`
+- `models.providers.openrouter.apiKey: "${OPENROUTER_API_KEY}"`
+- `models.providers.shanxia.{apiKey: "${SHANXIA_API_KEY}", ...}` — Mac-only 中国代理
+- `agents.defaults.model.primary: "anthropic/anthropic.claude-opus-4-7"`
+- `agents.defaults.models.*` 的 admin 专属 alias（Wangsu + OpenRouter + shanxia）
+- `session.agentToAgent.maxPingPongTurns`
+- `skills.limits.*`
+- `tools.agentToAgent.enabled` 继承 base，不额外限制 allowlist（admin 需要 `sessions_history` 读 ACP child session，Claude agent id 不是 `main`）
+- `plugins.entries.imessage.enabled: true`
+
+### 3.5 `config/u{N}.json5`（layer 3，docker 用户身份）
+
+一个 docker 用户一个文件，只放 feishu 身份：
+
+```json5
+{
+  $include: "./docker.json5",
+  channels: {
+    feishu: {
+      name: "<tester>的her",
+      appId: "cli_a92c99d102b8dbca",
+      appSecret: "${FEISHU_APP_SECRET}",
+      botOpenId: "ou_...",
+      oauthRedirectUri: "https://u{N}-auth.carher.net/feishu/oauth/callback",
+      dm: { allowFrom: ["ou_..."] },
+    },
+  },
+}
+```
+
+每个 u{N}.json5 10 行左右。primary model、alias 表、provider apiKey 全部从 `docker.json5` 继承。
+
+---
+
+## 4. Secret 管理
+
+原则：
+
+1. **git 里零明文 secret**
+2. 所有 secret 用 `${VAR}` 引用
+3. secret 真值来自 env file：
+   - admin Mac Her：`~/.openclaw/.env`（chmod 600，gitignored）
+   - docker 服务器：`docker/server.env`（per-server，gitignored）
+   - docker per-user：`docker/users.csv` 第 5 列（feishu appSecret），start-user.sh 注入为 `-e FEISHU_APP_SECRET`
+
+env 文件模板（作为公共 scaffolding 进 git）：
 
 ```
-/home/cltx/.openclaw/openclaw.json
-    └── $include: ./shared-config.json5    ← 2 层
+docker/server.env.example          docker 服务器共享 var 模板
+docker/users/template.env.example  per-user docker secret 模板
+openclaw-host.env.example          admin Mac secret 模板
 ```
 
-- 继承 shared-config 的: `contextTokens`、`compaction`、`memorySearch`、`tools`、`messages`、`browser`、`plugins`、`channels.feishu` 基础
-- 自己定义: `env`、`gateway`、`agents.defaults.model`、`channels.feishu` 凭证、`commands.ownerAllowFrom`、`plugins.entries.realtime`
-- **不定义 `models` provider** — 使用 SDK 内置默认 model 列表
-
-**特有配置:**
-
-- `gateway.bind: lan`, `gateway.auth.mode: token`
-- `commands.ownerAllowFrom` (限制飞书管理命令的用户范围)
-
-### 4.3 S1 Docker 容器（3 层 $include 链）
+### 4.1 Admin Mac Her env vars（`~/.openclaw/.env`）
 
 ```
-/data/.openclaw/openclaw.json           ← 每用户 (start-user.sh 生成)
-    └── $include: ./carher-config.json  ← Docker 共享层
-            └── $include: ./shared-config.json5  ← 全局共享层
+FEISHU_APP_SECRET_ADMIN=...
+ANTHROPIC_API_KEY=...
+ANTHROPIC_AUTH_TOKEN=...
+ANTHROPIC_BASE_URL=https://litellm.carher.net
+SHANXIA_API_KEY=...
+OPENROUTER_API_KEY=...
+VOYAGE_API_KEY=...
+GROQ_API_KEY=...
+CARHER_GATEWAY_TOKEN_HOST=...
 ```
 
-**挂载方式** (来自 `start-user.sh`):
+启动前 source：
 
 ```bash
--v "carher-${USER_ID}-data:/data/.openclaw"                                      # named volume (持久数据)
--v "${CONFIG_MOUNT}:/data/.openclaw/openclaw.json:ro"                             # per-user config (bind mount)
--v "${SCRIPT_DIR}/docker/carher-config.json:/data/.openclaw/carher-config.json:ro"  # Docker 共享层 (bind mount)
--v "${SCRIPT_DIR}/docker/shared-config.json5:/data/.openclaw/shared-config.json5:ro" # 全局共享层 (bind mount)
+set -a; source ~/.openclaw/.env; set +a
+./start.sh
 ```
 
-Docker 配置是 **bind mount**，直接读 repo 目录下的文件。所以 `git pull` 后文件立即更新，但需要重启容器才能生效（gateway 启动时加载配置）。
+或配合 launchd EnvironmentFile / direnv。
 
-**三层职责分工:**
+### 4.2 Docker 服务器共享 env（`docker/server.env`）
 
-| 层               | 文件                | 职责                                                                                              |
-| ---------------- | ------------------- | ------------------------------------------------------------------------------------------------- |
-| L1 (全局共享)    | shared-config.json5 | contextTokens, compaction, memorySearch, tools, messages, browser 基础, plugins 基础, feishu 基础 |
-| L2 (Docker 共享) | carher-config.json  | models 定义 (含 contextWindow/cost), browser.headless, gateway, commands.restart                  |
-| L3 (用户个性化)  | openclaw.json       | primary model, model aliases, feishu appId/appSecret/dm.allowFrom, gemini config                  |
+```
+ANTHROPIC_BASE_URL=https://litellm.carher.net
+ANTHROPIC_AUTH_TOKEN=...
+OPENROUTER_API_KEY=...
+VOYAGE_API_KEY=...
+GROQ_API_KEY=...
+CARHER_GATEWAY_TOKEN=...
+CARHER_AUTH_HOST=...              # per-server OAuth hostname
+CARHER_SERVER=S1|S3|local
+```
 
----
+`start-user.sh` 自动 source 这个文件，所有 docker 容器都收到这些 env。
 
-## 5. contextTokens 的决定链路
+### 4.3 Per-user docker secrets
 
-`contextTokens` 控制 compaction (上下文压缩) 的触发阈值。
+`docker/users.csv` 第 5 列是 feishu appSecret。`start-user.sh` 读 CSV 后通过 `-e FEISHU_APP_SECRET=<value>` 注入进单个容器。
 
-| 环境         | contextTokens 来源                            | 当前值 |
-| ------------ | --------------------------------------------- | ------ |
-| Mac 本地 Her | openclaw.json 直写                            | 200000 |
-| S1 Admin Her | 继承 shared-config.json5                      | 200000 |
-| S1 Docker    | carher-config.json 定义（覆盖 shared-config） | 200000 |
-
-注意: Docker 的 `carher-config.json` 显式写了 `contextTokens: 200000`。即使 `shared-config.json5` 的值不同，Docker 容器也会使用 `carher-config.json` 的值（sibling override）。
-
----
-
-## 6. 配置同步机制
-
-### 当前状态
-
-| 文件                               | 同步方式             | 问题                              |
-| ---------------------------------- | -------------------- | --------------------------------- |
-| repo `docker/shared-config.json5`  | Git                  | truth source                      |
-| S1 Docker 用的 shared-config.json5 | bind mount repo 文件 | `git pull` 即同步，需重启容器生效 |
-| S1 Admin 用的 shared-config.json5  | 手动维护的独立副本   | 容易与 repo 版本 drift            |
-| Mac 本地的 shared-config.json5     | 手动维护的独立副本   | 容易与 repo 版本 drift            |
-
-### 当前的同步风险
-
-1. **S1 Docker**: `git pull` 后 bind mount 的文件自动更新，但 **需重启容器** 才能生效
-2. **S1 Admin**: `/home/cltx/.openclaw/shared-config.json5` 是独立副本，与 repo 无关联，必须手动更新
-3. **Mac 本地**: `~/.openclaw/shared-config.json5` 是独立副本，当前甚至未被 `openclaw.json` 引用
+未来也可以切到 `docker/users/{N}.env` 独立 env file（模板见 `docker/users/template.env.example`），但目前沿用 CSV。
 
 ---
 
-## 7. 当前问题总结
+## 5. 运行时部署
 
-### P1: Mac 本地 Her 不使用 $include（配置方式不一致）
+### 5.1 Admin Mac Her（`./start.sh`）
 
-Mac 本地 Her 的 `openclaw.json` 直写所有配置，不通过 `$include` 引用 `shared-config.json5`。导致:
+`start.sh` 启动时做三件 config 相关事：
 
-- 修改 `shared-config.json5` 不会影响 Mac 本地 Her
-- 同一个功能配置（如 memorySearch、tools）需要在 Mac 本地和 shared-config 各维护一份
-- 配置 drift 风险高
+1. **Sync config → `~/.openclaw/`**（macOS 上 bind-mount 的等价实现，用 cp 而不是 symlink 以绕过 openclaw 的 realpath 校验）：
 
-### P2: shared-config.json5 存在多份手动维护的副本
+   ```
+   node -e "JSON5.parse(config/admin.json5) | JSON.stringify" > ~/.openclaw/admin.json5
+   node -e "JSON5.parse(config/base.json5) | JSON.stringify"  > ~/.openclaw/base.json5
+   node -e "JSON5.parse(config/host-mac.json5) | JSON.stringify" > ~/.openclaw/host-mac.json5
+   ln -sfn ./admin.json5 ~/.openclaw/openclaw.json   (同目录 symlink，安全)
+   ```
 
-repo、Mac 本地、S1 Admin 各有一份 `shared-config.json5`，没有自动同步机制。改了 repo 的不等于改了运行时的。
+   - 为什么是 JSON 而不是 JSON5：下游 python3 sync 段用 stdlib json 读写，不支持注释
+   - 为什么文件名保留 `.json5`：openclaw 的 resolver 用 JSON5.parse（JSON 是 JSON5 的超集），include 路径查找按文件名，保留 `.json5` 兼容
 
-### P3: carher-config.json 的 contextTokens 冗余
+2. **Python3 同步 feishu bot registry**：从 `docker/users.csv` 读所有 bot 的 appId/botOpenId/label，派生 `channels.feishu.{knownBots, knownBotOpenIds, oauthRedirectUri}`，写回 `~/.openclaw/admin.json5`（经 openclaw.json symlink 透传）。下次 start.sh 的 cp 会重新覆盖，所以 **git 源不被污染**。
 
-`carher-config.json` 显式写了 `contextTokens: 200000`，与 `shared-config.json5` 的值相同。这个冗余覆盖当初是为了防止 shared-config 的值错误，但增加了维护负担。
+3. **启动 gateway**：`node dist/index.js gateway run --port 18789 --bind loopback --force`
 
-### P4: S1 Admin Her 缺少 models 定义
+启动后的 openclaw 视角：
 
-S1 Admin Her 的 `openclaw.json` 没有定义 `models.providers`，使用 SDK 内置默认。而 Mac 本地和 Docker 都显式定义了 models（含 contextWindow、cost）。如果 SDK 默认值与预期不符，Admin Her 的行为会不同。
+```
+~/.openclaw/openclaw.json → ./admin.json5   (same-dir symlink)
+rootDir           = ~/.openclaw/
+rootRealDir       = ~/.openclaw/
+managedSkillsDir  = ~/.openclaw/skills/      (host-deployed, bind mount from ~/.openclaw/skills)
+$include 链：
+  admin.json5  → ~/.openclaw/host-mac.json5  ✓ inside rootRealDir
+  host-mac    → ~/.openclaw/base.json5        ✓
+```
 
----
+### 5.2 Docker 容器（`./start-user.sh --id=N`）
 
-## 8. 改进建议
+`start-user.sh` 对每个容器：
 
-### 建议 1: Mac 本地 Her 改为使用 $include（优先级: 高）
+1. 检查 `config/u{N}.json5` 存在，不存在报错退出
+2. 读 `docker/users.csv` 第 N 行拿 feishu appSecret + 其他派生信息
+3. `docker run` 挂载单个 config 文件到 `/data/.openclaw/` 根（不是挂目录）：
 
-让 Mac 本地 `~/.openclaw/openclaw.json` 也通过 `$include: ./shared-config.json5` 引用共享配置，移除重复内容，只保留 Mac 特有配置。
+   ```bash
+   -v config/u{N}.json5      :/data/.openclaw/openclaw.json:ro
+   -v config/base.json5      :/data/.openclaw/base.json5:ro
+   -v config/docker.json5    :/data/.openclaw/docker.json5:ro
+   -e FEISHU_APP_SECRET=<from CSV>
+   -e CARHER_GATEWAY_TOKEN=<from AUTH_TOKEN>
+   ```
 
-**改动后配置方式统一为 2 种:**
+4. 容器内 openclaw 读默认路径 `/data/.openclaw/openclaw.json`（= u{N}.json5 bind mount）
+5. include 链 `./docker.json5` → `./base.json5` 都在 `/data/.openclaw/` 内，realpath 校验通过
+6. `CONFIG_DIR = /data/.openclaw/`，`managedSkillsDir = /data/.openclaw/skills/`（start-user.sh 也 bind mount 了 `~/.openclaw/skills`）
 
-| 配置方式                                                 | 环境                | 层数 |
-| -------------------------------------------------------- | ------------------- | ---- |
-| openclaw.json → shared-config.json5                      | Mac 本地 + S1 Admin | 2    |
-| openclaw.json → carher-config.json → shared-config.json5 | Docker 容器         | 3    |
+为什么是**单个文件挂载**而不是整个 `config/` 目录挂载：
 
-**Mac 本地 openclaw.json 需保留的特有配置:**
+- 之前试过挂 `config/:/data/.openclaw/config/:ro` + `OPENCLAW_CONFIG_PATH=/data/.openclaw/config/u{N}.json5`
+- 结果 CONFIG_DIR 变成 `/data/.openclaw/config/`，managedSkillsDir 跑到 `/data/.openclaw/config/skills/`（不存在）
+- 所有 `openclaw-managed` source 的 skill（`feishu-chat`、`feishu-doc` 等 10 个）全部 not ready
+- 单文件扁平挂载让 CONFIG_DIR 保持在 `/data/.openclaw/`，skills 正常加载
 
-- `env.vars` (API keys)
-- `models.providers` (anthropic 直连需要真实 apiKey)
-- `agents.defaults.model.primary`、`agents.defaults.models` (aliases)
-- `agents.defaults.maxConcurrent`、`agents.defaults.subagents`
-- `browser.headless: false`
-- `gateway` (loopback, no auth)
-- `commands.restart: true`、`commands.ownerDisplay`
-- `channels.telegram`、`channels.imessage`
-- `channels.feishu` 凭证
-- `plugins.entries` (telegram/imessage)
-
-### 建议 2: 统一 shared-config.json5 同步机制（优先级: 高）
-
-方案 A — **符号链接** (推荐):
+### 5.3 添加新 docker 用户
 
 ```bash
-# S1 Admin
-ln -sf /Data/CarHer/docker/shared-config.json5 /home/cltx/.openclaw/shared-config.json5
+# 1. 选 ID（唯一，1-999）
+ID=105
 
-# Mac 本地
-ln -sf ~/Documents/work/openclaw/docker/shared-config.json5 ~/.openclaw/shared-config.json5
+# 2. 复制模板 + 改身份字段
+cp config/u101.json5 config/u${ID}.json5
+$EDITOR config/u${ID}.json5
+# 改：feishu.{name, appId, botOpenId, oauthRedirectUri, dm.allowFrom}
+
+# 3. users.csv 加一行（id, label, model-alias, appId, appSecret, ownerOpenId, provider, note, _, botOpenId）
+echo "${ID},...,..." >> docker/users.csv
+
+# 4. commit
+git add config/u${ID}.json5 docker/users.csv
+git commit -m "feat: add docker user ${ID}"
+
+# 5. 启动（bind mount 自动生效，不用 build image）
+./start-user.sh --id=${ID} --image=carher-core:<current-tag>
 ```
-
-优点: git pull 后所有环境自动同步，零维护。
-
-方案 B — 同步脚本:
-在 `start.sh` / Admin Her 启动脚本中加入 `cp docker/shared-config.json5 ~/.openclaw/`。
-缺点: 需要记得每次启动前运行。
-
-### 建议 3: 移除 carher-config.json 中的冗余 contextTokens（优先级: 低）
-
-`shared-config.json5` 已经定义了 `contextTokens: 200000`，`carher-config.json` 的同值覆盖可以移除。未来修改只需改一处。
-
-但如果作为防御性措施保留也不会出错。
-
-### 建议 4: 将 models 定义提升到 shared-config.json5（优先级: 中）
-
-目前 models 定义在 Mac 本地 `openclaw.json` 和 `carher-config.json` 各维护一份。可以把 models 定义移到 `shared-config.json5`。
-
-**障碍:** Mac 本地的 `anthropic` provider 需要真实 `apiKey`，Docker 用假 key (`sk-ant-not-used-on-server`)。需要通过环境变量 `${ANTHROPIC_API_KEY}` 统一。
-
-### 建议 5: S1 Admin Her 补充 models 定义（优先级: 中）
-
-S1 Admin Her 缺少显式 models 定义，依赖 SDK 默认值。如果实施建议 4，此问题自动解决。如果不实施建议 4，应在 S1 Admin 的 `openclaw.json` 中补充 models 配置。
 
 ---
 
-## 9. 目标架构（实施全部建议后）
+## 6. Rebuild 简史（从 3 层到 2 层）
+
+2026-04-23 之前：
 
 ```
-docker/shared-config.json5 (Git truth source)
-│
-├── contextTokens, compaction, memorySearch
-├── models 定义 (含 contextWindow, cost)
-├── tools, commands 基础, messages, browser 基础
-├── plugins 基础, channels.feishu 基础
-│
-├── ~/.openclaw/shared-config.json5 (symlink → repo)
-│   └── Mac 本地 openclaw.json ($include → shared-config.json5)
-│       └── 特有: env, browser.headless, gateway, telegram, imessage
-│
-├── /home/cltx/.openclaw/shared-config.json5 (symlink → repo)
-│   └── S1 Admin openclaw.json ($include → shared-config.json5)
-│       └── 特有: env, gateway, feishu 凭证, ownerAllowFrom
-│
-└── Docker bind mount → /data/.openclaw/shared-config.json5
-    └── carher-config.json ($include → shared-config.json5)
-        ├── 特有: browser.headless, gateway, commands.restart
-        └── per-user openclaw.json ($include → carher-config.json)
-            └── 特有: primary model, feishu 凭证, gemini config
+docker/shared-config.json5 (rebrand 源)
+├── cp → ~/.openclaw/shared-config.json5      (start.sh 每次启动 cp，hack)
+│   └── ~/.openclaw/openclaw.json $include ./shared-config.json5
+│       └── (还有 52 行 python mutation 注入 $include/A2A/ACP 到 openclaw.json)
+└── bind mount 到 /data/.openclaw/shared-config.json5 (docker)
+    └── docker/carher-config.json $include ./shared-config.json5
+        └── docker/user-configs/carher-config-{N}.json $include ./carher-config.json
+            └── 每次 start-user.sh 由 110 行 python3 现生成
 ```
 
-**结果: 改一处 shared-config.json5 + git pull → 所有环境自动生效（需重启）**
+病灶：
+
+- 3 层嵌套，数组 concat 陷阱，同字段在多层重复导致不确定行为
+- start.sh + start-user.sh 都在运行时 mutate 配置文件
+- admin openclaw.json 完全不在 git，明文 secret 硬编码
+- shared-config.json5 在 git 与 `~/.openclaw/` 各有一份，手工同步易 drift
+
+2026-04-23 rebuild 后：
+
+- 所有非 secret config 进 git (`config/*.json5`)
+- 3 层 include → 固定 2 层
+- 运行时 mutation 限定在派生副本（每次启动覆盖重写，不污染 git 源）
+- Secret 全部 `${VAR}` + env file
+
+`docker/{shared-config.json5, carher-config.json, user-configs/*}` 作为 **safety net 保留**，运行时不再被任何 path 挂载 / cp 到生效位置。
+
+---
+
+## 7. 已知局限
+
+- **Admin Mac Her 的 feishu.knownBots drift**：`config/admin.json5` 里是 snapshot，`start.sh` python3 段每次从 `docker/users.csv` 重新派生覆盖副本。CSV 加新 bot → 下次启动 Mac 侧自动获取；git 源不自动更新，需手工重新 snapshot 以保持 diff 可读。
+- **OpenRouter provider 用户的 docker alias**：`config/docker.json5` 默认把 `opus`/`sonnet` 等短别名绑到 `anthropic/anthropic.claude-*`（Wangsu）。如果某 docker 用户 CSV provider=openrouter，需要在 `config/u{N}.json5` 里覆盖 `agents.defaults.models.*` 重指到 openrouter 变体，否则 `/opus` 会走到 Wangsu 而不是 OpenRouter。
+- **Memory search embedding provider**：当前 `base.json5` 指 `https://openrouter.ai/api/v1/` + model `BAAI/bge-m3`。openrouter.ai 在部分网络环境下 docker 容器不可达，`memory_search` 会报 `fetch failed`。此为 rebuild 前即有的问题，独立修复路径（换 voyage 或 wangsu embedding endpoint）。
+- **1000 用户 scaling**：每用户一个 `config/u{N}.json5` 在 10-100 用户量级可维护；更大规模建议做 bootstrap 脚本从 `docker/users.csv` 批量生成。

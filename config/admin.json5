@@ -257,10 +257,9 @@
     limits: { maxSkillsInPrompt: 64, maxSkillsPromptChars: 30000 },
   },
 
-  tools: {
-    // enabled=true is inherited from base.json5 (promoted after dev merge).
-    // Host admin restricts A2A allowlist to ["main"]; docker users inherit
-    // enabled=true from base with no allowlist restriction by default.
-    agentToAgent: { allow: ["main"] },
-  },
+  // tools.agentToAgent.enabled=true is inherited from base.json5 (promoted
+  // after dev merge). Admin Mac Her intentionally does NOT restrict the
+  // allowlist — admin needs sessions_history to read ACP child sessions
+  // (Claude agent id != "main"), so we inherit base's no-allowlist default.
+  // Docker users also inherit the same unrestricted default.
 }

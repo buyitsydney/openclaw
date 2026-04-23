@@ -10,19 +10,21 @@
 
 每台服务器的 target state：
 
-| 服务器 | 容器 | Image | Profile |
-|---|---|---|---|
-| S1 | carher-12 | `carher:0420-ab-v2-src`（或 carher-core:0421-ab-v2）| 普通（test/弋天） |
-| S1 | carher-13 | `carher-core:0421-ab-v2` | **Hub + ACP + 16GB**（卜弋天主 her） |
-| S1 | **carher-198** | `carher-core:0421-ab-v2` | **Hub + ACP + 16GB + admin 特权**（研究1） |
-| S1 | carher-199 | `carher-core:0421-ab-v2` | Hub + ACP（研究2） |
-| S1 | carher-200 | `carher-core:0421-ab-v2` | Hub + ACP（研究3） |
-| S3 | carher-14 | `carher-core:0421-ab-v2` | 普通（刘国现） |
-| S3 | carher-75 | `carher-core:0421-ab-v2` | 普通（林森） |
+| 服务器 | 容器           | Image                                                | Profile                                    |
+| ------ | -------------- | ---------------------------------------------------- | ------------------------------------------ |
+| S1     | carher-12      | `carher:0420-ab-v2-src`（或 carher-core:0421-ab-v2） | 普通（test/弋天）                          |
+| S1     | carher-13      | `carher-core:0421-ab-v2`                             | **Hub + ACP + 16GB**（卜弋天主 her）       |
+| S1     | **carher-198** | `carher-core:0421-ab-v2`                             | **Hub + ACP + 16GB + admin 特权**（研究1） |
+| S1     | carher-199     | `carher-core:0421-ab-v2`                             | Hub + ACP（研究2）                         |
+| S1     | carher-200     | `carher-core:0421-ab-v2`                             | Hub + ACP（研究3）                         |
+| S3     | carher-14      | `carher-core:0421-ab-v2`                             | 普通（刘国现）                             |
+| S3     | carher-75      | `carher-core:0421-ab-v2`                             | 普通（林森）                               |
 
-Fleet-wide shared 配置（在 git）：
-- `docker/shared-config.json5` 有 `tools.agentToAgent.enabled=true` + `tools.sessions.visibility="all"`
-- `docker/carher-config.json` 有 `tools.sessions.visibility="all"`（不是 "agent"）
+Fleet-wide shared 配置（在 git，`config/` 目录是真源 — 详见 `docs/her/config-architecture`）：
+
+- `config/base.json5` 里 `tools.agentToAgent.enabled=true` + `tools.sessions.visibility="all"`（所有 agent 继承）
+- `config/docker.json5` 里 `agents.defaults.model.primary="anthropic/anthropic.claude-opus-4-7"` + Wangsu/OpenRouter model lists
+- 过去的 `docker/shared-config.json5` + `docker/carher-config.json` + `docker/user-configs/` 保留为 **deprecated safety net**，运行时不再挂载使用。
 
 ## 2. Bootstrap 步骤
 
@@ -38,7 +40,7 @@ cd /Data/CarHer
 git fetch origin feat/carher-a-b-decouple
 git reset --hard origin/feat/carher-a-b-decouple   # HEAD 应该到 b98a7e1223
 git log --oneline -1
-# 期望: b98a7e1223 carher-config: set tools.sessions.visibility=all
+# 期望: feat/config-rebuild HEAD (包含 config/ 新 tree + 扁平挂载 start-user.sh)
 ```
 
 ### 2.2 Host-local 非 git 文件（手动部署）
@@ -145,14 +147,14 @@ docker exec carher-198 head -3 /data/.openclaw/servers.txt
 ```yaml
 # S1 (端口号来自 start-user.sh 按 id 分配: {29000 + id*10 + offset})
 - hostname: s1-u13-fe.carher.net
-  service: http://localhost:29123      # docker-13 fe (8000 map)
+  service: http://localhost:29123 # docker-13 fe (8000 map)
 - hostname: s1-u13-proxy.carher.net
-  service: http://localhost:29124      # docker-13 proxy (8080 map)
+  service: http://localhost:29124 # docker-13 proxy (8080 map)
 - hostname: s1-u13-auth.carher.net
-  service: http://localhost:29125      # docker-13 auth (18891 map)
+  service: http://localhost:29125 # docker-13 auth (18891 map)
 
 - hostname: s1-u198-fe.carher.net
-  service: http://localhost:30973      # carher-198 fe
+  service: http://localhost:30973 # carher-198 fe
 - hostname: s1-u198-proxy.carher.net
   service: http://localhost:30974
 - hostname: s1-u198-auth.carher.net
@@ -166,6 +168,7 @@ Restart cloudflared：`sudo systemctl restart cloudflared`。
 ### 2.8 Fleet 资源配额（可选，docker update 即生效）
 
 主 her 和 admin 可以提到 16 CPU：
+
 ```bash
 docker update --cpus=16 carher-13 carher-198
 ```
@@ -175,7 +178,7 @@ docker update --cpus=16 carher-13 carher-198
 S1 回到 2026-04-23 04:00 的状态（今天所有改动消失，但 3 个月 session 数据恢复）。步骤：
 
 ```bash
-# 1. Git: fetch + reset 到 b98a7e1223 (把 shared-config / carher-config 改动拉回来)
+# 1. Git: fetch + reset 到 config-rebuild HEAD (把新 config/ 树 + start-user.sh 的扁平挂载改动拉回来)
 cd /Data/CarHer
 git fetch origin feat/carher-a-b-decouple
 git reset --hard origin/feat/carher-a-b-decouple
@@ -200,12 +203,12 @@ for c in carher-12 carher-13 carher-198 carher-199 carher-200; do
   docker logs $c --since 3m 2>&1 | grep -E "ACP ready|outbound\.enabled|WSClient connected|ws client ready" | tail -5
 done
 
-# shared-config 新字段可见
-docker exec carher-13 grep -A1 "sessions" /data/.openclaw/shared-config.json5 | tail -3
-# 期望看到 visibility: "all"
+# config 来自 /data/.openclaw/openclaw.json (= config/u{N}.json5 bind mount) + /data/.openclaw/{base,docker}.json5
+docker exec carher-13 grep -A1 "agentToAgent" /data/.openclaw/base.json5 | tail -3
+# 期望看到 enabled: true
 
-# carher-config 同步
-docker exec carher-13 grep -A1 "\"sessions\"" /data/.openclaw/carher-config.json | tail -3
+# sessions 在 base 里也能看
+docker exec carher-13 grep -A1 '"sessions"' /data/.openclaw/base.json5 | tail -3
 # 期望: "visibility": "all"
 
 # admin 特权
