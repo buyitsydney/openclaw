@@ -121,7 +121,7 @@ CARHER_ACP_ENABLED=1 CARHER_MEMORY_LIMIT=16g A2A_ENABLED=1 A2A_OUTBOUND=1 \
   ./start-user.sh --id=198 --image=carher-core:0421-ab-v2
 ```
 
-### 2.6 Admin 容器特殊 bootstrap（carher-198）
+### 2.6 Admin 容器特殊 bootstrap（carher-198）— 用 `bootstrap-admin.sh` 一键化
 
 **admin 需要额外装 sshpass + 拿 servers.txt。在 `start-user.sh` 起完后做**：
 
@@ -138,7 +138,7 @@ docker exec carher-198 head -3 /data/.openclaw/servers.txt
 # admin 现在能跨机 ssh cltx@10.68.13.18{6,7,8} docker ...
 ```
 
-**这步在 `start-user.sh` 外，每次 admin 容器 rebuild 都要重做**（sshpass 装在 writable layer，`docker rm + run` 会丢）。推荐写 `./bootstrap-admin.sh` 封装这两步（未来工作）。
+**这步用 `./bootstrap-admin.sh [carher-198]` 一键做完**（git tracked, 可重复）。每次 admin 容器 rebuild 后执行一次（sshpass 装在 writable layer，`docker rm + run` 会丢）。推荐写 `./bootstrap-admin.sh` 封装这两步（未来工作）。
 
 ### 2.7 Cloudflared 路由
 
@@ -219,9 +219,9 @@ docker exec carher-198 sshpass -p 'cxS4p)apmQ7f' ssh -o StrictHostKeyChecking=no
 
 ## 5. Known gaps（仍要手工的）
 
-- **admin bootstrap 没写成 script**：2.6 每次 rebuild 要手敲。建议未来写 `bootstrap-admin.sh`
+- **admin bootstrap 已写成 script** ✅ (2.6 `./bootstrap-admin.sh [carher-198]`，git tracked，rebuild admin 必跑)
 - **skills 部署没自动**：2.4 靠 cp。建议未来在 `start.sh` / `start-user.sh` 加 hook 自动同步 `.cursor/skills/` → host
-- **`docker-fleet/SKILL.md` 加进 `.cursor/skills/`（本 commit 做了）** ✅
+- **`docker-fleet/SKILL.md` 加进 `.cursor/skills/`** ✅
 
 ## 6. Tag 约定
 
