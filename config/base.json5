@@ -136,7 +136,13 @@
   },
 
   tools: {
-    sessions: { visibility: "agent" },
+    // sessions.visibility="all" + agentToAgent.enabled=true are needed for
+    // cross-agent sessions_history (ACP). Both fields apply to every agent,
+    // so they live in base.json5 (promoted from dev commits
+    // 16304bb71a + a964bfd9ce). Host admin layer additionally restricts
+    // the A2A allowlist to ["main"] in users/admin.json5.
+    sessions: { visibility: "all" },
+    agentToAgent: { enabled: true },
     web: { search: { provider: "perplexity" } },
     // Array declared here once; overlays MUST NOT redeclare this key.
     media: { audio: { models: [{ provider: "groq" }] } },

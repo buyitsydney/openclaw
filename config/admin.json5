@@ -258,6 +258,9 @@
   },
 
   tools: {
-    agentToAgent: { enabled: true, allow: ["main"] },
+    // enabled=true is inherited from base.json5 (promoted after dev merge).
+    // Host admin restricts A2A allowlist to ["main"]; docker users inherit
+    // enabled=true from base with no allowlist restriction by default.
+    agentToAgent: { allow: ["main"] },
   },
 }
