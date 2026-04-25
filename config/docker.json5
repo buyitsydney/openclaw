@@ -95,6 +95,12 @@
     runtime: { ttlMinutes: 120 },
   },
 
+  plugins: {
+    entries: {
+      acpx: { enabled: true },
+    },
+  },
+
   models: {
     providers: {
       anthropic: {
