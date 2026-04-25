@@ -1,0 +1,29 @@
+// config/u199.json5 — S1 carher-199 identity (Layer 3, 研究2)
+//
+// $include's docker.json5 → base.json5. Mounted into the container at
+// /data/.openclaw/openclaw.json (NOT u199.json5 — start-user.sh mounts
+// it as the canonical openclaw.json regardless of source filename).
+//
+// Only per-user feishu identity. Primary model + all other behavior
+// comes from docker.json5 / base.json5. Real appSecret is injected via
+// -e FEISHU_APP_SECRET on docker run (from users.csv).
+//
+// NOTE: oauthRedirectUri uses S1 tunnel prefix (s1-) because this user
+// runs only on S1. If migrated to another server, update this URL.
+
+{
+  "$include": "./docker.json5",
+
+  channels: {
+    feishu: {
+      name: "研究2的her",
+      appId: "cli_a96f043660f99cef",
+      appSecret: "${FEISHU_APP_SECRET}",
+      botOpenId: "ou_a19d25069d7d8ebf681807a6ead95a89",
+      oauthRedirectUri: "https://s1-u199-auth.carher.net/feishu/oauth/callback",
+      dm: {
+        allowFrom: ["ou_ef68a826ccdee37845dd1d35ce177ff3"],
+      },
+    },
+  },
+}

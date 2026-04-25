@@ -1,0 +1,21 @@
+// config/u104.json5 — Docker carher-104 identity (Layer 3)
+//
+// Same structure as u101.json5 — only per-user feishu identity differs.
+// Primary model + docker-shared behavior comes from docker.json5 → base.json5.
+
+{
+  "$include": "./docker.json5",
+
+  channels: {
+    feishu: {
+      name: "tester4的her",
+      appId: "cli_a94e4cee07e69bc2",
+      appSecret: "${FEISHU_APP_SECRET}",
+      botOpenId: "ou_1d0d43e68209ecb3936d636400aa430b",
+      oauthRedirectUri: "https://u104-auth.carher.net/feishu/oauth/callback",
+      dm: {
+        allowFrom: ["ou_93f297be4daba3e8db17ad3351a2c763"],
+      },
+    },
+  },
+}
