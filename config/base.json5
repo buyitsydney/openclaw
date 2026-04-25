@@ -77,12 +77,10 @@
     },
   },
 
-  models: {
-    providers: {
-      anthropic: { baseUrl: "https://litellm.carher.net" },
-      openrouter: { baseUrl: "https://openrouter.ai/api/v1" },
-    },
-  },
+  // models.providers intentionally omitted — openclaw auto-discovers
+  // anthropic + openrouter from env vars (ANTHROPIC_API_KEY/BASE_URL,
+  // OPENROUTER_API_KEY). baseUrl for Wangsu proxy is set via
+  // ANTHROPIC_BASE_URL env var in server.env.
 
   plugins: {
     // A+B v2 (2026-04): bundled feishu plugin removed; no deny needed.
