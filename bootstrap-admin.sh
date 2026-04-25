@@ -61,8 +61,7 @@ mkdir -p "$HOST_SKILL_DIR"
 
 ADMIN_SKILLS=(
   docker-fleet
-  carher-image-upgrade
-  carher-enterprise-ops
+  carher-ops
   carher-a2a-topology
   carher-shared-skills
   cloudflare-tunnel
