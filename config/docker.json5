@@ -85,6 +85,16 @@
     },
   },
 
+  acp: {
+    enabled: true,
+    backend: "acpx",
+    defaultAgent: "claude",
+    allowedAgents: ["claude"],
+    maxConcurrentSessions: 2,
+    dispatch: { enabled: true },
+    runtime: { ttlMinutes: 120 },
+  },
+
   models: {
     providers: {
       anthropic: {
