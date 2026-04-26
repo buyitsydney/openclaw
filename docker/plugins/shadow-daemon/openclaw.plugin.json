@@ -3,7 +3,7 @@
   "name": "Shadow Daemon",
   "description": "Config-driven document→markdown mirror for memory_search semantic recall",
   "version": "0.2.0",
-  "skills": ["./skills/user-doc-memory"],
+  "skills": ["./skills"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
