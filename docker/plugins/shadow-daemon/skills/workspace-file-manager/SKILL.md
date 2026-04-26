@@ -1,5 +1,5 @@
 ---
-name: user-doc-memory
+name: workspace-file-manager
 description: |
   用户文档记忆管理。workspace 下的文档由后台 daemon 自动转 markdown，memory_search 可语义召回。
   你控制一切：监控目录、markitdown 安装升级、进度监控、目录建议。daemon 是笨引擎，你是大脑。
