@@ -55,18 +55,20 @@ def check_markitdown():
     return False, None
 
 def check_watchdog():
+    """Verify watchdog is importable in a *fresh* subprocess (avoids stale
+    sys.modules cache after Her uninstalls/reinstalls the package)."""
     try:
-        import watchdog  # noqa: F401
-        version = getattr(watchdog, "__version__", "unknown")
-        if version == "unknown":
-            try:
-                from watchdog.version import VERSION_STRING
-                version = VERSION_STRING
-            except Exception:
-                version = "installed"
-        return True, version
-    except ImportError:
-        return False, None
+        proc = subprocess.run(
+            [sys.executable, "-c",
+             "import watchdog; "
+             "from watchdog.version import VERSION_STRING; "
+             "print(VERSION_STRING)"],
+            capture_output=True, timeout=10, check=False,
+        )
+        if proc.returncode == 0:
+            return True, proc.stdout.decode().strip() or "installed"
+    except Exception: pass
+    return False, None
 
 def load_config():
     try:
