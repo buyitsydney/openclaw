@@ -65,6 +65,11 @@ RUN --mount=type=cache,target=/root/.npm \
     cd /app/docker/plugins/a2a-gateway && \
     npm install --omit=dev --ignore-scripts
 
+COPY docker/plugins/shadow-daemon /app/docker/plugins/shadow-daemon
+RUN --mount=type=cache,target=/root/.npm \
+    cd /app/docker/plugins/shadow-daemon && \
+    npm install --omit=dev --ignore-scripts
+
 # CarHer 共享配置（shared-config.json5 + 用户 overlay）
 COPY docker/shared-config.json5 /app/docker/shared-config.json5
 COPY docker/user-configs         /app/docker/user-configs
