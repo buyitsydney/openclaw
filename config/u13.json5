@@ -1,0 +1,21 @@
+// config/u13.json5 — S1 carher-13 identity (卜弋天)
+//
+// $include's docker.json5 → base.json5. Mounted into the container at
+// /data/.openclaw/openclaw.json.
+
+{
+  "$include": "./docker.json5",
+
+  channels: {
+    feishu: {
+      name: "弋天的her",
+      appId: "cli_a917e5525178dbb3",
+      appSecret: "${FEISHU_APP_SECRET}",
+      botOpenId: "ou_f29acb43d200f5c5c293bfb2ef4036ac",
+      oauthRedirectUri: "https://s1-u13-auth.carher.net/feishu/oauth/callback",
+      dm: {
+        allowFrom: ["ou_b338bb3dcb85925f66d364dc04e0e516"],
+      },
+    },
+  },
+}

@@ -1,0 +1,29 @@
+// config/u14.json5 — S3 carher-14 identity (刘国现)
+//
+// $include's docker.json5 → base.json5. Mounted into the container at
+// /data/.openclaw/openclaw.json.
+//
+// provider=openrouter: override primary model to use OpenRouter.
+
+{
+  "$include": "./docker.json5",
+
+  agents: {
+    defaults: {
+      model: { primary: "openrouter/anthropic/claude-opus-4.7" },
+    },
+  },
+
+  channels: {
+    feishu: {
+      name: "国现的her",
+      appId: "cli_a91569fab9b81bc6",
+      appSecret: "${FEISHU_APP_SECRET}",
+      botOpenId: "ou_aedf3bafc1277fc330062ec7efae1ca4",
+      oauthRedirectUri: "https://s3-u14-auth.carher.net/feishu/oauth/callback",
+      dm: {
+        allowFrom: ["ou_fbaf6eec244d1c4a4541a477678dab17"],
+      },
+    },
+  },
+}
