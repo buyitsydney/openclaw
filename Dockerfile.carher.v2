@@ -82,10 +82,16 @@ COPY --from=openclaw-src-fetcher /src/src /app/openclaw-src/src
 COPY scripts/carher-entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# 全局 npm 安装去到持久卷（Her 的 CLI 安装跨重启保留）
+# 全局 npm 安装去到持久卷(Her 的 CLI 安装跨重启保留)
 ENV NPM_CONFIG_PREFIX="/data/.openclaw/local"
-ENV PATH="/data/.openclaw/local/bin:${PATH}"
+ENV PATH="/data/.openclaw/local/bin:/data/.openclaw/python/bin:${PATH}"
 ENV NODE_ENV=production
+
+# Method B: pip install --user 写入持久卷,markitdown / watchdog 跨容器重建保留。
+# PIP_BREAK_SYSTEM_PACKAGES 绕开 PEP 668 的 externally-managed 拦截。
+# Daemon 主进程的 env 由 plugin 显式设置,这里只为 docker exec / Her 的安装会话兜底。
+ENV PYTHONUSERBASE="/data/.openclaw/python"
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
 ARG BUILD_HASH=unknown
 LABEL carher.build.hash=$BUILD_HASH
