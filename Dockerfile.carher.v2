@@ -40,10 +40,10 @@ RUN apt-get update && \
 # Live Frontend 是 CarHer 自带扩展（上游 openclaw 镜像不含），从我们的工作区拷贝
 COPY extensions/realtime/live-frontend /app/extensions/realtime/live-frontend
 
-# Live Frontend Python 依赖
+# Live Frontend Python 依赖 + shadow-daemon (watchdog 事件驱动)
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --break-system-packages \
-      -r /app/extensions/realtime/live-frontend/requirements.txt requests
+      -r /app/extensions/realtime/live-frontend/requirements.txt requests watchdog
 
 # 独立插件 —— 拷贝 + npm install --omit=dev（每个插件各自一层，缓存友好）
 WORKDIR /app
@@ -63,11 +63,6 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY docker/plugins/a2a-gateway /app/docker/plugins/a2a-gateway
 RUN --mount=type=cache,target=/root/.npm \
     cd /app/docker/plugins/a2a-gateway && \
-    npm install --omit=dev --ignore-scripts
-
-COPY docker/plugins/shadow-daemon /app/docker/plugins/shadow-daemon
-RUN --mount=type=cache,target=/root/.npm \
-    cd /app/docker/plugins/shadow-daemon && \
     npm install --omit=dev --ignore-scripts
 
 # CarHer 共享配置（shared-config.json5 + 用户 overlay）

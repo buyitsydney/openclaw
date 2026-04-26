@@ -1,24 +1,29 @@
 #!/usr/bin/env python3
-"""shadow_daemon.py v4 — Config-driven office → markdown for OpenClaw memory_search.
+"""shadow_daemon.py v5 — Event-driven document → markdown for OpenClaw memory_search.
 
-v4: Fully dynamic, AI-driven architecture.
-- Reads _config.json to decide which directories to scan (no hardcoded lists)
-- No _config.json → idle (Her creates it)
-- No markitdown → idle (Her installs it)
-- Her controls everything through the SKILL
+v5: Event-driven via watchdog (chokidar's Python equivalent).
+- watchdog Observer watches configured directories
+- File events (create/modify/delete) trigger markitdown conversion
+- Initial sync on startup catches changes from offline period
+- No more os.walk polling / SIGUSR1 / progress.json / cycle counters
+- Complexity: O(changes) instead of O(total files)
+
+Architecture:
+  PDF/Office files → watchdog event → markitdown → memory/_shadow/*.md
+                                                     ↓
+                              builtin/QMD chokidar auto re-indexes
 """
 from __future__ import annotations
 import hashlib, json, os, signal, subprocess, sys, threading, time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
-# ---- config ----
+# ---- env / paths ----
 WORKSPACE = Path(os.environ.get("SHADOW_WORKSPACE", "/data/.openclaw/workspace")).resolve()
 SHADOW_DIR = Path(os.environ.get("SHADOW_DIR", str(WORKSPACE / "memory" / "_shadow"))).resolve()
 CONFIG_FILE = SHADOW_DIR / "_config.json"
-PROGRESS_FILE = SHADOW_DIR / "_progress.json"
 HEALTH_FILE = SHADOW_DIR / "_health.json"
-FALLBACK_INTERVAL_SEC = int(os.environ.get("SHADOW_INTERVAL_SEC", "300"))
 
 # ---- structured log ----
 def log(event, **kv):
@@ -30,7 +35,7 @@ def sha8(s): return hashlib.sha256(s.encode()).hexdigest()[:8]
 def shadow_path_for(src): return SHADOW_DIR / f"{sha8(str(src.resolve()))}__{src.stem[:60]}.md"
 
 def check_markitdown():
-    """Check if markitdown is importable and return version."""
+    """Check if markitdown is importable. Returns (available, version)."""
     try:
         proc = subprocess.run(
             [sys.executable, "-c", "import markitdown; print(markitdown.__version__)"],
@@ -49,6 +54,13 @@ def load_config():
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
 
+# ---- shared state ----
+_state_lock = threading.Lock()
+_current_config: Optional[dict] = None
+_current_observer = None
+_cumulative_converted = 0
+_last_event_at: Optional[str] = None
+
 def write_health(status, extra=None):
     """Write _health.json with current status."""
     SHADOW_DIR.mkdir(parents=True, exist_ok=True)
@@ -58,89 +70,47 @@ def write_health(status, extra=None):
         "markitdown_available": available,
         "markitdown_version": version,
         "last_run": datetime.now(timezone.utc).isoformat(),
+        "cumulative_converted": _cumulative_converted,
+        "last_event_at": _last_event_at,
     }
     if extra:
         health.update(extra)
+    if _current_config:
+        health["config_dirs"] = [d.get("path", "") for d in _current_config.get("directories", [])]
+        health["watching"] = _current_observer is not None and _current_observer.is_alive()
     try:
         HEALTH_FILE.write_text(json.dumps(health, indent=2))
     except OSError:
         pass
 
-def mem_available_mb():
+# ---- file filtering ----
+def is_indexable(p: Path, max_file_bytes: int) -> Optional[str]:
+    """Returns None if indexable, else a skip reason."""
+    if p.is_symlink():
+        return "symlink"
+    if not p.is_file():
+        return "not_file"
+    if p.name.startswith("."):
+        return "hidden"
+    # any path component starts with "." (hidden dir)
     try:
-        with open("/proc/meminfo") as f:
-            for ln in f:
-                if ln.startswith("MemAvailable:"): return int(ln.split()[1]) / 1024.0
-    except Exception: pass
-    return 999999.0
-
-def scan_configured_dirs(config):
-    """Scan only directories listed in config."""
-    dirs = config.get("directories", [])
-    max_file_bytes = config.get("maxFileMB", 50) * 1024 * 1024
-    out = []
-    for entry in dirs:
-        raw_path = entry.get("path", "")
-        if not raw_path:
-            continue
-        target = (WORKSPACE / raw_path).resolve()
-        # security: must be under workspace — check BEFORE is_dir()
-        try:
-            target.relative_to(WORKSPACE)
-        except ValueError:
-            log("skip_outside_workspace", path=raw_path, resolved=str(target))
-            continue
-        if not target.is_dir():
-            log("skip_missing_dir", path=raw_path)
-            continue
-        recursive = entry.get("recursive", True)
-        if recursive:
-            for root, dirs_list, files in os.walk(target, followlinks=False):
-                dirs_list[:] = [d for d in dirs_list if not d.startswith(".")]
-                for fn in files:
-                    if fn.startswith("."):
-                        continue
-                    p = Path(root) / fn
-                    if p.is_symlink():
-                        log("skip_symlink", src=str(p))
-                        continue
-                    try:
-                        sz = p.stat().st_size
-                        if sz > max_file_bytes:
-                            log("skip_size", src=str(p), size=sz)
-                        elif sz == 0:
-                            pass
-                        else:
-                            out.append(p)
-                    except OSError:
-                        pass
-        else:
-            for p in target.iterdir():
-                if p.is_dir() or p.name.startswith(".") or p.is_symlink():
-                    continue
-                try:
-                    sz = p.stat().st_size
-                    if sz > max_file_bytes:
-                        log("skip_size", src=str(p), size=sz)
-                    elif sz == 0:
-                        pass
-                    else:
-                        out.append(p)
-                except OSError:
-                    pass
-    return out
-
-def parse_source_header(md):
+        rel = p.relative_to(WORKSPACE)
+        for part in rel.parts[:-1]:
+            if part.startswith("."):
+                return "hidden_dir"
+    except ValueError:
+        return "outside_workspace"
     try:
-        with md.open() as f:
-            for _ in range(20):
-                line = f.readline()
-                if not line: break
-                if line.startswith("source:"): return line.split(":", 1)[1].strip()
-    except OSError: pass
+        sz = p.stat().st_size
+    except OSError:
+        return "stat_error"
+    if sz == 0:
+        return "empty"
+    if sz > max_file_bytes:
+        return "size"
     return None
 
-def write_shadow(src, dst, body, status="ok", error=""):
+def write_shadow(src: Path, dst: Path, body: str, status="ok", error=""):
     src_mtime = src.stat().st_mtime
     header = (
         f"---\nsource: {src.resolve()}\n"
@@ -154,7 +124,8 @@ def write_shadow(src, dst, body, status="ok", error=""):
     os.replace(tmp, dst)
     os.utime(dst, (src_mtime, src_mtime))
 
-def convert(src, dst, timeout_sec):
+def convert(src: Path, dst: Path, timeout_sec: int) -> bool:
+    global _cumulative_converted
     try:
         proc = subprocess.run(
             [sys.executable, "-m", "markitdown", str(src)],
@@ -162,16 +133,16 @@ def convert(src, dst, timeout_sec):
         )
         if proc.returncode == 0:
             write_shadow(src, dst, proc.stdout.decode("utf-8", "replace"), "ok")
+            with _state_lock:
+                _cumulative_converted += 1
             log("convert_ok", src=str(src), bytes=len(proc.stdout))
             return True
         err = proc.stderr.decode("utf-8", "replace")[:300]
         status = "oom" if proc.returncode in (-9, 137) else "failed"
-        write_shadow(src, dst, f"<!-- conversion {status} -->",
-                     status, error=f"rc={proc.returncode}")
+        write_shadow(src, dst, f"<!-- conversion {status} -->", status, error=f"rc={proc.returncode}")
         log(f"convert_{status}", src=str(src), rc=proc.returncode, err=err[:200])
     except subprocess.TimeoutExpired:
-        write_shadow(src, dst, "<!-- conversion timeout -->",
-                     "timeout", error="timeout")
+        write_shadow(src, dst, "<!-- conversion timeout -->", "timeout", error="timeout")
         log("convert_timeout", src=str(src), timeout_s=timeout_sec)
     except Exception as e:
         try: write_shadow(src, dst, "<!-- conversion failed -->", "failed", error=str(e)[:200])
@@ -179,109 +150,259 @@ def convert(src, dst, timeout_sec):
         log("convert_crashed", src=str(src), err=str(e)[:200])
     return False
 
-def load_progress():
-    try: return json.loads(PROGRESS_FILE.read_text())
-    except Exception: return {"last_processed": None, "cumulative_converted": 0}
-
-def save_progress(p):
-    try: PROGRESS_FILE.write_text(json.dumps(p, indent=2))
-    except Exception: pass
-
-def reconcile_once():
-    SHADOW_DIR.mkdir(parents=True, exist_ok=True)
-
-    # check markitdown
-    mt_available, mt_version = check_markitdown()
-    if not mt_available:
-        write_health("idle_no_markitdown")
-        log("idle_no_markitdown")
-        return 0, 0, 0
-
-    # load config
-    config = load_config()
-    if config is None:
-        write_health("idle_no_config")
-        log("idle_no_config")
-        return 0, 0, 0
-
-    started = time.monotonic()
-    scan_budget = config.get("scanBudgetSec", 240)
+def maybe_convert(src: Path, config: dict) -> bool:
+    """Convert if src is indexable and either shadow missing or src is newer."""
+    max_file_bytes = config.get("maxFileMB", 50) * 1024 * 1024
     extract_timeout = config.get("extractTimeoutSec", 180)
-    rate_limit_batch = 10
-    rate_limit_sleep = 5
+    skip = is_indexable(src, max_file_bytes)
+    if skip:
+        log("skip", src=str(src), reason=skip)
+        return False
+    sp = shadow_path_for(src)
+    try:
+        need = (not sp.exists()) or (src.stat().st_mtime > sp.stat().st_mtime + 1)
+    except OSError:
+        return False
+    if not need:
+        return False
+    return convert(src, sp, extract_timeout)
 
-    originals = scan_configured_dirs(config)
-    src_by_shadow = {shadow_path_for(p): p for p in originals}
-    progress = load_progress()
-    last = progress.get("last_processed")
-    items = sorted(src_by_shadow.items(), key=lambda kv: str(kv[1]))
-    if last:
-        start_idx = next((i for i, (_, s) in enumerate(items) if str(s) > last), 0)
-        items = items[start_idx:] + items[:start_idx]
-
-    converted = errors = 0
-    last_processed = None
-    for sp, src in items:
-        if time.monotonic() - started > scan_budget:
-            log("budget_exhausted", processed=converted + errors); break
+def remove_shadow_for(src: Path):
+    """Remove shadow file when source disappears."""
+    sp = shadow_path_for(src)
+    if sp.exists():
         try:
-            need = (not sp.exists()) or (src.stat().st_mtime > sp.stat().st_mtime + 1)
-            if need:
-                ok = convert(src, sp, extract_timeout)
-                converted += 1 if ok else 0
-                errors += 0 if ok else 1
-                if converted % rate_limit_batch == 0 and converted > 0:
-                    time.sleep(rate_limit_sleep)
-            last_processed = str(src)
-        except Exception as e:
-            errors += 1; log("loop_error", src=str(src), err=str(e)[:200])
+            sp.unlink()
+            log("shadow_removed", src=str(src), shadow=sp.name)
+        except OSError as e:
+            log("shadow_remove_error", src=str(src), err=str(e)[:100])
 
-    if last_processed:
-        progress["last_processed"] = last_processed
-        progress["cumulative_converted"] = progress.get("cumulative_converted", 0) + converted
-        save_progress(progress)
+# ---- security ----
+def resolve_watch_dirs(config: dict):
+    """Return list of (raw_path, resolved_path) for valid directories."""
+    out = []
+    for entry in config.get("directories", []):
+        raw_path = entry.get("path", "")
+        if not raw_path:
+            continue
+        target = (WORKSPACE / raw_path).resolve()
+        try:
+            target.relative_to(WORKSPACE)
+        except ValueError:
+            log("skip_outside_workspace", path=raw_path, resolved=str(target))
+            continue
+        if not target.is_dir():
+            log("skip_missing_dir", path=raw_path)
+            continue
+        out.append((raw_path, target, entry.get("recursive", True)))
+    return out
 
-    # gc orphans
+# ---- initial sync (catch up offline changes) ----
+def initial_sync(config: dict):
+    """Walk watched dirs once on startup, convert anything stale or missing,
+    then GC orphan shadow files whose sources vanished while daemon was offline.
+    This is the only O(N) operation; afterwards we are purely event-driven."""
+    started = time.monotonic()
+    targets = resolve_watch_dirs(config)
+    seen_sources = set()  # absolute paths of currently-existing sources
+    converted = 0
+    for raw_path, target, recursive in targets:
+        if recursive:
+            for root, dirs, files in os.walk(target, followlinks=False):
+                dirs[:] = [d for d in dirs if not d.startswith(".")]
+                for fn in files:
+                    if fn.startswith("."): continue
+                    p = (Path(root) / fn).resolve()
+                    seen_sources.add(str(p))
+                    if maybe_convert(p, config):
+                        converted += 1
+        else:
+            for p in target.iterdir():
+                if p.is_dir() or p.name.startswith("."): continue
+                p = p.resolve()
+                seen_sources.add(str(p))
+                if maybe_convert(p, config):
+                    converted += 1
+    # GC: remove shadow files whose sources are gone
     deleted = 0
     for sp in SHADOW_DIR.glob("*.md"):
         if sp.name.startswith("_"): continue
         src = parse_source_header(sp)
-        if not src or not Path(src).exists():
-            sp.unlink(missing_ok=True); deleted += 1
-            log("gc_orphan", shadow=sp.name, source=src)
+        if not src or src not in seen_sources:
+            try:
+                sp.unlink()
+                deleted += 1
+                log("gc_orphan", shadow=sp.name, source=src)
+            except OSError:
+                pass
+    log("initial_sync_done", originals=len(seen_sources), converted=converted,
+        deleted=deleted, elapsed_sec=round(time.monotonic() - started, 2))
+    return converted, deleted
 
-    config_dirs = [d.get("path", "") for d in config.get("directories", [])]
-    write_health("cycle_complete", {
-        "config_dirs": config_dirs,
-        "originals": len(originals),
-        "converted": converted,
-        "deleted": deleted,
-        "errors": errors,
-        "elapsed_sec": round(time.monotonic() - started, 2),
-        "cumulative_converted": progress.get("cumulative_converted", 0),
-    })
-    log("cycle_done", originals=len(originals), converted=converted, deleted=deleted,
-        errors=errors, elapsed_sec=round(time.monotonic() - started, 2))
-    return converted, deleted, errors
+def parse_source_header(md: Path) -> Optional[str]:
+    try:
+        with md.open() as f:
+            for _ in range(20):
+                line = f.readline()
+                if not line: break
+                if line.startswith("source:"):
+                    return line.split(":", 1)[1].strip()
+    except OSError: pass
+    return None
 
-def get_interval():
-    config = load_config()
-    if config and "intervalSec" in config:
-        return max(30, int(config["intervalSec"]))
-    return FALLBACK_INTERVAL_SEC
+# ---- watchdog event handler ----
+def make_handler(config: dict):
+    from watchdog.events import FileSystemEventHandler
 
-# SIGUSR1 wakes the daemon for an immediate cycle
-_wake_event = threading.Event()
+    class Handler(FileSystemEventHandler):
+        def _touch(self, path: str):
+            global _last_event_at
+            with _state_lock:
+                _last_event_at = datetime.now(timezone.utc).isoformat()
+
+        def on_created(self, event):
+            if event.is_directory: return
+            self._touch(event.src_path)
+            try:
+                p = Path(event.src_path).resolve()
+                p.relative_to(WORKSPACE)
+            except (OSError, ValueError):
+                return
+            log("event_created", src=str(p))
+            maybe_convert(p, config)
+
+        def on_modified(self, event):
+            if event.is_directory: return
+            self._touch(event.src_path)
+            try:
+                p = Path(event.src_path).resolve()
+                p.relative_to(WORKSPACE)
+            except (OSError, ValueError):
+                return
+            log("event_modified", src=str(p))
+            maybe_convert(p, config)
+
+        def on_moved(self, event):
+            if event.is_directory: return
+            self._touch(event.dest_path)
+            try:
+                src_old = Path(event.src_path).resolve()
+                src_new = Path(event.dest_path).resolve()
+                src_new.relative_to(WORKSPACE)
+            except (OSError, ValueError):
+                return
+            log("event_moved", src_old=str(src_old), src_new=str(src_new))
+            remove_shadow_for(src_old)
+            maybe_convert(src_new, config)
+
+        def on_deleted(self, event):
+            if event.is_directory: return
+            self._touch(event.src_path)
+            try:
+                p = Path(event.src_path).resolve()
+            except OSError:
+                return
+            log("event_deleted", src=str(p))
+            remove_shadow_for(p)
+    return Handler()
+
+# ---- observer lifecycle ----
+def start_observer(config: dict):
+    """Build a fresh watchdog Observer for current config. Returns observer or None."""
+    from watchdog.observers import Observer
+    targets = resolve_watch_dirs(config)
+    if not targets:
+        log("no_valid_dirs")
+        return None
+    handler = make_handler(config)
+    observer = Observer()
+    for raw_path, target, recursive in targets:
+        observer.schedule(handler, str(target), recursive=recursive)
+        log("watching", path=raw_path, resolved=str(target), recursive=recursive)
+    observer.daemon = True
+    observer.start()
+    return observer
+
+def stop_observer(observer):
+    if observer is None: return
+    try:
+        observer.stop()
+        observer.join(timeout=5)
+    except Exception as e:
+        log("observer_stop_error", err=str(e)[:200])
+
+# ---- config reloader ----
+def config_changed(old, new) -> bool:
+    """Return True if directories or filter knobs changed (requires observer rebuild)."""
+    if old is None or new is None:
+        return old is not new
+    keys = ("directories", "maxFileMB", "extractTimeoutSec")
+    return any(old.get(k) != new.get(k) for k in keys)
 
 def main():
-    if "--once" in sys.argv: reconcile_once(); return
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    signal.signal(signal.SIGUSR1, lambda *_: _wake_event.set())
-    log("daemon_start", workspace=str(WORKSPACE))
-    while True:
-        try: reconcile_once()
-        except Exception as e: log("cycle_crashed", err=str(e)[:300])
-        _wake_event.clear()
-        _wake_event.wait(timeout=get_interval())
+    global _current_config, _current_observer
+    log("daemon_start", workspace=str(WORKSPACE), shadow_dir=str(SHADOW_DIR))
+    SHADOW_DIR.mkdir(parents=True, exist_ok=True)
 
-if __name__ == "__main__": main()
+    stop_event = threading.Event()
+    def _term(*_):
+        log("daemon_stopping")
+        stop_event.set()
+    signal.signal(signal.SIGTERM, _term)
+    signal.signal(signal.SIGINT, _term)
+
+    while not stop_event.is_set():
+        # 1. check markitdown
+        mt_available, mt_version = check_markitdown()
+        if not mt_available:
+            if _current_observer:
+                stop_observer(_current_observer)
+                _current_observer = None
+            write_health("idle_no_markitdown")
+            stop_event.wait(timeout=15)
+            continue
+
+        # 2. check config
+        new_config = load_config()
+        if new_config is None:
+            if _current_observer:
+                stop_observer(_current_observer)
+                _current_observer = None
+            _current_config = None
+            write_health("idle_no_config")
+            stop_event.wait(timeout=15)
+            continue
+
+        # 3. (re)start observer if config changed
+        if config_changed(_current_config, new_config):
+            if _current_observer:
+                log("config_changed_restart_observer")
+                stop_observer(_current_observer)
+                _current_observer = None
+            _current_config = new_config
+            # initial sync runs synchronously, catches offline changes
+            initial_sync(new_config)
+            _current_observer = start_observer(new_config)
+            if _current_observer:
+                write_health("watching")
+            else:
+                write_health("idle_no_valid_dirs")
+
+        # 4. heartbeat health
+        if _current_observer and _current_observer.is_alive():
+            write_health("watching")
+        else:
+            # observer crashed somehow — restart on next loop
+            _current_observer = None
+            write_health("observer_dead")
+
+        # 5. wait for SIGTERM or 15s heartbeat (config poll interval)
+        stop_event.wait(timeout=15)
+
+    if _current_observer:
+        stop_observer(_current_observer)
+    write_health("stopped")
+    log("daemon_stopped")
+
+if __name__ == "__main__":
+    main()
