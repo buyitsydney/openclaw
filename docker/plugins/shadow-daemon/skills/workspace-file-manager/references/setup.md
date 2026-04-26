@@ -12,13 +12,16 @@ daemon 就绪需要两个前提：markitdown 已安装 + _config.json 已创建�
    - `status = "idle_no_config"` → 跳到步骤 5
    - `status = "cycle_complete"` → 已就绪，退出此流程
 
-2. 告诉用户："文档转换工具还没安装，我来装一下？"
-   **等用户确认，不要静默安装。**
+2. 告诉用户："文档转换工具还没安装,我来装一下?"
+   **等用户确认,不要静默安装。**
 
-3. 执行 `pip3 install --break-system-packages "markitdown[all]"`
-   必须带 `[all]`，否则 PDF 失败。
+3. 执行 `pip3 install --user "markitdown[all]" watchdog`
+   - `--user` 配合 daemon 设置的 `PYTHONUSERBASE=/data/.openclaw/python`(volume 上),
+     deps 会持久化,容器重建/重启后无需重装。
+   - 必须带 `[all]`,否则 PDF 失败。
+   - watchdog 是 daemon 的事件驱动核心,缺了 daemon 一直 idle_no_watchdog。
 
-4. 验证：`pip show markitdown | grep Version`
+4. 验证:`pip show markitdown watchdog | grep Version`
    - 失败 → 贴错误信息给用户
    - 成功 → 告诉用户版本号，等 30s 重读 _health.json 确认 `markitdown_available = true`
 

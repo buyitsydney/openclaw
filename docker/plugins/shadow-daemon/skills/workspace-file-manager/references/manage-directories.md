@@ -44,5 +44,5 @@
 用户说"升级工具"、或 errors 异常多时：
 
 1. `pip show markitdown | grep Version` 看当前版本
-2. `pip3 install --break-system-packages --upgrade "markitdown[all]"`
+2. `pip3 install --user --upgrade "markitdown[all]"`
 3. 验证新版本号，告诉用户

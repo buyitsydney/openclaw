@@ -76,15 +76,34 @@ const plugin = {
     let cooldownTimer: NodeJS.Timeout | null = null;
 
     function buildEnv(workspaceDir: string): NodeJS.ProcessEnv {
+      // Method B: persist `pip install --user` packages to the openclaw volume
+      // so markitdown / watchdog survive container rebuild. Daemon's child
+      // subprocesses (`python -c "import markitdown"`, `python -m markitdown`)
+      // inherit this env from the daemon process automatically.
+      const userBase = path.join(workspaceDir, "..", "python");
       return {
         ...process.env,
         SHADOW_WORKSPACE: workspaceDir,
         SHADOW_DIR: path.join(workspaceDir, cfg.shadowDir),
+        PYTHONUSERBASE: userBase,
       };
+    }
+
+    function ensureUserBase(workspaceDir: string, logger: OpenClawPluginApi["logger"]): void {
+      // Pre-create the dir so `pip install --user` works the very first time
+      // before any package has been installed.
+      const userBase = path.join(workspaceDir, "..", "python");
+      try {
+        const fs = createRequire(import.meta.url)("node:fs");
+        fs.mkdirSync(userBase, { recursive: true });
+      } catch (err) {
+        logger.warn(`shadow-daemon: could not create PYTHONUSERBASE ${userBase}: ${String(err)}`);
+      }
     }
 
     function launch(workspaceDir: string, logger: OpenClawPluginApi["logger"]): void {
       if (stopping) {return;}
+      ensureUserBase(workspaceDir, logger);
       const daemonPath = resolveDaemonPath();
       logger.info?.(
         `shadow-daemon: spawning ${cfg.pythonBin} ${daemonPath} (workspace=${workspaceDir})`,
