@@ -33,10 +33,22 @@ awk '/^10\.68/ {print $1, $2, $3}' /data/.openclaw/servers.txt
 
 ## SSH helper（每 session 开头设一次）
 
+凭证从 `servers.txt` 动态读取（admin 容器: `/data/.openclaw/servers.txt`；本地开发: `docker/servers.txt`）。**绝不在本文件 hardcode 密码**。
+
 ```bash
-s1() { sshpass -p 'cxS4p)apmQ7f' ssh -o StrictHostKeyChecking=no cltx@10.68.13.186 "$@"; }
-s2() { sshpass -p 'c@oKknm3Lm9f' ssh -o StrictHostKeyChecking=no cltx@10.68.13.187 "$@"; }
-s3() { sshpass -p 'f{Zv30fCeqnw' ssh -o StrictHostKeyChecking=no cltx@10.68.13.188 "$@"; }
+# 自动找 servers.txt (admin 容器或本地 repo)
+SERVERS_TXT="${SERVERS_TXT:-/data/.openclaw/servers.txt}"
+[ -r "$SERVERS_TXT" ] || SERVERS_TXT="$(git rev-parse --show-toplevel 2>/dev/null)/docker/servers.txt"
+[ -r "$SERVERS_TXT" ] || { echo "servers.txt not found"; return 1; }
+
+# 解析格式: IP  USER  PASSWORD  LABEL
+S1_PW=$(awk '/^10\.68\.13\.186/ {print $3}' "$SERVERS_TXT")
+S2_PW=$(awk '/^10\.68\.13\.187/ {print $3}' "$SERVERS_TXT")
+S3_PW=$(awk '/^10\.68\.13\.188/ {print $3}' "$SERVERS_TXT")
+
+s1() { sshpass -p "$S1_PW" ssh -o StrictHostKeyChecking=no cltx@10.68.13.186 "$@"; }
+s2() { sshpass -p "$S2_PW" ssh -o StrictHostKeyChecking=no cltx@10.68.13.187 "$@"; }
+s3() { sshpass -p "$S3_PW" ssh -o StrictHostKeyChecking=no cltx@10.68.13.188 "$@"; }
 ```
 
 之后所有操作 `s1 "cmd"` / `s2 "cmd"` / `s3 "cmd"`。
