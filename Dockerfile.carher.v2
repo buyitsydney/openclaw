@@ -6,7 +6,7 @@
 #
 # 三条轴独立，互不耦合。
 
-ARG OPENCLAW_TAG=2026.4.20
+ARG OPENCLAW_TAG=2026.4.24
 
 # Her 可读的 upstream openclaw src（只读、不参与 runtime）
 # 用 openclaw 官方 image 本身作 builder —— 它已经装了 git 2.39，省掉 docker.io 依赖
