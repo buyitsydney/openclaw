@@ -8,7 +8,7 @@ v4: Fully dynamic, AI-driven architecture.
 - Her controls everything through the SKILL
 """
 from __future__ import annotations
-import hashlib, json, os, signal, subprocess, sys, time
+import hashlib, json, os, signal, subprocess, sys, threading, time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -84,14 +84,14 @@ def scan_configured_dirs(config):
         if not raw_path:
             continue
         target = (WORKSPACE / raw_path).resolve()
-        if not target.is_dir():
-            log("skip_missing_dir", path=raw_path)
-            continue
-        # security: must be under workspace
+        # security: must be under workspace — check BEFORE is_dir()
         try:
             target.relative_to(WORKSPACE)
         except ValueError:
             log("skip_outside_workspace", path=raw_path, resolved=str(target))
+            continue
+        if not target.is_dir():
+            log("skip_missing_dir", path=raw_path)
             continue
         recursive = entry.get("recursive", True)
         if recursive:
@@ -270,13 +270,18 @@ def get_interval():
         return max(30, int(config["intervalSec"]))
     return FALLBACK_INTERVAL_SEC
 
+# SIGUSR1 wakes the daemon for an immediate cycle
+_wake_event = threading.Event()
+
 def main():
     if "--once" in sys.argv: reconcile_once(); return
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    signal.signal(signal.SIGUSR1, lambda *_: _wake_event.set())
     log("daemon_start", workspace=str(WORKSPACE))
     while True:
         try: reconcile_once()
         except Exception as e: log("cycle_crashed", err=str(e)[:300])
-        time.sleep(get_interval())
+        _wake_event.clear()
+        _wake_event.wait(timeout=get_interval())
 
 if __name__ == "__main__": main()
