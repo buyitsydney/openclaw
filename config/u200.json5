@@ -1,0 +1,21 @@
+// config/u200.json5 — S1 carher-200 identity (研究3)
+//
+// $include's docker.json5 → base.json5. Mounted into the container at
+// /data/.openclaw/openclaw.json.
+
+{
+  "$include": "./docker.json5",
+
+  channels: {
+    feishu: {
+      name: "研究3",
+      appId: "cli_a96f044b4ef95cc0",
+      appSecret: "${FEISHU_APP_SECRET}",
+      botOpenId: "ou_c2bc759110aa5bc80b2edea2ede864e9",
+      oauthRedirectUri: "https://s1-u200-auth.carher.net/feishu/oauth/callback",
+      dm: {
+        allowFrom: ["ou_4a9a4f41779063d4ab0d63548f775fd5"],
+      },
+    },
+  },
+}
