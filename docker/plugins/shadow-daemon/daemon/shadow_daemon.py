@@ -1,46 +1,24 @@
 #!/usr/bin/env python3
-"""shadow_daemon.py v3.2 — Office → Markdown for OpenClaw memory_search.
+"""shadow_daemon.py v4 — Config-driven office → markdown for OpenClaw memory_search.
 
-Reconciliation-style with **subprocess isolation** for markitdown conversion.
-Each convert runs in a fresh Python subprocess with its own RLIMIT_AS (address
-space) cap, so a pathological PDF cannot OOM the daemon process itself.
-
-v3.2 (based on Nova/影 real-load review):
-- Subprocess-per-conversion (crashes isolated, memory capped via RLIMIT_AS)
-- Per-file timeout raised to 180s (real PDFs can need 80s+)
-- Persistent progress so first-time scan can span multiple cycles
-- Structured JSON logs (v3.1) retained
+v4: Fully dynamic, AI-driven architecture.
+- Reads _config.json to decide which directories to scan (no hardcoded lists)
+- No _config.json → idle (Her creates it)
+- No markitdown → idle (Her installs it)
+- Her controls everything through the SKILL
 """
 from __future__ import annotations
-import hashlib, json, os, resource, signal, subprocess, sys, time
+import hashlib, json, os, signal, subprocess, sys, time
 from datetime import datetime, timezone
 from pathlib import Path
 
 # ---- config ----
 WORKSPACE = Path(os.environ.get("SHADOW_WORKSPACE", "/data/.openclaw/workspace")).resolve()
-SHADOW_DIR = (WORKSPACE / "memory" / "_shadow").resolve()
+SHADOW_DIR = Path(os.environ.get("SHADOW_DIR", str(WORKSPACE / "memory" / "_shadow"))).resolve()
+CONFIG_FILE = SHADOW_DIR / "_config.json"
 PROGRESS_FILE = SHADOW_DIR / "_progress.json"
-# Blocklist: known text/code/binary files that markitdown can't help with.
-# Everything else gets passed to markitdown — it rejects what it can't handle.
-SKIP_EXTS = {
-    ".md", ".txt", ".log", ".jsonl",
-    ".py", ".ts", ".js", ".jsx", ".tsx", ".sh", ".bash", ".zsh",
-    ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env",
-    ".sqlite", ".db", ".bin", ".o", ".so", ".dylib", ".wasm", ".exe",
-    ".tar", ".gz", ".bz2", ".xz", ".7z",
-    ".mp4", ".mkv", ".avi", ".mov", ".webm",
-}
-SKIP_DIRS = {"venv", "shadow-venv", "node_modules", ".git", "__pycache__",
-             "_shadow", "_backup_2026-04-07", ".dreams", ".openclaw"}
-INTERVAL_SEC = int(os.environ.get("SHADOW_INTERVAL_SEC", "300"))
-MAX_FILE_BYTES = int(os.environ.get("SHADOW_MAX_FILE_MB", "50")) * 1024 * 1024
-EXTRACT_TIMEOUT_SEC = int(os.environ.get("SHADOW_EXTRACT_TIMEOUT", "180"))
-SCAN_BUDGET_SEC = int(os.environ.get("SHADOW_SCAN_BUDGET", "240"))
-RATE_LIMIT_BATCH = 10
-RATE_LIMIT_SLEEP = 5
-MEM_FLOOR_MB = 200
-# RLIMIT_AS per markitdown subprocess (address space cap, SIGKILL if exceeded)
-SUBPROC_MEM_MB = int(os.environ.get("SHADOW_SUBPROC_MEM_MB", "1024"))
+HEALTH_FILE = SHADOW_DIR / "_health.json"
+FALLBACK_INTERVAL_SEC = int(os.environ.get("SHADOW_INTERVAL_SEC", "300"))
 
 # ---- structured log ----
 def log(event, **kv):
@@ -51,6 +29,43 @@ def log(event, **kv):
 def sha8(s): return hashlib.sha256(s.encode()).hexdigest()[:8]
 def shadow_path_for(src): return SHADOW_DIR / f"{sha8(str(src.resolve()))}__{src.stem[:60]}.md"
 
+def check_markitdown():
+    """Check if markitdown is importable and return version."""
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", "import markitdown; print(markitdown.__version__)"],
+            capture_output=True, timeout=10, check=False,
+        )
+        if proc.returncode == 0:
+            return True, proc.stdout.decode().strip()
+    except Exception:
+        pass
+    return False, None
+
+def load_config():
+    """Read _config.json. Returns dict or None."""
+    try:
+        return json.loads(CONFIG_FILE.read_text())
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+def write_health(status, extra=None):
+    """Write _health.json with current status."""
+    SHADOW_DIR.mkdir(parents=True, exist_ok=True)
+    available, version = check_markitdown()
+    health = {
+        "status": status,
+        "markitdown_available": available,
+        "markitdown_version": version,
+        "last_run": datetime.now(timezone.utc).isoformat(),
+    }
+    if extra:
+        health.update(extra)
+    try:
+        HEALTH_FILE.write_text(json.dumps(health, indent=2))
+    except OSError:
+        pass
+
 def mem_available_mb():
     try:
         with open("/proc/meminfo") as f:
@@ -59,25 +74,60 @@ def mem_available_mb():
     except Exception: pass
     return 999999.0
 
-def scan_originals():
+def scan_configured_dirs(config):
+    """Scan only directories listed in config."""
+    dirs = config.get("directories", [])
+    max_file_bytes = config.get("maxFileMB", 50) * 1024 * 1024
     out = []
-    for root, dirs, files in os.walk(WORKSPACE, followlinks=False):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
-        for fn in files:
-            if fn.startswith("."):
-                continue
-            p = Path(root) / fn
-            if p.is_symlink():
-                log("skip_symlink", src=str(p), target=str(os.readlink(p)))
-                continue
-            if p.suffix.lower() in SKIP_EXTS:
-                continue
-            try:
-                sz = p.stat().st_size
-                if sz > MAX_FILE_BYTES: log("skip_size", src=str(p), size=sz)
-                elif sz == 0: pass
-                else: out.append(p)
-            except OSError: pass
+    for entry in dirs:
+        raw_path = entry.get("path", "")
+        if not raw_path:
+            continue
+        target = (WORKSPACE / raw_path).resolve()
+        if not target.is_dir():
+            log("skip_missing_dir", path=raw_path)
+            continue
+        # security: must be under workspace
+        try:
+            target.relative_to(WORKSPACE)
+        except ValueError:
+            log("skip_outside_workspace", path=raw_path, resolved=str(target))
+            continue
+        recursive = entry.get("recursive", True)
+        if recursive:
+            for root, dirs_list, files in os.walk(target, followlinks=False):
+                dirs_list[:] = [d for d in dirs_list if not d.startswith(".")]
+                for fn in files:
+                    if fn.startswith("."):
+                        continue
+                    p = Path(root) / fn
+                    if p.is_symlink():
+                        log("skip_symlink", src=str(p))
+                        continue
+                    try:
+                        sz = p.stat().st_size
+                        if sz > max_file_bytes:
+                            log("skip_size", src=str(p), size=sz)
+                        elif sz == 0:
+                            pass
+                        else:
+                            out.append(p)
+                    except OSError:
+                        pass
+        else:
+            for p in target.iterdir():
+                if p.is_dir() or p.name.startswith(".") or p.is_symlink():
+                    continue
+                try:
+                    sz = p.stat().st_size
+                    if sz > max_file_bytes:
+                        log("skip_size", src=str(p), size=sz)
+                    elif sz == 0:
+                        pass
+                    else:
+                        out.append(p)
+                except OSError:
+                    pass
     return out
 
 def parse_source_header(md):
@@ -91,7 +141,6 @@ def parse_source_header(md):
     return None
 
 def write_shadow(src, dst, body, status="ok", error=""):
-    """Atomic write + align mtime to source mtime (prevents infinite retry)."""
     src_mtime = src.stat().st_mtime
     header = (
         f"---\nsource: {src.resolve()}\n"
@@ -105,16 +154,11 @@ def write_shadow(src, dst, body, status="ok", error=""):
     os.replace(tmp, dst)
     os.utime(dst, (src_mtime, src_mtime))
 
-def convert(src, dst):
-    """Run markitdown in an isolated subprocess. Memory is capped at the
-    systemd unit level (MemoryMax kills the whole daemon if it exceeds).
-    Process-internal RLIMIT guards were tested but OpenBLAS/numpy thread pool
-    trips RLIMIT_DATA / RLIMIT_AS on startup — we rely on timeout + systemd
-    instead of preexec rlimits."""
+def convert(src, dst, timeout_sec):
     try:
         proc = subprocess.run(
             [sys.executable, "-m", "markitdown", str(src)],
-            capture_output=True, timeout=EXTRACT_TIMEOUT_SEC, check=False,
+            capture_output=True, timeout=timeout_sec, check=False,
         )
         if proc.returncode == 0:
             write_shadow(src, dst, proc.stdout.decode("utf-8", "replace"), "ok")
@@ -128,7 +172,7 @@ def convert(src, dst):
     except subprocess.TimeoutExpired:
         write_shadow(src, dst, "<!-- conversion timeout -->",
                      "timeout", error="timeout")
-        log("convert_timeout", src=str(src), timeout_s=EXTRACT_TIMEOUT_SEC)
+        log("convert_timeout", src=str(src), timeout_s=timeout_sec)
     except Exception as e:
         try: write_shadow(src, dst, "<!-- conversion failed -->", "failed", error=str(e)[:200])
         except Exception: pass
@@ -145,44 +189,59 @@ def save_progress(p):
 
 def reconcile_once():
     SHADOW_DIR.mkdir(parents=True, exist_ok=True)
-    started = time.monotonic()
-    avail0 = mem_available_mb()
-    if avail0 < MEM_FLOOR_MB:
-        log("mem_skip_cycle", available_mb=avail0, floor_mb=MEM_FLOOR_MB)
+
+    # check markitdown
+    mt_available, mt_version = check_markitdown()
+    if not mt_available:
+        write_health("idle_no_markitdown")
+        log("idle_no_markitdown")
         return 0, 0, 0
-    originals = scan_originals()
+
+    # load config
+    config = load_config()
+    if config is None:
+        write_health("idle_no_config")
+        log("idle_no_config")
+        return 0, 0, 0
+
+    started = time.monotonic()
+    scan_budget = config.get("scanBudgetSec", 240)
+    extract_timeout = config.get("extractTimeoutSec", 180)
+    rate_limit_batch = 10
+    rate_limit_sleep = 5
+
+    originals = scan_configured_dirs(config)
     src_by_shadow = {shadow_path_for(p): p for p in originals}
     progress = load_progress()
     last = progress.get("last_processed")
-    # sort so we can resume deterministically
     items = sorted(src_by_shadow.items(), key=lambda kv: str(kv[1]))
     if last:
-        # continue after last processed file
         start_idx = next((i for i, (_, s) in enumerate(items) if str(s) > last), 0)
         items = items[start_idx:] + items[:start_idx]
+
     converted = errors = 0
     last_processed = None
     for sp, src in items:
-        if time.monotonic() - started > SCAN_BUDGET_SEC:
+        if time.monotonic() - started > scan_budget:
             log("budget_exhausted", processed=converted + errors); break
-        if mem_available_mb() < MEM_FLOOR_MB:
-            log("mem_skip_file", src=str(src)); break
         try:
             need = (not sp.exists()) or (src.stat().st_mtime > sp.stat().st_mtime + 1)
             if need:
-                ok = convert(src, sp)
+                ok = convert(src, sp, extract_timeout)
                 converted += 1 if ok else 0
                 errors += 0 if ok else 1
-                if converted % RATE_LIMIT_BATCH == 0 and converted > 0: time.sleep(RATE_LIMIT_SLEEP)
+                if converted % rate_limit_batch == 0 and converted > 0:
+                    time.sleep(rate_limit_sleep)
             last_processed = str(src)
         except Exception as e:
             errors += 1; log("loop_error", src=str(src), err=str(e)[:200])
-    # save progress so next cycle resumes
+
     if last_processed:
         progress["last_processed"] = last_processed
         progress["cumulative_converted"] = progress.get("cumulative_converted", 0) + converted
         save_progress(progress)
-    # reverse gc
+
+    # gc orphans
     deleted = 0
     for sp in SHADOW_DIR.glob("*.md"):
         if sp.name.startswith("_"): continue
@@ -190,26 +249,34 @@ def reconcile_once():
         if not src or not Path(src).exists():
             sp.unlink(missing_ok=True); deleted += 1
             log("gc_orphan", shadow=sp.name, source=src)
-    avail1 = mem_available_mb()
-    (SHADOW_DIR / "_health.json").write_text(json.dumps({
-        "last_run": datetime.now(timezone.utc).isoformat(),
-        "originals": len(originals), "converted": converted, "deleted": deleted, "errors": errors,
+
+    config_dirs = [d.get("path", "") for d in config.get("directories", [])]
+    write_health("cycle_complete", {
+        "config_dirs": config_dirs,
+        "originals": len(originals),
+        "converted": converted,
+        "deleted": deleted,
+        "errors": errors,
         "elapsed_sec": round(time.monotonic() - started, 2),
-        "mem_available_mb_start": round(avail0, 1),
-        "mem_available_mb_end": round(avail1, 1),
         "cumulative_converted": progress.get("cumulative_converted", 0),
-    }, indent=2))
+    })
     log("cycle_done", originals=len(originals), converted=converted, deleted=deleted,
         errors=errors, elapsed_sec=round(time.monotonic() - started, 2))
     return converted, deleted, errors
 
+def get_interval():
+    config = load_config()
+    if config and "intervalSec" in config:
+        return max(30, int(config["intervalSec"]))
+    return FALLBACK_INTERVAL_SEC
+
 def main():
     if "--once" in sys.argv: reconcile_once(); return
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    log("daemon_start", workspace=str(WORKSPACE), interval_sec=INTERVAL_SEC)
+    log("daemon_start", workspace=str(WORKSPACE))
     while True:
         try: reconcile_once()
         except Exception as e: log("cycle_crashed", err=str(e)[:300])
-        time.sleep(INTERVAL_SEC)
+        time.sleep(get_interval())
 
 if __name__ == "__main__": main()

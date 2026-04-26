@@ -1,17 +1,12 @@
 /**
- * Shadow Daemon plugin
+ * Shadow Daemon plugin — v2 config-driven architecture
  *
- * Spawns the Python shadow daemon as a background service. The daemon mirrors
- * PDF / docx / xlsx / pptx files under the workspace into plain markdown under
- * `<workspace>/<shadowDir>`, so that `memory_search` can recall document
- * content semantically without teaching the index to parse binary formats.
- *
- * Lifecycle: start()/stop() are driven by the Gateway registerService API.
- * If the Python process exits unexpectedly it is respawned with a short
- * backoff up to `MAX_RESTARTS` times before giving up.
+ * Spawns the Python shadow daemon as a background service. The daemon reads
+ * _config.json to decide which directories to scan. No _config.json = idle.
+ * No markitdown installed = idle. Her controls everything through the SKILL.
  */
 
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
@@ -23,24 +18,12 @@ const RESTART_BACKOFF_MS = 5_000;
 type ShadowConfig = {
   enabled: boolean;
   shadowDir: string;
-  extraPaths: string[];
-  intervalSec: number;
-  maxFileMB: number;
-  extractTimeoutSec: number;
-  scanBudgetSec: number;
-  subprocMemoryMB: number;
   pythonBin: string;
 };
 
 const DEFAULT_CONFIG: ShadowConfig = {
   enabled: true,
   shadowDir: "memory/_shadow",
-  extraPaths: [],
-  intervalSec: 300,
-  maxFileMB: 50,
-  extractTimeoutSec: 180,
-  scanBudgetSec: 240,
-  subprocMemoryMB: 1024,
   pythonBin: "python3",
 };
 
@@ -51,26 +34,6 @@ function readConfig(raw: Record<string, unknown> | undefined): ShadowConfig {
   if (typeof raw.shadowDir === "string" && raw.shadowDir.trim()) {
     cfg.shadowDir = raw.shadowDir.trim();
   }
-  if (Array.isArray(raw.extraPaths)) {
-    cfg.extraPaths = raw.extraPaths.filter(
-      (p): p is string => typeof p === "string" && p.trim().length > 0,
-    );
-  }
-  if (typeof raw.intervalSec === "number" && raw.intervalSec >= 30) {
-    cfg.intervalSec = Math.floor(raw.intervalSec);
-  }
-  if (typeof raw.maxFileMB === "number" && raw.maxFileMB > 0) {
-    cfg.maxFileMB = Math.floor(raw.maxFileMB);
-  }
-  if (typeof raw.extractTimeoutSec === "number" && raw.extractTimeoutSec > 0) {
-    cfg.extractTimeoutSec = Math.floor(raw.extractTimeoutSec);
-  }
-  if (typeof raw.scanBudgetSec === "number" && raw.scanBudgetSec > 0) {
-    cfg.scanBudgetSec = Math.floor(raw.scanBudgetSec);
-  }
-  if (typeof raw.subprocMemoryMB === "number" && raw.subprocMemoryMB > 0) {
-    cfg.subprocMemoryMB = Math.floor(raw.subprocMemoryMB);
-  }
   if (typeof raw.pythonBin === "string" && raw.pythonBin.trim()) {
     cfg.pythonBin = raw.pythonBin.trim();
   }
@@ -78,9 +41,6 @@ function readConfig(raw: Record<string, unknown> | undefined): ShadowConfig {
 }
 
 function resolveDaemonPath(): string {
-  // When Dockerfile COPYs the plugin to /app/docker/plugins/shadow-daemon the
-  // daemon sits next to this file. `createRequire` helps us find it whether
-  // we run from the compiled runtime or the source tree.
   const require_ = createRequire(import.meta.url);
   try {
     return require_.resolve("./daemon/shadow_daemon.py");
@@ -93,8 +53,8 @@ const plugin = {
   id: PLUGIN_ID,
   name: "Shadow Daemon",
   description:
-    "Mirror PDF / office documents in the workspace to markdown so memory_search can recall them.",
-  version: "0.1.0",
+    "Config-driven document→markdown mirror for memory_search semantic recall.",
+  version: "0.2.0",
   register(api: OpenClawPluginApi) {
     const cfg = readConfig(api.pluginConfig);
     if (!cfg.enabled) {
@@ -114,18 +74,11 @@ const plugin = {
     let backoffTimer: NodeJS.Timeout | null = null;
 
     function buildEnv(workspaceDir: string): NodeJS.ProcessEnv {
-      const env: NodeJS.ProcessEnv = { ...process.env };
-      env.SHADOW_WORKSPACE = workspaceDir;
-      env.SHADOW_DIR = path.join(workspaceDir, cfg.shadowDir);
-      env.SHADOW_INTERVAL_SEC = String(cfg.intervalSec);
-      env.SHADOW_MAX_FILE_MB = String(cfg.maxFileMB);
-      env.SHADOW_EXTRACT_TIMEOUT = String(cfg.extractTimeoutSec);
-      env.SHADOW_SCAN_BUDGET = String(cfg.scanBudgetSec);
-      env.SHADOW_SUBPROC_MEM_MB = String(cfg.subprocMemoryMB);
-      if (cfg.extraPaths.length > 0) {
-        env.SHADOW_EXTRA_PATHS = cfg.extraPaths.join(":");
-      }
-      return env;
+      return {
+        ...process.env,
+        SHADOW_WORKSPACE: workspaceDir,
+        SHADOW_DIR: path.join(workspaceDir, cfg.shadowDir),
+      };
     }
 
     function launch(workspaceDir: string, logger: OpenClawPluginApi["logger"]): void {
@@ -182,19 +135,6 @@ const plugin = {
       });
     }
 
-    function checkMarkitdownAvailable(logger: OpenClawPluginApi["logger"]): void {
-      try {
-        const check = spawnSync(cfg.pythonBin, ["-c", "import markitdown"]);
-        if (check.status !== 0) {
-          logger.warn(
-            "shadow-daemon: markitdown is not installed; conversions will fail. Install it in the Dockerfile with: pip3 install markitdown",
-          );
-        }
-      } catch (err) {
-        logger.warn(`shadow-daemon: markitdown check skipped: ${String(err)}`);
-      }
-    }
-
     api.registerService({
       id: PLUGIN_ID,
       start(ctx) {
@@ -202,7 +142,6 @@ const plugin = {
         const logger = ctx.logger ?? api.logger;
         stopping = false;
         restarts = 0;
-        checkMarkitdownAvailable(logger);
         launch(workspaceDir, logger);
       },
       async stop(ctx) {
