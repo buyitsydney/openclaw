@@ -17,7 +17,8 @@ Improvements over v2 polling:
 - no rate_limit_batch sleep — true parallelism
 """
 from __future__ import annotations
-import hashlib, json, os, signal, subprocess, sys, threading, time
+import hashlib, json, os, signal, subprocess, sys, threading, time, zipfile
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +34,19 @@ HEALTH_FILE = SHADOW_DIR / "_health.json"
 DEFAULT_DEBOUNCE_MS = 500
 DEFAULT_MAX_WORKERS = 8
 DEFAULT_RECONCILE_SEC = 60  # safety-net rescan to catch lost watchdog events
+DEFAULT_EXTRACT_TIMEOUT_SEC = 600  # Bug S fix: 30MB PDFs need >180s
+DEFAULT_MAX_OUTPUT_MB = 5          # Bug L fix: cap per-shadow md size
+DEFAULT_ARCHIVE_MAX_FILES = 20     # Bug Q fix: cap zip entries
+RECENT_BUFFER_SIZE = 50            # Bug R fix: rolling skips/errors
+
+# ---- Bug O helper: filename → expects strict UTF-8 text? ----
+TEXT_LIKE_EXT = {"txt", "md", "csv", "tsv", "log", "json", "xml",
+                 "html", "htm", "yaml", "yml", "toml", "ini"}
+
+# ---- Bug P helper: bidi/RTL control chars in filenames ----
+_BIDI_CTRL_CODEPOINTS = set(range(0x202A, 0x202F)) | {0x200E, 0x200F, 0x061C}
+def _has_bidi_ctrl(s: str) -> bool:
+    return any(ord(c) in _BIDI_CTRL_CODEPOINTS for c in s)
 
 # ---- structured log ----
 def log(event, **kv):
@@ -150,10 +164,40 @@ _cumulative_skipped = 0
 _cumulative_errors = 0
 _last_event_at: Optional[str] = None
 
+# Bug R fix: rolling per-event detail buffers
+_recent_skips: deque = deque(maxlen=RECENT_BUFFER_SIZE)   # [{path, reason, ts}]
+_recent_errors: deque = deque(maxlen=RECENT_BUFFER_SIZE)  # [{path, kind, ts}]
+
 # Per-path debounce timers and conversion locks
 _debounce_timers: dict = {}     # path_str -> threading.Timer
 _path_locks: dict = {}          # path_str -> threading.Lock
 _locks_mutex = threading.Lock()  # protects _debounce_timers + _path_locks
+
+# Cached dep state — refreshed only by main loop (not write_health hot path).
+_cached_mt_avail: bool = False
+_cached_mt_ver: Optional[str] = None
+_cached_wd_avail: bool = False
+_cached_wd_ver: Optional[str] = None
+_health_write_lock = threading.Lock()
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+def record_skip(path: str, reason: str):
+    """Bug R: append to rolling skip list + bump counter."""
+    global _cumulative_skipped
+    with _state_lock:
+        _cumulative_skipped += 1
+        _recent_skips.append({"path": path, "reason": reason, "ts": _now_iso()})
+    write_health_fast()
+
+def record_error(path: str, kind: str):
+    """Bug R: append to rolling error list + bump counter."""
+    global _cumulative_errors
+    with _state_lock:
+        _cumulative_errors += 1
+        _recent_errors.append({"path": path, "kind": kind, "ts": _now_iso()})
+    write_health_fast()
 
 def load_persistent_counters():
     """Bug J fix: restore cumulative counters from previous _health.json on startup."""
@@ -170,31 +214,57 @@ def load_persistent_counters():
     except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError):
         log("counters_fresh_start")
 
+def _refresh_deps_cache():
+    """Run in main loop only — spawn subprocess to verify deps; cache result."""
+    global _cached_mt_avail, _cached_mt_ver, _cached_wd_avail, _cached_wd_ver
+    _cached_mt_avail, _cached_mt_ver = check_markitdown()
+    _cached_wd_avail, _cached_wd_ver = check_watchdog()
+
 def write_health(status, extra=None):
+    """Main-loop entry: refresh dep cache then persist health."""
+    _refresh_deps_cache()
+    _persist_health(status, extra)
+
+def write_health_fast(status: Optional[str] = None):
+    """Hot-path entry (record_skip/record_error): use cached deps; no subprocess fork."""
+    _persist_health(status, None)
+
+def _persist_health(status: Optional[str], extra):
     SHADOW_DIR.mkdir(parents=True, exist_ok=True)
-    mt_avail, mt_ver = check_markitdown()
-    wd_avail, wd_ver = check_watchdog()
-    health = {
-        "status": status,
-        "markitdown_available": mt_avail,
-        "markitdown_version": mt_ver,
-        "watchdog_available": wd_avail,
-        "watchdog_version": wd_ver,
-        "last_run": datetime.now(timezone.utc).isoformat(),
-        "cumulative_converted": _cumulative_converted,
-        "cumulative_skipped": _cumulative_skipped,
-        "cumulative_errors": _cumulative_errors,
-        "last_event_at": _last_event_at,
-    }
-    if extra: health.update(extra)
-    if _current_config:
-        health["config_dirs"] = [d.get("path", "") for d in _current_config.get("directories", [])]
-        health["watching"] = _current_observer is not None and _current_observer.is_alive()
-        health["max_workers"] = _current_config.get("maxWorkers", DEFAULT_MAX_WORKERS)
-        health["debounce_ms"] = _current_config.get("debounceMs", DEFAULT_DEBOUNCE_MS)
-    try:
-        HEALTH_FILE.write_text(json.dumps(health, indent=2, ensure_ascii=False))
-    except OSError: pass
+    with _health_write_lock:
+        # Carry forward last status if caller didn't supply one.
+        if status is None:
+            try:
+                prev = json.loads(HEALTH_FILE.read_text())
+                status = prev.get("status", "watching")
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                status = "watching"
+        health = {
+            "status": status,
+            "markitdown_available": _cached_mt_avail,
+            "markitdown_version": _cached_mt_ver,
+            "watchdog_available": _cached_wd_avail,
+            "watchdog_version": _cached_wd_ver,
+            "last_run": datetime.now(timezone.utc).isoformat(),
+            "cumulative_converted": _cumulative_converted,
+            "cumulative_skipped": _cumulative_skipped,
+            "cumulative_errors": _cumulative_errors,
+            "last_event_at": _last_event_at,
+            "recent_skips": list(_recent_skips),
+            "recent_errors": list(_recent_errors),
+        }
+        if extra: health.update(extra)
+        if _current_config:
+            health["config_dirs"] = [d.get("path", "") for d in _current_config.get("directories", [])]
+            health["watching"] = _current_observer is not None and _current_observer.is_alive()
+            health["max_workers"] = _current_config.get("maxWorkers", DEFAULT_MAX_WORKERS)
+            health["debounce_ms"] = _current_config.get("debounceMs", DEFAULT_DEBOUNCE_MS)
+            health["extract_timeout_sec"] = _current_config.get("extractTimeoutSec", DEFAULT_EXTRACT_TIMEOUT_SEC)
+            health["max_output_mb"] = _current_config.get("maxOutputMB", DEFAULT_MAX_OUTPUT_MB)
+            health["archive_max_files"] = _current_config.get("archiveMaxFiles", DEFAULT_ARCHIVE_MAX_FILES)
+        try:
+            HEALTH_FILE.write_text(json.dumps(health, indent=2, ensure_ascii=False))
+        except OSError: pass
 
 # ---- file filtering ----
 def is_indexable(p: Path, max_file_bytes: int) -> Optional[str]:
@@ -218,60 +288,117 @@ def is_indexable(p: Path, max_file_bytes: int) -> Optional[str]:
 
 def write_shadow(src: Path, dst: Path, body: str, status="ok", error=""):
     """Bug I fix: also persist src_size in frontmatter so we can detect content
-    changes when mtime is reset (e.g. git checkout, rsync --times)."""
+    changes when mtime is reset (e.g. git checkout, rsync --times).
+    Bug P fix: warn in frontmatter when filename has bidi/RTL control chars."""
     src_stat = src.stat()
     src_mtime = src_stat.st_mtime
     src_size = src_stat.st_size
+    bidi_warning = ""
+    if _has_bidi_ctrl(src.name):
+        bidi_warning = "filename_warning: contains bidi control char\n"
     header = (
         f"---\nsource: {src.resolve()}\n"
         f"generated_at: {datetime.now(timezone.utc).isoformat()}\n"
         f"sha8: {sha8(str(src.resolve()))}\n"
         f"src_mtime: {int(src_mtime)}\nsrc_size: {src_size}\nstatus: {status}\n"
-        + (f"error: {error}\n" if error else "") + "---\n\n"
+        + (f"error: {error}\n" if error else "")
+        + bidi_warning
+        + "---\n\n"
     )
     tmp = dst.with_suffix(dst.suffix + ".tmp")
     tmp.write_text(header + body, encoding="utf-8")
     os.replace(tmp, dst)
     os.utime(dst, (src_mtime, src_mtime))
 
-def convert(src: Path, dst: Path, timeout_sec: int) -> bool:
-    global _cumulative_converted, _cumulative_errors
+def convert(src: Path, dst: Path, timeout_sec: int, max_output_bytes: int, archive_max_files: int) -> bool:
+    global _cumulative_converted
+    path_str = str(src)
     # Bug A: verify file content matches its extension before invoking markitdown.
     magic_err = verify_magic(src)
     if magic_err == "mime_mismatch":
         write_shadow(src, dst, f"<!-- file extension does not match content magic bytes -->",
                      "mime_mismatch", error="extension/magic mismatch")
-        with _state_lock: _cumulative_errors += 1
+        record_error(path_str, "mime_mismatch")
         log("mime_mismatch", src=str(src), ext=_safe_ext(src))
         return False
     if magic_err == "unreadable":
-        with _state_lock: _cumulative_errors += 1
+        record_error(path_str, "unreadable")
         log("convert_unreadable", src=str(src))
         return False
+
+    ext = _safe_ext(src)
+
+    # Bug Q: cap zip entry count BEFORE invoking markitdown.
+    if ext == "zip":
+        try:
+            with zipfile.ZipFile(str(src)) as zf:
+                n_entries = len(zf.namelist())
+        except (zipfile.BadZipFile, OSError) as e:
+            write_shadow(src, dst, f"<!-- zip read error -->", "failed", error=str(e)[:200])
+            record_error(path_str, "zip_read_error")
+            log("zip_read_error", src=str(src), err=str(e)[:200])
+            return False
+        if n_entries > archive_max_files:
+            write_shadow(src, dst,
+                         f"<!-- zip has {n_entries} entries (> {archive_max_files} cap) -->",
+                         "archive_too_many_files",
+                         error=f"{n_entries} entries > {archive_max_files}")
+            record_error(path_str, "archive_too_many_files")
+            log("archive_too_many_files", src=str(src), entries=n_entries, cap=archive_max_files)
+            return False
+
+    # Bug O: text-like extensions must be valid UTF-8.
+    if ext in TEXT_LIKE_EXT:
+        try:
+            with src.open("rb") as f:
+                head = f.read(64 * 1024)
+        except OSError as e:
+            record_error(path_str, "unreadable")
+            log("convert_unreadable", src=str(src), err=str(e)[:100])
+            return False
+        try:
+            head.decode("utf-8", "strict")
+        except UnicodeDecodeError as e:
+            write_shadow(src, dst, f"<!-- non-UTF-8 bytes in text file -->",
+                         "encoding_error", error=f"{e.reason} at byte {e.start}")
+            record_error(path_str, "encoding_error")
+            log("encoding_error", src=str(src), reason=e.reason, pos=e.start)
+            return False
+
     try:
         proc = subprocess.run(
             [sys.executable, "-m", "markitdown", str(src)],
             capture_output=True, timeout=timeout_sec, check=False,
         )
         if proc.returncode == 0:
-            write_shadow(src, dst, proc.stdout.decode("utf-8", "replace"), "ok")
+            out_bytes = proc.stdout
+            # Bug L: cap shadow md output size.
+            if len(out_bytes) > max_output_bytes:
+                write_shadow(src, dst,
+                             f"<!-- output truncated: {len(out_bytes)} bytes > {max_output_bytes} cap -->",
+                             "output_too_large",
+                             error=f"{len(out_bytes)} bytes > {max_output_bytes}")
+                record_error(path_str, "output_too_large")
+                log("output_too_large", src=str(src), bytes=len(out_bytes), cap=max_output_bytes)
+                return False
+            write_shadow(src, dst, out_bytes.decode("utf-8", "replace"), "ok")
             with _state_lock: _cumulative_converted += 1
-            log("convert_ok", src=str(src), bytes=len(proc.stdout))
+            log("convert_ok", src=str(src), bytes=len(out_bytes))
             return True
         err = proc.stderr.decode("utf-8", "replace")[:300]
         status = "oom" if proc.returncode in (-9, 137) else "failed"
         write_shadow(src, dst, f"<!-- conversion {status} -->", status, error=f"rc={proc.returncode}")
-        with _state_lock: _cumulative_errors += 1
+        record_error(path_str, status)
         log(f"convert_{status}", src=str(src), rc=proc.returncode, err=err[:200])
     except subprocess.TimeoutExpired:
         try: write_shadow(src, dst, "<!-- conversion timeout -->", "timeout", error="timeout")
         except Exception: pass
-        with _state_lock: _cumulative_errors += 1
+        record_error(path_str, "timeout")
         log("convert_timeout", src=str(src), timeout_s=timeout_sec)
     except Exception as e:
         try: write_shadow(src, dst, "<!-- conversion failed -->", "failed", error=str(e)[:200])
         except Exception: pass
-        with _state_lock: _cumulative_errors += 1
+        record_error(path_str, "crashed")
         log("convert_crashed", src=str(src), err=str(e)[:200])
     return False
 
@@ -299,15 +426,17 @@ def _read_shadow_size(sp: Path) -> Optional[int]:
 def maybe_convert(src: Path, config: dict) -> bool:
     """Acquire per-path lock, check size/staleness, run markitdown if needed.
     Bug I fix: detect mtime OR size change so resetting mtime can't mask edits."""
-    global _cumulative_skipped
     max_file_bytes = config.get("maxFileMB", 50) * 1024 * 1024
-    extract_timeout = config.get("extractTimeoutSec", 180)
+    extract_timeout = config.get("extractTimeoutSec", DEFAULT_EXTRACT_TIMEOUT_SEC)
+    max_output_bytes = int(config.get("maxOutputMB", DEFAULT_MAX_OUTPUT_MB)) * 1024 * 1024
+    archive_max_files = int(config.get("archiveMaxFiles", DEFAULT_ARCHIVE_MAX_FILES))
     path_str = str(src.resolve())
     lock = _get_path_lock(path_str)
     with lock:
         skip = is_indexable(src, max_file_bytes)
         if skip:
-            with _state_lock: _cumulative_skipped += 1
+            # Bug N + Bug R: record every skip with reason in rolling buffer.
+            record_skip(path_str, skip)
             log("skip", src=path_str, reason=skip)
             return False
         sp = shadow_path_for(src)
@@ -328,7 +457,7 @@ def maybe_convert(src: Path, config: dict) -> bool:
             need = mtime_newer or size_changed
         if not need:
             return False
-        return convert(src, sp, extract_timeout)
+        return convert(src, sp, extract_timeout, max_output_bytes, archive_max_files)
 
 def remove_shadow_for(src: Path):
     sp = shadow_path_for(src)
@@ -399,7 +528,13 @@ def initial_sync(config: dict, blocking: bool = True):
                 dirs[:] = [d for d in dirs if not d.startswith(".")]
                 for fn in files:
                     if fn.startswith("."): continue
-                    p = (Path(root) / fn).resolve()
+                    raw = Path(root) / fn
+                    # Bug N: explicit skip + record for symlinks (don't follow).
+                    if raw.is_symlink():
+                        record_skip(str(raw), "symlink")
+                        log("skip", src=str(raw), reason="symlink")
+                        continue
+                    p = raw.resolve()
                     seen_sources.add(str(p))
                     sp = shadow_path_for(p)
                     if sp.exists() and _is_fresh(p, sp):
@@ -408,9 +543,13 @@ def initial_sync(config: dict, blocking: bool = True):
                     submitted += 1
                     if blocking: futures.append(fut)
         else:
-            for p in target.iterdir():
-                if p.is_dir() or p.name.startswith("."): continue
-                p = p.resolve()
+            for raw in target.iterdir():
+                if raw.is_dir() or raw.name.startswith("."): continue
+                if raw.is_symlink():
+                    record_skip(str(raw), "symlink")
+                    log("skip", src=str(raw), reason="symlink")
+                    continue
+                p = raw.resolve()
                 seen_sources.add(str(p))
                 sp = shadow_path_for(p)
                 if sp.exists() and _is_fresh(p, sp):
@@ -447,8 +586,17 @@ def _schedule_convert(src: Path, config: dict):
         def _fire():
             with _locks_mutex:
                 _debounce_timers.pop(path_str, None)
+            raw = Path(path_str)
+            # Bug N: detect symlink BEFORE resolve() (which would silently follow it).
             try:
-                p = Path(path_str).resolve()
+                if raw.is_symlink():
+                    record_skip(str(raw), "symlink")
+                    log("skip", src=str(raw), reason="symlink")
+                    return
+            except OSError:
+                return
+            try:
+                p = raw.resolve()
                 p.relative_to(WORKSPACE)
             except (OSError, ValueError):
                 return
@@ -523,7 +671,7 @@ def stop_observer(observer):
 def config_changed(old, new) -> bool:
     if old is None or new is None: return old is not new
     keys = ("directories", "maxFileMB", "extractTimeoutSec", "debounceMs", "maxWorkers",
-            "reconcileIntervalSec")
+            "reconcileIntervalSec", "maxOutputMB", "archiveMaxFiles")
     return any(old.get(k) != new.get(k) for k in keys)
 
 # ---- main loop ----
