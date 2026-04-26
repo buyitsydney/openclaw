@@ -40,7 +40,71 @@ def log(event, **kv):
     print(json.dumps(rec, default=str), file=sys.stderr, flush=True)
 
 def sha8(s): return hashlib.sha256(s.encode()).hexdigest()[:8]
-def shadow_path_for(src): return SHADOW_DIR / f"{sha8(str(src.resolve()))}__{src.stem[:60]}.md"
+
+def _safe_ext(p: Path) -> str:
+    """Sanitize extension for use in filename. Empty when no/unsafe ext."""
+    ext = p.suffix.lstrip(".").lower()
+    # Only [a-z0-9] up to 6 chars; keeps shadow filenames clean and shell-safe
+    if ext and 1 <= len(ext) <= 6 and ext.isalnum():
+        return ext
+    return ""
+
+def shadow_path_for(src):
+    """Bug B fix: include source extension in shadow filename."""
+    h = sha8(str(src.resolve()))
+    stem = src.stem[:60]
+    ext = _safe_ext(src)
+    if ext:
+        return SHADOW_DIR / f"{h}__{stem}.{ext}.md"
+    return SHADOW_DIR / f"{h}__{stem}.md"
+
+# ---- Bug A: magic-byte mime check ----
+# Map ext → list of acceptable header byte prefixes (None = text/anything ok).
+# Source: file(1) magic + Wikipedia file signatures.
+_MAGIC_RULES: dict = {
+    "pdf":  [b"%PDF-"],
+    "docx": [b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"],
+    "xlsx": [b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"],
+    "pptx": [b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"],
+    "epub": [b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"],
+    "zip":  [b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"],
+    "doc":  [b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"],  # OLE Compound File
+    "xls":  [b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"],
+    "ppt":  [b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"],
+    "rtf":  [b"{\\rtf"],
+    "png":  [b"\x89PNG\r\n\x1a\n"],
+    "jpg":  [b"\xff\xd8\xff"],
+    "jpeg": [b"\xff\xd8\xff"],
+    "gif":  [b"GIF87a", b"GIF89a"],
+    "bmp":  [b"BM"],
+    "webp": [b"RIFF"],  # also has WEBP at offset 8 but RIFF is enough
+    "mp3":  [b"ID3", b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"],
+    "wav":  [b"RIFF"],
+    "mobi": [b"BOOKMOBI", b"TPZ", b"\xea\x05"],  # palmDOC variants too
+    # Text-ish formats: skip magic check (any bytes are valid)
+    "txt": None, "md": None, "csv": None, "tsv": None,
+    "json": None, "xml": None, "html": None, "htm": None,
+    "log": None, "yaml": None, "yml": None, "toml": None, "ini": None,
+}
+
+def verify_magic(src: Path) -> Optional[str]:
+    """Bug A fix: check first 8 bytes match the extension's magic bytes.
+    Returns None if OK or unknown ext (skip magic check).
+    Returns a reason string ('mime_mismatch' / 'unreadable') on failure."""
+    ext = _safe_ext(src)
+    if not ext:
+        return None  # No ext: don't enforce; treat as opaque blob.
+    rules = _MAGIC_RULES.get(ext)
+    if rules is None:
+        return None  # Either unlisted ext (don't block) or text-like.
+    try:
+        with src.open("rb") as f:
+            head = f.read(16)
+    except OSError:
+        return "unreadable"
+    if any(head.startswith(prefix) for prefix in rules):
+        return None
+    return "mime_mismatch"
 
 # ---- dep checks ----
 def check_markitdown():
@@ -91,6 +155,21 @@ _debounce_timers: dict = {}     # path_str -> threading.Timer
 _path_locks: dict = {}          # path_str -> threading.Lock
 _locks_mutex = threading.Lock()  # protects _debounce_timers + _path_locks
 
+def load_persistent_counters():
+    """Bug J fix: restore cumulative counters from previous _health.json on startup."""
+    global _cumulative_converted, _cumulative_skipped, _cumulative_errors
+    try:
+        h = json.loads(HEALTH_FILE.read_text())
+        _cumulative_converted = max(0, int(h.get("cumulative_converted", 0) or 0))
+        _cumulative_skipped = max(0, int(h.get("cumulative_skipped", 0) or 0))
+        _cumulative_errors = max(0, int(h.get("cumulative_errors", 0) or 0))
+        log("counters_restored",
+            converted=_cumulative_converted,
+            skipped=_cumulative_skipped,
+            errors=_cumulative_errors)
+    except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError):
+        log("counters_fresh_start")
+
 def write_health(status, extra=None):
     SHADOW_DIR.mkdir(parents=True, exist_ok=True)
     mt_avail, mt_ver = check_markitdown()
@@ -138,12 +217,16 @@ def is_indexable(p: Path, max_file_bytes: int) -> Optional[str]:
     return None
 
 def write_shadow(src: Path, dst: Path, body: str, status="ok", error=""):
-    src_mtime = src.stat().st_mtime
+    """Bug I fix: also persist src_size in frontmatter so we can detect content
+    changes when mtime is reset (e.g. git checkout, rsync --times)."""
+    src_stat = src.stat()
+    src_mtime = src_stat.st_mtime
+    src_size = src_stat.st_size
     header = (
         f"---\nsource: {src.resolve()}\n"
         f"generated_at: {datetime.now(timezone.utc).isoformat()}\n"
         f"sha8: {sha8(str(src.resolve()))}\n"
-        f"src_mtime: {int(src_mtime)}\nstatus: {status}\n"
+        f"src_mtime: {int(src_mtime)}\nsrc_size: {src_size}\nstatus: {status}\n"
         + (f"error: {error}\n" if error else "") + "---\n\n"
     )
     tmp = dst.with_suffix(dst.suffix + ".tmp")
@@ -153,6 +236,18 @@ def write_shadow(src: Path, dst: Path, body: str, status="ok", error=""):
 
 def convert(src: Path, dst: Path, timeout_sec: int) -> bool:
     global _cumulative_converted, _cumulative_errors
+    # Bug A: verify file content matches its extension before invoking markitdown.
+    magic_err = verify_magic(src)
+    if magic_err == "mime_mismatch":
+        write_shadow(src, dst, f"<!-- file extension does not match content magic bytes -->",
+                     "mime_mismatch", error="extension/magic mismatch")
+        with _state_lock: _cumulative_errors += 1
+        log("mime_mismatch", src=str(src), ext=_safe_ext(src))
+        return False
+    if magic_err == "unreadable":
+        with _state_lock: _cumulative_errors += 1
+        log("convert_unreadable", src=str(src))
+        return False
     try:
         proc = subprocess.run(
             [sys.executable, "-m", "markitdown", str(src)],
@@ -188,8 +283,22 @@ def _get_path_lock(path_str: str) -> threading.Lock:
             _path_locks[path_str] = lock
         return lock
 
+def _read_shadow_size(sp: Path) -> Optional[int]:
+    """Bug I helper: parse src_size from shadow frontmatter (None if missing/legacy)."""
+    try:
+        with sp.open() as f:
+            for _ in range(20):
+                line = f.readline()
+                if not line: break
+                if line.startswith("src_size:"):
+                    try: return int(line.split(":", 1)[1].strip())
+                    except ValueError: return None
+    except OSError: pass
+    return None
+
 def maybe_convert(src: Path, config: dict) -> bool:
-    """Acquire per-path lock, check size/staleness, run markitdown if needed."""
+    """Acquire per-path lock, check size/staleness, run markitdown if needed.
+    Bug I fix: detect mtime OR size change so resetting mtime can't mask edits."""
     global _cumulative_skipped
     max_file_bytes = config.get("maxFileMB", 50) * 1024 * 1024
     extract_timeout = config.get("extractTimeoutSec", 180)
@@ -203,9 +312,20 @@ def maybe_convert(src: Path, config: dict) -> bool:
             return False
         sp = shadow_path_for(src)
         try:
-            need = (not sp.exists()) or (src.stat().st_mtime > sp.stat().st_mtime + 1)
+            src_stat = src.stat()
         except OSError:
             return False
+        if not sp.exists():
+            need = True
+        else:
+            try:
+                sp_mtime = sp.stat().st_mtime
+            except OSError:
+                return False
+            saved_size = _read_shadow_size(sp)
+            mtime_newer = src_stat.st_mtime > sp_mtime + 1
+            size_changed = saved_size is not None and saved_size != src_stat.st_size
+            need = mtime_newer or size_changed
         if not need:
             return False
         return convert(src, sp, extract_timeout)
@@ -258,6 +378,21 @@ def initial_sync(config: dict, blocking: bool = True):
     seen_sources = set()
     submitted = 0
     futures = []
+
+    def _is_fresh(p: Path, sp: Path) -> bool:
+        """Bug I: shadow is fresh ONLY if src mtime not newer AND src size unchanged."""
+        try:
+            sp_stat = sp.stat()
+            p_stat = p.stat()
+        except OSError:
+            return False
+        if p_stat.st_mtime > sp_stat.st_mtime + 1:
+            return False
+        saved_size = _read_shadow_size(sp)
+        if saved_size is not None and saved_size != p_stat.st_size:
+            return False
+        return True
+
     for raw_path, target, recursive in targets:
         if recursive:
             for root, dirs, files in os.walk(target, followlinks=False):
@@ -266,12 +401,9 @@ def initial_sync(config: dict, blocking: bool = True):
                     if fn.startswith("."): continue
                     p = (Path(root) / fn).resolve()
                     seen_sources.add(str(p))
-                    # Pre-filter: skip if shadow already up-to-date (avoid queue churn)
-                    try:
-                        sp = shadow_path_for(p)
-                        if sp.exists() and sp.stat().st_mtime >= p.stat().st_mtime - 1:
-                            continue
-                    except OSError: continue
+                    sp = shadow_path_for(p)
+                    if sp.exists() and _is_fresh(p, sp):
+                        continue
                     fut = _executor.submit(maybe_convert, p, config)
                     submitted += 1
                     if blocking: futures.append(fut)
@@ -280,11 +412,9 @@ def initial_sync(config: dict, blocking: bool = True):
                 if p.is_dir() or p.name.startswith("."): continue
                 p = p.resolve()
                 seen_sources.add(str(p))
-                try:
-                    sp = shadow_path_for(p)
-                    if sp.exists() and sp.stat().st_mtime >= p.stat().st_mtime - 1:
-                        continue
-                except OSError: continue
+                sp = shadow_path_for(p)
+                if sp.exists() and _is_fresh(p, sp):
+                    continue
                 fut = _executor.submit(maybe_convert, p, config)
                 submitted += 1
                 if blocking: futures.append(fut)
@@ -401,6 +531,7 @@ def main():
     global _current_config, _current_observer, _executor
     log("daemon_start", workspace=str(WORKSPACE), shadow_dir=str(SHADOW_DIR))
     SHADOW_DIR.mkdir(parents=True, exist_ok=True)
+    load_persistent_counters()  # Bug J: carry cumulative across restarts
 
     stop_event = threading.Event()
     def _term(*_):
