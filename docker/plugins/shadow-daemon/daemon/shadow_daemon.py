@@ -247,11 +247,14 @@ def parse_source_header(md: Path) -> Optional[str]:
     except OSError: pass
     return None
 
-def initial_sync(config: dict):
-    """Single O(N) walk on startup. Submits all conversion tasks to executor in parallel."""
+def initial_sync(config: dict, blocking: bool = True):
+    """Walk watched dirs, submit conversion tasks for stale/missing files.
+    Periodic reconcile uses blocking=False to avoid main-loop stalls.
+    GC orphan shadow files (sources gone)."""
     started = time.monotonic()
     targets = resolve_watch_dirs(config)
     seen_sources = set()
+    submitted = 0
     futures = []
     for raw_path, target, recursive in targets:
         if recursive:
@@ -261,14 +264,29 @@ def initial_sync(config: dict):
                     if fn.startswith("."): continue
                     p = (Path(root) / fn).resolve()
                     seen_sources.add(str(p))
-                    futures.append(_executor.submit(maybe_convert, p, config))
+                    # Pre-filter: skip if shadow already up-to-date (avoid queue churn)
+                    try:
+                        sp = shadow_path_for(p)
+                        if sp.exists() and sp.stat().st_mtime >= p.stat().st_mtime - 1:
+                            continue
+                    except OSError: continue
+                    fut = _executor.submit(maybe_convert, p, config)
+                    submitted += 1
+                    if blocking: futures.append(fut)
         else:
             for p in target.iterdir():
                 if p.is_dir() or p.name.startswith("."): continue
                 p = p.resolve()
                 seen_sources.add(str(p))
-                futures.append(_executor.submit(maybe_convert, p, config))
-    converted = sum(1 for f in futures if f.result())
+                try:
+                    sp = shadow_path_for(p)
+                    if sp.exists() and sp.stat().st_mtime >= p.stat().st_mtime - 1:
+                        continue
+                except OSError: continue
+                fut = _executor.submit(maybe_convert, p, config)
+                submitted += 1
+                if blocking: futures.append(fut)
+    converted = sum(1 for f in futures if f.result()) if blocking else -1
     deleted = 0
     for sp in SHADOW_DIR.glob("*.md"):
         if sp.name.startswith("_"): continue
@@ -279,9 +297,10 @@ def initial_sync(config: dict):
                 deleted += 1
                 log("gc_orphan", shadow=sp.name, source=src)
             except OSError: pass
-    log("initial_sync_done", originals=len(seen_sources), converted=converted,
-        deleted=deleted, elapsed_sec=round(time.monotonic() - started, 2))
-    return converted, deleted
+    log("sync_done", originals=len(seen_sources), submitted=submitted,
+        converted=converted, deleted=deleted, blocking=blocking,
+        elapsed_sec=round(time.monotonic() - started, 2))
+    return submitted, deleted
 
 # ---- debounced event submission ----
 def _schedule_convert(src: Path, config: dict):
@@ -431,11 +450,11 @@ def main():
             _current_observer = start_observer(new_config)
             have_valid_dirs = _current_observer is not None
 
-        # 4. periodic reconcile — safety net for lost watchdog events
+        # 4. periodic reconcile — non-blocking safety net for lost watchdog events
         reconcile_sec = int(new_config.get("reconcileIntervalSec", DEFAULT_RECONCILE_SEC))
         if have_valid_dirs and time.monotonic() - last_reconcile_at >= reconcile_sec:
             log("periodic_reconcile_start")
-            initial_sync(new_config)
+            initial_sync(new_config, blocking=False)  # non-blocking submit
             last_reconcile_at = time.monotonic()
 
         # 5. status
