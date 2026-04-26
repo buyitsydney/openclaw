@@ -32,6 +32,7 @@ HEALTH_FILE = SHADOW_DIR / "_health.json"
 # ---- tunables (config-overridable) ----
 DEFAULT_DEBOUNCE_MS = 500
 DEFAULT_MAX_WORKERS = 8
+DEFAULT_RECONCILE_SEC = 60  # safety-net rescan to catch lost watchdog events
 
 # ---- structured log ----
 def log(event, **kv):
@@ -370,7 +371,8 @@ def stop_observer(observer):
 
 def config_changed(old, new) -> bool:
     if old is None or new is None: return old is not new
-    keys = ("directories", "maxFileMB", "extractTimeoutSec", "debounceMs", "maxWorkers")
+    keys = ("directories", "maxFileMB", "extractTimeoutSec", "debounceMs", "maxWorkers",
+            "reconcileIntervalSec")
     return any(old.get(k) != new.get(k) for k in keys)
 
 # ---- main loop ----
@@ -384,6 +386,9 @@ def main():
         log("daemon_stopping"); stop_event.set()
     signal.signal(signal.SIGTERM, _term)
     signal.signal(signal.SIGINT, _term)
+
+    last_reconcile_at = 0.0
+    have_valid_dirs = False
 
     while not stop_event.is_set():
         # 1. dep checks (Her installs both via SKILL)
@@ -406,6 +411,7 @@ def main():
             if _current_observer:
                 stop_observer(_current_observer); _current_observer = None
             _current_config = None
+            have_valid_dirs = False
             write_health("idle_no_config")
             stop_event.wait(timeout=15); continue
 
@@ -421,16 +427,27 @@ def main():
             _executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="shadow-worker")
             log("executor_started", max_workers=max_workers)
             initial_sync(new_config)
+            last_reconcile_at = time.monotonic()
             _current_observer = start_observer(new_config)
-            write_health("watching" if _current_observer else "idle_no_valid_dirs")
+            have_valid_dirs = _current_observer is not None
 
-        # 4. heartbeat
-        if _current_observer and _current_observer.is_alive():
+        # 4. periodic reconcile — safety net for lost watchdog events
+        reconcile_sec = int(new_config.get("reconcileIntervalSec", DEFAULT_RECONCILE_SEC))
+        if have_valid_dirs and time.monotonic() - last_reconcile_at >= reconcile_sec:
+            log("periodic_reconcile_start")
+            initial_sync(new_config)
+            last_reconcile_at = time.monotonic()
+
+        # 5. status
+        if not have_valid_dirs:
+            write_health("idle_no_valid_dirs")
+        elif _current_observer and _current_observer.is_alive():
             write_health("watching")
         else:
             _current_observer = None
+            have_valid_dirs = False
             write_health("observer_dead")
-        stop_event.wait(timeout=15)
+        stop_event.wait(timeout=5)  # tighter heartbeat for faster reconcile
 
     if _current_observer: stop_observer(_current_observer)
     if _executor: _executor.shutdown(wait=False, cancel_futures=True)
