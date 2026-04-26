@@ -40,10 +40,10 @@ RUN apt-get update && \
 # Live Frontend 是 CarHer 自带扩展（上游 openclaw 镜像不含），从我们的工作区拷贝
 COPY extensions/realtime/live-frontend /app/extensions/realtime/live-frontend
 
-# Live Frontend Python 依赖 + shadow-daemon (watchdog 事件驱动)
+# Live Frontend Python 依赖
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --break-system-packages \
-      -r /app/extensions/realtime/live-frontend/requirements.txt requests watchdog
+      -r /app/extensions/realtime/live-frontend/requirements.txt requests
 
 # 独立插件 —— 拷贝 + npm install --omit=dev（每个插件各自一层，缓存友好）
 WORKDIR /app
