@@ -70,7 +70,7 @@ RUN --mount=type=cache,target=/root/.npm \
     cd /app/docker/plugins/shadow-daemon && \
     npm install --omit=dev --ignore-scripts
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --break-system-packages markitdown
+    pip3 install --break-system-packages "markitdown[all]"
 
 # CarHer 共享配置（shared-config.json5 + 用户 overlay）
 COPY docker/shared-config.json5 /app/docker/shared-config.json5

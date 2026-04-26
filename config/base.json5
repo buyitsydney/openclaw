@@ -109,7 +109,7 @@
         enabled: true,
         config: {
           shadowDir: "memory/_shadow",
-          intervalSec: 300,
+          intervalSec: 30,
         },
       },
       "active-memory": { enabled: false },
