@@ -30,12 +30,6 @@
   },
 
   gateway: {
-    // 2026-04-27: openclaw 2026.4.24 的启动检查只看顶层 effective config 的
-    // gateway.mode,如果 missing 就触发 "gateway-mode-missing-vs-last-good"
-    // → clobber 当前 openclaw.json,从内置 backup 恢复。base.json5 已设
-    // mode=local,但 clobber 检查发生在 $include 展开之前。显式在 docker
-    // overlay 里再写一次,避免每次启动产生一个 .clobbered.<ts> 备份文件。
-    mode: "local",
     bind: "lan",
     auth: {
       mode: "token",
