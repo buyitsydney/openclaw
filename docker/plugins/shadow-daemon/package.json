@@ -1,0 +1,26 @@
+{
+  "name": "shadow-daemon",
+  "version": "0.1.0",
+  "description": "CarHer shadow daemon plugin — PDF/office→markdown mirror for memory_search",
+  "type": "module",
+  "main": "index.ts",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "openclaw": "^2026.4.14",
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.3.2 <2026.5.0"
+  },
+  "openclaw": {
+    "extensions": ["./index.ts"],
+    "install": {
+      "localPath": "docker/plugins/shadow-daemon",
+      "defaultChoice": "local"
+    }
+  }
+}

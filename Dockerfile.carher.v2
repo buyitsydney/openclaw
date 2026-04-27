@@ -84,13 +84,17 @@ RUN chmod +x /entrypoint.sh
 
 # 全局 npm 安装去到持久卷(Her 的 CLI 安装跨重启保留)
 ENV NPM_CONFIG_PREFIX="/data/.openclaw/local"
-ENV PATH="/data/.openclaw/local/bin:/data/.openclaw/python/bin:${PATH}"
+# pip install --user 默认 $HOME/.local = /data/.local (HOME=/data via start-user.sh)。
+# /data 是 docker volume,所以 /data/.local 自动持久化。把 .local/bin 加进 PATH
+# 让 markitdown 等 CLI 可调用。
+ENV PATH="/data/.openclaw/local/bin:/data/.local/bin:${PATH}"
 ENV NODE_ENV=production
 
-# Method B: pip install --user 写入持久卷,markitdown / watchdog 跨容器重建保留。
-# PIP_BREAK_SYSTEM_PACKAGES 绕开 PEP 668 的 externally-managed 拦截。
-# Daemon 主进程的 env 由 plugin 显式设置,这里只为 docker exec / Her 的安装会话兜底。
-ENV PYTHONUSERBASE="/data/.openclaw/python"
+# PIP_BREAK_SYSTEM_PACKAGES: 绕开 Debian 12+ 的 PEP 668 externally-managed 拦截。
+# 我们故意不设 PYTHONUSERBASE — 让 pip --user 走默认 $HOME/.local,这样
+# 不论 Her 在哪个 shell 上下文(docker exec / claude code subprocess /
+# bash -l)安装,pip 都落到同一个固定位置 /data/.local。daemon 进程同样
+# 不强制 PYTHONUSERBASE,继承相同默认 → 装包路径与读取路径绝对一致。
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
 ARG BUILD_HASH=unknown

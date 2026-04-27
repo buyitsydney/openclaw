@@ -1,48 +1,126 @@
-# 目录管理与状态监控
+# 目录管理 + 状态监控
 
-## _config.json schema
+> ⚠️ 写之前必读 [her-ux-principles.md](her-ux-principles.md)。
 
-位置：`memory/_shadow/_config.json`，daemon 每个 cycle 热加载。
+## 用户场景
 
-```json
-{
-  "version": 1,
-  "directories": [
-    { "path": "docs", "recursive": true }
-  ],
-  "intervalSec": 30,
-  "maxFileMB": 50,
-  "extractTimeoutSec": 180,
-  "scanBudgetSec": 240
-}
+工作空间已接入(`ready: true`)。用户想:
+- 加新目录索引("把 ~/projects/2026 也加进去")
+- 停某个目录("别看 contracts/ 了")
+- 看当前状态("daemon 现在咋样")
+- 升级工具(error 多了 / 用户说"换个版本")
+
+## 加目录("加 <目录>")
+
+### Step 1 — 确认目录存在 + 看一眼内容(惊喜模式)
+
+```bash
+ls /data/.openclaw/workspace/<path>
+find /data/.openclaw/workspace/<path> -maxdepth 2 -type f \
+  \( -name '*.pdf' -o -name '*.docx' -o ... \) | wc -l
 ```
 
-| 字段 | 说明 | 默认 |
-|------|------|------|
-| directories[].path | 相对 workspace 路径 | 必填 |
-| directories[].recursive | 递归子目录 | true |
-| intervalSec | 扫描间隔秒 | 300 |
-| maxFileMB | 文件大小上限 MB | 50 |
-| extractTimeoutSec | 单文件超时秒 | 180 |
-| scanBudgetSec | 单次扫描总时间上限秒 | 240 |
+不存在 → "你说的 `<path>` 我没找到,是不是 `<相似路径>`?要我用那个吗?"
 
-添加目录前必须 `ls` 确认目录存在。
+### Step 2 — 给具体数字 + 估时
 
-## 进度监控
+```
+找到 `projects/2026/` — 里面有 23 个文档(15 PDF, 6 Word, 2 Excel)。
+加进去后 daemon 大约 2 分钟转完。开始?
+```
 
-添加目录或大量新文件后执行。
+⏸ 等同意。
 
-1. 读 `_health.json`，看 originals 和 converted
-2. originals ≤ 5 → "几个文件，很快就好"，等一个 cycle 后报结果
-3. originals > 5 → "发现 N 个文件需要转换，预计需要几个周期"
-   - 每隔一个 intervalSec 重读 _health.json
-   - 全部完成 → "所有文件转换完毕，共 N 个文档可搜索"
-   - 有 errors → 报告失败文件，建议排查
+### Step 3 — 改 _config.json + 一气呵成
 
-## markitdown 升级
+读现有 config,append 新目录,原子写入:
 
-用户说"升级工具"、或 errors 异常多时：
+```python
+import json
+p = "/data/.openclaw/workspace/memory/_shadow/_config.json"
+cfg = json.load(open(p))
+cfg["directories"].append({"path": "projects/2026", "recursive": True})
+open(p+".tmp","w").write(json.dumps(cfg,indent=2))
+import os; os.replace(p+".tmp", p)
+```
 
-1. `pip show markitdown | grep Version` 看当前版本
-2. `pip3 install --user --upgrade "markitdown[all]"`
-3. 验证新版本号，告诉用户
+(写完 daemon 自动检测 — 无需手动通知)
+
+### Step 4 — 实时报进度
+
+每 30s 或每 25%(以最快者为准)读 `_health.json` 的 `progress`:
+
+```
+🔄 加好了,正在转 23 个新文档...(0/23)
+🔄 已转 8/23 (35%)
+🔄 已转 16/23 (70%)
+✓ 23/23 全部完成(实际耗时 1m48s)。memory_search 现在能搜到这批了。
+```
+
+## 停目录("别看 <目录>" / "去掉 <目录>")
+
+### Step 1 — 确认是这个目录
+
+```
+你说的是停止索引 `contracts/` 吗?
+注:已经索引的 5 份合同会被删除(memory_search 不再返回它们)。
+确认?
+```
+
+⏸ 等。
+
+### Step 2 — 改 config + 报结果
+
+```python
+cfg["directories"] = [d for d in cfg["directories"] if d["path"] != "contracts"]
+# 原子写
+```
+
+```
+✓ contracts/ 不再监控。daemon 在清理旧 shadow,大约 5s。
+```
+
+读 `_health.json` 看 `progress` 中是否清完(converted 减少到稳定值)。
+
+## 看状态("daemon 状态" / "/status")
+
+读 `_health.json` 一次,翻译成产品语言:
+
+```
+📊 当前状态
+  · 工具: ✓ markitdown 0.1.5 + watchdog 6.0.0
+  · 监控目录: docs/, contracts/, projects/2026/
+  · 已索引: 47 个文档
+  · 最近错误: 0
+  · 最近一次活动: 2 分钟前(转换 projects/2026/Q4-plan.pdf)
+```
+
+如果 `ready: false`,告诉用户具体是哪一步缺(产品语言):
+- `needs: "tools"` → "文档转换工具还没装,要装吗?"
+- `needs: "config"` → "还没选要监控的目录,要扫一遍给你看吗?"
+
+## 升级工具("升级 markitdown" / 错误率高时主动建议)
+
+### 主动建议时机
+
+- 最近 24h `errors > 5%` 且 大多是 "convert_failed" → 可能是 markitdown 版本兼容性
+- 用户主动要求
+
+### 流程
+
+```bash
+pip show markitdown 2>&1 | grep Version  # 当前版本
+pip3 install --user --upgrade "markitdown[all]"  # 升级
+pip show markitdown 2>&1 | grep Version  # 新版本
+```
+
+进度:"📦 升级 markitdown 大约 30s..." → 升级完毕 → "✓ 升到 X.Y.Z(从 A.B.C)。daemon 自动用新版本,旧文档无需重转"
+
+(daemon 重新 import 自动用新版,Her 不需要发任何信号)
+
+## 不要做的事
+
+- ❌ 跟用户说 "intervalSec" "scanBudgetSec" "shadow file" 等内部字段
+- ❌ 把 `_health.json` 原文倒给用户看(它是给 Her 读的接口,不是 UI)
+- ❌ "originals=N submitted=M deleted=K" 这种工程数据 — 要翻译成"已索引 47 个,最近错误 0"
+- ❌ 沉默等 daemon 跑完(必须周期报进度)

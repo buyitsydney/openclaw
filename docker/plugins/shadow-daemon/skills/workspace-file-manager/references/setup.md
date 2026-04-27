@@ -1,73 +1,137 @@
-# 首次安装与欢迎流程
+# 把工作空间接进 memory_search(首次设置)
 
-daemon 就绪需要两个前提：markitdown 已安装 + _config.json 已创建。
+> ⚠️ 写之前必读 [her-ux-principles.md](her-ux-principles.md)。
 
-## 步骤
+## 用户场景
 
-1. 读 `memory/_shadow/_health.json`
-   - 文件不存在 → `pgrep -fa shadow_daemon.py` 检查进程
-     - 无进程 → 告诉用户 daemon 未运行，排查插件日志
-     - 有进程 → 首次启动未跑完 cycle，等 30s 再读
-   - `status = "idle_no_markitdown"` → 继续步骤 2
-   - `status = "idle_no_config"` → 跳到步骤 5
-   - `status = "cycle_complete"` → 已就绪，退出此流程
+用户希望以后 @ Her 找文档时能直接 `memory_search` 命中具体内容,不用每次现想。
 
-2. 告诉用户："文档转换工具还没安装,我来装一下?"
-   **等用户确认,不要静默安装。**
+## 流程(全程对用户可见)
 
-3. 执行 `pip3 install --user "markitdown[all]" watchdog`
-   - Dockerfile 已设 `PYTHONUSERBASE=/data/.openclaw/python` 和
-     `PIP_BREAK_SYSTEM_PACKAGES=1`,所以 `--user` 会写入持久卷,
-     容器重建/重启后 deps 自动保留,无需重装。
-   - 必须带 `[all]`,否则 PDF 失败。
-   - watchdog 是 daemon 的事件驱动核心,缺了 daemon 一直 idle_no_watchdog。
+### Step 1 — 看 daemon 是否就绪
 
-4. 验证:`pip show markitdown watchdog | grep Version`
-   - 失败 → 贴错误信息给用户
-   - 成功 → 告诉用户版本号
-   - **关键(v7)**:执行 `kill -USR1 $(pgrep -f shadow_daemon.py)` 通知 daemon 立即重新探测 deps。
-     daemon 是 100% 事件驱动的,不会自己轮询发现你装好了。不发信号 daemon 永远 idle。
-     发完等 5s,读 _health.json 确认 `markitdown_available=true watchdog_available=true`。
-   - **如果 SIGUSR1 后 daemon 转 `reinit_error` 状态**:这是 daemon 启动时
-     `/data/.openclaw/python/lib/python3.11/site-packages/` 还不存在导致 sys.path
-     没加 USER_SITE 的旧 bug。v7.1 已修(`_do_reinit` 主动 sys.path.insert)。
-     如果你跑的还是 v7,临时方案:`kill $(pgrep -f shadow_daemon.py)`,supervisor
-     会重启 daemon,新进程会正确加载 USER_SITE。
+读 `memory/_shadow/_health.json`:
+- `ready: true` → 已就绪,跳到 [manage-directories.md](manage-directories.md) 的"加目录"流程
+- `ready: false` 且 `needs: "tools"` → 走 Step 2
+- `ready: false` 且 `needs: "config"` → 跳 Step 4(工具齐全,只差选目录)
 
-5. 扫描 workspace 目录结构和文档文件分布:
-   - 找目录:`find . -maxdepth 3 -type d ! -path '*/.*' ! -path '*/node_modules/*' ! -path '*/memory/*' ! -path '*/state/*'`
-   - 找文档:`find . -maxdepth 3 -type f \( -name "*.pdf" -o -name "*.docx" -o -name "*.xlsx" -o -name "*.pptx" \) ! -path '*/.*'`
+文件不存在 → daemon 还没起来,等 30s 重读。仍没有 → 告诉用户 daemon 没运行,需要排查(不是用户该解决的)。
 
-6. 向用户展示发现结果,格式示例:
-   > 我扫描了你的工作空间,发现:
-   > 📁 docs/ — 12 个文档(8 PDF, 3 Word, 1 Excel)
-   > 📁 contracts/ — 5 个 PDF
-   > 根目录散落 3 个文件
-   > 建议:监控 docs/ 和 contracts/,根目录的文件建议移到 docs/ 下。
-   > 要我这样配置吗?
+### Step 2 — 征求安装同意 + 预报时间
 
-7. 等用户确认或修改目录选择。
+```
+我看到你工作空间还没接 memory_search。要不要我接上?
+我会装一个文档转换工具(markitdown + watchdog,大约 30s),然后开始扫描你的文档。
+```
 
-8. 根据确认结果创建 `memory/_shadow/_config.json`(schema 见 [manage-directories.md](manage-directories.md))。
-   - **写完 _config.json daemon 会自动通过 meta-watchdog 检测到,无需 SIGUSR1**。
-   - 等 3-5s 后读 _health.json,应看到 `status: "watching"`。
+⏸ 等用户确认。
 
-9. 告诉用户:"配置完成,daemon 已开始监听并转换。我帮你盯着进度。"
-   进入 [manage-directories.md](manage-directories.md) 的进度监控流程。
+### Step 3 — 装工具 + 报进度
 
----
+执行:
+```bash
+pip3 install --user "markitdown[all]" watchdog
+```
+(daemon 镜像已配好 PIP_BREAK_SYSTEM_PACKAGES 等,Her 不用关心 pip 内部)
 
-## v7 事件驱动备忘(给 Her 自己看)
+**装完后,daemon 会自动检测到 deps 就位 — 不用手动通知**。
 
-daemon 是 dumb engine,所有状态切换由这些事件触发:
+进度汇报节奏(必做):
+- T+0:"📦 开始装,大约 30s..."
+- 装完:`pip show markitdown watchdog` 拿版本号
+- T+完成:"✓ 装好(实际耗时 Xs),markitdown <ver> + watchdog <ver>。下一步:扫描你的文档"
 
-| 事件 | 触发条件 | daemon 行为 |
-|---|---|---|
-| `_config.json` 创建/修改/删除 | Her 写文件 | 自动 reinit,无需信号 |
-| PYTHONUSERBASE site-packages 变化 | Her 装/卸 deps | 自动 reinit |
-| `SIGUSR1` | Her 想强制 daemon 重探一切 | 立即 reinit |
-| `SIGTERM` | 容器停止/supervisor | 优雅退出 |
+失败:贴 pip 错误的最后 1-2 行,问用户要不要重试。
 
-**关键铁律**:Her 装/卸 markitdown 或 watchdog 之后,**必须**发 SIGUSR1。原因:刚装完
-PYTHONUSERBASE 子目录可能还没产生 watchdog 监听的精确路径事件,信号是双保险。
-卸的时候同理 — site-packages 删除可能不被 watchdog 完整捕捉,信号最干净。
+### Step 4 — 扫描 + 给建议(惊喜模式)
+
+Her 自己 `find`,**不问用户目录**:
+
+```bash
+find /data/.openclaw/workspace -maxdepth 3 -type f \
+  \( -name '*.pdf' -o -name '*.docx' -o -name '*.xlsx' -o -name '*.pptx' \
+     -o -name '*.md' -o -name '*.txt' \) \
+  ! -path '*/.*' ! -path '*/memory/*' ! -path '*/state/*' ! -path '*/node_modules/*'
+```
+
+按目录分组统计。判断:
+- 哪些是明显内容目录(docs/ contracts/ projects/ ...)→ 建议监控
+- 根目录散落文件 → 建议 mv 到 docs/(惊喜:Her 主动整理)
+- 明显垃圾目录(.git/ tmp/ 大量 png 截图)→ 不监控,告诉用户跳过的原因
+
+### Step 5 — 一句话报告 + 具体建议
+
+```
+扫完了:
+📁 docs/      — 12 个文档(8 PDF, 3 Word, 1 Excel)
+📁 contracts/ — 5 份合同 PDF
+根目录散落 3 个 PDF — 看起来该归 docs/ 下
+
+建议:监控 docs/ 和 contracts/,我帮你把根目录 3 个 mv 到 docs/。
+这样配吗?
+```
+
+⏸ 等用户拍板。用户说"嗯/好/可以" → Step 6 一气呵成。说"自己来" → Step 6 跳过 mv,只写 config。
+
+### Step 6 — 一气呵成执行
+
+```bash
+# 先 mv(如果用户同意)
+mv /workspace/根目录散落.pdf /workspace/docs/...
+
+# 再写 _config.json
+cat > /data/.openclaw/workspace/memory/_shadow/_config.json <<'EOF'
+{
+  "version": 1,
+  "directories": [
+    {"path": "docs", "recursive": true},
+    {"path": "contracts", "recursive": true}
+  ],
+  "maxFileMB": 50,
+  "maxWorkers": 8
+}
+EOF
+```
+
+**写完 daemon 自动开始转换 — 不用手动通知**。
+
+### Step 7 — 转换中实时报进度
+
+读 `_health.json` 的 `progress: {converted, total, pct}`,每 30s 或每 25% 报一次:
+
+```
+📁 配好了,daemon 已开始转换 17 个文档,大约 1 分钟内完成,我盯着...
+🔄 已转 5/17 (29%)
+🔄 已转 12/17 (70%)
+✓ 17/17 全部完成(实际耗时 73s)。
+
+现在你可以在群里 @我 问"XX 项目设计文档"/"XX 合同条款",我直接给你具体内容片段。
+```
+
+### Step 8 — 收尾:把维护权交回用户
+
+```
+之后:
+- 往 docs/ 或 contracts/ 丢新文档,我会自动索引(无需通知)
+- 想加新目录监控,告诉我"加 <目录>"
+- 想停某个目录,告诉我"别看 <目录>"
+- 想知道当前状态,问"daemon 状态"
+
+收工。
+```
+
+## 失败兜底
+
+| 现象 | Her 该说 |
+|---|---|
+| `pip install` 网络失败 | "❌ 装工具失败,网络似乎不通(<错误一行>),要再试吗?或我先放着,你处理网络后跟我说" |
+| `pip` 装完了但 5s 后 `ready` 还是 false | "🤔 装好了但 daemon 没识别,我等 30s 再看一次" → 仍 false → "❌ daemon 识别失败,需要我重启 daemon 吗?(有副作用,也可以先放着)" |
+| 扫到 0 个文档 | "🤷 你的工作空间没找到 PDF/Word/MD 等文档。要换个目录扫,还是先这样?" |
+| 用户拒绝建议 | "OK,告诉我你想监控哪些目录,我直接配" → 这是开放题但用户主动说不,合理 |
+
+## 不要做的事
+
+- ❌ 跟用户说 `idle_no_markitdown` `idle_no_watchdog` `reinit_error` 等内部状态名
+- ❌ 跟用户说 `SIGUSR1` `PYTHONUSERBASE` `pgrep -f shadow_daemon` 等内部命令
+- ❌ 沉默 30s 不报进度
+- ❌ 反问"你想要什么配置?"这种开放题

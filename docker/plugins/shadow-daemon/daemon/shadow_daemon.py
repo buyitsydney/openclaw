@@ -239,7 +239,44 @@ def _persist_health(status: Optional[str], extra):
                 status = prev.get("status", "watching")
             except (FileNotFoundError, json.JSONDecodeError, OSError):
                 status = "watching"
+
+        # ---- product-facing fields (Her reads these, NOT the internal ones) ----
+        # ready: a single boolean answer to "can I index documents now?"
+        # needs: when not ready, ONE word telling Her what to do next
+        ready = (status == "watching")
+        needs: Optional[str] = None
+        if not ready:
+            if status in ("idle_no_watchdog", "idle_no_markitdown"):
+                needs = "tools"      # Her runs pip install
+            elif status in ("idle_no_config", "idle_no_valid_dirs"):
+                needs = "config"     # Her writes _config.json
+            elif status == "reinit_error":
+                needs = "recovery"   # Her may need to restart daemon
+            elif status == "stopped":
+                needs = "restart"    # supervisor will respawn
+            else:
+                needs = "unknown"
+
+        progress = {
+            "indexed_total": _cumulative_converted,
+            "errors_recent": len(_recent_errors),
+        }
+
+        watching_dirs: list = []
+        if _current_config and _current_observer is not None:
+            watching_dirs = [d.get("path", "") for d in _current_config.get("directories", [])]
+
+        # ---- end product-facing fields ----
+
         health = {
+            # ── product (Her reads these) ──
+            "ready": ready,
+            "needs": needs,
+            "progress": progress,
+            "watching_dirs": watching_dirs,
+            "last_event_at": _last_event_at,
+
+            # ── internal / engineering (kept for observability + back-compat) ──
             "status": status,
             "markitdown_available": _cached_mt_avail,
             "markitdown_version": _cached_mt_ver,
@@ -249,7 +286,6 @@ def _persist_health(status: Optional[str], extra):
             "cumulative_converted": _cumulative_converted,
             "cumulative_skipped": _cumulative_skipped,
             "cumulative_errors": _cumulative_errors,
-            "last_event_at": _last_event_at,
             "recent_skips": list(_recent_skips),
             "recent_errors": list(_recent_errors),
         }
@@ -803,8 +839,9 @@ def _meta_handler_factory():
     return MetaHandler()
 
 def _start_meta_observer() -> Optional[object]:
-    """Watch SHADOW_DIR (for _config.json events) and, if discoverable,
-    PYTHONUSERBASE/lib/*/site-packages (for deps install/uninstall).
+    """Watch SHADOW_DIR (for _config.json events) and the user-site dir
+    (~/.local/lib by default, or PYTHONUSERBASE/lib if explicitly set) so
+    deps install/uninstall by Her auto-triggers reinit. No SIGUSR1 needed.
     Returns the observer or None if watchdog not importable."""
     try:
         from watchdog.observers import Observer
@@ -816,18 +853,22 @@ def _start_meta_observer() -> Optional[object]:
     SHADOW_DIR.mkdir(parents=True, exist_ok=True)
     obs.schedule(handler, str(SHADOW_DIR), recursive=False)
     log("meta_observer_watching", path=str(SHADOW_DIR))
-    # site-packages: PYTHONUSERBASE/lib/python<X.Y>/site-packages
-    user_base = os.environ.get("PYTHONUSERBASE", "")
-    if user_base:
-        try:
-            ub = Path(user_base) / "lib"
-            if ub.is_dir():
-                # Recursive so we catch python3.X/site-packages even if dir gets
-                # created mid-flight; Linux inotify handles this fine.
-                obs.schedule(handler, str(ub), recursive=True)
-                log("meta_observer_watching", path=str(ub))
-        except OSError as e:
-            log("meta_observer_userbase_skipped", err=str(e)[:100])
+    # User-site root: PYTHONUSERBASE/lib if set, else ~/.local/lib (pip default
+    # when HOME=/data → /data/.local/lib). We watch the parent /lib so even
+    # the python3.X subdir creation is observed (Linux inotify handles this).
+    user_base_env = os.environ.get("PYTHONUSERBASE", "").strip()
+    if user_base_env:
+        user_lib = Path(user_base_env) / "lib"
+    else:
+        user_lib = Path.home() / ".local" / "lib"
+    try:
+        # Create parent dirs so watchdog can attach an inotify watch even if
+        # pip hasn't run yet (it creates the .X.Y subdir on first install).
+        user_lib.mkdir(parents=True, exist_ok=True)
+        obs.schedule(handler, str(user_lib), recursive=True)
+        log("meta_observer_watching", path=str(user_lib))
+    except OSError as e:
+        log("meta_observer_userlib_skipped", err=str(e)[:100])
     obs.daemon = True
     obs.start()
     return obs
