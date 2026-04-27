@@ -6,6 +6,22 @@
 {
   "$include": "./docker.json5",
 
+  // 2026-04-27: 0424 boot check needs gateway.mode at root (no $include expansion).
+  gateway: {
+    mode: "local",
+  },
+
+  // A2A hub mode: 13/198/199/200 are permanent hubs (god-mode peers).
+  plugins: {
+    entries: {
+      "a2a-gateway": {
+        config: {
+          outbound: { enabled: true },
+        },
+      },
+    },
+  },
+
   channels: {
     feishu: {
       name: "研究3",

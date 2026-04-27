@@ -843,6 +843,22 @@ def _do_reinit():
         _executor.shutdown(wait=True, cancel_futures=False); _executor = None
     _current_config = None
 
+    # v7.1: refresh sys.path with USER_SITE in case it was missing at startup.
+    # Python's site.py only adds USER_SITE to sys.path if the dir EXISTS at
+    # interpreter start. If markitdown/watchdog get installed AFTER daemon
+    # started (Her does pip install --user post-boot), sys.path doesn't pick
+    # them up and `import watchdog` fails inside the daemon process despite
+    # the subprocess fork seeing them. Manually injecting USER_SITE here
+    # makes SIGUSR1 enough — no need to restart the daemon process.
+    try:
+        import site as _site
+        user_site = _site.getusersitepackages()
+        if user_site and os.path.isdir(user_site) and user_site not in sys.path:
+            sys.path.insert(0, user_site)
+            log("sys_path_refreshed", added=user_site)
+    except Exception as e:
+        log("sys_path_refresh_failed", err=str(e)[:200])
+
     # 2. probe deps (this is the only place we fork; once per reinit, not 5s).
     _refresh_deps_cache()
     if not _cached_wd_avail:

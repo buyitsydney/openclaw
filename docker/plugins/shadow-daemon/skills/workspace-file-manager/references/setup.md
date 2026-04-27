@@ -28,6 +28,11 @@ daemon 就绪需要两个前提：markitdown 已安装 + _config.json 已创建�
    - **关键(v7)**:执行 `kill -USR1 $(pgrep -f shadow_daemon.py)` 通知 daemon 立即重新探测 deps。
      daemon 是 100% 事件驱动的,不会自己轮询发现你装好了。不发信号 daemon 永远 idle。
      发完等 5s,读 _health.json 确认 `markitdown_available=true watchdog_available=true`。
+   - **如果 SIGUSR1 后 daemon 转 `reinit_error` 状态**:这是 daemon 启动时
+     `/data/.openclaw/python/lib/python3.11/site-packages/` 还不存在导致 sys.path
+     没加 USER_SITE 的旧 bug。v7.1 已修(`_do_reinit` 主动 sys.path.insert)。
+     如果你跑的还是 v7,临时方案:`kill $(pgrep -f shadow_daemon.py)`,supervisor
+     会重启 daemon,新进程会正确加载 USER_SITE。
 
 5. 扫描 workspace 目录结构和文档文件分布:
    - 找目录:`find . -maxdepth 3 -type d ! -path '*/.*' ! -path '*/node_modules/*' ! -path '*/memory/*' ! -path '*/state/*'`

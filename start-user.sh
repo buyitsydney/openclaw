@@ -547,8 +547,8 @@ docker run -d \
   --name "$CONTAINER_NAME" \
   --init \
   --restart unless-stopped \
-  --memory=${CARHER_MEMORY_LIMIT:-2g} \
-  ${CARHER_CPU_LIMIT:+--cpus=$CARHER_CPU_LIMIT} \
+  --memory=${CARHER_MEMORY_LIMIT:-16g} \
+  --cpus=${CARHER_CPU_LIMIT:-10} \
   --network carher-net \
   -e HOME=/data \
   -e OPENCLAW_INSTANCE_ID="${INSTANCE_ID}" \

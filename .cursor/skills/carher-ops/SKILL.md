@@ -103,25 +103,57 @@ Dockerfile 含 `openclaw-src-fetcher` stage，clone 对应 tag 的源码到 `/ap
 
 ## 第 4 章 · 容器启动（start-user.sh）
 
+### 资源默认值（铁律 — 2026-04-27 升级）
+
+**所有 her 容器固定 10 CPU + 16GiB RAM**。`start-user.sh` 默认就是这个,不用每次显式传:
+
+```bash
+--memory=${CARHER_MEMORY_LIMIT:-16g}
+--cpus=${CARHER_CPU_LIMIT:-10}
+```
+
+历史上 admin/特殊容器才走 16g+10cpu,其他用默认 2g 跑出过 OOM。统一拉到 10/16 之后,跑大压测/ACP 子进程不再被打爆。
+
+### A2A Hub 名单（铁律）
+
+**永久 hub 节点(god mode,outbound.enabled=true)**:
+
+- `carher-13`(弋天)
+- `carher-198`(admin / 研究1)
+- `carher-199`(研究2)
+- `carher-200`(研究3)
+
+这 4 个的 `config/u<N>.json5` 必须包含:
+
+```json5
+plugins: {
+  entries: {
+    "a2a-gateway": { config: { outbound: { enabled: true } } },
+  },
+}
+```
+
+其他 her(carher-14 国现, carher-75 林森, carher-12 等)是 spoke,只接收。
+
 ### 环境变量控制
 
 | 功能  | 环境变量                                | 说明                       |
 | ----- | --------------------------------------- | -------------------------- |
 | ACP   | `CARHER_ACP_ENABLED=1`                  | Claude Code 子进程         |
-| A2A   | `A2A_ENABLED=1`                         | Spoke（被动接收）          |
-| A2A   | `A2A_ENABLED=1 A2A_OUTBOUND=1`          | Hub（上帝视角，主动调度）  |
-| 内存  | `CARHER_MEMORY_LIMIT=8g`                | 建议 ACP 用 4-8G           |
+| A2A   | (在 `u<N>.json5` 里 `outbound.enabled`) | Hub 永久标记,见上文        |
+| 内存  | `CARHER_MEMORY_LIMIT=<N>g`              | 默认 16g,够 ACP 也够压测   |
+| CPU   | `CARHER_CPU_LIMIT=<N>`                  | 默认 10                    |
+
+`A2A_ENABLED` / `A2A_OUTBOUND` 是 start-user.sh 的 print-only flag,实际生效靠 user config json5。
 
 ### 标准启动
 
 ```bash
-# Spoke + ACP
-CARHER_ACP_ENABLED=1 A2A_ENABLED=1 ./start-user.sh --id=N --image=carher-core:<TAG>
-
-# Hub + ACP（通常只给 admin）
-CARHER_ACP_ENABLED=1 CARHER_MEMORY_LIMIT=16g A2A_ENABLED=1 A2A_OUTBOUND=1 \
-  ./start-user.sh --id=N --image=carher-core:<TAG>
+# 任何 her(spoke 或 hub 都一样,资源默认 10cpu/16g)
+CARHER_ACP_ENABLED=1 ./start-user.sh --id=N --image=carher-core:<TAG>
 ```
+
+hub 与否由 `config/u<N>.json5` 的 `outbound.enabled` 决定。
 
 ### 验证
 
@@ -129,7 +161,10 @@ CARHER_ACP_ENABLED=1 CARHER_MEMORY_LIMIT=16g A2A_ENABLED=1 A2A_OUTBOUND=1 \
 docker logs carher-N | grep 'WSClient connected'
 docker logs carher-N | grep 'gateway] ready'
 docker logs carher-N | grep 'acpx.*ready'
+docker inspect carher-N --format 'CPU={{.HostConfig.NanoCpus}} Mem={{.HostConfig.Memory}}'
+# 期望:CPU=10000000000  Mem=17179869184
 ```
+
 
 ### start-user.sh 关键行为
 
