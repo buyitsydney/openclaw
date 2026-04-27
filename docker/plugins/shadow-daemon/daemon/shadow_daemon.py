@@ -313,15 +313,32 @@ def write_shadow(src: Path, dst: Path, body: str, status="ok", error=""):
 def convert(src: Path, dst: Path, timeout_sec: int, max_output_bytes: int, archive_max_files: int) -> bool:
     global _cumulative_converted
     path_str = str(src)
+    # Bug X1: source can disappear at any point during convert (Her batch-deletes,
+    # or rapid create+delete burst). Classify those as skip("source_gone") instead
+    # of error("crashed") — the watchdog delete event will clean up the shadow.
+    if not src.exists():
+        record_skip(path_str, "source_gone")
+        log("source_gone_pre", src=str(src))
+        return False
     # Bug A: verify file content matches its extension before invoking markitdown.
     magic_err = verify_magic(src)
     if magic_err == "mime_mismatch":
-        write_shadow(src, dst, f"<!-- file extension does not match content magic bytes -->",
-                     "mime_mismatch", error="extension/magic mismatch")
+        try:
+            write_shadow(src, dst, f"<!-- file extension does not match content magic bytes -->",
+                         "mime_mismatch", error="extension/magic mismatch")
+        except FileNotFoundError:
+            record_skip(path_str, "source_gone")
+            log("source_gone_pre", src=str(src))
+            return False
         record_error(path_str, "mime_mismatch")
         log("mime_mismatch", src=str(src), ext=_safe_ext(src))
         return False
     if magic_err == "unreadable":
+        # Bug X1: distinguish "file disappeared" from "real read error".
+        if not src.exists():
+            record_skip(path_str, "source_gone")
+            log("source_gone_pre", src=str(src))
+            return False
         record_error(path_str, "unreadable")
         log("convert_unreadable", src=str(src))
         return False
@@ -333,16 +350,30 @@ def convert(src: Path, dst: Path, timeout_sec: int, max_output_bytes: int, archi
         try:
             with zipfile.ZipFile(str(src)) as zf:
                 n_entries = len(zf.namelist())
+        except FileNotFoundError:
+            record_skip(path_str, "source_gone")
+            log("source_gone_pre", src=str(src))
+            return False
         except (zipfile.BadZipFile, OSError) as e:
-            write_shadow(src, dst, f"<!-- zip read error -->", "failed", error=str(e)[:200])
+            try:
+                write_shadow(src, dst, f"<!-- zip read error -->", "failed", error=str(e)[:200])
+            except FileNotFoundError:
+                record_skip(path_str, "source_gone")
+                log("source_gone_pre", src=str(src))
+                return False
             record_error(path_str, "zip_read_error")
             log("zip_read_error", src=str(src), err=str(e)[:200])
             return False
         if n_entries > archive_max_files:
-            write_shadow(src, dst,
-                         f"<!-- zip has {n_entries} entries (> {archive_max_files} cap) -->",
-                         "archive_too_many_files",
-                         error=f"{n_entries} entries > {archive_max_files}")
+            try:
+                write_shadow(src, dst,
+                             f"<!-- zip has {n_entries} entries (> {archive_max_files} cap) -->",
+                             "archive_too_many_files",
+                             error=f"{n_entries} entries > {archive_max_files}")
+            except FileNotFoundError:
+                record_skip(path_str, "source_gone")
+                log("source_gone_pre", src=str(src))
+                return False
             record_error(path_str, "archive_too_many_files")
             log("archive_too_many_files", src=str(src), entries=n_entries, cap=archive_max_files)
             return False
@@ -352,6 +383,10 @@ def convert(src: Path, dst: Path, timeout_sec: int, max_output_bytes: int, archi
         try:
             with src.open("rb") as f:
                 head = f.read(64 * 1024)
+        except FileNotFoundError:
+            record_skip(path_str, "source_gone")
+            log("source_gone_pre", src=str(src))
+            return False
         except OSError as e:
             record_error(path_str, "unreadable")
             log("convert_unreadable", src=str(src), err=str(e)[:100])
@@ -359,8 +394,13 @@ def convert(src: Path, dst: Path, timeout_sec: int, max_output_bytes: int, archi
         try:
             head.decode("utf-8", "strict")
         except UnicodeDecodeError as e:
-            write_shadow(src, dst, f"<!-- non-UTF-8 bytes in text file -->",
-                         "encoding_error", error=f"{e.reason} at byte {e.start}")
+            try:
+                write_shadow(src, dst, f"<!-- non-UTF-8 bytes in text file -->",
+                             "encoding_error", error=f"{e.reason} at byte {e.start}")
+            except FileNotFoundError:
+                record_skip(path_str, "source_gone")
+                log("source_gone_pre", src=str(src))
+                return False
             record_error(path_str, "encoding_error")
             log("encoding_error", src=str(src), reason=e.reason, pos=e.start)
             return False
@@ -374,29 +414,71 @@ def convert(src: Path, dst: Path, timeout_sec: int, max_output_bytes: int, archi
             out_bytes = proc.stdout
             # Bug L: cap shadow md output size.
             if len(out_bytes) > max_output_bytes:
-                write_shadow(src, dst,
-                             f"<!-- output truncated: {len(out_bytes)} bytes > {max_output_bytes} cap -->",
-                             "output_too_large",
-                             error=f"{len(out_bytes)} bytes > {max_output_bytes}")
+                try:
+                    write_shadow(src, dst,
+                                 f"<!-- output truncated: {len(out_bytes)} bytes > {max_output_bytes} cap -->",
+                                 "output_too_large",
+                                 error=f"{len(out_bytes)} bytes > {max_output_bytes}")
+                except FileNotFoundError:
+                    record_skip(path_str, "source_gone")
+                    log("source_gone_post", src=str(src))
+                    return False
                 record_error(path_str, "output_too_large")
                 log("output_too_large", src=str(src), bytes=len(out_bytes), cap=max_output_bytes)
                 return False
-            write_shadow(src, dst, out_bytes.decode("utf-8", "replace"), "ok")
+            try:
+                write_shadow(src, dst, out_bytes.decode("utf-8", "replace"), "ok")
+            except FileNotFoundError:
+                # Bug X1: source deleted between markitdown success and shadow stat.
+                record_skip(path_str, "source_gone")
+                log("source_gone_post", src=str(src))
+                return False
             with _state_lock: _cumulative_converted += 1
             log("convert_ok", src=str(src), bytes=len(out_bytes))
             return True
+        # rc != 0: distinguish "real failure" from "source deleted mid-convert".
+        if not src.exists():
+            record_skip(path_str, "source_gone")
+            log("source_gone_during", src=str(src), rc=proc.returncode)
+            return False
         err = proc.stderr.decode("utf-8", "replace")[:300]
         status = "oom" if proc.returncode in (-9, 137) else "failed"
-        write_shadow(src, dst, f"<!-- conversion {status} -->", status, error=f"rc={proc.returncode}")
+        try:
+            write_shadow(src, dst, f"<!-- conversion {status} -->", status, error=f"rc={proc.returncode}")
+        except FileNotFoundError:
+            record_skip(path_str, "source_gone")
+            log("source_gone_post", src=str(src))
+            return False
         record_error(path_str, status)
         log(f"convert_{status}", src=str(src), rc=proc.returncode, err=err[:200])
     except subprocess.TimeoutExpired:
+        if not src.exists():
+            record_skip(path_str, "source_gone")
+            log("source_gone_during", src=str(src))
+            return False
         try: write_shadow(src, dst, "<!-- conversion timeout -->", "timeout", error="timeout")
+        except FileNotFoundError:
+            record_skip(path_str, "source_gone")
+            log("source_gone_post", src=str(src))
+            return False
         except Exception: pass
         record_error(path_str, "timeout")
         log("convert_timeout", src=str(src), timeout_s=timeout_sec)
+    except FileNotFoundError as e:
+        # Daemon-side raise during subprocess setup or write_shadow.
+        record_skip(path_str, "source_gone")
+        log("source_gone_during", src=str(src), err=str(e)[:100])
+        return False
     except Exception as e:
+        if not src.exists():
+            record_skip(path_str, "source_gone")
+            log("source_gone_during", src=str(src), err=str(e)[:100])
+            return False
         try: write_shadow(src, dst, "<!-- conversion failed -->", "failed", error=str(e)[:200])
+        except FileNotFoundError:
+            record_skip(path_str, "source_gone")
+            log("source_gone_post", src=str(src))
+            return False
         except Exception: pass
         record_error(path_str, "crashed")
         log("convert_crashed", src=str(src), err=str(e)[:200])
