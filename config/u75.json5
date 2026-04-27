@@ -8,6 +8,11 @@
 {
   "$include": "./docker.json5",
 
+  // 2026-04-27: 0424 boot check needs gateway.mode at root (no $include expansion).
+  gateway: {
+    mode: "local",
+  },
+
   agents: {
     defaults: {
       model: { primary: "openrouter/anthropic/claude-opus-4.7" },

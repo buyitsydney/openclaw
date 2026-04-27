@@ -1,0 +1,54 @@
+// config/u198.json5 — S1 carher-198 identity (admin / 研究1的her)
+//
+// Admin host. $include's docker.json5 → base.json5. Mounted into the
+// container at /data/.openclaw/openclaw.json by start-user.sh --id=198.
+//
+// History: 裸机 yitian-her 2026-04-23 退役,由 carher-198 (研究1) 接管 admin。
+// Special: must run with `CARHER_MEMORY_LIMIT=16g A2A_ENABLED=1 A2A_OUTBOUND=1
+// CARHER_ACP_ENABLED=1 ./start-user.sh --id=198 ...` then bootstrap-admin.sh.
+//
+// Real appSecret is injected via -e FEISHU_APP_SECRET on docker run.
+
+{
+  "$include": "./docker.json5",
+
+  // 2026-04-27: openclaw 2026.4.24 boot check reads root parsed gateway.mode
+  // BEFORE $include expansion. Without this, every gateway start clobbers
+  // openclaw.json (see u199.json5 — docker-199 had 145 .clobbered.<ts> in
+  // a single deploy window before the fix).
+  gateway: {
+    mode: "local",
+  },
+
+  // Admin uses Wangsu LiteLLM as primary (matches docker.json5 default).
+  agents: {
+    defaults: {
+      model: { primary: "anthropic/anthropic.claude-opus-4-7" },
+    },
+  },
+
+  // A2A hub mode: outbound enabled so admin can dispatch to other peers.
+  plugins: {
+    entries: {
+      "a2a-gateway": {
+        config: {
+          outbound: { enabled: true },
+        },
+      },
+    },
+  },
+
+  channels: {
+    feishu: {
+      enabled: true,
+      name: "研究1的her",
+      appId: "cli_a96f0bfba3789cd4",
+      appSecret: "${FEISHU_APP_SECRET}",
+      botOpenId: "ou_65f48b445b68952a2295f52662c52f66",
+      oauthRedirectUri: "https://s1-u198-auth.carher.net/feishu/oauth/callback",
+      dm: {
+        allowFrom: ["ou_2a4f5afdd1e14033d1b33dac12850765"],
+      },
+    },
+  },
+}

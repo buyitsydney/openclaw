@@ -6,6 +6,12 @@
 {
   "$include": "./docker.json5",
 
+  // 2026-04-27: openclaw 2026.4.24 启动检查 root parsed gateway.mode 不展开
+  // $include。每个 user config 都必须在顶层显式声明,否则会触发 clobber。
+  gateway: {
+    mode: "local",
+  },
+
   channels: {
     feishu: {
       name: "弋天的her",
