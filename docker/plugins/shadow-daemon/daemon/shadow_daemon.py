@@ -434,6 +434,8 @@ def convert(src: Path, dst: Path, timeout_sec: int, max_output_bytes: int, archi
                 log("source_gone_post", src=str(src))
                 return False
             with _state_lock: _cumulative_converted += 1
+            # v7: every state-changing convert must flush health (no main-loop heartbeat).
+            write_health_fast()
             log("convert_ok", src=str(src), bytes=len(out_bytes))
             return True
         # rc != 0: distinguish "real failure" from "source deleted mid-convert".
@@ -757,83 +759,166 @@ def config_changed(old, new) -> bool:
     return any(old.get(k) != new.get(k) for k in keys)
 
 # ---- main loop ----
-def main():
+# v7 (2026-04-27): pure event-driven, Her-triggered. No 5s polling, no per-cycle
+# subprocess fork. Daemon idle CPU = 0%.
+#
+# Trigger sources:
+#   - SIGUSR1 → re-init (Her sends after pip install/uninstall, or 'reload now')
+#   - SIGTERM/SIGINT → graceful shutdown
+#   - meta-watchdog event on _config.json (create/modify/delete) → re-init
+#   - meta-watchdog event on PYTHONUSERBASE/site-packages (markitdown/watchdog
+#     dirs appear/disappear) → re-init
+#
+# Boot-time fork cost: 2 subprocess imports (markitdown + watchdog) ONCE.
+# Steady-state fork cost: 0 (until next trigger).
+
+_reinit_event = threading.Event()
+_shutdown_event = threading.Event()
+_meta_observer = None
+
+def _request_reinit(reason: str):
+    log("reinit_requested", reason=reason)
+    _reinit_event.set()
+
+def _meta_handler_factory():
+    """Watchdog handler for the daemon's own meta-events: _config.json and
+    PYTHONUSERBASE site-packages changes. Any event => request re-init."""
+    from watchdog.events import FileSystemEventHandler
+    config_name = CONFIG_FILE.name
+    site_pkgs_marker = "site-packages"
+
+    class MetaHandler(FileSystemEventHandler):
+        def _maybe(self, evt, why):
+            path = getattr(evt, "src_path", "") or ""
+            if config_name in os.path.basename(path):
+                _request_reinit(f"config_{why}")
+                return
+            if site_pkgs_marker in path:
+                _request_reinit(f"site_packages_{why}")
+
+        def on_created(self, e):  self._maybe(e, "created")
+        def on_modified(self, e): self._maybe(e, "modified")
+        def on_deleted(self, e):  self._maybe(e, "deleted")
+        def on_moved(self, e):    self._maybe(e, "moved")
+    return MetaHandler()
+
+def _start_meta_observer() -> Optional[object]:
+    """Watch SHADOW_DIR (for _config.json events) and, if discoverable,
+    PYTHONUSERBASE/lib/*/site-packages (for deps install/uninstall).
+    Returns the observer or None if watchdog not importable."""
+    try:
+        from watchdog.observers import Observer
+    except ImportError:
+        return None
+    obs = Observer()
+    handler = _meta_handler_factory()
+    # _config.json lives in SHADOW_DIR, watch the dir non-recursively.
+    SHADOW_DIR.mkdir(parents=True, exist_ok=True)
+    obs.schedule(handler, str(SHADOW_DIR), recursive=False)
+    log("meta_observer_watching", path=str(SHADOW_DIR))
+    # site-packages: PYTHONUSERBASE/lib/python<X.Y>/site-packages
+    user_base = os.environ.get("PYTHONUSERBASE", "")
+    if user_base:
+        try:
+            ub = Path(user_base) / "lib"
+            if ub.is_dir():
+                # Recursive so we catch python3.X/site-packages even if dir gets
+                # created mid-flight; Linux inotify handles this fine.
+                obs.schedule(handler, str(ub), recursive=True)
+                log("meta_observer_watching", path=str(ub))
+        except OSError as e:
+            log("meta_observer_userbase_skipped", err=str(e)[:100])
+    obs.daemon = True
+    obs.start()
+    return obs
+
+def _do_reinit():
+    """Tear down current observer/executor and rebuild from current state.
+    Pure side-effect function, called only from main thread."""
     global _current_config, _current_observer, _executor
-    log("daemon_start", workspace=str(WORKSPACE), shadow_dir=str(SHADOW_DIR))
+    # 1. tear down work observer + executor (meta observer stays up).
+    if _current_observer:
+        stop_observer(_current_observer); _current_observer = None
+    if _executor:
+        _executor.shutdown(wait=True, cancel_futures=False); _executor = None
+    _current_config = None
+
+    # 2. probe deps (this is the only place we fork; once per reinit, not 5s).
+    _refresh_deps_cache()
+    if not _cached_wd_avail:
+        write_health_fast("idle_no_watchdog")
+        return
+    if not _cached_mt_avail:
+        write_health_fast("idle_no_markitdown")
+        return
+
+    # 3. probe config.
+    new_config = load_config()
+    if new_config is None:
+        write_health_fast("idle_no_config")
+        return
+
+    # 4. spin up executor + observer for actual work.
+    _current_config = new_config
+    max_workers = max(1, int(new_config.get("maxWorkers", DEFAULT_MAX_WORKERS)))
+    _executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="shadow-worker")
+    log("executor_started", max_workers=max_workers)
+    initial_sync(new_config)  # blocking catch-up
+    _current_observer = start_observer(new_config)
+    if _current_observer is None:
+        write_health_fast("idle_no_valid_dirs")
+        return
+    write_health_fast("watching")
+
+def main():
+    global _meta_observer
+    log("daemon_start", workspace=str(WORKSPACE), shadow_dir=str(SHADOW_DIR), version="v7")
     SHADOW_DIR.mkdir(parents=True, exist_ok=True)
     load_persistent_counters()  # Bug J: carry cumulative across restarts
 
-    stop_event = threading.Event()
-    def _term(*_):
-        log("daemon_stopping"); stop_event.set()
+    def _term(signum, _frame):
+        log("daemon_stopping", signal=signum); _shutdown_event.set(); _reinit_event.set()
+    def _usr1(_signum, _frame):
+        log("sigusr1_received"); _request_reinit("sigusr1")
     signal.signal(signal.SIGTERM, _term)
     signal.signal(signal.SIGINT, _term)
+    signal.signal(signal.SIGUSR1, _usr1)
 
-    last_reconcile_at = 0.0
-    have_valid_dirs = False
+    # Meta observer: watch _config.json + site-packages even when we have no
+    # deps yet. It's safe even when watchdog is missing because the import is
+    # in _start_meta_observer; if missing, we fall back to SIGUSR1-only mode.
+    _meta_observer = _start_meta_observer()
+    if _meta_observer is None:
+        log("meta_observer_unavailable",
+            note="watchdog not installed yet; relying on SIGUSR1 from Her")
 
-    while not stop_event.is_set():
-        # 1. dep checks (Her installs both via SKILL)
-        mt_avail, _ = check_markitdown()
-        wd_avail, _ = check_watchdog()
-        if not wd_avail:
-            if _current_observer:
-                stop_observer(_current_observer); _current_observer = None
-            write_health("idle_no_watchdog")
-            stop_event.wait(timeout=15); continue
-        if not mt_avail:
-            if _current_observer:
-                stop_observer(_current_observer); _current_observer = None
-            write_health("idle_no_markitdown")
-            stop_event.wait(timeout=15); continue
+    # First reinit: get into desired state immediately (don't wait for trigger).
+    _request_reinit("startup")
 
-        # 2. config check
-        new_config = load_config()
-        if new_config is None:
-            if _current_observer:
-                stop_observer(_current_observer); _current_observer = None
-            _current_config = None
-            have_valid_dirs = False
-            write_health("idle_no_config")
-            stop_event.wait(timeout=15); continue
+    while not _shutdown_event.is_set():
+        # Block until something asks for re-init or shutdown. No polling.
+        _reinit_event.wait()
+        if _shutdown_event.is_set(): break
+        _reinit_event.clear()
+        # Coalesce: if more events arrived during reinit, the next loop picks them up.
+        try:
+            _do_reinit()
+        except Exception as e:
+            log("reinit_crashed", err=str(e)[:200])
+            # Don't loop tight on a recurring crash — drop into idle.
+            try: write_health_fast("reinit_error")
+            except Exception: pass
 
-        # 3. (re)start observer + executor on config change
-        if config_changed(_current_config, new_config):
-            if _current_observer:
-                log("config_changed_restart_observer")
-                stop_observer(_current_observer); _current_observer = None
-            if _executor:
-                _executor.shutdown(wait=True, cancel_futures=False); _executor = None
-            _current_config = new_config
-            max_workers = max(1, int(new_config.get("maxWorkers", DEFAULT_MAX_WORKERS)))
-            _executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="shadow-worker")
-            log("executor_started", max_workers=max_workers)
-            initial_sync(new_config)
-            last_reconcile_at = time.monotonic()
-            _current_observer = start_observer(new_config)
-            have_valid_dirs = _current_observer is not None
+        # If we just transitioned to idle_no_watchdog and meta_observer wasn't
+        # started before (because watchdog wasn't installed at boot), try now.
+        if _meta_observer is None and _cached_wd_avail:
+            _meta_observer = _start_meta_observer()
 
-        # 4. periodic reconcile — non-blocking safety net for lost watchdog events
-        reconcile_sec = int(new_config.get("reconcileIntervalSec", DEFAULT_RECONCILE_SEC))
-        if have_valid_dirs and time.monotonic() - last_reconcile_at >= reconcile_sec:
-            log("periodic_reconcile_start")
-            initial_sync(new_config, blocking=False)  # non-blocking submit
-            last_reconcile_at = time.monotonic()
-
-        # 5. status
-        if not have_valid_dirs:
-            write_health("idle_no_valid_dirs")
-        elif _current_observer and _current_observer.is_alive():
-            write_health("watching")
-        else:
-            _current_observer = None
-            have_valid_dirs = False
-            write_health("observer_dead")
-        stop_event.wait(timeout=5)  # tighter heartbeat for faster reconcile
-
+    # Shutdown.
     if _current_observer: stop_observer(_current_observer)
+    if _meta_observer: stop_observer(_meta_observer)
     if _executor: _executor.shutdown(wait=False, cancel_futures=True)
-    write_health("stopped")
+    write_health_fast("stopped")
     log("daemon_stopped")
 
 if __name__ == "__main__":
