@@ -838,10 +838,31 @@ def _meta_handler_factory():
         def on_moved(self, e):    self._maybe(e, "moved")
     return MetaHandler()
 
+def _find_watchable_ancestor(target: Path) -> Path:
+    """Walk up from `target` until we find a directory that currently exists.
+    Guaranteed to return SOMETHING (worst case: /). Used so meta-watchdog can
+    attach to a stable parent that won't disappear under rm -rf of the target
+    itself, and will still catch child-creation events (pip install creating
+    user_lib for the first time)."""
+    p = target
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    return p
+
 def _start_meta_observer() -> Optional[object]:
-    """Watch SHADOW_DIR (for _config.json events) and the user-site dir
-    (~/.local/lib by default, or PYTHONUSERBASE/lib if explicitly set) so
-    deps install/uninstall by Her auto-triggers reinit. No SIGUSR1 needed.
+    """Watch SHADOW_DIR (for _config.json events) and the deepest existing
+    ancestor of user-site (~/.local by default, or PYTHONUSERBASE if set).
+    Watching the ancestor — NOT the target — is critical: if the target is
+    the watch root and gets rm -rf'd, inotify removes the watch and we go
+    blind to future mkdir. By pinning on a stable ancestor with recursive=
+    True, we see all create/delete events underneath, including the target
+    being (re)created from scratch.
+
+    The handler filters events via path substring so we only react to:
+    - SHADOW_DIR/_config.json events
+    - <anything>/site-packages/** events (pip install/uninstall)
+    Unrelated events under the ancestor are ignored.
+
     Returns the observer or None if watchdog not importable."""
     try:
         from watchdog.observers import Observer
@@ -853,20 +874,21 @@ def _start_meta_observer() -> Optional[object]:
     SHADOW_DIR.mkdir(parents=True, exist_ok=True)
     obs.schedule(handler, str(SHADOW_DIR), recursive=False)
     log("meta_observer_watching", path=str(SHADOW_DIR))
-    # User-site root: PYTHONUSERBASE/lib if set, else ~/.local/lib (pip default
-    # when HOME=/data → /data/.local/lib). We watch the parent /lib so even
-    # the python3.X subdir creation is observed (Linux inotify handles this).
+    # User-site root resolution: same rules as Python's site.py:
+    #   USER_BASE = PYTHONUSERBASE env or platform default (~/.local).
     user_base_env = os.environ.get("PYTHONUSERBASE", "").strip()
     if user_base_env:
-        user_lib = Path(user_base_env) / "lib"
+        user_base = Path(user_base_env)
     else:
-        user_lib = Path.home() / ".local" / "lib"
+        user_base = Path.home() / ".local"
+    # Watch the deepest existing ancestor, not the (possibly-absent or
+    # about-to-be-deleted) target. If user_base exists we watch it; if it
+    # doesn't exist yet, we walk up to find the first dir that does.
+    watch_root = _find_watchable_ancestor(user_base)
     try:
-        # Create parent dirs so watchdog can attach an inotify watch even if
-        # pip hasn't run yet (it creates the .X.Y subdir on first install).
-        user_lib.mkdir(parents=True, exist_ok=True)
-        obs.schedule(handler, str(user_lib), recursive=True)
-        log("meta_observer_watching", path=str(user_lib))
+        obs.schedule(handler, str(watch_root), recursive=True)
+        log("meta_observer_watching",
+            path=str(watch_root), user_base=str(user_base))
     except OSError as e:
         log("meta_observer_userlib_skipped", err=str(e)[:100])
     obs.daemon = True
@@ -941,13 +963,35 @@ def main():
     signal.signal(signal.SIGINT, _term)
     signal.signal(signal.SIGUSR1, _usr1)
 
-    # Meta observer: watch _config.json + site-packages even when we have no
-    # deps yet. It's safe even when watchdog is missing because the import is
-    # in _start_meta_observer; if missing, we fall back to SIGUSR1-only mode.
+    # Meta observer: needs watchdog itself. If watchdog is not yet installed
+    # (chicken-and-egg), we fall back to a slow bootstrap poller that fires
+    # a subprocess `import watchdog` check every 10s. Once watchdog is there,
+    # the poller asks main for reinit and main promotes to the meta-observer.
     _meta_observer = _start_meta_observer()
+    _bootstrap_stop = threading.Event()
+    _bootstrap_thread = None
     if _meta_observer is None:
         log("meta_observer_unavailable",
-            note="watchdog not installed yet; relying on SIGUSR1 from Her")
+            note="watchdog not installed; bootstrap polling every 10s until it is")
+        def _bootstrap_poll():
+            # Slow poll (10s) while watchdog can't be imported. Each tick
+            # forks one subprocess; negligible cost. Stops as soon as we
+            # can import watchdog, which promotes to the real event loop.
+            while not _bootstrap_stop.is_set() and not _shutdown_event.is_set():
+                if _bootstrap_stop.wait(timeout=10):
+                    return
+                try:
+                    subprocess.run([sys.executable, "-c", "import watchdog"],
+                                   check=True, capture_output=True, timeout=10)
+                    log("bootstrap_poll_saw_watchdog",
+                        note="requesting main-loop reinit")
+                    _request_reinit("bootstrap_deps_appeared")
+                    return
+                except (subprocess.CalledProcessError,
+                        subprocess.TimeoutExpired, OSError):
+                    continue
+        _bootstrap_thread = threading.Thread(target=_bootstrap_poll, daemon=True)
+        _bootstrap_thread.start()
 
     # First reinit: get into desired state immediately (don't wait for trigger).
     _request_reinit("startup")
@@ -966,12 +1010,19 @@ def main():
             try: write_health_fast("reinit_error")
             except Exception: pass
 
-        # If we just transitioned to idle_no_watchdog and meta_observer wasn't
-        # started before (because watchdog wasn't installed at boot), try now.
+        # If watchdog became importable (first install), promote to real
+        # meta-observer and stop the bootstrap poller.
         if _meta_observer is None and _cached_wd_avail:
             _meta_observer = _start_meta_observer()
+            if _meta_observer is not None:
+                _bootstrap_stop.set()  # poller will exit next tick
+                log("meta_observer_promoted",
+                    note="watchdog became available")
 
     # Shutdown.
+    _bootstrap_stop.set()
+    if _bootstrap_thread and _bootstrap_thread.is_alive():
+        _bootstrap_thread.join(timeout=2)
     if _current_observer: stop_observer(_current_observer)
     if _meta_observer: stop_observer(_meta_observer)
     if _executor: _executor.shutdown(wait=False, cancel_futures=True)
