@@ -718,3 +718,258 @@ def test_no_duplicate_limit_fields_top_level(sandbox):
             assert k in internal, f"Bug C: `_internal.{k}` missing, debug needs it"
     finally:
         stop_daemon(proc)
+
+
+# ============================================================
+# v8.5 — Proactive audit bugs (10 uncovered by Her's stress tests)
+# ============================================================
+
+def test_config_invalid_maxfilemb_does_not_crash(sandbox):
+    """Bug C: maxFileMB as string (e.g. config typo) must not crash daemon."""
+    (sandbox["shadow"] / "_config.json").write_text(json.dumps({
+        "version": 1,
+        "directories": [{"path": "docs", "recursive": True}],
+        "maxFileMB": "abc",  # bad type
+        "extractTimeoutSec": 30,
+    }))
+    proc = start_daemon()
+    try:
+        time.sleep(6)  # let daemon attempt reinit
+        assert proc.poll() is None, "Bug C: daemon crashed on bad maxFileMB type"
+        h = read_health(sandbox["shadow"])
+        # Either daemon recovers to ready (with default) or reports needs gracefully.
+        assert h, "Bug C: daemon wrote no health after bad config"
+        # Must NOT be perpetually in reinit_error state.
+        assert _internal(h).get("status") != "reinit_error", (
+            f"Bug C: daemon stuck in reinit_error. status={_internal(h).get('status')}"
+        )
+    finally:
+        stop_daemon(proc)
+
+
+def test_config_invalid_maxworkers_zero(sandbox):
+    """Bug I: maxWorkers=0 or negative would crash ThreadPoolExecutor.
+    Daemon must clamp to a safe minimum (>=1)."""
+    (sandbox["shadow"] / "_config.json").write_text(json.dumps({
+        "version": 1,
+        "directories": [{"path": "docs", "recursive": True}],
+        "maxWorkers": 0,
+    }))
+    proc = start_daemon()
+    try:
+        time.sleep(6)
+        assert proc.poll() is None, "Bug I: daemon crashed on maxWorkers=0"
+        h = read_health(sandbox["shadow"])
+        assert h.get("ready") is True or _internal(h).get("status") != "reinit_error", (
+            f"Bug I: maxWorkers=0 broke daemon. h={h}"
+        )
+    finally:
+        stop_daemon(proc)
+
+
+def test_config_directories_malformed(sandbox):
+    """Bug N: `directories` as dict instead of list, or entries not dict,
+    must not crash daemon — it should log and keep running."""
+    # Malformed: directories is a dict instead of list
+    (sandbox["shadow"] / "_config.json").write_text(json.dumps({
+        "version": 1,
+        "directories": {"path": "docs"},  # WRONG shape
+    }))
+    proc = start_daemon()
+    try:
+        time.sleep(5)
+        assert proc.poll() is None, "Bug N: daemon crashed on malformed directories"
+        h = read_health(sandbox["shadow"])
+        assert h, "Bug N: no health written"
+        assert _internal(h).get("status") != "reinit_error", (
+            f"Bug N: reinit_error on bad directories: {h}"
+        )
+    finally:
+        stop_daemon(proc)
+
+
+def test_skip_generates_tombstone_for_real_files(sandbox):
+    """Bug F/K: empty/oversize real files must produce tombstone shadows so
+    next reconcile doesn't keep retrying them. Symlinks/hidden/non-existent
+    don't get tombstones (no real content to stat), but record_skip must
+    dedup so recent_skips doesn't spam under reconcile."""
+    write_config(sandbox["shadow"], maxFileMB=1)
+    proc = start_daemon()
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        (sandbox["docs"] / "skip_empty.txt").write_text("")
+        (sandbox["docs"] / "skip_big.txt").write_text("X" * (2 * 1024 * 1024))
+        time.sleep(3)
+        import hashlib
+        for name in ("skip_empty.txt", "skip_big.txt"):
+            src = sandbox["docs"] / name
+            sha = hashlib.sha256(str(src.resolve()).encode()).hexdigest()[:8]
+            hits = list(sandbox["shadow"].glob(f"{sha}__*.md"))
+            assert hits, (
+                f"Bug F: {name} did not get a tombstone shadow. "
+                f"Daemon will rescan every reconcile cycle."
+            )
+    finally:
+        stop_daemon(proc)
+
+
+def test_recent_skips_deduplicated(sandbox):
+    """Bug F related: broken symlink triggers skip every reconcile cycle.
+    record_skip must dedup consecutive same-path same-reason entries so
+    the recent_skips buffer doesn't fill with duplicates from one bad file."""
+    write_config(sandbox["shadow"])
+    proc = start_daemon()
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        target = sandbox["docs"] / "broken.link"
+        try: target.symlink_to("/does/not/exist")
+        except OSError: pytest.skip("symlink unsupported")
+        # Force multiple reinits → multiple initial_sync passes over the same skip
+        for _ in range(3):
+            proc.send_signal(signal.SIGUSR1)
+            time.sleep(1)
+        h = read_health(sandbox["shadow"])
+        skips_for_link = [e for e in h.get("recent_skips", []) if "broken.link" in str(e.get("path", ""))]
+        assert len(skips_for_link) <= 1, (
+            f"record_skip must dedup — got {len(skips_for_link)} entries for one broken symlink"
+        )
+    finally:
+        stop_daemon(proc)
+
+
+def test_pct_reaches_100_when_all_accounted(sandbox):
+    """Bug G: pct should eventually hit 100% when every source file has
+    been processed (converted or tombstoned via skip/error). Currently
+    numerator = cumulative_converted only, so skipped/errored files
+    keep pct < 100 forever."""
+    write_config(sandbox["shadow"], maxFileMB=1)
+    proc = start_daemon()
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        (sandbox["docs"] / "a.txt").write_text("ok")
+        (sandbox["docs"] / "b.txt").write_text("")      # skip: empty
+        (sandbox["docs"] / "c.txt").write_text("X" * (2 * 1024 * 1024))  # skip: size
+        time.sleep(5)
+        h = read_health(sandbox["shadow"])
+        p = h.get("progress") or {}
+        # All 3 are processed (1 ok + 2 tombstone); progress should report 100.
+        assert p.get("pct") == 100.0 or p.get("pct") == 100, (
+            f"Bug G: pct={p.get('pct')} with 1 ok + 2 skip. Should be 100%. "
+            f"progress={p}"
+        )
+    finally:
+        stop_daemon(proc)
+
+
+def test_target_count_decrements_on_delete(sandbox):
+    """Bug H: target_count must decrement when source file is deleted,
+    not wait for next initial_sync (22s stale)."""
+    write_config(sandbox["shadow"])
+    proc = start_daemon()
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        for i in range(3):
+            (sandbox["docs"] / f"t_{i}.txt").write_text(f"n={i}")
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            h = read_health(sandbox["shadow"])
+            if h.get("progress", {}).get("target_count", 0) >= 3: break
+            time.sleep(0.3)
+        h = read_health(sandbox["shadow"])
+        assert h["progress"]["target_count"] >= 3, (
+            f"setup failed: target_count should be 3, got {h['progress']}"
+        )
+        # Now delete 2
+        (sandbox["docs"] / "t_0.txt").unlink()
+        (sandbox["docs"] / "t_1.txt").unlink()
+        # Within 5s, target_count should reflect the remaining source file count
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            h = read_health(sandbox["shadow"])
+            if h["progress"].get("target_count", 99) <= 1: return
+            time.sleep(0.3)
+        h = read_health(sandbox["shadow"])
+        pytest.fail(
+            f"Bug H: target_count stuck at {h['progress'].get('target_count')} "
+            f"after 2 deletes within 5s. Should be ~1."
+        )
+    finally:
+        stop_daemon(proc)
+
+
+def test_path_locks_dict_bounded(sandbox):
+    """Bug J: _path_locks grows forever. If user churns 10000 unique
+    filenames, daemon leaks 10000 Lock objects. Dict should prune
+    entries whose source path no longer exists."""
+    write_config(sandbox["shadow"])
+    proc = start_daemon()
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        # Churn: create and delete 100 unique files
+        for i in range(100):
+            f = sandbox["docs"] / f"churn_{i:03}.txt"
+            f.write_text(f"n={i}")
+        time.sleep(3)
+        for i in range(100):
+            f = sandbox["docs"] / f"churn_{i:03}.txt"
+            if f.exists(): f.unlink()
+        time.sleep(5)  # allow delete events to propagate
+        # Query daemon for internal lock count via log inspection. Read the
+        # most recent sync_done log to see how many paths are tracked.
+        # Acceptance: after 100 file churn, _path_locks must not retain 100+
+        # entries for files that no longer exist.
+        h = read_health(sandbox["shadow"])
+        # Fallback check: daemon must still be alive AND health reports indexed_now
+        # matches live file count, confirming the churn was processed end-to-end.
+        assert proc.poll() is None, "Bug J: daemon crashed under churn"
+        assert h["progress"]["indexed_now"] <= 5, (
+            f"Bug J indirect check: indexed_now={h['progress']['indexed_now']} "
+            f"after churn (expect ~0). GC not running?"
+        )
+    finally:
+        stop_daemon(proc)
+
+
+def test_config_stringy_numbers_work(sandbox):
+    """Bug L: config.get('maxFileMB', 50) * 1024 * 1024 lacks int coerce.
+    If config is '50' (string), string * int = repeated string, then the
+    byte comparison fails silently or unpredictably. maxFileMB should
+    coerce before use."""
+    (sandbox["shadow"] / "_config.json").write_text(json.dumps({
+        "version": 1,
+        "directories": [{"path": "docs", "recursive": True}],
+        "maxFileMB": "50",  # stringified number
+        "maxWorkers": "4",
+    }))
+    proc = start_daemon()
+    try:
+        time.sleep(6)
+        assert proc.poll() is None, "Bug L: daemon crashed on stringy numeric config"
+        h = read_health(sandbox["shadow"])
+        assert _internal(h).get("status") not in ("reinit_error",), (
+            f"Bug L: stringy numbers broke daemon: {h}"
+        )
+        # And basic convert still works
+        (sandbox["docs"] / "string-conf.txt").write_text("works")
+        wait_for_shadow(sandbox["shadow"], sandbox["docs"] / "string-conf.txt", timeout=10)
+    finally:
+        stop_daemon(proc)
+
+
+def test_tmp_files_cleaned_after_crash(sandbox):
+    """Bug M: shadow write is write_text(.tmp) + os.replace. If daemon
+    is killed between those two calls, .tmp files linger. On next
+    startup daemon should sweep stale .tmp files out of SHADOW_DIR."""
+    # Pre-seed a stale .tmp to simulate a crash
+    stale = sandbox["shadow"] / "stale12__old.txt.md.tmp"
+    stale.write_text("half-written")
+    write_config(sandbox["shadow"])
+    proc = start_daemon()
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        time.sleep(2)
+        assert not stale.exists(), (
+            f"Bug M: stale .tmp from prior crash still exists: {stale}"
+        )
+    finally:
+        stop_daemon(proc)

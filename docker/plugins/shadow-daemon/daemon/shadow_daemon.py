@@ -154,6 +154,39 @@ def load_config():
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
 
+# ---- v8.5 Bug C/L/N: defensive config coercion ----
+def _cfg_int(cfg: dict, key: str, default: int) -> int:
+    """Coerce a config value to int with graceful fallback.
+    Accepts int / float / numeric string / None. Garbage → default.
+    Never raises — daemon must not die from a config typo."""
+    try:
+        v = (cfg or {}).get(key, default)
+        if v is None: return default
+        if isinstance(v, bool): return default  # bool is subclass of int, reject
+        return int(v) if not isinstance(v, str) else int(v.strip())
+    except (ValueError, TypeError):
+        log("config_coerce_fallback", key=key, value=repr((cfg or {}).get(key)), fallback=default)
+        return default
+
+def _cfg_dirs(cfg: dict) -> list:
+    """Validate `directories` is a list of dicts with `path` string.
+    Garbage → empty list + log. Never raises."""
+    raw = (cfg or {}).get("directories", [])
+    if not isinstance(raw, list):
+        log("config_bad_directories_type", got=type(raw).__name__)
+        return []
+    out = []
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            log("config_bad_directory_entry", index=i, got=type(entry).__name__)
+            continue
+        p = entry.get("path")
+        if not isinstance(p, str) or not p.strip():
+            log("config_bad_directory_path", index=i)
+            continue
+        out.append({"path": p.strip(), "recursive": bool(entry.get("recursive", True))})
+    return out
+
 # ---- shared state ----
 _state_lock = threading.Lock()
 _current_config: Optional[dict] = None
@@ -173,6 +206,9 @@ _recent_events: deque = deque(maxlen=RECENT_BUFFER_SIZE)  # [{path, kind, ts}]
 # v8.3 Bug 1+2: latest human-readable event + last-known source file count.
 _last_event: Optional[str] = None         # "convert_ok docs/foo.pdf"
 _target_count: int = 0                    # # of source files daemon currently tracks
+# v8.5 Bug H: track known source paths so target_count updates on every
+# event, not just initial_sync. Creations add; deletions remove.
+_known_sources: set = set()
 
 # Per-path debounce timers and conversion locks
 _debounce_timers: dict = {}     # path_str -> threading.Timer
@@ -197,9 +233,18 @@ def _rel_path(full: str) -> str:
         return full
 
 def record_skip(path: str, reason: str):
-    """Bug R: append to rolling skip list + bump counter."""
+    """Bug R: append to rolling skip list + bump counter.
+    v8.5: dedup consecutive same-path same-reason entries so files
+    daemon can never process (symlinks, broken files) don't flood the
+    buffer every reconcile cycle."""
     global _cumulative_skipped, _last_event, _last_event_at
     with _state_lock:
+        # Dedup: if the most recent entry has same path+reason, just
+        # bump the timestamp instead of appending a duplicate.
+        if _recent_skips and _recent_skips[-1].get("path") == path \
+                         and _recent_skips[-1].get("reason") == reason:
+            _recent_skips[-1]["ts"] = _now_iso()
+            return
         _cumulative_skipped += 1
         ts = _now_iso()
         _recent_skips.append({"path": path, "reason": reason, "ts": ts})
@@ -227,6 +272,8 @@ def record_ok(path: str):
         _recent_events.append({"path": path, "kind": "convert_ok", "ts": ts})
         _last_event = f"convert_ok {_rel_path(path)}"
         _last_event_at = ts  # v8.4 Bug A
+    # v8.5 Bug H: mark path as known for target_count tracking
+    note_source(path)
     # write_health_fast already called by convert() after increment
 
 def prune_recent_for_path(path: str):
@@ -238,6 +285,28 @@ def prune_recent_for_path(path: str):
             keep = [e for e in buf if e.get("path") != path]
             buf.clear()
             buf.extend(keep)
+
+def note_source(path: str) -> bool:
+    """v8.5 Bug H: mark a path as known to the daemon; bump target_count if
+    it's the first sighting. Called from convert() success + tombstone paths.
+    Returns True if this was a new path."""
+    global _target_count
+    with _state_lock:
+        if path not in _known_sources:
+            _known_sources.add(path)
+            _target_count = len(_known_sources)
+            return True
+        return False
+
+def forget_source(path: str) -> bool:
+    """v8.5 Bug H: mirror note_source on delete. Returns True if removed."""
+    global _target_count
+    with _state_lock:
+        if path in _known_sources:
+            _known_sources.discard(path)
+            _target_count = len(_known_sources)
+            return True
+        return False
 
 def load_persistent_counters():
     """Bug J fix: restore cumulative counters from previous _health.json on startup.
@@ -310,11 +379,15 @@ def _persist_health(status: Optional[str], extra):
         except OSError:
             indexed_now = 0
 
-        # v8.3 Bug 2: target_count = source files from last sync; pct = how much
-        # of that target we've converted in this daemon lifetime (bounded 0-100).
+        # v8.3 Bug 2 + v8.5 Bug G: target_count = source files from last sync;
+        # pct = how much of target we've PROCESSED (converted OR skipped OR
+        # errored — all of those have tombstones now). Using only cumulative_
+        # converted leaves pct < 100 forever when some files legitimately
+        # can't be converted (too big, empty, bad encoding).
+        processed = _cumulative_converted + _cumulative_skipped + _cumulative_errors
         pct = 100.0
         if _target_count > 0:
-            pct = round(min(100.0, 100.0 * _cumulative_converted / _target_count), 1)
+            pct = round(min(100.0, 100.0 * processed / _target_count), 1)
 
         progress = {
             "indexed_total": _cumulative_converted,      # cumulative (back-compat)
@@ -326,14 +399,15 @@ def _persist_health(status: Optional[str], extra):
 
         watching_dirs: list = []
         if _current_config and _current_observer is not None:
-            watching_dirs = [d.get("path", "") for d in _current_config.get("directories", [])]
+            watching_dirs = [d["path"] for d in _cfg_dirs(_current_config)]
 
         # v8.3 Bug 6: expose caps under `limits:{}` so SKILL docs don't hardcode.
+        # v8.5 Bug C/L: _cfg_int tolerates config typos.
         limits = {
-            "max_file_mb": int((_current_config or {}).get("maxFileMB", 50)),
-            "max_output_mb": int((_current_config or {}).get("maxOutputMB", DEFAULT_MAX_OUTPUT_MB)),
-            "archive_max_files": int((_current_config or {}).get("archiveMaxFiles", DEFAULT_ARCHIVE_MAX_FILES)),
-            "extract_timeout_sec": int((_current_config or {}).get("extractTimeoutSec", DEFAULT_EXTRACT_TIMEOUT_SEC)),
+            "max_file_mb": _cfg_int(_current_config, "maxFileMB", 50),
+            "max_output_mb": _cfg_int(_current_config, "maxOutputMB", DEFAULT_MAX_OUTPUT_MB),
+            "archive_max_files": _cfg_int(_current_config, "archiveMaxFiles", DEFAULT_ARCHIVE_MAX_FILES),
+            "extract_timeout_sec": _cfg_int(_current_config, "extractTimeoutSec", DEFAULT_EXTRACT_TIMEOUT_SEC),
         }
 
         # ---- end product-facing fields ----
@@ -355,10 +429,10 @@ def _persist_health(status: Optional[str], extra):
             "cumulative_errors": _cumulative_errors,
         }
         if _current_config:
-            internal["config_dirs"] = [d.get("path", "") for d in _current_config.get("directories", [])]
+            internal["config_dirs"] = [d["path"] for d in _cfg_dirs(_current_config)]
             internal["watching"] = _current_observer is not None and _current_observer.is_alive()
-            internal["max_workers"] = _current_config.get("maxWorkers", DEFAULT_MAX_WORKERS)
-            internal["debounce_ms"] = _current_config.get("debounceMs", DEFAULT_DEBOUNCE_MS)
+            internal["max_workers"] = _cfg_int(_current_config, "maxWorkers", DEFAULT_MAX_WORKERS)
+            internal["debounce_ms"] = _cfg_int(_current_config, "debounceMs", DEFAULT_DEBOUNCE_MS)
 
         health = {
             # ── product (Her reads these) ──
@@ -627,19 +701,35 @@ def _read_shadow_size(sp: Path) -> Optional[int]:
 
 def maybe_convert(src: Path, config: dict) -> bool:
     """Acquire per-path lock, check size/staleness, run markitdown if needed.
-    Bug I fix: detect mtime OR size change so resetting mtime can't mask edits."""
-    max_file_bytes = config.get("maxFileMB", 50) * 1024 * 1024
-    extract_timeout = config.get("extractTimeoutSec", DEFAULT_EXTRACT_TIMEOUT_SEC)
-    max_output_bytes = int(config.get("maxOutputMB", DEFAULT_MAX_OUTPUT_MB)) * 1024 * 1024
-    archive_max_files = int(config.get("archiveMaxFiles", DEFAULT_ARCHIVE_MAX_FILES))
+    Bug I fix: detect mtime OR size change so resetting mtime can't mask edits.
+    v8.5 Bug L: all config reads via _cfg_int to tolerate type typos."""
+    max_file_bytes = _cfg_int(config, "maxFileMB", 50) * 1024 * 1024
+    extract_timeout = _cfg_int(config, "extractTimeoutSec", DEFAULT_EXTRACT_TIMEOUT_SEC)
+    max_output_bytes = _cfg_int(config, "maxOutputMB", DEFAULT_MAX_OUTPUT_MB) * 1024 * 1024
+    archive_max_files = _cfg_int(config, "archiveMaxFiles", DEFAULT_ARCHIVE_MAX_FILES)
     path_str = str(src.resolve())
     lock = _get_path_lock(path_str)
     with lock:
         skip = is_indexable(src, max_file_bytes)
         if skip:
-            # Bug N + Bug R: record every skip with reason in rolling buffer.
+            # v8.5 Bug F/K: write a tombstone shadow for skipped files too,
+            # so next reconcile sees it as "already handled" and doesn't
+            # rescan every cycle. SKILL.md promises every failure → tombstone.
+            # Only reasons where src actually exists can get a tombstone;
+            # not_exists/stat_error/outside_workspace/not_file → no source,
+            # just log + skip record, no shadow.
             record_skip(path_str, skip)
             log("skip", src=path_str, reason=skip)
+            if skip in ("empty", "size") and src.exists() and src.is_file():
+                try:
+                    sp = shadow_path_for(src)
+                    write_shadow(src, sp,
+                                 f"<!-- skipped: {skip} -->",
+                                 status=f"skip:{skip}",
+                                 error=skip)
+                    note_source(path_str)  # v8.5 Bug H: tombstoned file counts
+                except Exception as e:
+                    log("tombstone_write_failed", src=path_str, err=str(e)[:100])
             return False
         sp = shadow_path_for(src)
         try:
@@ -670,17 +760,23 @@ def remove_shadow_for(src: Path):
         except OSError as e:
             log("shadow_remove_error", src=str(src), err=str(e)[:100])
     # v8.3 Bug 13: prune stale entries so Her doesn't report ghost errors
-    # for files that no longer exist. Also flush health so the change is
-    # visible to the next SKILL read.
-    prune_recent_for_path(str(src))
+    # for files that no longer exist.
+    src_str = str(src)
+    prune_recent_for_path(src_str)
+    # v8.5 Bug H: forget this path so target_count drops immediately.
+    forget_source(src_str)
+    # v8.5 Bug J: prune per-path lock so _path_locks doesn't grow unbounded
+    # under churn. Source is gone, lock is dead weight.
+    with _locks_mutex:
+        _path_locks.pop(str(src.resolve()), None)
     write_health_fast()
 
 # ---- security ----
 def resolve_watch_dirs(config: dict):
+    # v8.5 Bug N: _cfg_dirs validates type-safety up front.
     out = []
-    for entry in config.get("directories", []):
-        raw_path = entry.get("path", "")
-        if not raw_path: continue
+    for entry in _cfg_dirs(config):
+        raw_path = entry["path"]
         target = (WORKSPACE / raw_path).resolve()
         try:
             target.relative_to(WORKSPACE)
@@ -690,7 +786,7 @@ def resolve_watch_dirs(config: dict):
         if not target.is_dir():
             log("skip_missing_dir", path=raw_path)
             continue
-        out.append((raw_path, target, entry.get("recursive", True)))
+        out.append((raw_path, target, entry["recursive"]))
     return out
 
 # ---- initial sync (catches up offline period changes) ----
@@ -775,14 +871,15 @@ def initial_sync(config: dict, blocking: bool = True):
                 deleted += 1
                 log("gc_orphan", shadow=sp.name, source=src)
             except OSError: pass
-    # v8.3 Bug 2: record how many source files we know about so progress.pct
-    # has a stable denominator until the next sync. Only flush health when
-    # the count actually changes — otherwise we perturb last_run needlessly
-    # (no-polling test relies on last_run staying stable during idle).
+    # v8.3 Bug 2 + v8.5 Bug H: sync the authoritative source-set with what
+    # initial_sync observed. `_known_sources` is the single source of truth
+    # for target_count; replace it atomically with this snapshot.
     global _target_count
-    new_target = len(seen_sources)
-    should_flush = new_target != _target_count
     with _state_lock:
+        new_target = len(seen_sources)
+        should_flush = new_target != _target_count or _known_sources != seen_sources
+        _known_sources.clear()
+        _known_sources.update(seen_sources)
         _target_count = new_target
     log("sync_done", originals=new_target, submitted=submitted,
         converted=converted, deleted=deleted, blocking=blocking,
@@ -796,7 +893,7 @@ def _schedule_convert(src: Path, config: dict):
     """Per-path debounce: cancel pending timer, start new one. Last burst wins."""
     global _last_event_at
     path_str = str(src)
-    debounce_sec = config.get("debounceMs", DEFAULT_DEBOUNCE_MS) / 1000.0
+    debounce_sec = _cfg_int(config, "debounceMs", DEFAULT_DEBOUNCE_MS) / 1000.0
     with _locks_mutex:
         old = _debounce_timers.pop(path_str, None)
         if old:
@@ -1037,7 +1134,7 @@ def _do_reinit():
 
     # 4. spin up executor + observer for actual work.
     _current_config = new_config
-    max_workers = max(1, int(new_config.get("maxWorkers", DEFAULT_MAX_WORKERS)))
+    max_workers = max(1, _cfg_int(new_config, "maxWorkers", DEFAULT_MAX_WORKERS))
     _executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="shadow-worker")
     log("executor_started", max_workers=max_workers)
     initial_sync(new_config)  # blocking catch-up
@@ -1049,8 +1146,19 @@ def _do_reinit():
 
 def main():
     global _meta_observer
-    log("daemon_start", workspace=str(WORKSPACE), shadow_dir=str(SHADOW_DIR), version="v7")
+    log("daemon_start", workspace=str(WORKSPACE), shadow_dir=str(SHADOW_DIR), version="v8.5")
     SHADOW_DIR.mkdir(parents=True, exist_ok=True)
+    # v8.5 Bug M: sweep any stale *.tmp files left over from a crash
+    # between write_text and os.replace in a previous daemon lifetime.
+    try:
+        stale_tmps = list(SHADOW_DIR.glob("*.tmp"))
+        for p in stale_tmps:
+            try: p.unlink()
+            except OSError: pass
+        if stale_tmps:
+            log("stale_tmp_cleaned", count=len(stale_tmps))
+    except OSError as e:
+        log("stale_tmp_scan_error", err=str(e)[:100])
     load_persistent_counters()  # Bug J: carry cumulative across restarts
 
     def _term(signum, _frame):
