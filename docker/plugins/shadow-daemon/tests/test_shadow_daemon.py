@@ -135,6 +135,11 @@ def read_health(shadow: Path) -> dict:
         return {}
 
 
+def count_shadow(shadow: Path) -> int:
+    """Count live shadow .md files (excluding _ prefixed like _health/_config)."""
+    return len([p for p in shadow.glob("*.md") if not p.name.startswith("_")])
+
+
 def read_last_run(shadow: Path):
     return read_health(shadow).get("last_run")
 
@@ -444,5 +449,185 @@ def test_no_polling_in_steady_state(sandbox):
             f"event-driven promise broken: last_run advanced without any event "
             f"({baseline_last_run!r} → {h1.get('last_run')!r})"
         )
+    finally:
+        stop_daemon(proc)
+
+
+# ============================================================
+# v8.3 — SKILL schema alignment (Her 压测 2026-04-28 发现 14 bug)
+# ============================================================
+
+def test_health_has_last_event_field(sandbox):
+    """Bug 1: SKILL 承诺 `last_event` 字段(人话格式如 'convert_ok docs/foo.pdf'),
+    daemon 必须 emit。不是 last_event_at(那是时间戳)。"""
+    write_config(sandbox["shadow"])
+    proc = start_daemon()
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        f = sandbox["docs"] / "evt.txt"
+        f.write_text("hello")
+        wait_for_shadow(sandbox["shadow"], f, timeout=10)
+        time.sleep(0.8)  # let daemon persist last_event
+        h = read_health(sandbox["shadow"])
+        assert "last_event" in h, f"Bug 1: `last_event` missing from health.json: keys={list(h.keys())}"
+        assert isinstance(h["last_event"], (str, type(None))), (
+            f"Bug 1: `last_event` must be str or None, got {type(h['last_event'])}"
+        )
+        if h["last_event"]:
+            assert "convert_ok" in h["last_event"] or "convert" in h["last_event"], (
+                f"Bug 1: `last_event` should be human-readable event summary, got {h['last_event']!r}"
+            )
+    finally:
+        stop_daemon(proc)
+
+
+def test_progress_has_target_count_and_pct(sandbox):
+    """Bug 2: SKILL 需要 `progress.target_count` 和 `progress.pct` 给用户报
+    '已转 5/17 (29%)'。 daemon 必须提供。"""
+    write_config(sandbox["shadow"])
+    # Drop 10 files BEFORE daemon boots so initial_sync sees them
+    for i in range(10):
+        (sandbox["docs"] / f"p_{i:02}.txt").write_text(f"p={i}")
+    proc = start_daemon()
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=20)
+        time.sleep(2)  # let initial_sync finish
+        h = read_health(sandbox["shadow"])
+        p = h.get("progress") or {}
+        assert "target_count" in p, f"Bug 2: progress missing `target_count`: {p}"
+        assert "pct" in p, f"Bug 2: progress missing `pct`: {p}"
+        assert p["target_count"] >= 10, (
+            f"Bug 2: target_count must count source files, got {p.get('target_count')} < 10"
+        )
+        assert isinstance(p["pct"], (int, float)), (
+            f"Bug 2: pct must be number, got {type(p['pct'])}"
+        )
+        assert 0 <= p["pct"] <= 100, f"Bug 2: pct must be 0-100, got {p['pct']}"
+    finally:
+        stop_daemon(proc)
+
+
+def test_progress_has_indexed_now(sandbox):
+    """Bug 12: `indexed_total` is cumulative, misleads when files deleted.
+    Daemon must add `indexed_now` = count of LIVE shadow .md files right now."""
+    write_config(sandbox["shadow"])
+    proc = start_daemon()
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        for i in range(5):
+            (sandbox["docs"] / f"n_{i}.txt").write_text("x")
+        # Wait for all 5 to convert
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if count_shadow(sandbox["shadow"]) >= 5: break
+            time.sleep(0.2)
+        time.sleep(0.5)
+        h = read_health(sandbox["shadow"])
+        p = h["progress"]
+        assert "indexed_now" in p, f"Bug 12: progress missing `indexed_now`: {p}"
+        assert p["indexed_now"] >= 5, f"Bug 12: indexed_now should be ~5, got {p['indexed_now']}"
+        # Now delete 3 and assert indexed_now drops
+        for i in range(3):
+            (sandbox["docs"] / f"n_{i}.txt").unlink()
+        deadline = time.monotonic() + 6
+        while time.monotonic() < deadline:
+            if count_shadow(sandbox["shadow"]) <= 2: break
+            time.sleep(0.2)
+        time.sleep(0.5)
+        h = read_health(sandbox["shadow"])
+        p = h["progress"]
+        assert p["indexed_now"] <= 2, (
+            f"Bug 12: after 3 deletes, indexed_now should drop, got {p['indexed_now']}. "
+            f"This is the key diff vs cumulative indexed_total."
+        )
+        # cumulative MUST stay non-decreasing (that's its job)
+        assert h["cumulative_converted"] >= 5, (
+            f"cumulative_converted regressed to {h['cumulative_converted']}"
+        )
+    finally:
+        stop_daemon(proc)
+
+
+def test_recent_events_contains_convert_ok(sandbox):
+    """Bug 3: SKILL's index-document.md reads `recent_events` to check if a
+    specific file got convert_ok. Daemon must emit this buffer."""
+    write_config(sandbox["shadow"])
+    proc = start_daemon()
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        f = sandbox["docs"] / "evt-sample.txt"
+        f.write_text("body")
+        wait_for_shadow(sandbox["shadow"], f, timeout=10)
+        time.sleep(0.8)
+        h = read_health(sandbox["shadow"])
+        assert "recent_events" in h, f"Bug 3: `recent_events` missing. keys={list(h.keys())}"
+        events = h["recent_events"]
+        assert isinstance(events, list), f"Bug 3: recent_events must be list, got {type(events)}"
+        hit = [e for e in events if "evt-sample" in str(e.get("path", ""))]
+        assert hit, (
+            f"Bug 3: recent_events should contain convert_ok for the file just converted. "
+            f"events={events[:5]}"
+        )
+        assert hit[0].get("kind") == "convert_ok", (
+            f"Bug 3: event kind should be 'convert_ok' for happy path, got {hit[0]}"
+        )
+    finally:
+        stop_daemon(proc)
+
+
+def test_recent_errors_prunes_on_source_delete(sandbox):
+    """Bug 13: when a source file that had an error is deleted, its entry in
+    recent_errors should be pruned — otherwise Her reports non-existent errors."""
+    write_config(sandbox["shadow"])
+    proc = start_daemon()
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        # Create a file that will produce an error: .txt with non-utf8 bytes
+        # (triggers encoding_error, which is a real `record_error` path).
+        f = sandbox["docs"] / "bad.txt"
+        f.write_bytes(b"hello \xff\xfe\x80 invalid utf-8")
+        # Wait until daemon records it in errors.
+        deadline = time.monotonic() + 10
+        matched = False
+        while time.monotonic() < deadline:
+            h = read_health(sandbox["shadow"])
+            if any("bad.txt" in str(e.get("path", "")) for e in h.get("recent_errors", [])):
+                matched = True
+                break
+            time.sleep(0.2)
+        assert matched, "recent_errors should contain bad.txt entry first"
+        # Now delete the file.
+        f.unlink()
+        time.sleep(2)
+        h = read_health(sandbox["shadow"])
+        residual = [e for e in h.get("recent_errors", []) if "bad.txt" in str(e.get("path", ""))]
+        assert not residual, (
+            f"Bug 13: after source delete, recent_errors should be pruned. "
+            f"still contains: {residual}"
+        )
+    finally:
+        stop_daemon(proc)
+
+
+def test_limits_field_exposes_caps(sandbox):
+    """Bug 6: supported-formats.md hard-codes 20 files / 5MB output. Daemon
+    must expose these under `limits:{}` so SKILL can read, not hardcode."""
+    write_config(sandbox["shadow"])
+    proc = start_daemon()
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        h = read_health(sandbox["shadow"])
+        lim = h.get("limits") or {}
+        assert "archive_max_files" in lim, (
+            f"Bug 6: limits.archive_max_files missing. keys={list(lim.keys())}"
+        )
+        assert "max_output_mb" in lim, (
+            f"Bug 6: limits.max_output_mb missing. keys={list(lim.keys())}"
+        )
+        assert "max_file_mb" in lim, (
+            f"Bug 6: limits.max_file_mb missing. keys={list(lim.keys())}"
+        )
+        assert lim["archive_max_files"] > 0
+        assert lim["max_output_mb"] > 0
     finally:
         stop_daemon(proc)

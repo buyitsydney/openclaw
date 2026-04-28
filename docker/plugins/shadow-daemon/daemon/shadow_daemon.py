@@ -167,6 +167,12 @@ _last_event_at: Optional[str] = None
 # Bug R fix: rolling per-event detail buffers
 _recent_skips: deque = deque(maxlen=RECENT_BUFFER_SIZE)   # [{path, reason, ts}]
 _recent_errors: deque = deque(maxlen=RECENT_BUFFER_SIZE)  # [{path, kind, ts}]
+# v8.3 Bug 3: rolling buffer of successful convert events, so SKILL can
+# check "did this file's convert_ok show up yet?" without polling shadow fs.
+_recent_events: deque = deque(maxlen=RECENT_BUFFER_SIZE)  # [{path, kind, ts}]
+# v8.3 Bug 1+2: latest human-readable event + last-known source file count.
+_last_event: Optional[str] = None         # "convert_ok docs/foo.pdf"
+_target_count: int = 0                    # # of source files daemon currently tracks
 
 # Per-path debounce timers and conversion locks
 _debounce_timers: dict = {}     # path_str -> threading.Timer
@@ -183,21 +189,49 @@ _health_write_lock = threading.Lock()
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+def _rel_path(full: str) -> str:
+    """Best-effort path shortening for human-readable last_event."""
+    try:
+        return str(Path(full).relative_to(WORKSPACE))
+    except (ValueError, TypeError):
+        return full
+
 def record_skip(path: str, reason: str):
     """Bug R: append to rolling skip list + bump counter."""
-    global _cumulative_skipped
+    global _cumulative_skipped, _last_event
     with _state_lock:
         _cumulative_skipped += 1
         _recent_skips.append({"path": path, "reason": reason, "ts": _now_iso()})
+        _last_event = f"skip:{reason} {_rel_path(path)}"
     write_health_fast()
 
 def record_error(path: str, kind: str):
     """Bug R: append to rolling error list + bump counter."""
-    global _cumulative_errors
+    global _cumulative_errors, _last_event
     with _state_lock:
         _cumulative_errors += 1
         _recent_errors.append({"path": path, "kind": kind, "ts": _now_iso()})
+        _last_event = f"error:{kind} {_rel_path(path)}"
     write_health_fast()
+
+def record_ok(path: str):
+    """v8.3 Bug 3: push convert_ok into recent_events so SKILL can verify
+    a specific file converted without polling the shadow filesystem."""
+    global _last_event
+    with _state_lock:
+        _recent_events.append({"path": path, "kind": "convert_ok", "ts": _now_iso()})
+        _last_event = f"convert_ok {_rel_path(path)}"
+    # write_health_fast already called by convert() after increment
+
+def prune_recent_for_path(path: str):
+    """v8.3 Bug 13: when a source file is gone (delete event), remove its
+    entries from recent_skips/errors/events so Her doesn't surface ghost
+    errors for files that no longer exist."""
+    with _state_lock:
+        for buf in (_recent_skips, _recent_errors, _recent_events):
+            keep = [e for e in buf if e.get("path") != path]
+            buf.clear()
+            buf.extend(keep)
 
 def load_persistent_counters():
     """Bug J fix: restore cumulative counters from previous _health.json on startup."""
@@ -257,14 +291,41 @@ def _persist_health(status: Optional[str], extra):
             else:
                 needs = "unknown"
 
+        # v8.3 Bug 12: current shadow count (excludes tombstones? no — shadow
+        # files exist for both OK and failed conversions. Her's user-facing
+        # "already indexed N" should use indexed_now, not cumulative.
+        try:
+            indexed_now = sum(
+                1 for p in SHADOW_DIR.glob("*.md") if not p.name.startswith("_")
+            )
+        except OSError:
+            indexed_now = 0
+
+        # v8.3 Bug 2: target_count = source files from last sync; pct = how much
+        # of that target we've converted in this daemon lifetime (bounded 0-100).
+        pct = 100.0
+        if _target_count > 0:
+            pct = round(min(100.0, 100.0 * _cumulative_converted / _target_count), 1)
+
         progress = {
-            "indexed_total": _cumulative_converted,
+            "indexed_total": _cumulative_converted,      # cumulative (back-compat)
+            "indexed_now": indexed_now,                   # live shadow count (Bug 12)
+            "target_count": _target_count,                # source files last seen (Bug 2)
+            "pct": pct,                                   # 0-100 (Bug 2)
             "errors_recent": len(_recent_errors),
         }
 
         watching_dirs: list = []
         if _current_config and _current_observer is not None:
             watching_dirs = [d.get("path", "") for d in _current_config.get("directories", [])]
+
+        # v8.3 Bug 6: expose caps under `limits:{}` so SKILL docs don't hardcode.
+        limits = {
+            "max_file_mb": int((_current_config or {}).get("maxFileMB", 50)),
+            "max_output_mb": int((_current_config or {}).get("maxOutputMB", DEFAULT_MAX_OUTPUT_MB)),
+            "archive_max_files": int((_current_config or {}).get("archiveMaxFiles", DEFAULT_ARCHIVE_MAX_FILES)),
+            "extract_timeout_sec": int((_current_config or {}).get("extractTimeoutSec", DEFAULT_EXTRACT_TIMEOUT_SEC)),
+        }
 
         # ---- end product-facing fields ----
 
@@ -274,7 +335,12 @@ def _persist_health(status: Optional[str], extra):
             "needs": needs,
             "progress": progress,
             "watching_dirs": watching_dirs,
+            "last_event": _last_event,                    # human-readable (Bug 1)
             "last_event_at": _last_event_at,
+            "recent_events": list(_recent_events),        # ok convert log (Bug 3)
+            "recent_skips": list(_recent_skips),
+            "recent_errors": list(_recent_errors),
+            "limits": limits,                             # SKILL reads here (Bug 6)
 
             # ── internal / engineering (kept for observability + back-compat) ──
             "status": status,
@@ -286,8 +352,6 @@ def _persist_health(status: Optional[str], extra):
             "cumulative_converted": _cumulative_converted,
             "cumulative_skipped": _cumulative_skipped,
             "cumulative_errors": _cumulative_errors,
-            "recent_skips": list(_recent_skips),
-            "recent_errors": list(_recent_errors),
         }
         if extra: health.update(extra)
         if _current_config:
@@ -470,6 +534,9 @@ def convert(src: Path, dst: Path, timeout_sec: int, max_output_bytes: int, archi
                 log("source_gone_post", src=str(src))
                 return False
             with _state_lock: _cumulative_converted += 1
+            # v8.3 Bug 3: push convert_ok into recent_events + last_event so
+            # Her can verify "this file converted" without polling the shadow fs.
+            record_ok(path_str)
             # v7: every state-changing convert must flush health (no main-loop heartbeat).
             write_health_fast()
             log("convert_ok", src=str(src), bytes=len(out_bytes))
@@ -587,6 +654,11 @@ def remove_shadow_for(src: Path):
             log("shadow_removed", src=str(src), shadow=sp.name)
         except OSError as e:
             log("shadow_remove_error", src=str(src), err=str(e)[:100])
+    # v8.3 Bug 13: prune stale entries so Her doesn't report ghost errors
+    # for files that no longer exist. Also flush health so the change is
+    # visible to the next SKILL read.
+    prune_recent_for_path(str(src))
+    write_health_fast()
 
 # ---- security ----
 def resolve_watch_dirs(config: dict):
@@ -688,9 +760,20 @@ def initial_sync(config: dict, blocking: bool = True):
                 deleted += 1
                 log("gc_orphan", shadow=sp.name, source=src)
             except OSError: pass
-    log("sync_done", originals=len(seen_sources), submitted=submitted,
+    # v8.3 Bug 2: record how many source files we know about so progress.pct
+    # has a stable denominator until the next sync. Only flush health when
+    # the count actually changes — otherwise we perturb last_run needlessly
+    # (no-polling test relies on last_run staying stable during idle).
+    global _target_count
+    new_target = len(seen_sources)
+    should_flush = new_target != _target_count
+    with _state_lock:
+        _target_count = new_target
+    log("sync_done", originals=new_target, submitted=submitted,
         converted=converted, deleted=deleted, blocking=blocking,
         elapsed_sec=round(time.monotonic() - started, 2))
+    if should_flush:
+        write_health_fast()
     return submitted, deleted
 
 # ---- debounced event submission ----

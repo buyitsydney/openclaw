@@ -12,11 +12,9 @@
 | PowerPoint | .pptx | ✅ | "PPT 文字内容能记,排版样式不存" |
 | HTML | .html | ✅ | "网页保存的 HTML 没问题" |
 | CSV/JSON/XML | .csv/.json/.xml | ✅ | "结构化文本没问题" |
-| ZIP | .zip(≤20 文件) | ✅ | "压缩包自动展开,但超过 20 个文件的我只记文件名清单" |
+| ZIP | .zip(见 `limits.archive_max_files`) | ✅ | "压缩包自动展开,但超过 N 个文件的我只记文件名清单。N 读 `_health.json` → `limits.archive_max_files`" |
 | EPUB | .epub | ✅ | "电子书没问题" |
 | MD/TXT | .md/.txt | ✅ | "纯文本/Markdown 直接存(必须 UTF-8 编码)" |
-| 图片 | .png/.jpg | ⚠️ | "需要先开图片识别(OCR)才能记,默认只存文件名" |
-| 音频 | .wav/.mp3 | ⚠️ | "需要先开 whisper 转写才能记内容" |
 | RAR | .rar | ⚠️ | "暂不支持(容器没装 unrar),压缩为 zip 我能处理" |
 
 ## 失败时给用户的人话
@@ -28,7 +26,7 @@
 | `mime_mismatch` | "文件扩展名跟内容不匹配(比如名字叫 .pdf 但实际是文本),换一个文件试试" |
 | `archive_too_many_files` | "压缩包里超过 20 个文件,只索引了清单。展开后单独发我能逐个记" |
 | `encoding_error` | "文本文件不是 UTF-8 编码,需要先转一下编码" |
-| `output_too_large` | "内容超过 5MB 上限,我只能记摘要" |
+| `output_too_large` | "内容超过上限(见 `limits.max_output_mb`),我只能记摘要" |
 | `oom` | "文件太大或太复杂把转换工具吃爆了,要更长超时再试吗?" |
 | `timeout` | "10 分钟没转完,通常是大 PDF/扫描件。要再给它更长时间试吗?" |
 | `crashed` / `failed` | "转换出错,可能这个文件损坏。换一个或修一下看?" |

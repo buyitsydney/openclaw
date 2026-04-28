@@ -48,14 +48,17 @@ import os; os.replace(p+".tmp", p)
 
 ### Step 4 — 实时报进度
 
-每 30s 或每 25%(以最快者为准)读 `_health.json` 的 `progress`:
+每 30s 或每 25%(以最快者为准)读 `_health.json` 的 `progress`,用 **`indexed_now`** 作分子、**`target_count`** 作分母、**`pct`** 作百分比:
 
 ```
-🔄 加好了,正在转 23 个新文档...(0/23)
-🔄 已转 8/23 (35%)
-🔄 已转 16/23 (70%)
+🔄 加好了,正在转 23 个新文档...(indexed_now=N / target_count=23)
+🔄 已索引 8/23 (35%)
+🔄 已索引 16/23 (70%)
 ✓ 23/23 全部完成(实际耗时 1m48s)。memory_search 现在能搜到这批了。
 ```
+
+**不要用 `indexed_total`**!那是 daemon 一生累计转换次数,单调递增,给用户会误导("这里才 20 个文档,为啥你说 150?")。
+
 
 ## 停目录("别看 <目录>" / "去掉 <目录>")
 
@@ -88,11 +91,12 @@ cfg["directories"] = [d for d in cfg["directories"] if d["path"] != "contracts"]
 
 ```
 📊 当前状态
-  · 工具: ✓ markitdown 0.1.5 + watchdog 6.0.0
-  · 监控目录: docs/, contracts/, projects/2026/
-  · 已索引: 47 个文档
-  · 最近错误: 0
-  · 最近一次活动: 2 分钟前(转换 projects/2026/Q4-plan.pdf)
+  · 可以工作: ✓ (ready=true)
+  · 监控目录: docs/, contracts/, projects/2026/    (watching_dirs)
+  · 已索引: 47 个文档                                (indexed_now)
+  · 进度: 47/50 (94%)                                (indexed_now/target_count — 有 3 个还在队列)
+  · 最近错误: 0                                     (progress.errors_recent)
+  · 最近一次活动: 2 分钟前(convert_ok projects/2026/Q4-plan.pdf)   (last_event + 算 ts 差)
 ```
 
 如果 `ready: false`,告诉用户具体是哪一步缺(产品语言):

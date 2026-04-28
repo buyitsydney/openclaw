@@ -36,19 +36,25 @@
 
 ## Step 4 — 实时盯转换 + 报完成
 
-每 5s 读 `_health.json`,看 `recent_events` 里有没有这个文件的 `convert_ok`(daemon 暴露的字段名以实际为准):
+每 5s 读 `_health.json`,扫 `recent_events`(按时间倒序,最多 50 条)找 `kind=convert_ok` 且 `path` 包含目标文件:
+
+```python
+h = json.load(open("memory/_shadow/_health.json"))
+target = "path/to/user-file.pdf"
+ok = any(e["kind"] == "convert_ok" and target in e["path"] for e in h.get("recent_events", []))
+```
 
 ```
 🔄 转换中...
 ✓ 索引完毕(8s)。现在 memory_search "<文件名>" 能直接命中了。
 ```
 
-如果 `recent_errors` 出现该文件 → 翻译错误为人话:
+如果 `recent_errors` 出现该文件 → 翻译错误为人话(上限数字从 `_health.json.limits.*` 读,**不要硬编码**):
 - `mime_mismatch`:"❌ 这文件扩展名跟内容不符(假 PDF?),换一个文件试试"
-- `archive_too_many_files`:"❌ 这是个大压缩包,我只索引了文件名,内容请展开后单个发"
+- `archive_too_many_files`:"❌ 压缩包超过 limits.archive_max_files 上限,我只索引了清单"
 - `encoding_error`:"❌ 文本文件不是 UTF-8 编码,需要先转 utf8"
-- `output_too_large`:"❌ 内容超过 5MB 上限,我只能存摘要"
-- `timeout`:"⏱ 太大了 daemon 没在 10min 内转完,要我用更长的超时再试吗?"
+- `output_too_large`:"❌ 内容超过 limits.max_output_mb MB 上限,我只能存摘要"
+- `timeout`:"⏱ 太大太复杂 daemon 没在 limits.extract_timeout_sec 秒内转完,要我用更长的超时再试吗?"
 
 ## 不要做的事
 

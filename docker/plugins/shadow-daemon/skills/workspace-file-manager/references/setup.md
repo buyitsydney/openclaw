@@ -12,8 +12,12 @@
 
 读 `memory/_shadow/_health.json`:
 - `ready: true` → 已就绪,跳到 [manage-directories.md](manage-directories.md) 的"加目录"流程
-- `ready: false` 且 `needs: "tools"` → 走 Step 2
+- `ready: false` 且 `needs: "tools"`:
+  - 且 `progress.indexed_total == 0` → **全新接入**,走 Step 2-8 完整流程
+  - 且 `progress.indexed_total > 0` → **工具重装场景**:告诉用户"转换工具掉了要重装,但之前索引的 N 个历史都在,不会丢"。跑 Step 2-3(装工具),自动恢复到 ready。**不要重做 Step 4-6**(config 还在)
 - `ready: false` 且 `needs: "config"` → 跳 Step 4(工具齐全,只差选目录)
+- `ready: false` 且 `needs: "recovery"` → 告诉用户"我这边有点问题,要我重启自己吗?"。等用户同意,再让用户在容器里 `kill $(pgrep -f shadow_daemon.py)` (supervisor 自动起新的)
+- `ready: false` 且 `needs: "restart"` → daemon 已停,supervisor 应自动拉起。等 10s 重读 health
 
 文件不存在 → daemon 还没起来,等 30s 重读。仍没有 → 告诉用户 daemon 没运行,需要排查(不是用户该解决的)。
 
@@ -45,19 +49,28 @@ pip3 install --user "markitdown[all]" watchdog
 
 ### Step 4 — 扫描 + 给建议(惊喜模式)
 
-Her 自己 `find`,**不问用户目录**:
+Her 自己 `find`,**不问用户目录**。默认 exclude 要严(Her-style workspace 经常全是代码/persona 文件):
 
 ```bash
 find /data/.openclaw/workspace -maxdepth 3 -type f \
   \( -name '*.pdf' -o -name '*.docx' -o -name '*.xlsx' -o -name '*.pptx' \
-     -o -name '*.md' -o -name '*.txt' \) \
-  ! -path '*/.*' ! -path '*/memory/*' ! -path '*/state/*' ! -path '*/node_modules/*'
+     -o -name '*.md' -o -name '*.txt' -o -name '*.html' \) \
+  ! -path '*/.*' \
+  ! -path '*/node_modules/*' ! -path '*/.git/*' ! -path '*/venv/*' ! -path '*/.venv/*' \
+  ! -path '*/memory/*' ! -path '*/state/*' ! -path '*/.state/*' \
+  ! -path '*/archive/*' ! -path '*/stress-test/*' ! -path '*/.worktrees/*' ! -path '*/.claude/*' \
+  ! -path '*/carher-*/*' ! -path '*/wt-*/*' ! -path '*/__pycache__/*'
 ```
 
 按目录分组统计。判断:
 - 哪些是明显内容目录(docs/ contracts/ projects/ ...)→ 建议监控
 - 根目录散落文件 → 建议 mv 到 docs/(惊喜:Her 主动整理)
 - 明显垃圾目录(.git/ tmp/ 大量 png 截图)→ 不监控,告诉用户跳过的原因
+
+**识别 Her persona 工作区**:如果根目录有 `SOUL.md`/`MEMORY.md`/`IDENTITY.md`/`USER.md`/`AGENTS.md`/`HEARTBEAT.md` 这几个,或者有 `carher-*/` `wt-*/` 工作树目录 → 这是 Her 自己的 workspace,**默认只推荐 `docs/`**,其他 `wiki/` `research/` `projects/` 类目录**必须让用户逐个确认**(可能混了归档/工程产物)。
+
+**默认 exclude 根目录这几个文件**(bootstrap 已注入 Her context,再索引=双轨重复):
+`SOUL.md`、`MEMORY.md`、`IDENTITY.md`、`USER.md`、`AGENTS.md`、`HEARTBEAT.md`、`CLAUDE.md`(如果是 Her 自己的)
 
 ### Step 5 — 一句话报告 + 具体建议
 
@@ -97,16 +110,21 @@ EOF
 
 ### Step 7 — 转换中实时报进度
 
-读 `_health.json` 的 `progress: {converted, total, pct}`,每 30s 或每 25% 报一次:
+读 `_health.json` 的 `progress`,**必看三个字段**:
+- `indexed_now`:当前有 shadow 的源文件数(转一个长一个,删一个减一个)
+- `target_count`:监控目录里的源文件总数(用作进度分母)
+- `pct`:0-100,daemon 自己算好的
 
 ```
-📁 配好了,daemon 已开始转换 17 个文档,大约 1 分钟内完成,我盯着...
-🔄 已转 5/17 (29%)
-🔄 已转 12/17 (70%)
+📁 配好了,daemon 已开始转换 17 个文档,大约 1 分钟内完成(转换不是实时,reconcile 周期 15s,我每 30s 读一次进度)。
+🔄 已索引 5/17 (29%)   ← 读 indexed_now / target_count / pct
+🔄 已索引 12/17 (70%)
 ✓ 17/17 全部完成(实际耗时 73s)。
 
 现在你可以在群里 @我 问"XX 项目设计文档"/"XX 合同条款",我直接给你具体内容片段。
 ```
+
+**不是实时**:daemon reconcile 周期约 15s + 单文件转换要 50ms-秒级(PDF 可能分钟),所以从你写 config 到第一个 shadow 出现通常 3-30s。告诉用户这个体感。
 
 ### Step 8 — 收尾:把维护权交回用户
 
