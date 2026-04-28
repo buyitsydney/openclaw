@@ -41,10 +41,50 @@ daemon 写,Her 读。唯一契约面。任何别的 reference 引用的字段都
 
 ## 内部字段(**Her 永远不给用户看**)
 
-仅给运维/工程 debug 用,Her 禁止暴露:
-`status`、`markitdown_available`、`markitdown_version`、`watchdog_available`、`watchdog_version`、`last_run`、`cumulative_converted`、`cumulative_skipped`、`cumulative_errors`、`config_dirs`、`watching`、`max_workers`、`debounce_ms`、`extract_timeout_sec`、`max_output_mb`、`archive_max_files`
+v8.4 起全部结构性隔离到 `_internal:{}` 子对象。Her **永远不读 `_internal` 任何字段**给用户。只有运维/工程 debug 时才看:
 
-(`limits.*` 和 `config_dirs`/`max_workers` 等的内容看起来相似,但 `limits` 是**产品层**打包好给 Her 用,top-level 的那几个是**调试残留**,将来可能移除)
+```json
+"_internal": {
+  "status": "watching" | "idle_no_*" | "reinit_error" | "stopped",
+  "markitdown_available": bool,
+  "markitdown_version": "0.1.5",
+  "watchdog_available": bool,
+  "watchdog_version": "6.0.0",
+  "last_run": "2026-04-28T...",
+  "cumulative_converted": int,    // lifetime 累计,只增不减
+  "cumulative_skipped": int,
+  "cumulative_errors": int,
+  "config_dirs": ["docs/"],
+  "watching": bool,
+  "max_workers": 8,
+  "debounce_ms": 500
+}
+```
+
+`config_dirs` 跟顶层的 `watching_dirs` 看起来像,但它是**调试快照**,Her 用 `watching_dirs`(产品层,永远保证可用)。
+
+## 两态对照(`ready=false` vs `ready=true` 字段实际值)
+
+| 字段 | `ready=false needs=tools` | `ready=false needs=config` | `ready=true`(正常工作) |
+|------|---|---|---|
+| `ready` | `false` | `false` | `true` |
+| `needs` | `"tools"` | `"config"` | `null` |
+| `progress.indexed_now` | 0 (或遗留 shadow) | 0 (或遗留) | 实时 |
+| `progress.target_count` | 0 | 0 | 最近 sync 源数 |
+| `progress.pct` | 100 (边界) | 100 (边界) | 0-100 |
+| `progress.indexed_total` | 累计(历史重装前的量) | 累计 | 累计 |
+| `progress.errors_recent` | 0 (首次) 或 历史 | 0 | 0-50 |
+| `watching_dirs` | `[]` | `[]` | `["docs/", ...]` |
+| `last_event` | null (未开工) / 历史 | null / 历史 | 最新 "convert_ok ..." |
+| `last_event_at` | null / 历史 | null / 历史 | 最新 ISO 时间戳 |
+| `recent_events` | `[]` (首次) / 历史 | `[]` / 历史 | 最多 50 条 |
+| `recent_skips/errors` | `[]` / 历史 | `[]` / 历史 | rolling 50 条 |
+| `limits` | 完整 (Her 仍可读限制) | 完整 | 完整 |
+| `_internal.status` | `idle_no_watchdog` / `idle_no_markitdown` | `idle_no_config` / `idle_no_valid_dirs` | `watching` |
+| `_internal.watchdog_available` | false 或 true(只缺 markitdown 时) | true | true |
+| `_internal.cumulative_*` | ≥0 (重装场景可能非 0) | ≥0 | ≥0 |
+
+**Her 判断流程**:看 `ready` + `needs` 拿 2 分支决策。`progress.indexed_total > 0` 是区分"全新接入"vs"工具重装"的关键。
 
 ## 反模式(Her 做了就是错)
 

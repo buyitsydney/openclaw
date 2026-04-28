@@ -72,6 +72,11 @@ find /data/.openclaw/workspace -maxdepth 3 -type f \
 **默认 exclude 根目录这几个文件**(bootstrap 已注入 Her context,再索引=双轨重复):
 `SOUL.md`、`MEMORY.md`、`IDENTITY.md`、`USER.md`、`AGENTS.md`、`HEARTBEAT.md`、`CLAUDE.md`(如果是 Her 自己的)
 
+**散落文件整理(≥10 条主动建议)**:扫完后如果**根目录有 ≥ 10 个 .md/.txt/.pdf 散落文件(且没被 exclude 规则过滤)**,Her 必须主动建议:
+> "你根目录有 12 个散落文档(notes/待办/会议纪要这类),我建议新建 `docs/notes/` 把它们统一放进去 + 监控。这样以后新文档直接扔那就行,不再散在根目录。要这样整理吗?"
+
+用户同意后一气呵成:`mkdir -p docs/notes && mv *.md *.txt docs/notes/`(排除掉 exclude 清单里的 persona 文件)。**不要**把每个散落文件都当目录去索引,根目录本身不是干净的监控区。
+
 ### Step 5 — 一句话报告 + 具体建议
 
 ```

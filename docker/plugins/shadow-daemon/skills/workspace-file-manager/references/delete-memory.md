@@ -42,20 +42,23 @@
 如果原文件仍在监控目录里,只删 shadow 没用 — daemon 下次活动会重新索引。
 所以"只删记忆"实际操作是:**把原文件 mv 出监控目录**(或删它)。
 
-Shadow 文件顶部是 YAML front-matter(不是单行 `source:` 冒号后接值,而是 YAML 块,
-键名 `source:` 开头,后跟绝对路径),所以解析要用严格的 YAML 前缀匹配:
+Shadow 文件名格式是 `<sha8>__<basename>.<ext>.md`(daemon 固定约定),所以根本不用 parse YAML front-matter,直接 glob 匹配文件名:
 
 ```bash
-# 找到原文件路径(精确匹配 "source: " 开头的那一行,避免误匹 "generated_at:" 等)
-SHADOW=$(ls /data/.openclaw/workspace/memory/_shadow/*__*Q4-plan.pdf.md 2>/dev/null | head -1)
-if [ -z "$SHADOW" ]; then echo "shadow not found"; exit 1; fi
-SRC=$(awk '/^---$/{ if(in_fm) exit; in_fm=1; next } in_fm && /^source:/{ sub(/^source:[[:space:]]*/,""); print; exit }' "$SHADOW")
-# 确认 SRC 是真实存在的文件
-[ -f "$SRC" ] || { echo "source no longer exists"; exit 1; }
+# 例:用户说"删 Q4-plan.pdf 的记忆"
+BASENAME="Q4-plan.pdf"
+# shadow 文件名包含完整 basename,直接 glob 即可
+SHADOW=$(ls /data/.openclaw/workspace/memory/_shadow/*__"$BASENAME".md 2>/dev/null | head -1)
+if [ -z "$SHADOW" ]; then echo "shadow not found for $BASENAME"; exit 1; fi
+# 原文件还在工作空间的话,用 find 按 basename 定位
+SRC=$(find /data/.openclaw/workspace -type f -name "$BASENAME" -not -path '*/memory/*' -not -path '*/.*' 2>/dev/null | head -1)
+[ -f "$SRC" ] || { echo "source no longer exists (shadow 会被 daemon 自动 GC)"; exit 0; }
 # mv 到工作空间根的 _archive/(daemon 不监控)
 mkdir -p /data/.openclaw/workspace/_archive
 mv "$SRC" /data/.openclaw/workspace/_archive/
 ```
+
+旧版用 `grep "source:"` 读 YAML front-matter 会**误匹** `generated_at:` / `src_size:` 等其他字段;改用文件名 glob 根本不依赖文件内容,永远对。
 
 (daemon 看到 source 消失,自动 GC 删 shadow,Her 不用手动)
 

@@ -85,6 +85,11 @@ def stop_daemon(proc, timeout=5):
     return "", err
 
 
+def _internal(h: dict) -> dict:
+    """Get `_internal` sub-object (v8.4) with flat-layout fallback."""
+    return (h.get("_internal") or h) if h else {}
+
+
 def wait_for_health_status(shadow: Path, status: str, timeout=15):
     deadline = time.monotonic() + timeout
     last = None
@@ -93,7 +98,7 @@ def wait_for_health_status(shadow: Path, status: str, timeout=15):
         if hf.exists():
             try:
                 last = json.loads(hf.read_text())
-                if last.get("status") == status:
+                if _internal(last).get("status") == status:
                     return last
             except json.JSONDecodeError: pass
         time.sleep(0.1)
@@ -141,7 +146,7 @@ def count_shadow(shadow: Path) -> int:
 
 
 def read_last_run(shadow: Path):
-    return read_health(shadow).get("last_run")
+    return _internal(read_health(shadow)).get("last_run")
 
 
 def wait_last_run_advances(shadow: Path, prior, timeout=12):
@@ -342,7 +347,7 @@ def test_userlib_absent_at_boot_then_created(sandbox, tmp_path, monkeypatch):
 
         # And after reinit, daemon should now see watchdog and watch files.
         h = read_health(sandbox["shadow"])
-        assert h.get("watchdog_available") is True, (
+        assert _internal(h).get("watchdog_available") is True, (
             f"After deps install, watchdog still not detected: {h}"
         )
     finally:
@@ -376,7 +381,7 @@ def test_sigusr1_burst_no_crash(sandbox):
             proc.send_signal(signal.SIGUSR1)
         time.sleep(3)
         assert proc.poll() is None, "daemon crashed under SIGUSR1 burst"
-        assert read_health(sandbox["shadow"]).get("status") == "watching"
+        assert _internal(read_health(sandbox["shadow"])).get("status") == "watching"
     finally:
         stop_daemon(proc)
 
@@ -404,7 +409,7 @@ def test_sigterm_clean_shutdown(sandbox):
             time.sleep(0.1)
         assert proc.poll() is not None, "daemon didn't exit after SIGTERM"
         h = read_health(sandbox["shadow"])
-        assert h.get("status") == "stopped"
+        assert _internal(h).get("status") == "stopped"
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -541,9 +546,8 @@ def test_progress_has_indexed_now(sandbox):
             f"This is the key diff vs cumulative indexed_total."
         )
         # cumulative MUST stay non-decreasing (that's its job)
-        assert h["cumulative_converted"] >= 5, (
-            f"cumulative_converted regressed to {h['cumulative_converted']}"
-        )
+        cum = _internal(h).get("cumulative_converted", 0)
+        assert cum >= 5, f"cumulative_converted regressed to {cum}"
     finally:
         stop_daemon(proc)
 
@@ -629,5 +633,88 @@ def test_limits_field_exposes_caps(sandbox):
         )
         assert lim["archive_max_files"] > 0
         assert lim["max_output_mb"] > 0
+    finally:
+        stop_daemon(proc)
+
+
+# ============================================================
+# v8.4 — Her-found follow-up: last_event_at, cumulative isolation, field cleanup
+# ============================================================
+
+def test_last_event_at_updates_with_last_event(sandbox):
+    """Bug A: `last_event_at` was null even after events fired. Must be set
+    whenever `last_event` is set, so Her can compute 'N minutes ago'."""
+    write_config(sandbox["shadow"])
+    proc = start_daemon()
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        f = sandbox["docs"] / "when.txt"
+        f.write_text("x")
+        wait_for_shadow(sandbox["shadow"], f, timeout=10)
+        time.sleep(0.8)
+        h = read_health(sandbox["shadow"])
+        assert h.get("last_event"), f"precondition: last_event not set. h={h}"
+        assert h.get("last_event_at") is not None, (
+            f"Bug A: last_event is {h['last_event']!r} but last_event_at is null. "
+            f"Her needs the timestamp to say 'N minutes ago'."
+        )
+        # And it must be a valid ISO timestamp.
+        from datetime import datetime
+        datetime.fromisoformat(h["last_event_at"].replace("Z", "+00:00"))
+    finally:
+        stop_daemon(proc)
+
+
+def test_cumulative_fields_not_in_top_level(sandbox):
+    """Bug B: `cumulative_converted/skipped/errors` at top level is too easy
+    for Her to accidentally surface. They must live under `_internal:` so
+    they're structurally hidden per SKILL contract."""
+    write_config(sandbox["shadow"])
+    proc = start_daemon()
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        h = read_health(sandbox["shadow"])
+        for forbidden in ("cumulative_converted", "cumulative_skipped", "cumulative_errors"):
+            assert forbidden not in h, (
+                f"Bug B: `{forbidden}` still at top-level; must be inside `_internal:`. "
+                f"SKILL bans Her from exposing it — structural isolation prevents accidents."
+            )
+        internal = h.get("_internal") or {}
+        for needed in ("cumulative_converted", "cumulative_skipped", "cumulative_errors"):
+            assert needed in internal, (
+                f"Bug B: `_internal.{needed}` missing. Ops needs these for debug. "
+                f"Hidden from Her but still written for observability."
+            )
+    finally:
+        stop_daemon(proc)
+
+
+def test_no_duplicate_limit_fields_top_level(sandbox):
+    """Bug C: `extract_timeout_sec` / `max_output_mb` / `archive_max_files`
+    appear in both top-level AND `limits:{}`. Top-level copies are drift-
+    bait; delete them. Other runtime info (config_dirs / watching /
+    max_workers / debounce_ms) moves to `_internal` so top-level stays a
+    clean product contract."""
+    write_config(sandbox["shadow"])
+    proc = start_daemon()
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        h = read_health(sandbox["shadow"])
+        duplicate_with_limits = ("extract_timeout_sec", "max_output_mb", "archive_max_files")
+        for k in duplicate_with_limits:
+            assert k not in h, (
+                f"Bug C: `{k}` at top-level is a duplicate of `limits.{k}`. "
+                f"Delete top-level; SKILL should read `limits.{k}`."
+            )
+        # And runtime info fields move under _internal.
+        runtime_info_keys = ("config_dirs", "watching", "max_workers", "debounce_ms")
+        for k in runtime_info_keys:
+            assert k not in h, (
+                f"Bug C: `{k}` at top-level should be in `_internal` "
+                f"(runtime/debug info, not product contract)."
+            )
+        internal = h.get("_internal") or {}
+        for k in runtime_info_keys:
+            assert k in internal, f"Bug C: `_internal.{k}` missing, debug needs it"
     finally:
         stop_daemon(proc)

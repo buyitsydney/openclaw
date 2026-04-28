@@ -198,29 +198,35 @@ def _rel_path(full: str) -> str:
 
 def record_skip(path: str, reason: str):
     """Bug R: append to rolling skip list + bump counter."""
-    global _cumulative_skipped, _last_event
+    global _cumulative_skipped, _last_event, _last_event_at
     with _state_lock:
         _cumulative_skipped += 1
-        _recent_skips.append({"path": path, "reason": reason, "ts": _now_iso()})
+        ts = _now_iso()
+        _recent_skips.append({"path": path, "reason": reason, "ts": ts})
         _last_event = f"skip:{reason} {_rel_path(path)}"
+        _last_event_at = ts  # v8.4 Bug A: keep pair in sync
     write_health_fast()
 
 def record_error(path: str, kind: str):
     """Bug R: append to rolling error list + bump counter."""
-    global _cumulative_errors, _last_event
+    global _cumulative_errors, _last_event, _last_event_at
     with _state_lock:
         _cumulative_errors += 1
-        _recent_errors.append({"path": path, "kind": kind, "ts": _now_iso()})
+        ts = _now_iso()
+        _recent_errors.append({"path": path, "kind": kind, "ts": ts})
         _last_event = f"error:{kind} {_rel_path(path)}"
+        _last_event_at = ts  # v8.4 Bug A
     write_health_fast()
 
 def record_ok(path: str):
     """v8.3 Bug 3: push convert_ok into recent_events so SKILL can verify
     a specific file converted without polling the shadow filesystem."""
-    global _last_event
+    global _last_event, _last_event_at
     with _state_lock:
-        _recent_events.append({"path": path, "kind": "convert_ok", "ts": _now_iso()})
+        ts = _now_iso()
+        _recent_events.append({"path": path, "kind": "convert_ok", "ts": ts})
         _last_event = f"convert_ok {_rel_path(path)}"
+        _last_event_at = ts  # v8.4 Bug A
     # write_health_fast already called by convert() after increment
 
 def prune_recent_for_path(path: str):
@@ -234,13 +240,16 @@ def prune_recent_for_path(path: str):
             buf.extend(keep)
 
 def load_persistent_counters():
-    """Bug J fix: restore cumulative counters from previous _health.json on startup."""
+    """Bug J fix: restore cumulative counters from previous _health.json on startup.
+    v8.4: counters now live under `_internal:{}`; keep back-compat with the old
+    top-level layout so we can upgrade without losing lifetime stats."""
     global _cumulative_converted, _cumulative_skipped, _cumulative_errors
     try:
         h = json.loads(HEALTH_FILE.read_text())
-        _cumulative_converted = max(0, int(h.get("cumulative_converted", 0) or 0))
-        _cumulative_skipped = max(0, int(h.get("cumulative_skipped", 0) or 0))
-        _cumulative_errors = max(0, int(h.get("cumulative_errors", 0) or 0))
+        src = h.get("_internal") or h   # new path first, fall back to flat
+        _cumulative_converted = max(0, int(src.get("cumulative_converted", 0) or 0))
+        _cumulative_skipped = max(0, int(src.get("cumulative_skipped", 0) or 0))
+        _cumulative_errors = max(0, int(src.get("cumulative_errors", 0) or 0))
         log("counters_restored",
             converted=_cumulative_converted,
             skipped=_cumulative_skipped,
@@ -329,20 +338,12 @@ def _persist_health(status: Optional[str], extra):
 
         # ---- end product-facing fields ----
 
-        health = {
-            # ── product (Her reads these) ──
-            "ready": ready,
-            "needs": needs,
-            "progress": progress,
-            "watching_dirs": watching_dirs,
-            "last_event": _last_event,                    # human-readable (Bug 1)
-            "last_event_at": _last_event_at,
-            "recent_events": list(_recent_events),        # ok convert log (Bug 3)
-            "recent_skips": list(_recent_skips),
-            "recent_errors": list(_recent_errors),
-            "limits": limits,                             # SKILL reads here (Bug 6)
-
-            # ── internal / engineering (kept for observability + back-compat) ──
+        # v8.4 Bug B/C: isolate non-product fields under `_internal:` so Her
+        # can't accidentally surface `cumulative_converted=50231` etc. Top-
+        # level stays a clean product contract (ready/needs/progress/
+        # watching_dirs/last_event/recent_*/limits). Everything else (deps
+        # versions, cumulative counters, runtime tuning) lives in _internal.
+        internal = {
             "status": status,
             "markitdown_available": _cached_mt_avail,
             "markitdown_version": _cached_mt_ver,
@@ -353,15 +354,29 @@ def _persist_health(status: Optional[str], extra):
             "cumulative_skipped": _cumulative_skipped,
             "cumulative_errors": _cumulative_errors,
         }
-        if extra: health.update(extra)
         if _current_config:
-            health["config_dirs"] = [d.get("path", "") for d in _current_config.get("directories", [])]
-            health["watching"] = _current_observer is not None and _current_observer.is_alive()
-            health["max_workers"] = _current_config.get("maxWorkers", DEFAULT_MAX_WORKERS)
-            health["debounce_ms"] = _current_config.get("debounceMs", DEFAULT_DEBOUNCE_MS)
-            health["extract_timeout_sec"] = _current_config.get("extractTimeoutSec", DEFAULT_EXTRACT_TIMEOUT_SEC)
-            health["max_output_mb"] = _current_config.get("maxOutputMB", DEFAULT_MAX_OUTPUT_MB)
-            health["archive_max_files"] = _current_config.get("archiveMaxFiles", DEFAULT_ARCHIVE_MAX_FILES)
+            internal["config_dirs"] = [d.get("path", "") for d in _current_config.get("directories", [])]
+            internal["watching"] = _current_observer is not None and _current_observer.is_alive()
+            internal["max_workers"] = _current_config.get("maxWorkers", DEFAULT_MAX_WORKERS)
+            internal["debounce_ms"] = _current_config.get("debounceMs", DEFAULT_DEBOUNCE_MS)
+
+        health = {
+            # ── product (Her reads these) ──
+            "ready": ready,
+            "needs": needs,
+            "progress": progress,
+            "watching_dirs": watching_dirs,
+            "last_event": _last_event,
+            "last_event_at": _last_event_at,
+            "recent_events": list(_recent_events),
+            "recent_skips": list(_recent_skips),
+            "recent_errors": list(_recent_errors),
+            "limits": limits,
+
+            # ── internal (ops-only, Her banned from exposing) ──
+            "_internal": internal,
+        }
+        if extra: health.update(extra)
         try:
             HEALTH_FILE.write_text(json.dumps(health, indent=2, ensure_ascii=False))
         except OSError: pass
