@@ -15,14 +15,47 @@ This directory replaces `start-user.sh` with declarative `docker compose` files.
 ```
 deploy/
 ├── common/
-│   ├── carher-net.yaml        # shared network (redis lives here)
+│   ├── compose.template.yaml  # template used by scaffold.sh
 │   └── redis.yaml             # shared redis container
-├── carher-101/
-│   ├── compose.yaml           # service definition (id 101)
-│   ├── .env                   # image tag + per-user overrides
+├── carher-101/                # first PoC user (tested)
+│   ├── compose.yaml           # service definition
+│   ├── .env                   # IMAGE_TAG + overrides (git-tracked)
 │   └── secrets.env            # gitignored: feishu secret, gateway token
-└── carher-102/                # next user (similar)
-    └── ...
+├── carher-{102,103,104}/      # scaffolded from users.csv
+├── build-and-push.sh          # build + push to registry
+├── migrate-carher-101.sh      # first-time migration (stop start-user.sh, compose up)
+├── init-user.sh               # first-boot steps (voice token, device pairing)
+└── scaffold.sh                # generate deploy/carher-N/ from users.csv
+```
+
+## Registry-based image distribution (Phase 1 — replaces docker save|load)
+
+### Local PoC registry
+```bash
+# One-time: start local registry
+docker run -d --name carher-registry --restart unless-stopped \
+  -p 5001:5000 -v carher-registry-data:/var/lib/registry registry:2
+
+# Build + push
+./build-and-push.sh                                    # → localhost:5001/carher-core:<date>
+
+# Point a deploy at it
+# edit deploy/carher-101/.env:
+#   IMAGE_TAG=localhost:5001/carher-core:2026.4.29
+docker compose up -d
+```
+
+### Production registry (ghcr.io example)
+```bash
+# One-time: docker login to ghcr.io (needs write:packages PAT)
+echo $GH_PAT | docker login ghcr.io -u YOUR_USER --password-stdin
+
+# Build + push
+./build-and-push.sh --registry=ghcr.io/YOUR_USER
+
+# Server side (S1/S3):
+docker pull ghcr.io/YOUR_USER/carher-core:2026.4.29
+# (no git clone, no docker save|load, no source on server)
 ```
 
 ## Usage
