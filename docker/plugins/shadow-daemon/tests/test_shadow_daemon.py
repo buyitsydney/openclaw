@@ -973,3 +973,129 @@ def test_tmp_files_cleaned_after_crash(sandbox):
         )
     finally:
         stop_daemon(proc)
+
+
+# ============================================================
+# v8.6 — Ship blockers surfaced by Her's 45min regression (B3/B6/B11)
+# ============================================================
+
+def test_config_negative_maxfilemb_falls_back(sandbox):
+    """Bug B11: maxFileMB=-1 must not be silently accepted. _cfg_int
+    should clamp below-minimum values and fall back to default, not pass
+    negative bytes into `size > max_file_bytes` comparisons (which would
+    reject every file as tombstoned/skipped and produce a ghost ready=true
+    daemon with no real content indexed)."""
+    write_config(sandbox["shadow"], maxFileMB=-1)
+    proc = start_daemon()
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        small = sandbox["docs"] / "tiny.txt"
+        small.write_text("hello world")
+        sp = wait_for_shadow(sandbox["shadow"], small, timeout=6)
+        body = sp.read_text()
+        # With the fix, maxFileMB clamps to default and content lands.
+        # With the bug, shadow is a tombstone like "<!-- skipped: size -->".
+        assert "hello world" in body, (
+            f"Bug B11: maxFileMB=-1 silently tombstoned the file instead of "
+            f"clamping to a sane default. Shadow body: {body[:200]!r}"
+        )
+    finally:
+        stop_daemon(proc)
+
+
+def test_config_zero_maxoutputmb_falls_back(sandbox):
+    """Bug B11: maxOutputMB=0 would error-out every non-empty shadow as
+    output_too_large (0 bytes > 0 cap). Clamp to default."""
+    write_config(sandbox["shadow"], maxOutputMB=0)
+    proc = start_daemon()
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        f = sandbox["docs"] / "short.txt"
+        f.write_text("some content here")
+        sp = wait_for_shadow(sandbox["shadow"], f, timeout=6)
+        body = sp.read_text()
+        assert "some content here" in body, (
+            f"Bug B11: maxOutputMB=0 errored out the shadow instead of "
+            f"clamping. Body: {body[:200]!r}"
+        )
+    finally:
+        stop_daemon(proc)
+
+
+def test_reinit_does_not_block_on_inflight_converts(sandbox):
+    """Bug B6: SIGUSR1 reinit calls _executor.shutdown(wait=True) which
+    blocks until every in-flight convert finishes. With a 10-minute
+    extractTimeoutSec, reinit can stall 10+ minutes. Must use
+    shutdown(wait=False, cancel_futures=True) so queued work drops and
+    reinit returns promptly; in-flight threads can finish in background."""
+    write_config(sandbox["shadow"], debounceMs=50)
+    # 5s mock delay — reinit must be noticeably faster than that to prove
+    # shutdown no longer waits for in-flight convert.
+    proc = start_daemon(env_extra={"MOCK_MARKITDOWN_DELAY_SEC": "5.0"})
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        # Prime executor with in-flight converts
+        for i in range(4):
+            (sandbox["docs"] / f"slow_{i}.txt").write_text(f"payload {i}")
+        time.sleep(1.0)  # debounce (50ms) fires, executor threads get busy in mock sleep(5)
+        # Fire SIGUSR1 and time until reinit-completed evidence appears.
+        # Evidence: log line `"event": "executor_started"` (next executor spin-up)
+        # or `"event": "sync_done"` from post-reinit initial_sync — both fire
+        # AFTER the old executor has been shut down.
+        lf = proc._stderr_file
+        lf.flush()
+        baseline_pos = lf.tell()
+        t0 = time.monotonic()
+        proc.send_signal(signal.SIGUSR1)
+        elapsed_to_exec_started = None
+        deadline = time.monotonic() + 4.0  # must beat the 5s mock delay
+        while time.monotonic() < deadline:
+            lf.flush()
+            lf.seek(baseline_pos)
+            new_blob = lf.read().decode("utf-8", "replace")
+            if '"event": "executor_started"' in new_blob:
+                elapsed_to_exec_started = time.monotonic() - t0
+                break
+            time.sleep(0.1)
+        assert elapsed_to_exec_started is not None and elapsed_to_exec_started < 4.0, (
+            f"Bug B6: reinit did not complete within 4s even though mock "
+            f"markitdown delay is 5s. executor.shutdown(wait=True) is "
+            f"blocking on the in-flight 5s convert. elapsed={elapsed_to_exec_started}"
+        )
+    finally:
+        stop_daemon(proc, timeout=15)
+
+
+def test_periodic_reconcile_runs_without_watchdog_events(sandbox):
+    """Bug B3: daemon must have a periodic safety-net reconcile timer
+    that catches lost watchdog events (burst overflow, transient fsevents
+    gaps). Currently DEFAULT_RECONCILE_SEC=60 is declared but unused —
+    no timer or thread ever fires a rescan. To prove the timer exists,
+    we set reconcileIntervalSec=2 and watch `sync_done` log events: we
+    should see multiple within a short window even without any file
+    changes to emit watchdog events."""
+    # Need debug-level log capture. stderr of daemon already logs sync_done.
+    write_config(sandbox["shadow"], reconcileIntervalSec=2)
+    proc = start_daemon()
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        # After ready, no new files. Any further sync_done events must come
+        # from a periodic timer — watchdog has nothing to fire on.
+        time.sleep(5.5)  # allow ≥2 reconcile cycles at 2s interval
+        # Read accumulated stderr
+        lf = getattr(proc, "_stderr_file", None)
+        assert lf is not None
+        lf.flush()
+        pos = lf.tell()
+        lf.seek(0)
+        blob = lf.read().decode("utf-8", "replace")
+        lf.seek(pos)  # restore
+        # Count sync_done occurrences (startup initial_sync counts as 1).
+        sync_events = blob.count('"event": "sync_done"')
+        assert sync_events >= 3, (
+            f"Bug B3: expected ≥3 sync_done events in 5s with "
+            f"reconcileIntervalSec=2 (startup + 2 periodic). "
+            f"Got {sync_events}. No periodic reconcile timer is running."
+        )
+    finally:
+        stop_daemon(proc)

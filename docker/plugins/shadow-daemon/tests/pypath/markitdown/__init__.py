@@ -1,13 +1,21 @@
 """Mock markitdown for tests. Returns file contents verbatim as 'markdown'.
-Simulates ~50ms work so parallel tests meaningfully exercise the executor."""
+Default ~50ms; override via MOCK_MARKITDOWN_DELAY_SEC env for slow-convert tests
+(B6 reinit blocking regression)."""
 import sys, time, os
 
 __version__ = "0.0.1-mock"
 
 
+def _delay() -> float:
+    try:
+        return float(os.environ.get("MOCK_MARKITDOWN_DELAY_SEC", "0.05"))
+    except ValueError:
+        return 0.05
+
+
 class MarkItDown:
     def convert(self, path):
-        time.sleep(0.05)
+        time.sleep(_delay())
         class R:
             def __init__(self, text): self.text_content = text
         try:
@@ -23,7 +31,7 @@ def _cli_main():
     if len(sys.argv) < 2:
         sys.exit(2)
     path = sys.argv[1]
-    time.sleep(0.05)
+    time.sleep(_delay())
     try:
         with open(path, "rb") as f:
             sys.stdout.buffer.write(f.read())

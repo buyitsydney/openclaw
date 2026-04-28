@@ -154,19 +154,25 @@ def load_config():
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
 
-# ---- v8.5 Bug C/L/N: defensive config coercion ----
-def _cfg_int(cfg: dict, key: str, default: int) -> int:
+# ---- v8.5 Bug C/L/N + v8.6 Bug B11: defensive config coercion ----
+def _cfg_int(cfg: dict, key: str, default: int, min_value: int = 1) -> int:
     """Coerce a config value to int with graceful fallback.
     Accepts int / float / numeric string / None. Garbage → default.
+    Values below min_value (default 1) clamp to default + log — prevents
+    typos like maxFileMB=-1 from silently rejecting every file.
     Never raises — daemon must not die from a config typo."""
     try:
         v = (cfg or {}).get(key, default)
         if v is None: return default
         if isinstance(v, bool): return default  # bool is subclass of int, reject
-        return int(v) if not isinstance(v, str) else int(v.strip())
+        result = int(v) if not isinstance(v, str) else int(v.strip())
     except (ValueError, TypeError):
         log("config_coerce_fallback", key=key, value=repr((cfg or {}).get(key)), fallback=default)
         return default
+    if result < min_value:
+        log("config_coerce_clamp", key=key, value=result, min_value=min_value, fallback=default)
+        return default
+    return result
 
 def _cfg_dirs(cfg: dict) -> list:
     """Validate `directories` is a list of dicts with `path` string.
@@ -214,6 +220,11 @@ _known_sources: set = set()
 _debounce_timers: dict = {}     # path_str -> threading.Timer
 _path_locks: dict = {}          # path_str -> threading.Lock
 _locks_mutex = threading.Lock()  # protects _debounce_timers + _path_locks
+
+# v8.6 Bug B3: periodic reconcile safety-net. Recreated per reinit so config
+# changes to reconcileIntervalSec take effect without daemon restart.
+_reconcile_stop: Optional[threading.Event] = None
+_reconcile_thread: Optional[threading.Thread] = None
 
 # Cached dep state — refreshed only by main loop (not write_health hot path).
 _cached_mt_avail: bool = False
@@ -1090,15 +1101,50 @@ def _start_meta_observer() -> Optional[object]:
     obs.start()
     return obs
 
+def _reconcile_loop(stop_event: threading.Event, interval: int):
+    """v8.6 Bug B3: periodic safety-net rescan to catch lost watchdog events
+    (burst overflow, macOS fsevents coalescing, rm -rf races). Runs in a
+    daemon thread. initial_sync() is idempotent — fresh shadows are skipped
+    by mtime/size check, so repeated calls are cheap under steady state."""
+    while not stop_event.wait(timeout=interval):
+        if _shutdown_event.is_set(): return
+        cfg = _current_config
+        if cfg is None: continue  # config dropped; wait for next reinit
+        try:
+            initial_sync(cfg)
+        except Exception as e:
+            log("reconcile_crashed", err=str(e)[:200])
+
+
+def _stop_reconcile_thread():
+    """Stop and join the periodic reconcile thread if running. Called from
+    reinit (teardown) and main shutdown."""
+    global _reconcile_stop, _reconcile_thread
+    if _reconcile_stop:
+        _reconcile_stop.set()
+    if _reconcile_thread and _reconcile_thread.is_alive():
+        _reconcile_thread.join(timeout=3)
+    _reconcile_stop = None
+    _reconcile_thread = None
+
+
 def _do_reinit():
     """Tear down current observer/executor and rebuild from current state.
     Pure side-effect function, called only from main thread."""
     global _current_config, _current_observer, _executor
+    global _reconcile_stop, _reconcile_thread
     # 1. tear down work observer + executor (meta observer stays up).
     if _current_observer:
         stop_observer(_current_observer); _current_observer = None
+    # v8.6 Bug B6: don't block on in-flight converts. A 600s PDF mid-flight
+    # would stall SIGUSR1 reinit for 10 minutes. Drop queued futures, let
+    # running threads finish in background — new executor's workers can't
+    # trample them because maybe_convert() serializes per-path via _path_locks.
     if _executor:
-        _executor.shutdown(wait=True, cancel_futures=False); _executor = None
+        _executor.shutdown(wait=False, cancel_futures=True); _executor = None
+    # v8.6 Bug B3: stop old reconcile thread before rebuilding so a config
+    # change to reconcileIntervalSec takes effect on the new thread.
+    _stop_reconcile_thread()
     _current_config = None
 
     # v7.1: refresh sys.path with USER_SITE in case it was missing at startup.
@@ -1142,6 +1188,15 @@ def _do_reinit():
     if _current_observer is None:
         write_health_fast("idle_no_valid_dirs")
         return
+    # v8.6 Bug B3: start periodic reconcile safety-net. min=1s so a tiny
+    # reconcileIntervalSec doesn't spin-loop; 60s is the default.
+    interval = _cfg_int(new_config, "reconcileIntervalSec", DEFAULT_RECONCILE_SEC)
+    _reconcile_stop = threading.Event()
+    _reconcile_thread = threading.Thread(
+        target=_reconcile_loop, args=(_reconcile_stop, interval),
+        daemon=True, name="shadow-reconcile")
+    _reconcile_thread.start()
+    log("reconcile_thread_started", interval_sec=interval)
     write_health_fast("watching")
 
 def main():
@@ -1229,6 +1284,7 @@ def main():
     _bootstrap_stop.set()
     if _bootstrap_thread and _bootstrap_thread.is_alive():
         _bootstrap_thread.join(timeout=2)
+    _stop_reconcile_thread()  # v8.6 Bug B3
     if _current_observer: stop_observer(_current_observer)
     if _meta_observer: stop_observer(_meta_observer)
     if _executor: _executor.shutdown(wait=False, cancel_futures=True)
