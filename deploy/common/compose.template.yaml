@@ -1,0 +1,72 @@
+# carher-{USER_ID} template — do NOT use directly.
+# Use ./scaffold.sh <user-id> to generate deploy/carher-<N>/ from this template.
+#
+# Placeholders ({{VAR}}) get substituted; .env + secrets.env are written separately.
+
+services:
+  carher:
+    image: ${IMAGE_TAG}
+    container_name: carher-{{USER_ID}}
+    init: true
+    restart: unless-stopped
+    mem_limit: ${MEMORY_LIMIT:-2g}
+    networks:
+      - carher-net
+    env_file:
+      - ../../docker/server.env        # shared API keys
+      - ./secrets.env                  # per-user secrets (gitignored)
+    environment:
+      HOME: /data
+      NODE_OPTIONS: --max-old-space-size=1536
+      TZ: Asia/Shanghai
+      OPENCLAW_INSTANCE_ID: carher-{{USER_ID}}-compose
+      GOOGLE_APPLICATION_CREDENTIALS: /gcloud/application_default_credentials.json
+
+      REDIS_URL: redis://carher-redis:6379
+      CARHER_SERVER: local
+      CARHER_LAN_IP: 127.0.0.1
+      CARHER_A2A_PORT: "{{PORT_A2A}}"
+
+      VOICE_FE_HOST: u{{USER_ID}}-fe.carher.net
+      VOICE_PROXY_HOST: u{{USER_ID}}-proxy.carher.net
+      WEBCHAT_URL: http://localhost:{{PORT_GW}}#token=${CARHER_GATEWAY_TOKEN}
+
+      CARHER_ACP_ENABLED: "1"
+      A2A_ENABLED: "1"
+
+    ports:
+      - "{{PORT_GW}}:18789"
+      - "{{PORT_FE}}:8000"
+      - "{{PORT_WS}}:8080"
+      - "{{PORT_OAUTH}}:18891"
+      - "{{PORT_A2A}}:18800"
+
+    volumes:
+      - carher-{{USER_ID}}-home:/data
+      - carher-{{USER_ID}}-data:/data/.openclaw
+      - ${HOME}/.config/gcloud/application_default_credentials.json:/gcloud/application_default_credentials.json:ro
+      - ${HOME}/.openclaw/skills:/data/.openclaw/skills:ro
+      - ../../docker/plugins/a2a-gateway:/data/.openclaw/plugins/a2a-gateway:ro
+      - ../../config/u{{USER_ID}}.json5:/data/.openclaw/openclaw.json:ro
+      - ../../config/base.json5:/data/.openclaw/base.json5:ro
+      - ../../config/docker.json5:/data/.openclaw/docker.json5:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:18789/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+networks:
+  carher-net:
+    name: carher-net
+    external: true
+
+volumes:
+  carher-{{USER_ID}}-home:
+    name: carher-{{USER_ID}}-home
+    external: true
+  carher-{{USER_ID}}-data:
+    name: carher-{{USER_ID}}-data
+    external: true

@@ -1,0 +1,26 @@
+# Shared redis for carher fleet (a2a-gateway peer registry + feishu broadcast).
+# Network carher-net is created externally (see `network create` one-liner in README).
+#
+# Run once per host:
+#   docker compose -f deploy/common/redis.yaml up -d
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: carher-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    networks:
+      - carher-net
+    volumes:
+      - carher-redis-data:/data
+
+networks:
+  carher-net:
+    name: carher-net
+    external: true            # create with: docker network create carher-net
+
+volumes:
+  carher-redis-data:
+    name: carher-redis-data
+    external: true            # preserve data across compose resets

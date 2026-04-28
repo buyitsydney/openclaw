@@ -1,0 +1,72 @@
+# carher-{USER_ID} template — do NOT use directly.
+# Use ./scaffold.sh <user-id> to generate deploy/carher-<N>/ from this template.
+#
+# Placeholders ({{VAR}}) get substituted; .env + secrets.env are written separately.
+
+services:
+  carher:
+    image: ${IMAGE_TAG}
+    container_name: carher-103
+    init: true
+    restart: unless-stopped
+    mem_limit: ${MEMORY_LIMIT:-2g}
+    networks:
+      - carher-net
+    env_file:
+      - ../../docker/server.env        # shared API keys
+      - ./secrets.env                  # per-user secrets (gitignored)
+    environment:
+      HOME: /data
+      NODE_OPTIONS: --max-old-space-size=1536
+      TZ: Asia/Shanghai
+      OPENCLAW_INSTANCE_ID: carher-103-compose
+      GOOGLE_APPLICATION_CREDENTIALS: /gcloud/application_default_credentials.json
+
+      REDIS_URL: redis://carher-redis:6379
+      CARHER_SERVER: local
+      CARHER_LAN_IP: 127.0.0.1
+      CARHER_A2A_PORT: "30026"
+
+      VOICE_FE_HOST: u103-fe.carher.net
+      VOICE_PROXY_HOST: u103-proxy.carher.net
+      WEBCHAT_URL: http://localhost:30021#token=${CARHER_GATEWAY_TOKEN}
+
+      CARHER_ACP_ENABLED: "1"
+      A2A_ENABLED: "1"
+
+    ports:
+      - "30021:18789"
+      - "30023:8000"
+      - "30024:8080"
+      - "30025:18891"
+      - "30026:18800"
+
+    volumes:
+      - carher-103-home:/data
+      - carher-103-data:/data/.openclaw
+      - ${HOME}/.config/gcloud/application_default_credentials.json:/gcloud/application_default_credentials.json:ro
+      - ${HOME}/.openclaw/skills:/data/.openclaw/skills:ro
+      - ../../docker/plugins/a2a-gateway:/data/.openclaw/plugins/a2a-gateway:ro
+      - ../../config/u103.json5:/data/.openclaw/openclaw.json:ro
+      - ../../config/base.json5:/data/.openclaw/base.json5:ro
+      - ../../config/docker.json5:/data/.openclaw/docker.json5:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:18789/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+networks:
+  carher-net:
+    name: carher-net
+    external: true
+
+volumes:
+  carher-103-home:
+    name: carher-103-home
+    external: true
+  carher-103-data:
+    name: carher-103-data
+    external: true

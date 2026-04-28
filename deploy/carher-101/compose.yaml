@@ -1,0 +1,98 @@
+# carher-101 (Mac local tester) — declarative replacement for:
+#
+#   CARHER_ACP_ENABLED=1 A2A_ENABLED=1 ./start-user.sh --id=101 --image=...
+#
+# IMAGE_TAG comes from .env (the only thing you edit to upgrade).
+# Secrets come from secrets.env (gitignored).
+# Static config comes from bind-mounts of config/*.json5 (repo-tracked).
+#
+# Upgrade:  edit .env IMAGE_TAG -> docker compose up -d
+# Rollback: edit .env IMAGE_TAG back -> docker compose up -d
+# Logs:     docker compose logs -f
+# Stop:     docker compose down  (volumes preserved)
+
+services:
+  carher:
+    image: ${IMAGE_TAG}
+    container_name: carher-101
+    init: true
+    restart: unless-stopped
+    mem_limit: ${MEMORY_LIMIT:-2g}
+    networks:
+      - carher-net
+    env_file:
+      - ../../docker/server.env        # shared API keys (anthropic, openrouter)
+      - ./secrets.env                  # per-user secrets (feishu + gateway token)
+    environment:
+      # Runtime identity
+      HOME: /data
+      NODE_OPTIONS: --max-old-space-size=1536
+      TZ: Asia/Shanghai
+      OPENCLAW_INSTANCE_ID: carher-101-compose
+      GOOGLE_APPLICATION_CREDENTIALS: /gcloud/application_default_credentials.json
+
+      # Network topology (compose-internal redis, no host ports needed)
+      REDIS_URL: redis://carher-redis:6379
+      CARHER_SERVER: local
+      CARHER_LAN_IP: 127.0.0.1
+      CARHER_A2A_PORT: "30006"
+
+      # Frontend URLs (named-host routing via cloudflare tunnel)
+      VOICE_FE_HOST: u101-fe.carher.net
+      VOICE_PROXY_HOST: u101-proxy.carher.net
+      WEBCHAT_URL: http://localhost:30001#token=${CARHER_GATEWAY_TOKEN}
+
+      # Feature flags — declarative, no caller-side env gymnastics
+      CARHER_ACP_ENABLED: "1"
+      A2A_ENABLED: "1"
+      # A2A_OUTBOUND left unset = spoke mode. Set to "1" to make this a hub.
+
+      # NOTE: start-user.sh mirrors ANTHROPIC_* to CARHER_ANTHROPIC_* and also
+      # sets ANTHROPIC_API_KEY = ANTHROPIC_AUTH_TOKEN. We replicate that inside
+      # env_file via an entrypoint wrapper, OR we accept the mirror happens
+      # inside openclaw 2026.4.24+ itself (recent builds do this detection).
+      # For PoC: keep mirror out; if auth fails we add it back.
+
+    ports:
+      - "30001:18789"       # Gateway
+      - "30003:8000"        # Frontend HTTP
+      - "30004:8080"        # Frontend WS proxy
+      - "30005:18891"       # OAuth callback
+      - "30006:18800"       # A2A gateway
+
+    volumes:
+      # Persistent state (volumes preserved across compose up/down)
+      - carher-101-home:/data
+      - carher-101-data:/data/.openclaw
+
+      # Readonly host credentials
+      - ${HOME}/.config/gcloud/application_default_credentials.json:/gcloud/application_default_credentials.json:ro
+      - ${HOME}/.openclaw/skills:/data/.openclaw/skills:ro
+
+      # A2A plugin source (could live in image; kept mounted for hot-reload during PoC)
+      - ../../docker/plugins/a2a-gateway:/data/.openclaw/plugins/a2a-gateway:ro
+
+      # Config (L1/L2/L3 stack; readonly so openclaw cannot rewrite)
+      - ../../config/u101.json5:/data/.openclaw/openclaw.json:ro
+      - ../../config/base.json5:/data/.openclaw/base.json5:ro
+      - ../../config/docker.json5:/data/.openclaw/docker.json5:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:18789/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+networks:
+  carher-net:
+    name: carher-net
+    external: true
+
+volumes:
+  carher-101-home:
+    name: carher-101-home
+    external: true
+  carher-101-data:
+    name: carher-101-data
+    external: true
