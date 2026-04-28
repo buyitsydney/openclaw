@@ -47,11 +47,14 @@ services:
       A2A_ENABLED: "1"
       # A2A_OUTBOUND left unset = spoke mode. Set to "1" to make this a hub.
 
-      # NOTE: start-user.sh mirrors ANTHROPIC_* to CARHER_ANTHROPIC_* and also
-      # sets ANTHROPIC_API_KEY = ANTHROPIC_AUTH_TOKEN. We replicate that inside
-      # env_file via an entrypoint wrapper, OR we accept the mirror happens
-      # inside openclaw 2026.4.24+ itself (recent builds do this detection).
-      # For PoC: keep mirror out; if auth fails we add it back.
+      # Anthropic auth mirror — REQUIRED.
+      # server.env provides ANTHROPIC_AUTH_TOKEN/ANTHROPIC_BASE_URL (Wangsu LiteLLM
+      # proxy), but openclaw's provider-anthropic reads ANTHROPIC_API_KEY.
+      # start-user.sh does this mirror in bash; compose does it declaratively here.
+      # Both point at the same Wangsu token.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_AUTH_TOKEN}
+      CARHER_ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN}
+      CARHER_ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL}
 
     ports:
       - "30001:18789"       # Gateway
