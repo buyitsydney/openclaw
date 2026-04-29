@@ -1,0 +1,29 @@
+// config/u12.json5 — S1 carher-12 identity (卜弋天 test bot)
+//
+// $include's docker.json5 → base.json5. Mounted into the container at
+// /data/.openclaw/openclaw.json.
+//
+// This is the test bot, not the primary — DM is open (no allowFrom).
+// Migrated from old flat config (docker/user-configs/carher-config-12.json)
+// to the 3-layer $include architecture as part of compose-migration PoC.
+
+{
+  "$include": "./docker.json5",
+
+  // 2026-04-27 upstream workaround: explicit root-level gateway.mode to avoid
+  // "gateway-mode-missing-vs-last-good" false-positive clobber in 0424+ CLI
+  // pre-check. See u13.json5 for the fleet-wide note.
+  gateway: {
+    mode: "local",
+  },
+
+  channels: {
+    feishu: {
+      name: "test的her",
+      appId: "cli_a917fa892ff91bb5",
+      appSecret: "${FEISHU_APP_SECRET}",
+      botOpenId: "ou_e61e28e780d62a44b004ab5308da1323",
+      oauthRedirectUri: "https://s1-u12-auth.carher.net/feishu/oauth/callback",
+    },
+  },
+}
