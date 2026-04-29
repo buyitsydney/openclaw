@@ -84,15 +84,19 @@
 
   plugins: {
     // A+B v2 (2026-04): bundled feishu plugin removed; no deny needed.
-    // Both feishu-her and a2a-gateway ship under docker/plugins/ and are
-    // loaded via this path (relative to cwd — docker cwd=/app, host cwd=repo).
-    load: {
-      paths: [
-        "docker/plugins/feishu-her",
-        "docker/plugins/a2a-gateway",
-        "docker/plugins/shadow-daemon",
-      ],
-    },
+    //
+    // plugins.load.paths is env-specific (absolute path of plugin dir on disk
+    // differs between docker / native / mac app), so it lives in the env
+    // overlay — docker.json5 for containers, future host overlay for native
+    // her. Keeping relative paths here was a config bug: openclaw 0424
+    // resolves them via `path.resolve(trimmed)` which uses process.cwd(), so
+    // the gateway at CWD=/app sees `/app/docker/plugins/*` OK but a her-side
+    // `openclaw status` tool call at CWD=/data/.openclaw/workspace sees a
+    // non-existent `/data/.openclaw/workspace/docker/plugins/*` and reports
+    // "Config invalid" even though the running gateway is healthy.
+    //
+    // Array-field rule (see header): since paths is NOT declared here, any
+    // overlay may declare it once without the deep-merge concat bug.
     entries: {
       "feishu-her": { enabled: true },
       "a2a-gateway": {
