@@ -1144,39 +1144,52 @@ def test_oom_convert_produces_oom_tombstone(sandbox):
         stop_daemon(proc, timeout=15)
 
 
-def test_convert_subprocess_has_memory_budget(sandbox):
-    """v8.7 Finding #3: daemon must cap markitdown subprocess memory via
-    `preexec_fn=resource.setrlimit(RLIMIT_AS, convertMemoryMB * MB)`.
-    Without this, a runaway markitdown (5-20 MB PDF with huge rasterized
-    pages) can take 3+ GB, get cgroup-OOM-killed in prod, and blame lands
-    on the wrong layer.
+def test_pdf_batching_wires_up_when_oversized(sandbox):
+    """v8.8 Finding #3: v8.7's RLIMIT_AS was reverted (it broke markitdown's
+    own import). v8.8 uses page-chunking instead: large PDFs go through
+    pymupdf → N-page chunk → markitdown once per chunk → concat.
 
-    macOS's Darwin kernel silently rejects RLIMIT_AS so we can't verify
-    the limit took effect from the child's getrlimit() — Linux container
-    runs will honor it. The test checks the daemon's INTENT: every
-    convert() call logs `convert_subprocess mem_mb=<N>` with N matching
-    the config. Presence of the log proves the preexec_fn would run on
-    Linux, which is where it matters."""
-    write_config(sandbox["shadow"], convertMemoryMB=512)
+    We can't run real markitdown on macOS pytest (no markitdown installed,
+    mock markitdown is used), so this test verifies daemon WIRE-UP only:
+    a PDF with > pdfBatchPages pages must emit `pdf_batch_start` log.
+    The actual memory reduction is validated in the v87-repro Docker
+    integration harness under /tmp/v8.7-repro/."""
+    import pytest
+    try:
+        import pymupdf
+    except ImportError:
+        pytest.skip("pymupdf not installed on host; integration tests rely on docker harness")
+
+    # Build a small N-page text PDF inline (pymupdf is available).
+    pdf_path = sandbox["docs"] / "multipage.pdf"
+    doc = pymupdf.open()
+    for i in range(25):
+        pg = doc.new_page()
+        pg.insert_text((50, 50), f"Page {i+1} — v8.8 batching probe", fontsize=12)
+    doc.save(str(pdf_path))
+    doc.close()
+
+    # Set batch size SMALLER than the PDF so batching triggers.
+    write_config(sandbox["shadow"], pdfBatchPages=5)
     proc = start_daemon()
     try:
         wait_for_ready(sandbox["shadow"], timeout=15)
-        f = sandbox["docs"] / "probe.txt"
-        f.write_text("rlimit probe payload")
-        # Wait long enough for debounce + convert to emit the log.
-        time.sleep(2)
+        # Touch mtime so the watched file really fires a convert event
+        # (it was created before start_daemon so watchdog may miss the create).
+        pdf_path.touch()
+        time.sleep(3)
         lf = getattr(proc, "_stderr_file", None)
         assert lf is not None
         lf.flush()
         lf.seek(0)
         blob = lf.read().decode("utf-8", "replace")
-        assert '"event": "convert_subprocess"' in blob, (
-            "v8.7: daemon did not emit `convert_subprocess` log — "
-            "memory-budget code path is not wired."
+        assert '"event": "pdf_batch_start"' in blob, (
+            "v8.8: 25-page PDF with pdfBatchPages=5 did not trigger batching "
+            f"(no pdf_batch_start log). Log excerpt:\n{blob[-800:]}"
         )
-        assert '"mem_mb": 512' in blob, (
-            f"v8.7: convert_subprocess log did not carry mem_mb=512 "
-            f"(config convertMemoryMB=512 not propagated). Log excerpt:\n{blob[-500:]}"
+        assert '"pages": 25' in blob and '"batch": 5' in blob, (
+            f"v8.8: pdf_batch_start log missing expected fields. "
+            f"Log excerpt:\n{blob[-500:]}"
         )
     finally:
         stop_daemon(proc)
