@@ -10,6 +10,14 @@
 {
   "$include": "./docker.json5",
 
+  // 2026-04-27: openclaw 2026.4.24 启动检查 root parsed gateway.mode 不展开
+  // $include。每个 user config 都必须在顶层显式声明,否则会触发 clobber
+  // ("Config auto-restored from backup: gateway-mode-missing-vs-last-good")。
+  // 已知 upstream 限制,fleet-wide workaround(见 u13/14/75/198/199/200)。
+  gateway: {
+    mode: "local",
+  },
+
   channels: {
     feishu: {
       name: "tester的her",

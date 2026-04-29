@@ -6,6 +6,13 @@
 {
   "$include": "./docker.json5",
 
+  // 2026-04-27 upstream workaround: explicit root-level gateway.mode to avoid
+  // "gateway-mode-missing-vs-last-good" false-positive clobber in 0424 CLI
+  // pre-check. See u13.json5 for the fleet-wide note.
+  gateway: {
+    mode: "local",
+  },
+
   channels: {
     feishu: {
       name: "tester3的her",
