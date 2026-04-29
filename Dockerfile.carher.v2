@@ -6,7 +6,7 @@
 #
 # 三条轴独立，互不耦合。
 
-ARG OPENCLAW_TAG=2026.4.20
+ARG OPENCLAW_TAG=2026.4.24
 
 # Her 可读的 upstream openclaw src（只读、不参与 runtime）
 # 用 openclaw 官方 image 本身作 builder —— 它已经装了 git 2.39，省掉 docker.io 依赖
@@ -65,6 +65,11 @@ RUN --mount=type=cache,target=/root/.npm \
     cd /app/docker/plugins/a2a-gateway && \
     npm install --omit=dev --ignore-scripts
 
+COPY docker/plugins/shadow-daemon /app/docker/plugins/shadow-daemon
+RUN --mount=type=cache,target=/root/.npm \
+    cd /app/docker/plugins/shadow-daemon && \
+    npm install --omit=dev --ignore-scripts
+
 # CarHer 共享配置（shared-config.json5 + 用户 overlay）
 COPY docker/shared-config.json5 /app/docker/shared-config.json5
 COPY docker/user-configs         /app/docker/user-configs
@@ -77,10 +82,20 @@ COPY --from=openclaw-src-fetcher /src/src /app/openclaw-src/src
 COPY scripts/carher-entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# 全局 npm 安装去到持久卷（Her 的 CLI 安装跨重启保留）
+# 全局 npm 安装去到持久卷(Her 的 CLI 安装跨重启保留)
 ENV NPM_CONFIG_PREFIX="/data/.openclaw/local"
-ENV PATH="/data/.openclaw/local/bin:${PATH}"
+# pip install --user 默认 $HOME/.local = /data/.local (HOME=/data via start-user.sh)。
+# /data 是 docker volume,所以 /data/.local 自动持久化。把 .local/bin 加进 PATH
+# 让 markitdown 等 CLI 可调用。
+ENV PATH="/data/.openclaw/local/bin:/data/.local/bin:${PATH}"
 ENV NODE_ENV=production
+
+# PIP_BREAK_SYSTEM_PACKAGES: 绕开 Debian 12+ 的 PEP 668 externally-managed 拦截。
+# 我们故意不设 PYTHONUSERBASE — 让 pip --user 走默认 $HOME/.local,这样
+# 不论 Her 在哪个 shell 上下文(docker exec / claude code subprocess /
+# bash -l)安装,pip 都落到同一个固定位置 /data/.local。daemon 进程同样
+# 不强制 PYTHONUSERBASE,继承相同默认 → 装包路径与读取路径绝对一致。
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
 ARG BUILD_HASH=unknown
 LABEL carher.build.hash=$BUILD_HASH

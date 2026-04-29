@@ -14,6 +14,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 const PLUGIN_ID = "shadow-daemon";
 const MAX_RESTARTS = 3;
 const RESTART_BACKOFF_MS = 5_000;
+const RESTART_COOLDOWN_MS = 5 * 60 * 1000;
 
 type ShadowConfig = {
   enabled: boolean;
@@ -72,8 +73,15 @@ const plugin = {
     let restarts = 0;
     let stopping = false;
     let backoffTimer: NodeJS.Timeout | null = null;
+    let cooldownTimer: NodeJS.Timeout | null = null;
 
     function buildEnv(workspaceDir: string): NodeJS.ProcessEnv {
+      // Inherit container env as-is. We deliberately do NOT set PYTHONUSERBASE
+      // here. Per-shell consistency matters: when Her runs `pip install --user`
+      // via docker exec / Claude Code Bash, her shell may not see the env.
+      // If we override here daemon and her shell would diverge. By leaving
+      // PYTHONUSERBASE unset, both default to ~/.local (HOME=/data → /data/.local,
+      // which is on the /data docker volume → persistent across container rebuild).
       return {
         ...process.env,
         SHADOW_WORKSPACE: workspaceDir,
@@ -93,6 +101,16 @@ const plugin = {
       });
       child = proc;
 
+      // Reset restart counter after sustained healthy operation
+      if (cooldownTimer) {clearTimeout(cooldownTimer);}
+      cooldownTimer = setTimeout(() => {
+        if (restarts > 0) {
+          logger.info?.(`shadow-daemon: healthy for ${RESTART_COOLDOWN_MS / 1000}s, resetting restart counter`);
+          restarts = 0;
+        }
+        cooldownTimer = null;
+      }, RESTART_COOLDOWN_MS);
+
       proc.stdout.setEncoding("utf8");
       proc.stdout.on("data", (chunk: string) => {
         for (const line of chunk.split(/\r?\n/)) {
@@ -110,6 +128,7 @@ const plugin = {
 
       proc.on("exit", (code, signal) => {
         child = null;
+        if (cooldownTimer) {clearTimeout(cooldownTimer); cooldownTimer = null;}
         if (stopping) {
           logger.info?.(`shadow-daemon: exited during shutdown (code=${code}, signal=${signal})`);
           return;
@@ -149,6 +168,10 @@ const plugin = {
         if (backoffTimer) {
           clearTimeout(backoffTimer);
           backoffTimer = null;
+        }
+        if (cooldownTimer) {
+          clearTimeout(cooldownTimer);
+          cooldownTimer = null;
         }
         const proc = child;
         child = null;

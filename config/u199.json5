@@ -14,6 +14,25 @@
 {
   "$include": "./docker.json5",
 
+  // 2026-04-27: openclaw 2026.4.24 boot check 直接读 root-level parsed
+  // gateway.mode (不展开 $include),missing 就 clobber + restore from
+  // last-good。docker-199 一晚生成 145 个 .clobbered.<ts>。每个 user
+  // config 都必须在顶层显式 set mode,否则 base.json5 里的值看不到。
+  gateway: {
+    mode: "local",
+  },
+
+  // A2A hub mode: 13/198/199/200 are permanent hubs (god-mode peers).
+  plugins: {
+    entries: {
+      "a2a-gateway": {
+        config: {
+          outbound: { enabled: true },
+        },
+      },
+    },
+  },
+
   channels: {
     feishu: {
       name: "研究2的her",

@@ -90,6 +90,7 @@
       paths: [
         "docker/plugins/feishu-her",
         "docker/plugins/a2a-gateway",
+        "docker/plugins/shadow-daemon",
       ],
     },
     entries: {
@@ -102,6 +103,12 @@
           // Overridden per-user in users/admin.json5 (hub) and left default
           // (spoke) in users/{101,102}.json5.
           outbound: { enabled: true },
+        },
+      },
+      "shadow-daemon": {
+        enabled: true,
+        config: {
+          shadowDir: "memory/_shadow",
         },
       },
       "active-memory": { enabled: false },

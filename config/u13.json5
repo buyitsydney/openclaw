@@ -6,6 +6,23 @@
 {
   "$include": "./docker.json5",
 
+  // 2026-04-27: openclaw 2026.4.24 启动检查 root parsed gateway.mode 不展开
+  // $include。每个 user config 都必须在顶层显式声明,否则会触发 clobber。
+  gateway: {
+    mode: "local",
+  },
+
+  // A2A hub 模式:carher-13 (弋天) 是 god mode/hub,可以主动调度其他 peer。
+  plugins: {
+    entries: {
+      "a2a-gateway": {
+        config: {
+          outbound: { enabled: true },
+        },
+      },
+    },
+  },
+
   channels: {
     feishu: {
       name: "弋天的her",

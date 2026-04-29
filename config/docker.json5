@@ -98,6 +98,10 @@
   },
 
   plugins: {
+    // 2026-04-27: bonjour 在 openclaw 2026.4.24 base 里 CIAO PROBING CANCELLED
+    // 抛 unhandled rejection,把 gateway 30s 一循环 kill 掉。Docker 容器内
+    // mDNS 本来就用不上,直接禁用规避。
+    deny: ["bonjour"],
     entries: {
       acpx: { enabled: true },
     },

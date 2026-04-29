@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.50.0",
+    "@sinclair/typebox": "^0.34.0",
     "ioredis": "^5.10.1"
   },
   "devDependencies": {

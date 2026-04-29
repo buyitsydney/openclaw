@@ -1,0 +1,24 @@
+{
+  "id": "shadow-daemon",
+  "name": "Shadow Daemon",
+  "description": "Config-driven document→markdown mirror for memory_search semantic recall",
+  "version": "0.2.0",
+  "skills": ["./skills"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": { "type": "boolean", "default": true },
+      "shadowDir": {
+        "type": "string",
+        "description": "Relative path under workspace where converted .md mirrors are written",
+        "default": "memory/_shadow"
+      },
+      "pythonBin": {
+        "type": "string",
+        "description": "Python interpreter path used to exec the daemon",
+        "default": "python3"
+      }
+    }
+  }
+}
