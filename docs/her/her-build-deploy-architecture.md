@@ -245,6 +245,21 @@ cd deploy/carher-N && docker compose up -d
 ### 已解决
 - **Anthropic auth mirror** — compose.yaml 里显式 mirror `ANTHROPIC_AUTH_TOKEN → ANTHROPIC_API_KEY`（start-user.sh 在 bash 里做这件事；compose 需要显式声明，否则 bot 回 `Missing API key for provider "anthropic"`）
 
+### 首次启动慢（3-5 分钟，非 bug）
+
+openclaw 2026.4.24+ 引入 **"lazy runtime deps"** 机制：plugin 依赖（`@anthropic-ai/sdk`、`@mariozechner/pi-ai`、`@aws-sdk/*` 等 25+ 包）不在 image 里 bundle，改为首次启动时 npm install 到持久化 volume `/data/.openclaw/plugin-runtime-deps/openclaw-<version>-<hash>/`。
+
+**表现**：
+- **首次启动**（新容器、volume 里没有对应 openclaw 版本的 plugin-runtime-deps）= **3-5 分钟**直到 `Feishu WSClient connected`。期间 log 显示 "starting channels and sidecars..." 后没动静，直到 npm install 完成。
+- **第二次起及以后**（同 volume）= **< 10 秒**。
+- **跨版本升级**（openclaw tag 变）= 视为首次启动，重装一遍（目录按 `<version>-<hash>` 隔离）。
+
+**应对**：
+- compose.yaml `healthcheck.start_period=300s`（5 min）给足首启时间，避免被误判 unhealthy。
+- 观察 log `plugins] * staging bundled runtime deps` → `installed bundled runtime deps in *ms` 确认在装什么。
+
+**未来优化**：Dockerfile 里预 `RUN node openclaw.mjs plugins stage-runtime-deps --all` 把 deps 预装到 image（但会让 image 大 ~600MB，需权衡）。
+
 ### 尚未做
 - **GitHub Actions**：`.github/workflows/build-image.yml` 自动化 build+push（需要 gh token 加 `write:packages` scope）
 - **Image 签名**：`cosign sign` + `cosign verify` 供应链安全
