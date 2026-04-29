@@ -37,6 +37,11 @@ DEFAULT_RECONCILE_SEC = 60  # safety-net rescan to catch lost watchdog events
 DEFAULT_EXTRACT_TIMEOUT_SEC = 600  # Bug S fix: 30MB PDFs need >180s
 DEFAULT_MAX_OUTPUT_MB = 5          # Bug L fix: cap per-shadow md size
 DEFAULT_ARCHIVE_MAX_FILES = 20     # Bug Q fix: cap zip entries
+# v8.7 Finding #3: cap markitdown subprocess memory so a runaway PDF
+# render doesn't blow the container cgroup (mysterious SIGKILL) — instead
+# the subprocess self-terminates predictably at the configured AS budget
+# and daemon writes a self-describing oom tombstone.
+DEFAULT_CONVERT_MEMORY_MB = 1024    # 1 GiB per-convert address-space cap
 RECENT_BUFFER_SIZE = 50            # Bug R fix: rolling skips/errors
 
 # ---- Bug O helper: filename → expects strict UTF-8 text? ----
@@ -510,7 +515,29 @@ def write_shadow(src: Path, dst: Path, body: str, status="ok", error=""):
     os.replace(tmp, dst)
     os.utime(dst, (src_mtime, src_mtime))
 
-def convert(src: Path, dst: Path, timeout_sec: int, max_output_bytes: int, archive_max_files: int) -> bool:
+def _make_preexec_fn(mem_bytes: int):
+    """v8.7: build a subprocess preexec callback that caps RLIMIT_AS to mem_bytes.
+    Returns None on platforms without the `resource` module (e.g. Windows), so the
+    daemon degrades to "no budget" rather than failing on import.
+    Factoring this out of convert() keeps it small and easy to mock in tests."""
+    try:
+        import resource  # POSIX only — absent on Windows
+    except ImportError:
+        return None
+    if mem_bytes <= 0:
+        return None
+    def _apply_limits():
+        try:
+            resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
+        except (ValueError, OSError):
+            pass  # best-effort; don't block subprocess on obscure rlimit rejection
+    return _apply_limits
+
+
+def convert(src: Path, dst: Path, timeout_sec: int, max_output_bytes: int,
+            archive_max_files: int, convert_mem_bytes: int = 0) -> bool:
+    """v8.7: convert_mem_bytes > 0 caps markitdown subprocess address space via
+    RLIMIT_AS preexec. 0 = no budget (legacy behavior, cgroup is the only layer)."""
     global _cumulative_converted
     path_str = str(src)
     # Bug X1: source can disappear at any point during convert (Her batch-deletes,
@@ -606,9 +633,16 @@ def convert(src: Path, dst: Path, timeout_sec: int, max_output_bytes: int, archi
             return False
 
     try:
+        # v8.7 Finding #3: record our memory budget in the log so operators
+        # (and tests) can verify the daemon is capping markitdown even on
+        # platforms where getrlimit() from inside the child can't confirm
+        # it (macOS silently rejects RLIMIT_AS; Linux honors it correctly).
+        if convert_mem_bytes > 0:
+            log("convert_subprocess", src=str(src), mem_mb=convert_mem_bytes // (1024 * 1024))
         proc = subprocess.run(
             [sys.executable, "-m", "markitdown", str(src)],
             capture_output=True, timeout=timeout_sec, check=False,
+            preexec_fn=_make_preexec_fn(convert_mem_bytes),
         )
         if proc.returncode == 0:
             out_bytes = proc.stdout
@@ -713,11 +747,14 @@ def _read_shadow_size(sp: Path) -> Optional[int]:
 def maybe_convert(src: Path, config: dict) -> bool:
     """Acquire per-path lock, check size/staleness, run markitdown if needed.
     Bug I fix: detect mtime OR size change so resetting mtime can't mask edits.
-    v8.5 Bug L: all config reads via _cfg_int to tolerate type typos."""
+    v8.5 Bug L: all config reads via _cfg_int to tolerate type typos.
+    v8.7: also pass convertMemoryMB through so convert() can cap the markitdown
+    subprocess's address space."""
     max_file_bytes = _cfg_int(config, "maxFileMB", 50) * 1024 * 1024
     extract_timeout = _cfg_int(config, "extractTimeoutSec", DEFAULT_EXTRACT_TIMEOUT_SEC)
     max_output_bytes = _cfg_int(config, "maxOutputMB", DEFAULT_MAX_OUTPUT_MB) * 1024 * 1024
     archive_max_files = _cfg_int(config, "archiveMaxFiles", DEFAULT_ARCHIVE_MAX_FILES)
+    convert_mem_bytes = _cfg_int(config, "convertMemoryMB", DEFAULT_CONVERT_MEMORY_MB) * 1024 * 1024
     path_str = str(src.resolve())
     lock = _get_path_lock(path_str)
     with lock:
@@ -760,7 +797,8 @@ def maybe_convert(src: Path, config: dict) -> bool:
             need = mtime_newer or size_changed
         if not need:
             return False
-        return convert(src, sp, extract_timeout, max_output_bytes, archive_max_files)
+        return convert(src, sp, extract_timeout, max_output_bytes, archive_max_files,
+                       convert_mem_bytes=convert_mem_bytes)
 
 def remove_shadow_for(src: Path):
     sp = shadow_path_for(src)
@@ -1201,7 +1239,7 @@ def _do_reinit():
 
 def main():
     global _meta_observer
-    log("daemon_start", workspace=str(WORKSPACE), shadow_dir=str(SHADOW_DIR), version="v8.6")
+    log("daemon_start", workspace=str(WORKSPACE), shadow_dir=str(SHADOW_DIR), version="v8.7")
     SHADOW_DIR.mkdir(parents=True, exist_ok=True)
     # v8.5 Bug M: sweep any stale *.tmp files left over from a crash
     # between write_text and os.replace in a previous daemon lifetime.

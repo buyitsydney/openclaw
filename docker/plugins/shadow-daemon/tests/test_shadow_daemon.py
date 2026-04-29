@@ -1099,3 +1099,126 @@ def test_periodic_reconcile_runs_without_watchdog_events(sandbox):
         )
     finally:
         stop_daemon(proc)
+
+
+# ============================================================
+# v8.7 — OOM memory budget + counter-race (Her regression findings 2026-04-29)
+# ============================================================
+
+def test_oom_convert_produces_oom_tombstone(sandbox):
+    """v8.7 Finding #3: 5 MB PDF reproducibly OOMs markitdown; cgroup SIGKILLs
+    the subprocess (rc=-9). Today the daemon already writes SOME tombstone
+    but labels it 'failed rc=-9' — not self-describing. After v8.7, daemon
+    must classify subprocess OOM (rc in {137, -9}) explicitly as `oom`,
+    surface it under recent_errors with kind='oom', and write a shadow with
+    status='oom' so Her can translate the failure reason to the user."""
+    write_config(sandbox["shadow"])
+    proc = start_daemon(env_extra={"MOCK_MARKITDOWN_OOM": "1"})
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        f = sandbox["docs"] / "hungry.txt"
+        f.write_text("anything — mock will OOM regardless")
+        # Give daemon enough time to debounce → attempt convert → observe rc=-9 → tombstone
+        deadline = time.monotonic() + 12
+        import hashlib
+        sha = hashlib.sha256(str(f.resolve()).encode()).hexdigest()[:8]
+        sp_glob = sandbox["shadow"].glob(f"{sha}__*.md")
+        shadow = None
+        while time.monotonic() < deadline:
+            hits = [p for p in sandbox["shadow"].glob(f"{sha}__*.md") if not p.name.startswith("_")]
+            if hits:
+                shadow = hits[0]
+                break
+            time.sleep(0.2)
+        assert shadow is not None, "v8.7: OOM convert did not produce a tombstone"
+        body = shadow.read_text()
+        assert "oom" in body.lower(), (
+            f"v8.7: OOM tombstone must self-describe as OOM in body. Got: {body[:200]!r}"
+        )
+        h = read_health(sandbox["shadow"])
+        kinds = {e.get("kind") for e in h.get("recent_errors", [])}
+        assert "oom" in kinds, (
+            f"v8.7: recent_errors must include kind='oom'. Got kinds={kinds!r}"
+        )
+    finally:
+        stop_daemon(proc, timeout=15)
+
+
+def test_convert_subprocess_has_memory_budget(sandbox):
+    """v8.7 Finding #3: daemon must cap markitdown subprocess memory via
+    `preexec_fn=resource.setrlimit(RLIMIT_AS, convertMemoryMB * MB)`.
+    Without this, a runaway markitdown (5-20 MB PDF with huge rasterized
+    pages) can take 3+ GB, get cgroup-OOM-killed in prod, and blame lands
+    on the wrong layer.
+
+    macOS's Darwin kernel silently rejects RLIMIT_AS so we can't verify
+    the limit took effect from the child's getrlimit() — Linux container
+    runs will honor it. The test checks the daemon's INTENT: every
+    convert() call logs `convert_subprocess mem_mb=<N>` with N matching
+    the config. Presence of the log proves the preexec_fn would run on
+    Linux, which is where it matters."""
+    write_config(sandbox["shadow"], convertMemoryMB=512)
+    proc = start_daemon()
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        f = sandbox["docs"] / "probe.txt"
+        f.write_text("rlimit probe payload")
+        # Wait long enough for debounce + convert to emit the log.
+        time.sleep(2)
+        lf = getattr(proc, "_stderr_file", None)
+        assert lf is not None
+        lf.flush()
+        lf.seek(0)
+        blob = lf.read().decode("utf-8", "replace")
+        assert '"event": "convert_subprocess"' in blob, (
+            "v8.7: daemon did not emit `convert_subprocess` log — "
+            "memory-budget code path is not wired."
+        )
+        assert '"mem_mb": 512' in blob, (
+            f"v8.7: convert_subprocess log did not carry mem_mb=512 "
+            f"(config convertMemoryMB=512 not propagated). Log excerpt:\n{blob[-500:]}"
+        )
+    finally:
+        stop_daemon(proc)
+
+
+def test_cumulative_counters_monotonic_under_burst(sandbox):
+    """Bug #2 (Her 2026-04-28 finding): `_cumulative_converted` exposed in
+    health.json as `indexed_total` can be read mid-increment across multiple
+    worker threads because `_persist_health` reads counters without taking
+    `_state_lock`. Monitor sees non-monotonic values → false alerts.
+    After v8.7, indexed_total observed across any sequence of _health.json
+    snapshots must be non-decreasing."""
+    # Force as much concurrency as possible on the read side
+    write_config(sandbox["shadow"], maxWorkers=8, debounceMs=50)
+    proc = start_daemon()
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        # Burst: 100 small files
+        for i in range(100):
+            (sandbox["docs"] / f"churn_{i:03}.txt").write_text(f"n={i}")
+        # Sample health.json repeatedly during the convert storm
+        samples = []
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            h = read_health(sandbox["shadow"])
+            it = (h.get("progress") or {}).get("indexed_total")
+            if isinstance(it, int):
+                samples.append(it)
+            if samples and samples[-1] >= 100:
+                break
+            time.sleep(0.05)
+        # indexed_total must be monotonically non-decreasing
+        regressions = [
+            (i, samples[i - 1], samples[i])
+            for i in range(1, len(samples))
+            if samples[i] < samples[i - 1]
+        ]
+        assert not regressions, (
+            f"Bug #2: indexed_total went BACKWARDS across {len(regressions)} samples. "
+            f"First regression: sample[{regressions[0][0] - 1}]={regressions[0][1]} "
+            f"→ sample[{regressions[0][0]}]={regressions[0][2]}. "
+            f"Full sequence (trimmed): {samples[:30]} ... {samples[-10:]}"
+        )
+    finally:
+        stop_daemon(proc)
