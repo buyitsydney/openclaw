@@ -512,3 +512,69 @@ describe("feishu gateway reasoning: enqueue-followup reproducer", () => {
     await gatewayPromise;
   });
 });
+
+describe("resolveEffectiveReasoningMode: fleet-wide config kill switch", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    readSessionStoreJson5Mock.mockReturnValue({ store: {}, ok: true });
+  });
+
+  it("returns 'off' even when persisted is 'stream' if config.channels.feishu.reasoning.defaultLevel='off'", async () => {
+    const { resolveEffectiveReasoningMode } = await import("./gateway.js");
+    readSessionStoreJson5Mock.mockReturnValue({
+      store: {
+        "agent:main:feishu:dm:oc_dm_room": { reasoningLevel: "stream" },
+      },
+      ok: true,
+    });
+    const cfg = {
+      channels: { feishu: { reasoning: { defaultLevel: "off" } } },
+    } as unknown as OpenClawConfig;
+    const result = resolveEffectiveReasoningMode({
+      cleanText: "hello",
+      storePath: "/tmp/feishu-killswitch.json",
+      sessionKey: "agent:main:feishu:dm:oc_dm_room",
+      config: cfg,
+    });
+    expect(result).toBe("off");
+  });
+
+  it("inline /reasoning:stream still overrides fleet 'off' kill switch", async () => {
+    const { resolveEffectiveReasoningMode } = await import("./gateway.js");
+    const cfg = {
+      channels: { feishu: { reasoning: { defaultLevel: "off" } } },
+    } as unknown as OpenClawConfig;
+    const result = resolveEffectiveReasoningMode({
+      cleanText: "hi /reasoning:stream",
+      storePath: "/tmp/feishu-killswitch.json",
+      sessionKey: "agent:main:feishu:dm:oc_dm_room",
+      config: cfg,
+    });
+    expect(result).toBe("stream");
+  });
+
+  it("falls back to her historical 'stream' default when no fleet config + no persisted", async () => {
+    const { resolveEffectiveReasoningMode } = await import("./gateway.js");
+    const result = resolveEffectiveReasoningMode({
+      cleanText: "hello",
+      storePath: "/tmp/feishu-no-config.json",
+      sessionKey: "agent:main:feishu:dm:oc_dm_room",
+      config: {} as OpenClawConfig,
+    });
+    expect(result).toBe("stream");
+  });
+
+  it("returns 'off' when fleet defaultLevel='off' and no persisted state", async () => {
+    const { resolveEffectiveReasoningMode } = await import("./gateway.js");
+    const cfg = {
+      channels: { feishu: { reasoning: { defaultLevel: "off" } } },
+    } as unknown as OpenClawConfig;
+    const result = resolveEffectiveReasoningMode({
+      cleanText: "hello",
+      storePath: "/tmp/feishu-killswitch-empty.json",
+      sessionKey: "agent:main:feishu:dm:oc_dm_room",
+      config: cfg,
+    });
+    expect(result).toBe("off");
+  });
+});

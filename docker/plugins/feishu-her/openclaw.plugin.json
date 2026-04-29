@@ -39,6 +39,17 @@
               "oauthPort": { "type": "integer" }
             }
           },
+          "reasoning": {
+            "type": "object",
+            "description": "Fleet-wide reasoning controls for feishu-her.",
+            "properties": {
+              "defaultLevel": {
+                "type": "string",
+                "enum": ["off", "on", "stream"],
+                "description": "Default reasoning mode when no per-session value is set. 'off' acts as a kill switch and ignores previously persisted reasoningLevel values; inline /reasoning:xxx still wins."
+              }
+            }
+          },
           "accounts": { "type": "object" }
         }
       }
