@@ -66,16 +66,29 @@ export async function registerAllFeishuTools(api: OpenClawPluginApi): Promise<vo
   registerGroupModeTool(api);
   registerFeishuBotDirectoryTool(api);
   registerFeishuBoardTools(api);
-  // Gate knowledge-qa on backend scope availability (auto-detected, no config needed)
+  // knowledge-qa: register synchronously so it makes the plugin capture
+  // window. openclaw snapshots `captured.tools` immediately after this
+  // `register()` returns (registry-*.js line 343:
+  //   `registry.tools.push(...captured.tools.map(...))`), so any tool
+  // pushed AFTER the snapshot (e.g. via `await fetchBackendUserScopes`)
+  // never reaches `registry.tools` → Her's LLM never sees it. We register
+  // sync unconditionally; the tool's own execute() already calls
+  // `requireUserToken` which returns an auth_url to prompt re-authorization
+  // if the scope is actually missing at invocation time. Backend scope is
+  // only probed as a warning, not as a gate.
+  registerFeishuKnowledgeQATool(api);
   const accounts = listEnabledFeishuAccounts(api.config);
   if (accounts.length > 0) {
-    const backendScopes = await fetchBackendUserScopes(accounts[0]);
-    if (!backendScopes || backendScopes.has(KNOWLEDGE_QA_REQUIRED_SCOPE)) {
-      registerFeishuKnowledgeQATool(api);
-    } else {
-      api.logger.info?.(
-        `feishu: skipping knowledge_qa tool (scope ${KNOWLEDGE_QA_REQUIRED_SCOPE} not in app backend)`,
-      );
-    }
+    void fetchBackendUserScopes(accounts[0])
+      .then((scopes) => {
+        if (scopes && !scopes.has(KNOWLEDGE_QA_REQUIRED_SCOPE)) {
+          api.logger.warn?.(
+            `feishu: knowledge_qa tool registered but backend lacks ${KNOWLEDGE_QA_REQUIRED_SCOPE}; invocations will return auth_url until scope is granted`,
+          );
+        }
+      })
+      .catch(() => {
+        // Probe failure is non-fatal; tool's execute() handles scope misses
+      });
   }
 }
