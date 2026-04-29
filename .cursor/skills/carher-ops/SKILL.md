@@ -57,7 +57,7 @@ config/u{N}.json5        ← L3: per-user 身份（feishu appId/secret/botOpenId
 
 ## 第 3 章 · 镜像构建（唯一正确方式）
 
-> ⚠️ **`build-image.sh` 是 v1 单体架构遗留，不支持 A+B，严禁使用！** 唯一正确方式是 `docker build -f Dockerfile.carher.v2`。
+A+B v2 架构下镜像只通过 `docker build -f Dockerfile.carher.v2` 构建。
 
 ### 构建命令
 
@@ -82,10 +82,10 @@ ARG OPENCLAW_TAG=2026.X.OLD  →  ARG OPENCLAW_TAG=2026.X.NEW
 
 ### 构建时间预期
 
-| 场景                  | 时间              |
-| --------------------- | ----------------- |
-| 冷（首次新 base tag） | ~30min            |
-| 热（same base 改 B）  | 3-5min            |
+| 场景                  | 时间   |
+| --------------------- | ------ |
+| 冷（首次新 base tag） | ~30min |
+| 热（same base 改 B）  | 3-5min |
 
 ### 升级前检查
 
@@ -137,12 +137,12 @@ plugins: {
 
 ### 环境变量控制
 
-| 功能  | 环境变量                                | 说明                       |
-| ----- | --------------------------------------- | -------------------------- |
-| ACP   | `CARHER_ACP_ENABLED=1`                  | Claude Code 子进程         |
-| A2A   | (在 `u<N>.json5` 里 `outbound.enabled`) | Hub 永久标记,见上文        |
-| 内存  | `CARHER_MEMORY_LIMIT=<N>g`              | 默认 16g,够 ACP 也够压测   |
-| CPU   | `CARHER_CPU_LIMIT=<N>`                  | 默认 10                    |
+| 功能 | 环境变量                                | 说明                     |
+| ---- | --------------------------------------- | ------------------------ |
+| ACP  | `CARHER_ACP_ENABLED=1`                  | Claude Code 子进程       |
+| A2A  | (在 `u<N>.json5` 里 `outbound.enabled`) | Hub 永久标记,见上文      |
+| 内存 | `CARHER_MEMORY_LIMIT=<N>g`              | 默认 16g,够 ACP 也够压测 |
+| CPU  | `CARHER_CPU_LIMIT=<N>`                  | 默认 10                  |
 
 `A2A_ENABLED` / `A2A_OUTBOUND` 是 start-user.sh 的 print-only flag,实际生效靠 user config json5。
 
@@ -164,7 +164,6 @@ docker logs carher-N | grep 'acpx.*ready'
 docker inspect carher-N --format 'CPU={{.HostConfig.NanoCpus}} Mem={{.HostConfig.Memory}}'
 # 期望:CPU=10000000000  Mem=17179869184
 ```
-
 
 ### start-user.sh 关键行为
 
@@ -240,18 +239,18 @@ scripts/carher-verify.sh --id=N --wait=60
 # exit 0 = 全过 / exit 3 = 有 FAIL / exit 2 = 容器不存在
 ```
 
-| #  | Gate               | 检查内容                              | 失败含义                    |
-| -- | ------------------ | ------------------------------------- | --------------------------- |
-| 1  | gateway ready      | `[gateway] ready (N plugins...)`      | 容器没起来                  |
-| 2  | plugin 数量        | N ≥ 7                                 | A+B 缺插件                 |
-| 3  | feishu WSClient    | `WSClient connected`                  | token 失效或 appId 错       |
-| 4  | A2A peers          | `refreshRegistryPeers found N`, N>0   | Redis 或 A2A 未启用（警告） |
-| 5  | acpx runtime       | `acpx runtime backend ready`          | ACP 未启用（警告）          |
-| 6  | 无 plugin 契约错误 | 无 `plugin validation/schema failed`  | **SDK drift — 立刻回滚**   |
-| 7  | bundled feishu 清理| feishu 残留目录不存在                 | Dockerfile rm 不全          |
-| 8  | a2a-gateway ioredis| `node_modules/ioredis` 存在           | npm install 失败            |
-| 9  | feishu-her 依赖    | `@larksuiteoapi` 存在                 | feishu 连不上               |
-| 10 | 无严重运行时错误   | 无 `FATAL/uncaughtException/crash`    | 立刻回滚                    |
+| #   | Gate                | 检查内容                             | 失败含义                    |
+| --- | ------------------- | ------------------------------------ | --------------------------- |
+| 1   | gateway ready       | `[gateway] ready (N plugins...)`     | 容器没起来                  |
+| 2   | plugin 数量         | N ≥ 7                                | A+B 缺插件                  |
+| 3   | feishu WSClient     | `WSClient connected`                 | token 失效或 appId 错       |
+| 4   | A2A peers           | `refreshRegistryPeers found N`, N>0  | Redis 或 A2A 未启用（警告） |
+| 5   | acpx runtime        | `acpx runtime backend ready`         | ACP 未启用（警告）          |
+| 6   | 无 plugin 契约错误  | 无 `plugin validation/schema failed` | **SDK drift — 立刻回滚**    |
+| 7   | bundled feishu 清理 | feishu 残留目录不存在                | Dockerfile rm 不全          |
+| 8   | a2a-gateway ioredis | `node_modules/ioredis` 存在          | npm install 失败            |
+| 9   | feishu-her 依赖     | `@larksuiteoapi` 存在                | feishu 连不上               |
+| 10  | 无严重运行时错误    | 无 `FATAL/uncaughtException/crash`   | 立刻回滚                    |
 
 ### Monitor 模板
 
@@ -331,10 +330,10 @@ docker exec carher-N find /data/.openclaw/agents -name '*.jsonl' -exec grep -oh 
 
 ### Owner 机制
 
-| 场景          | CSV 列                 | 生成配置              |
-| ------------- | ---------------------- | --------------------- |
-| 专属 Bot      | `feishu_owner_open_id` | `dm.allowFrom`        |
-| 共享 Bot      | `owner_allow_from`     | `commands.ownerAllowFrom` |
+| 场景     | CSV 列                 | 生成配置                  |
+| -------- | ---------------------- | ------------------------- |
+| 专属 Bot | `feishu_owner_open_id` | `dm.allowFrom`            |
+| 共享 Bot | `owner_allow_from`     | `commands.ownerAllowFrom` |
 
 无 Owner → AI 看不到 cron/gateway 等 `ownerOnly` 工具。
 
@@ -361,12 +360,12 @@ CARHER_ACP_ENABLED=1 CARHER_MEMORY_LIMIT=16g A2A_ENABLED=1 A2A_OUTBOUND=1 \
 
 ### bootstrap 内容
 
-| # | 资产                         | docker rm 后 |
-|---|------------------------------|-------------|
-| 1 | sshpass + openssh-client     | 丢          |
-| 2 | /data/.openclaw/servers.txt  | 保留(volume)|
-| 3 | admin 运维 skills            | 可能丢      |
-| 4 | docker update --cpus=10      | 丢          |
+| #   | 资产                        | docker rm 后 |
+| --- | --------------------------- | ------------ |
+| 1   | sshpass + openssh-client    | 丢           |
+| 2   | /data/.openclaw/servers.txt | 保留(volume) |
+| 3   | admin 运维 skills           | 可能丢       |
+| 4   | docker update --cpus=10     | 丢           |
 
 ### 诊断
 
@@ -412,11 +411,7 @@ a2a-gateway 的 `ioredis` 依赖缺失。检查 `node_modules/ioredis/`。
 
 `pnpm install` 一次解决，或用户授权 `--no-verify`。
 
-### 踩坑 6：`build-image.sh` 是 v1 遗留
-
-**严禁用于 A+B 架构！** 它用的是旧 `Dockerfile.carher`（单体 monorepo 编译），不支持 `--build-arg OPENCLAW_TAG`。A+B 必须走 `docker build -f Dockerfile.carher.v2`。
-
-### 踩坑 7：openclaw-src-fetcher clone 失败
+### 踩坑 6：openclaw-src-fetcher clone 失败
 
 3 层 fallback 兜底后 `/app/openclaw-src/src` 可能是空目录，不影响 runtime。
 
@@ -456,12 +451,12 @@ docker logs carher-N --since=15m 2>&1 | grep -c "deliver:"
 
 ### 关键文档
 
-| 文档                                           | 内容                     |
-| ---------------------------------------------- | ------------------------ |
-| `docs/her/her-feishu-bot-architecture.md`      | 架构详解                 |
-| `docs/her/her-feishu-bot-enterprise-deploy.md` | 部署指南                 |
-| `docs/her/her-image-architecture.md`           | A+B 镜像架构             |
-| `docker/servers.txt`                           | 服务器凭证（本地敏感）   |
-| `start-user.sh`                                | 容器管理脚本             |
-| `scripts/carher-verify.sh`                     | 10 gate 自检             |
-| `docs/her/acp-claude-code-setup.md`            | ACP 开启指南             |
+| 文档                                           | 内容                   |
+| ---------------------------------------------- | ---------------------- |
+| `docs/her/her-feishu-bot-architecture.md`      | 架构详解               |
+| `docs/her/her-feishu-bot-enterprise-deploy.md` | 部署指南               |
+| `docs/her/her-image-architecture.md`           | A+B 镜像架构           |
+| `docker/servers.txt`                           | 服务器凭证（本地敏感） |
+| `start-user.sh`                                | 容器管理脚本           |
+| `scripts/carher-verify.sh`                     | 10 gate 自检           |
+| `docs/her/acp-claude-code-setup.md`            | ACP 开启指南           |

@@ -1201,7 +1201,7 @@ def _do_reinit():
 
 def main():
     global _meta_observer
-    log("daemon_start", workspace=str(WORKSPACE), shadow_dir=str(SHADOW_DIR), version="v8.5")
+    log("daemon_start", workspace=str(WORKSPACE), shadow_dir=str(SHADOW_DIR), version="v8.6")
     SHADOW_DIR.mkdir(parents=True, exist_ok=True)
     # v8.5 Bug M: sweep any stale *.tmp files left over from a crash
     # between write_text and os.replace in a previous daemon lifetime.

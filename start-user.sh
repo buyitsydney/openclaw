@@ -89,7 +89,7 @@ for arg in "$@"; do
       echo ""
       echo "  --id=N        用户编号 (1-999)"
       echo "  --model=MODEL 指定 AI 模型（覆盖 users.csv 中的设置）"
-      echo "  --image=NAME  使用指定 Docker 镜像（默认 carher:local，用 build-image.sh 构建）"
+      echo "  --image=NAME  使用指定 Docker 镜像（默认 carher:local）"
       echo "  --host=IP     Webchat 访问地址（默认 localhost，企业部署用内网 IP）"
       echo "  --random      附加临时随机隧道（一次性演示，关终端就消失）"
       echo "  --reset       重置语音 token（不重启容器，立即生效）"
@@ -281,7 +281,7 @@ echo ""
 echo -e "${YELLOW}🚗 CarHer User ${USER_ID} — 启动${NC}"
 echo ""
 
-# --- Image check (build is now separate: use build-image.sh) ---
+# --- Image check (image construction is handled separately per carher-ops skill) ---
 RUNTIME_IMAGE="${IMAGE_NAME:-carher:local}"
 if [ -n "$DEV_MODE" ]; then
   # Dev mode: ensure base image + dist/ exist
@@ -299,8 +299,8 @@ if [ -n "$DEV_MODE" ]; then
   echo -e "${GREEN}  ✓ Dev 模式: bind mount 源码${NC}"
 else
   if ! docker image inspect "$RUNTIME_IMAGE" &>/dev/null; then
-    echo -e "${RED}  ✗ 镜像 ${RUNTIME_IMAGE} 不存在，请先运行: ./build-image.sh${NC}"
-    [ -n "$IMAGE_NAME" ] && echo -e "${YELLOW}    提示: ./build-image.sh --tag=${IMAGE_NAME}${NC}"
+    echo -e "${RED}  ✗ 镜像 ${RUNTIME_IMAGE} 不存在${NC}"
+    echo -e "${YELLOW}    先构建镜像(见 .cursor/skills/carher-ops/SKILL.md),再运行本脚本。${NC}"
     exit 1
   fi
   IMAGE_HASH=$(docker inspect "$RUNTIME_IMAGE" --format '{{index .Config.Labels "carher.build.hash"}}' 2>/dev/null || echo "unknown")
