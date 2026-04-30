@@ -51,14 +51,37 @@ for ID in "${IDS[@]}"; do
     -e "s/{{PORT_A2A}}/${PORT_A2A}/g" \
     "$TEMPLATE" > "$USER_DIR/compose.yaml"
 
+  # Mirror compose \${VAR} substitution sources from docker/server.env
+  # (compose resolves \${VAR} at parse time from shell-env / --env-file / project-.env,
+  # NOT from env_file directives — see compose spec. So we bake the needed vars here.)
+  SERVER_ENV="$ROOT/docker/server.env"
+  ANTHROPIC_AUTH_TOKEN_VAL=""
+  ANTHROPIC_BASE_URL_VAL=""
+  CARHER_LAN_IP_VAL="127.0.0.1"
+  if [ -f "$SERVER_ENV" ]; then
+    ANTHROPIC_AUTH_TOKEN_VAL=$(awk -F= "/^ANTHROPIC_AUTH_TOKEN=/{print substr(\$0, index(\$0, \"=\") + 1)}" "$SERVER_ENV")
+    ANTHROPIC_BASE_URL_VAL=$(awk -F= "/^ANTHROPIC_BASE_URL=/{print substr(\$0, index(\$0, \"=\") + 1)}" "$SERVER_ENV")
+    lan_ip=$(awk -F= "/^CARHER_LAN_IP=/{print substr(\$0, index(\$0, \"=\") + 1)}" "$SERVER_ENV")
+    [ -n "$lan_ip" ] && CARHER_LAN_IP_VAL="$lan_ip"
+  fi
+
   # Write .env only if absent (don't clobber user's chosen IMAGE_TAG)
   if [ ! -f "$USER_DIR/.env" ]; then
     cat > "$USER_DIR/.env" <<EOF
 # carher-${ID} (${C_NAME}) — edit IMAGE_TAG to upgrade/rollback.
 
 IMAGE_TAG=carher-core:phase2-config-free-101
-MEMORY_LIMIT=4g
+MEMORY_LIMIT=16g
 CARHER_GATEWAY_TOKEN=carher-container-token
+
+# Compose \${VAR} substitution sources (mirrored from docker/server.env).
+# These are needed because compose env_file directives are NOT consulted
+# during \${VAR} expansion — only shell env / --env-file / this project .env.
+# Without these, ANTHROPIC_API_KEY ends up blank and CARHER_LAN_IP stays
+# loopback, breaking anthropic calls and cross-container A2A respectively.
+ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN_VAL}
+ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL_VAL}
+CARHER_LAN_IP=${CARHER_LAN_IP_VAL}
 EOF
   fi
 

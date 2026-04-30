@@ -24,7 +24,7 @@ services:
 
       REDIS_URL: redis://carher-redis:6379
       CARHER_SERVER: local
-      CARHER_LAN_IP: 127.0.0.1
+      CARHER_LAN_IP: ${CARHER_LAN_IP:-127.0.0.1}
       CARHER_A2A_PORT: "{{PORT_A2A}}"
 
       VOICE_FE_HOST: u{{USER_ID}}-fe.carher.net
