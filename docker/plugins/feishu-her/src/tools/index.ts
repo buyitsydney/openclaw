@@ -4,8 +4,6 @@
  */
 
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
-import { listEnabledFeishuAccounts } from "../accounts.js";
-import { fetchBackendUserScopes } from "../oauth.js";
 import { registerFeishuBitableTools } from "./bitable.js";
 import { registerFeishuBoardTools } from "./board.js";
 import { registerFeishuBotDirectoryTool } from "./bot-directory.js";
@@ -27,7 +25,7 @@ import { registerFeishuDocCommentsTools } from "./doc-comments.js";
 import { registerFeishuDocTools } from "./docx.js";
 import { registerFeishuDriveTools } from "./drive.js";
 import { registerGroupModeTool } from "./group-mode-tool.js";
-import { registerFeishuKnowledgeQATool, KNOWLEDGE_QA_REQUIRED_SCOPE } from "./knowledge-qa.js";
+import { registerFeishuKnowledgeQATool } from "./knowledge-qa.js";
 import { registerFeishuMessageSearchTool } from "./message-search.js";
 import { registerFeishuMessageTools } from "./message.js";
 import { registerFeishuMinutesTools } from "./minutes.js";
@@ -66,16 +64,17 @@ export async function registerAllFeishuTools(api: OpenClawPluginApi): Promise<vo
   registerGroupModeTool(api);
   registerFeishuBotDirectoryTool(api);
   registerFeishuBoardTools(api);
-  // Gate knowledge-qa on backend scope availability (auto-detected, no config needed)
-  const accounts = listEnabledFeishuAccounts(api.config);
-  if (accounts.length > 0) {
-    const backendScopes = await fetchBackendUserScopes(accounts[0]);
-    if (!backendScopes || backendScopes.has(KNOWLEDGE_QA_REQUIRED_SCOPE)) {
-      registerFeishuKnowledgeQATool(api);
-    } else {
-      api.logger.info?.(
-        `feishu: skipping knowledge_qa tool (scope ${KNOWLEDGE_QA_REQUIRED_SCOPE} not in app backend)`,
-      );
-    }
-  }
+  // knowledge-qa: register synchronously so it makes the plugin capture
+  // window. openclaw snapshots captured.tools immediately after this
+  // register() returns (registry-*.js: `registry.tools.push(...captured.tools.map(...))`),
+  // so any tool pushed AFTER the snapshot never reaches registry.tools →
+  // Her's LLM never sees it. We register sync unconditionally; the tool's
+  // own execute() returns an auth_url if scope is missing at invocation.
+  //
+  // IMPORTANT: no async probe here. An earlier revision added
+  // `void fetchBackendUserScopes(...).then(warn)` which correlated with
+  // a plugin re-register storm on openclaw 2026.4.26 (every inbound
+  // feishu message triggered an extra register cycle, CPU 100%,
+  // inbound queue starvation). Strictly sync is the safe contract.
+  registerFeishuKnowledgeQATool(api);
 }

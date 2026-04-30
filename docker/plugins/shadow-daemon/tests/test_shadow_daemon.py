@@ -1099,3 +1099,139 @@ def test_periodic_reconcile_runs_without_watchdog_events(sandbox):
         )
     finally:
         stop_daemon(proc)
+
+
+# ============================================================
+# v8.7 — OOM memory budget + counter-race (Her regression findings 2026-04-29)
+# ============================================================
+
+def test_oom_convert_produces_oom_tombstone(sandbox):
+    """v8.7 Finding #3: 5 MB PDF reproducibly OOMs markitdown; cgroup SIGKILLs
+    the subprocess (rc=-9). Today the daemon already writes SOME tombstone
+    but labels it 'failed rc=-9' — not self-describing. After v8.7, daemon
+    must classify subprocess OOM (rc in {137, -9}) explicitly as `oom`,
+    surface it under recent_errors with kind='oom', and write a shadow with
+    status='oom' so Her can translate the failure reason to the user."""
+    write_config(sandbox["shadow"])
+    proc = start_daemon(env_extra={"MOCK_MARKITDOWN_OOM": "1"})
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        f = sandbox["docs"] / "hungry.txt"
+        f.write_text("anything — mock will OOM regardless")
+        # Give daemon enough time to debounce → attempt convert → observe rc=-9 → tombstone
+        deadline = time.monotonic() + 12
+        import hashlib
+        sha = hashlib.sha256(str(f.resolve()).encode()).hexdigest()[:8]
+        sp_glob = sandbox["shadow"].glob(f"{sha}__*.md")
+        shadow = None
+        while time.monotonic() < deadline:
+            hits = [p for p in sandbox["shadow"].glob(f"{sha}__*.md") if not p.name.startswith("_")]
+            if hits:
+                shadow = hits[0]
+                break
+            time.sleep(0.2)
+        assert shadow is not None, "v8.7: OOM convert did not produce a tombstone"
+        body = shadow.read_text()
+        assert "oom" in body.lower(), (
+            f"v8.7: OOM tombstone must self-describe as OOM in body. Got: {body[:200]!r}"
+        )
+        h = read_health(sandbox["shadow"])
+        kinds = {e.get("kind") for e in h.get("recent_errors", [])}
+        assert "oom" in kinds, (
+            f"v8.7: recent_errors must include kind='oom'. Got kinds={kinds!r}"
+        )
+    finally:
+        stop_daemon(proc, timeout=15)
+
+
+def test_pdf_batching_wires_up_when_oversized(sandbox):
+    """v8.8 Finding #3: v8.7's RLIMIT_AS was reverted (it broke markitdown's
+    own import). v8.8 uses page-chunking instead: large PDFs go through
+    pymupdf → N-page chunk → markitdown once per chunk → concat.
+
+    We can't run real markitdown on macOS pytest (no markitdown installed,
+    mock markitdown is used), so this test verifies daemon WIRE-UP only:
+    a PDF with > pdfBatchPages pages must emit `pdf_batch_start` log.
+    The actual memory reduction is validated in the v87-repro Docker
+    integration harness under /tmp/v8.7-repro/."""
+    import pytest
+    try:
+        import pymupdf
+    except ImportError:
+        pytest.skip("pymupdf not installed on host; integration tests rely on docker harness")
+
+    # Build a small N-page text PDF inline (pymupdf is available).
+    pdf_path = sandbox["docs"] / "multipage.pdf"
+    doc = pymupdf.open()
+    for i in range(25):
+        pg = doc.new_page()
+        pg.insert_text((50, 50), f"Page {i+1} — v8.8 batching probe", fontsize=12)
+    doc.save(str(pdf_path))
+    doc.close()
+
+    # Set batch size SMALLER than the PDF so batching triggers.
+    write_config(sandbox["shadow"], pdfBatchPages=5)
+    proc = start_daemon()
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        # Touch mtime so the watched file really fires a convert event
+        # (it was created before start_daemon so watchdog may miss the create).
+        pdf_path.touch()
+        time.sleep(3)
+        lf = getattr(proc, "_stderr_file", None)
+        assert lf is not None
+        lf.flush()
+        lf.seek(0)
+        blob = lf.read().decode("utf-8", "replace")
+        assert '"event": "pdf_batch_start"' in blob, (
+            "v8.8: 25-page PDF with pdfBatchPages=5 did not trigger batching "
+            f"(no pdf_batch_start log). Log excerpt:\n{blob[-800:]}"
+        )
+        assert '"pages": 25' in blob and '"batch": 5' in blob, (
+            f"v8.8: pdf_batch_start log missing expected fields. "
+            f"Log excerpt:\n{blob[-500:]}"
+        )
+    finally:
+        stop_daemon(proc)
+
+
+def test_cumulative_counters_monotonic_under_burst(sandbox):
+    """Bug #2 (Her 2026-04-28 finding): `_cumulative_converted` exposed in
+    health.json as `indexed_total` can be read mid-increment across multiple
+    worker threads because `_persist_health` reads counters without taking
+    `_state_lock`. Monitor sees non-monotonic values → false alerts.
+    After v8.7, indexed_total observed across any sequence of _health.json
+    snapshots must be non-decreasing."""
+    # Force as much concurrency as possible on the read side
+    write_config(sandbox["shadow"], maxWorkers=8, debounceMs=50)
+    proc = start_daemon()
+    try:
+        wait_for_ready(sandbox["shadow"], timeout=15)
+        # Burst: 100 small files
+        for i in range(100):
+            (sandbox["docs"] / f"churn_{i:03}.txt").write_text(f"n={i}")
+        # Sample health.json repeatedly during the convert storm
+        samples = []
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            h = read_health(sandbox["shadow"])
+            it = (h.get("progress") or {}).get("indexed_total")
+            if isinstance(it, int):
+                samples.append(it)
+            if samples and samples[-1] >= 100:
+                break
+            time.sleep(0.05)
+        # indexed_total must be monotonically non-decreasing
+        regressions = [
+            (i, samples[i - 1], samples[i])
+            for i in range(1, len(samples))
+            if samples[i] < samples[i - 1]
+        ]
+        assert not regressions, (
+            f"Bug #2: indexed_total went BACKWARDS across {len(regressions)} samples. "
+            f"First regression: sample[{regressions[0][0] - 1}]={regressions[0][1]} "
+            f"→ sample[{regressions[0][0]}]={regressions[0][2]}. "
+            f"Full sequence (trimmed): {samples[:30]} ... {samples[-10:]}"
+        )
+    finally:
+        stop_daemon(proc)

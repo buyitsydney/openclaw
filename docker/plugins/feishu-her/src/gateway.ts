@@ -260,16 +260,34 @@ function inferContentType(filePath: string): string | undefined {
   return map[ext] ?? "application/octet-stream";
 }
 
-const HER_DEFAULT_REASONING: ReasoningLevel = "stream";
+// Historical her default when no fleet config is set. Kept for backwards
+// compatibility with existing per-session "stream" expectations.
+const HER_LEGACY_DEFAULT_REASONING: ReasoningLevel = "stream";
 
-function resolveEffectiveReasoningMode(params: {
+export function resolveEffectiveReasoningMode(params: {
   cleanText: string;
   storePath: string;
   sessionKey: string;
+  config: OpenClawConfig;
 }): ReasoningLevel {
+  // Inline /reasoning:xxx always wins so per-session emergency overrides work
+  // even when the fleet kill switch is on.
   const inlineReasoning = extractReasoningDirective(params.cleanText).reasoningLevel;
   if (inlineReasoning) {
     return inlineReasoning;
+  }
+
+  const feishuCfg = (params.config?.channels?.feishu ?? {}) as Record<string, unknown>;
+  const reasoningCfg = (feishuCfg.reasoning ?? {}) as Record<string, unknown>;
+  const fleetDefault =
+    normalizeReasoningLevel(reasoningCfg.defaultLevel as string | undefined) ??
+    HER_LEGACY_DEFAULT_REASONING;
+
+  // Fleet-wide kill switch: when defaultLevel='off', ignore previously persisted
+  // reasoningLevel values (including legacy "stream" pre-seeded by older
+  // gateway code). One shared-config flip turns reasoning off across the fleet.
+  if (fleetDefault === "off") {
+    return "off";
   }
 
   const { store } = readSessionStoreJson5(params.storePath);
@@ -277,18 +295,7 @@ function resolveEffectiveReasoningMode(params: {
   const persistedReasoning =
     typeof persistedRaw === "string" ? normalizeReasoningLevel(persistedRaw) : undefined;
 
-  // Pre-seed default so upstream directive handling also sees it
-  // (upstream defaults to "off" when reasoningLevel is absent).
-  if (!persistedReasoning && store[params.sessionKey]) {
-    store[params.sessionKey].reasoningLevel = HER_DEFAULT_REASONING;
-    try {
-      writeFileSync(params.storePath, JSON.stringify(store, null, 2));
-    } catch {
-      // best-effort; upstream will still get the correct value next time
-    }
-  }
-
-  return persistedReasoning ?? HER_DEFAULT_REASONING;
+  return persistedReasoning ?? fleetDefault;
 }
 
 // ── Anthropic Max quota probe ────────────────────────────────────────────
@@ -2976,6 +2983,7 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
     cleanText,
     storePath,
     sessionKey: route.sessionKey,
+    config,
   });
   const expectedDiscussionTurnId = acceptedDiscussionTurn?.turnId;
   let discussionVisibleReplyBlocked = false;
