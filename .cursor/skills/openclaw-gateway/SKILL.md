@@ -24,17 +24,17 @@ description: OpenClaw gateway startup conventions and scripts. Use when the user
 5. Start Live Frontend Proxy: `python3 extensions/realtime/live-frontend/server.py &`
 6. Auto-open browser pages (webchat + live frontend)
 
-## ABSOLUTE FACT: Code is Always Latest After start.sh / start-user.sh
+## ABSOLUTE FACT: Code is Always Latest After start.sh / docker compose up
 
-**NEVER question whether the running code is up to date after these scripts run:**
+**NEVER question whether the running code is up to date after these commands run:**
 
 - **`start.sh`** — always runs `pnpm build` before launching gateway. After `start.sh`, the gateway is guaranteed to run the latest `src/` code. Period.
-- **`start-user.sh`** — always rebuilds the Docker image if `src/` files are dirty (via `git diff`). After `start-user.sh`, Docker containers are guaranteed to run the latest `src/` code. Period.
+- **Docker compose** — containers run the image specified by `deploy/carher-{id}/.env` IMAGE_TAG. After `docker compose up -d`, the container is guaranteed to run that exact image. Period.
 
 Do NOT:
 
 - Suggest "the gateway might not have the latest code" after a restart via start.sh
-- Suggest "Docker might not have the fix" after a rebuild via start-user.sh
+- Suggest "Docker might not have the fix" after a compose up with the correct image tag
 - Run redundant `pnpm build` to "make sure" — the scripts already handle this
 - Waste time verifying dist/ contents when the user just restarted via these scripts
 

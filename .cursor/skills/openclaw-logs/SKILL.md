@@ -96,8 +96,8 @@ logging: {
 Docker 用户容器的日志通过 `docker logs` 查看：
 
 ```bash
-./start-user.sh --id=101 --logs    # 跟踪容器日志
-docker logs carher-101 --tail 50   # 最近 50 行
+cd deploy/carher-101 && docker compose logs -f carher   # 跟踪容器日志
+docker logs carher-101 --tail 50                        # 最近 50 行
 ```
 
 容器内的文件日志在 Docker volume 内，路径同上 `/tmp/openclaw/openclaw-YYYY-MM-DD.log`，可通过 `docker exec` 访问：

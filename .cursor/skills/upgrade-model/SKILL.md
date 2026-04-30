@@ -20,25 +20,25 @@ OpenClaw 对 OpenRouter 和 Anthropic 直连**没有**模型自动发现。新�
 
 一个文件搞定。模型定义 + 白名单 + primary 都在这里。
 
-### Docker 容器（CarHer）
+### Docker 容器（CarHer）— compose + 三层 config
 
 ```
-/tmp/carher-config-N.json       ← start-user.sh 自动生成（per-user）
-  └─ $include → docker/carher-config.json     ← 模型定义在这里
-       └─ $include → docker/shared-config.json5  ← 共享功能配置
+config/base.json5        ← L1: 全局默认（model definitions、tools、admin allowlist）
+  ↑ $include
+config/docker.json5      ← L2: docker 共享（redis、groups、gateway、模型定义）
+  ↑ $include
+config/u{N}.json5        ← L3: per-user（feishu 凭证、model.primary、白名单）
 ```
 
-**关键**：Docker 用户的配置是**三层 $include 链**：
+| 层级 | 文件                   | 包含什么                                 | 谁写的   |
+| ---- | ---------------------- | ---------------------------------------- | -------- |
+| L1   | `config/base.json5`    | 全局默认 model definitions + tools       | 人工维护 |
+| L2   | `config/docker.json5`  | docker 共享（redis、groups、模型定义）   | 人工维护 |
+| L3   | `config/u{N}.json5`    | per-user 身份 + model.primary + 白名单   | 人工维护 |
 
-| 层级 | 文件                         | 包含什么                                 | 谁写的                        |
-| ---- | ---------------------------- | ---------------------------------------- | ----------------------------- |
-| 顶层 | `/tmp/carher-config-N.json`  | model.primary + 白名单 + 飞书凭证        | `start-user.sh` Python 生成器 |
-| 中层 | `docker/carher-config.json`  | 模型定义（models.providers.\*.models[]） | 人工维护                      |
-| 底层 | `docker/shared-config.json5` | memorySearch、tools、tts 等共享功能      | 人工维护                      |
+容器内 `/data/.openclaw/openclaw.json` 是 **read-only bind mount**，指向 `config/u{N}.json5`。永远不要 `docker exec` 写容器内配置。
 
-**用户默认模型来源**：`docker/users.csv` 的 model 列（短名如 `sonnet`、`opus`、`gemini-3.1`）
-
-容器内 `/data/.openclaw/openclaw.json` 是 **read-only bind mount**，指向 `/tmp/carher-config-N.json`。永远不要 `docker exec` 写容器内配置。
+Config 100% git-tracked，secrets 用 `${VAR}` 占位符由 compose env_file 注入。
 
 ## 新增 OpenRouter 模型：完整 Checklist
 
@@ -80,7 +80,7 @@ curl -s https://openrouter.ai/api/v1/models | \
 }
 ```
 
-#### 2b. `docker/carher-config.json`（Docker 基础配置）
+#### 2b. `config/docker.json5`（Docker 共享配置）
 
 在 `models.providers.openrouter.models[]` 中添加**同样的**模型定义。
 
@@ -100,51 +100,30 @@ curl -s https://openrouter.ai/api/v1/models | \
 
 > **注意**：白名单 key 用 `openrouter/` 前缀（provider-qualified），模型定义的 `id` 不带前缀。
 
-#### 3b. `start-user.sh` Python 配置生成器（Docker 用户）
+#### 3b. `config/u{N}.json5`（per-user 配置）
 
-在 `~行 443-458` 的 **两个 provider 分支**（`if provider == 'anthropic'` 和 `else`）的 `agents['defaults']['models']` 中都添加：
+在每个需要此模型的用户的 `config/u{N}.json5` 的 `agents.defaults.models` 中添加：
 
-```python
-'openrouter/google/gemini-3.1-pro-preview': {'alias': 'gemini'},
+```json5
+"openrouter/google/gemini-3.1-pro-preview": { alias: "gemini" },
 ```
 
-> **两个分支都要加**，否则某些 Docker 用户看不到新模型。
+### Step 4（可选）：设为某 Docker 用户的默认模型
 
-### Step 4：添加短名映射（1 个文件）
-
-#### `start-user.sh` 的 `resolve_model()` 函数（~行 34-47）
-
-添加短名 → 完整 ID 的映射，让 `docker/users.csv` 和 `--model=` 参数可以用短名：
+编辑 `config/u{N}.json5` 的 `agents.defaults.model.primary`，然后重启容器：
 
 ```bash
-gemini-3.1|gemini-3.1-pro) echo "openrouter/google/gemini-3.1-pro-preview" ;;
+cd deploy/carher-N && docker compose up -d --force-recreate
 ```
 
-### Step 5（可选）：设为某 Docker 用户的默认模型
-
-编辑 `docker/users.csv` 的 model 列（用短名），然后正常启动：
-
-```csv
-1,测试用户,gemini-3.1,cli_xxx,...
-```
-
-```bash
-./start-user.sh --id=1
-```
-
-这就够了。`start-user.sh` 会从 CSV 读取 model 列并自动 resolve。
-
-模型优先级（高到低）：CLI `--model=`（临时覆盖，不改 CSV） > `users.csv` model 列（标准做法） > `carher-config.json` 中的 `agents.defaults.model.primary`
-
-### Step 6：验证
+### Step 5：验证
 
 ```bash
 # Docker 容器验证
-docker exec carher-N python3 -c \
-  'import json; d=json.load(open("/data/.openclaw/openclaw.json")); print(d["agents"]["defaults"]["model"]["primary"])'
+docker exec carher-N cat /data/.openclaw/openclaw.json | grep -i primary
 
 # 日志确认
-docker logs carher-N --tail 50 2>&1 | grep -i 'model\|gemini'
+cd deploy/carher-N && docker compose logs --tail 50 carher | grep -i 'model\|gemini'
 ```
 
 ## 涉及文件总结
@@ -152,10 +131,8 @@ docker logs carher-N --tail 50 2>&1 | grep -i 'model\|gemini'
 | 文件                            | 改什么                       | 本地 Her | Docker |
 | ------------------------------- | ---------------------------- | -------- | ------ |
 | `~/.openclaw/openclaw.json`     | 模型定义 + 白名单 + primary  | ✅       | —      |
-| `docker/carher-config.json`     | 模型定义（$include 链中层）  | —        | ✅     |
-| `start-user.sh` resolve_model() | 短名 → 完整 ID 映射          | —        | ✅     |
-| `start-user.sh` Python 生成器   | 白名单（两个 provider 分支） | —        | ✅     |
-| `docker/users.csv`              | 用户默认模型（可选，用短名） | —        | ✅     |
+| `config/docker.json5`           | 模型定义（L2 共享层）        | —        | ✅     |
+| `config/u{N}.json5`             | per-user 白名单 + primary    | —        | ✅     |
 
 ## 升级上游依赖中的模型
 
@@ -196,12 +173,12 @@ shouldCompact(contextTokens, contextWindow):
 | `models.providers.*` 模型定义   | gateway restart | config.patch 自动触发                 |
 | `agents.defaults.models` 白名单 | gateway restart | restart 后 `/model` 立即可见          |
 | `agents.defaults.model.primary` | gateway restart | 新 session 使用新模型                 |
-| 依赖升级（pi-ai 等）            | ❌ 需完整重启   | start.sh / start-user.sh 重启         |
-| Docker 容器配置                 | ❌ 需重建       | `./start-user.sh --id=N --no-rebuild` |
+| 依赖升级（pi-ai 等）            | ❌ 需完整重启   | start.sh 重启 / compose recreate      |
+| Docker 容器配置                 | ❌ 需 recreate  | `docker compose up -d --force-recreate` |
 
 ## Quick Mapping（当前短名）
 
-"有模型定义"指 `carher-config.json` 或 `openclaw.json` 中有完整的 cost/context 元数据。无定义的短名仅在 `resolve_model()` 中有映射，OpenRouter 会兜底处理，但缺少正确的 cost tracking 和 context window 限制。
+"有模型定义"指 `config/docker.json5` 或 `openclaw.json` 中有完整的 cost/context 元数据。
 
 ### 本地 Her（`~/.openclaw/openclaw.json` 白名单）
 
@@ -216,16 +193,11 @@ shouldCompact(contextTokens, contextWindow):
 
 > **直连 vs OpenRouter 同模型**：`opus`（Anthropic 直连）更便宜、延迟更低；`or-opus`（OpenRouter）有 fallback 和统一计费。
 
-### Docker（`start-user.sh` resolve_model）
+### Docker（`config/docker.json5` + `config/u{N}.json5` 白名单）
 
-| 短名                            | 完整 ID                                                                                   | 有模型定义    |
+| Alias                           | 完整 ID                                                                                   | 有模型定义    |
 | ------------------------------- | ----------------------------------------------------------------------------------------- | ------------- |
 | `sonnet` / `sonnet-4.6`         | 按 provider 分：`anthropic/claude-sonnet-4-6` 或 `openrouter/anthropic/claude-sonnet-4.6` | ✅            |
 | `opus` / `opus-4.6`             | 按 provider 分：`anthropic/claude-opus-4-6` 或 `openrouter/anthropic/claude-opus-4.6`     | ✅            |
 | `gemini-3.1` / `gemini-3.1-pro` | `openrouter/google/gemini-3.1-pro-preview`                                                | ✅            |
-| `haiku` / `haiku-3.5`           | `openrouter/anthropic/claude-3.5-haiku`                                                   | ❌ 仅短名映射 |
-| `gemini-2.5` / `gemini-pro`     | `openrouter/google/gemini-2.5-pro-preview`                                                | ❌ 仅短名映射 |
-| `gemini-flash`                  | `openrouter/google/gemini-2.0-flash-001`                                                  | ❌ 仅短名映射 |
-| `gpt-4o`                        | `openrouter/openai/gpt-4o`                                                                | ❌ 仅短名映射 |
-| `gpt-4o-mini`                   | `openrouter/openai/gpt-4o-mini`                                                           | ❌ 仅短名映射 |
 | `minimax` / `minimax-m2.5`      | `openrouter/minimax/minimax-m2.5`                                                         | ✅            |
