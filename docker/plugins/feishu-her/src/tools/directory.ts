@@ -18,6 +18,7 @@ import {
   resolveOAuthRedirectUri,
 } from "../oauth.js";
 import { getFeishuClient } from "../outbound.js";
+import { getOAuthDirectSender } from "./oauth-direct.js";
 
 function json(data: unknown) {
   return {
@@ -234,6 +235,7 @@ export function registerFeishuDirectoryTools(api: OpenClawPluginApi) {
                 redirectUri,
                 tokenPromise: getValidUserToken(firstAccount),
                 toolLabel: "通讯录搜索",
+                sendDirectToUser: getOAuthDirectSender(firstAccount),
               });
               if (!tokenResult.ok) return tokenResult.authResponse;
               return json(

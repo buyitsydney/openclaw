@@ -127,6 +127,7 @@ import {
 } from "./status-footer.js";
 import { callChatApi } from "./tools/chat-api.js";
 import { fetchChatHistory, getTenantAccessToken } from "./tools/chat-history.js";
+import { setOAuthDirectContext } from "./tools/oauth-direct.js";
 
 const MERGE_FORWARD_DISABLED_TEXT = "[merged forward disabled]";
 
@@ -3159,6 +3160,9 @@ async function handleInboundMessage(data: any, deps: InboundDeps): Promise<void>
   // `filterMessagingToolDuplicates` (text dedup) in core reply-payloads.ts.
   // Preferred mode: tts.auto = "inbound" — system handles TTS, no AI echo, no dedup needed.
   const sentMediaUrls = new Set<string>();
+
+  // Set OAuth direct-send context so tools can send auth cards directly to user
+  setOAuthDirectContext(account, chatId);
 
   // Track whether deliver has fired so cleanup waits for lane-queued messages
   // whose deliver callback fires AFTER dispatchReplyWithBufferedBlockDispatcher

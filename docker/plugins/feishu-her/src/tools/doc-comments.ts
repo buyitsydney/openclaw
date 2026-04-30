@@ -23,6 +23,7 @@ import {
   requireUserToken,
   resolveOAuthRedirectUri,
 } from "../oauth.js";
+import { getOAuthDirectSender } from "./oauth-direct.js";
 
 function json(data: unknown) {
   return {
@@ -245,6 +246,7 @@ export function registerFeishuDocCommentsTools(api: OpenClawPluginApi): void {
         redirectUri,
         tokenPromise: getValidUserToken(account),
         toolLabel: "文档评论",
+        sendDirectToUser: getOAuthDirectSender(account),
       });
       if (!tokenResult.ok) return tokenResult.authResponse;
       const userToken = tokenResult.token.access_token;

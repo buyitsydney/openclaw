@@ -8,6 +8,7 @@ import {
   requireUserToken,
   resolveOAuthRedirectUri,
 } from "../oauth.js";
+import { getOAuthDirectSender } from "./oauth-direct.js";
 import { callChatApi, makeLocalErrorResult, makeToolResult } from "./chat-api.js";
 import { resolveDriveShareUrl } from "./share-url.js";
 
@@ -240,6 +241,7 @@ export function registerFeishuSheetTools(api: OpenClawPluginApi) {
             redirectUri: oauthRedirectUri,
             tokenPromise: getValidUserToken(account),
             toolLabel: "飞书表格读取",
+            sendDirectToUser: getOAuthDirectSender(account),
           });
 
         switch (params.action) {

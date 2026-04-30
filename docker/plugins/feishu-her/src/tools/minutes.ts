@@ -27,6 +27,7 @@ import {
   type FeishuUserToken,
 } from "../oauth.js";
 import { getFeishuClient } from "../outbound.js";
+import { getOAuthDirectSender } from "./oauth-direct.js";
 
 // ── Schema ──
 
@@ -1178,6 +1179,7 @@ export function registerFeishuMinutesTools(api: OpenClawPluginApi): void {
             redirectUri,
             tokenPromise: getValidUserToken(firstAccount),
             toolLabel: "飞书妙记",
+            sendDirectToUser: getOAuthDirectSender(firstAccount),
           });
           if (!guard.ok) return guard.authResponse;
           const userToken = guard.token;
@@ -1221,7 +1223,7 @@ export function registerFeishuMinutesTools(api: OpenClawPluginApi): void {
               return json({ error: `Unknown action: ${params.action}` });
           }
         } catch (err) {
-          const authResp = await handleFeishuTokenError(err, firstAccount, redirectUri);
+          const authResp = await handleFeishuTokenError(err, firstAccount, redirectUri, getOAuthDirectSender(firstAccount));
           const message = err instanceof Error ? err.message : String(err);
           if (authResp) return authResp;
 

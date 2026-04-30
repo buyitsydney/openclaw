@@ -25,6 +25,7 @@ import {
   requireUserToken,
   resolveOAuthRedirectUri,
 } from "../oauth.js";
+import { getOAuthDirectSender } from "./oauth-direct.js";
 import { toUnixSeconds } from "./time-utils.js";
 
 // ── Schema ──
@@ -501,6 +502,7 @@ export function registerFeishuKnowledgeQATool(api: OpenClawPluginApi): void {
             redirectUri,
             tokenPromise: getValidUserToken(firstAccount),
             toolLabel: "飞书知识问答",
+            sendDirectToUser: getOAuthDirectSender(firstAccount),
           });
           if (!guard.ok) return guard.authResponse;
           const userToken = guard.token;
@@ -534,6 +536,7 @@ export function registerFeishuKnowledgeQATool(api: OpenClawPluginApi): void {
               redirectUri,
               tokenPromise: getValidUserToken(firstAccount),
               toolLabel: "飞书知识问答",
+              sendDirectToUser: getOAuthDirectSender(firstAccount),
             });
             if (!reauth.ok) return reauth.authResponse;
           }
@@ -553,6 +556,7 @@ export function registerFeishuKnowledgeQATool(api: OpenClawPluginApi): void {
               redirectUri,
               tokenPromise: getValidUserToken(firstAccount),
               toolLabel: "飞书知识问答",
+              sendDirectToUser: getOAuthDirectSender(firstAccount),
             });
             if (!reauth.ok) return reauth.authResponse;
           }

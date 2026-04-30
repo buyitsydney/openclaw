@@ -278,6 +278,7 @@ export async function handleFeishuTokenError(
   err: unknown,
   account?: ResolvedFeishuAccount,
   redirectUri?: string,
+  sendDirectToUser?: (text: string) => Promise<void>,
 ): Promise<{ content: { type: "text"; text: string }[]; details: unknown } | null> {
   // Extract error code from various error shapes
   let code: number | undefined;
@@ -321,11 +322,32 @@ export async function handleFeishuTokenError(
     );
     invalidateAllUserTokens();
 
-    // Generate auth URL so the tool can return it directly to her
+    // Generate auth URL — send directly to user if callback available
     if (account && redirectUri) {
       const effectiveScopes = await resolveEffectiveOAuthScopes(account);
       const chatId = account.accountId;
       const authUrl = getAuthUrlForChat(account, chatId, redirectUri, effectiveScopes);
+
+      if (sendDirectToUser) {
+        const cardText =
+          `🔐 授权已失效，需要重新授权\n\n` +
+          `[点击这里完成飞书授权](${authUrl})\n\n` +
+          `授权完成后请重新发送你的请求。`;
+        await sendDirectToUser(cardText);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                status: "auth_link_sent",
+                message: "用户 OAuth 授权已失效，已直接发送重新授权链接给用户。",
+              }),
+            },
+          ],
+          details: { status: "auth_link_sent" },
+        };
+      }
+
       const details = {
         error: "user_auth_required",
         message:
@@ -927,6 +949,7 @@ export async function requireUserToken(params: {
   redirectUri: string;
   tokenPromise: Promise<FeishuUserToken | null>;
   toolLabel: string;
+  sendDirectToUser?: (text: string) => Promise<void>;
 }): Promise<RequireUserTokenResult> {
   const token = await params.tokenPromise;
   if (token) return { ok: true as const, token };
@@ -935,6 +958,30 @@ export async function requireUserToken(params: {
   const effectiveScopes = await resolveEffectiveOAuthScopes(params.account);
   const chatId = params.account.accountId;
   const authUrl = getAuthUrlForChat(params.account, chatId, params.redirectUri, effectiveScopes);
+
+  if (params.sendDirectToUser) {
+    const cardText =
+      `🔐 需要授权才能使用「${params.toolLabel}」\n\n` +
+      `[点击这里完成飞书授权](${authUrl})\n\n` +
+      `授权完成后请重新发送你的请求。`;
+    await params.sendDirectToUser(cardText);
+    return {
+      ok: false as const,
+      authResponse: {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              status: "auth_link_sent",
+              message: `已直接发送${params.toolLabel}的 OAuth 授权链接给用户，请等待用户完成授权后重试。`,
+            }),
+          },
+        ],
+        details: { status: "auth_link_sent" },
+      },
+    };
+  }
+
   const details = {
     error: "user_auth_required",
     message:

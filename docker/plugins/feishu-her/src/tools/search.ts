@@ -18,6 +18,7 @@ import {
   requireUserToken,
   resolveOAuthRedirectUri,
 } from "../oauth.js";
+import { getOAuthDirectSender } from "./oauth-direct.js";
 import { searchRootDriveItemsByTitle } from "./drive-browse.js";
 import { resolveDriveShareUrl, type DriveDocType } from "./share-url.js";
 
@@ -369,6 +370,7 @@ export function registerFeishuSearchTool(api: OpenClawPluginApi): void {
             redirectUri,
             tokenPromise: getValidUserToken(firstAccount),
             toolLabel: "飞书搜索",
+            sendDirectToUser: getOAuthDirectSender(firstAccount),
           });
           if (!guard.ok) return guard.authResponse;
 
@@ -408,7 +410,7 @@ export function registerFeishuSearchTool(api: OpenClawPluginApi): void {
             note: "Drive and Wiki are searched independently. Root-level Drive folders are supplemented via user-root browse because Feishu's docs search may miss folders.",
           });
         } catch (err) {
-          const authResp = await handleFeishuTokenError(err, firstAccount, redirectUri);
+          const authResp = await handleFeishuTokenError(err, firstAccount, redirectUri, getOAuthDirectSender(firstAccount));
           if (authResp) return authResp;
           return json({ error: err instanceof Error ? err.message : String(err) });
         }

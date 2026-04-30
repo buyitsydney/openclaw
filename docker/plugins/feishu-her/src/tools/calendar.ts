@@ -18,6 +18,7 @@ import {
   resolveOAuthRedirectUri,
 } from "../oauth.js";
 import { getFeishuClient } from "../outbound.js";
+import { buildSendDirectToUser, getOAuthDirectSender } from "./oauth-direct.js";
 import { toUnixSecondsStr, toRfc3339 } from "./time-utils.js";
 
 function json(data: unknown) {
@@ -510,7 +511,7 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
   const redirectUri = resolveOAuthRedirectUri(api.config);
 
   api.registerTool(
-    {
+    (toolCtx) => ({
       name: "feishu_calendar",
       label: "Feishu Calendar",
       description:
@@ -555,6 +556,7 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
             redirectUri,
             tokenPromise: getValidUserToken(firstAccount),
             toolLabel: "日历",
+            sendDirectToUser: buildSendDirectToUser(firstAccount, toolCtx.deliveryContext?.to),
           });
           if (!tokenResult.ok) return tokenResult.authResponse;
           const userToken = tokenResult.token.access_token;
@@ -666,7 +668,7 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
               return json({ error: `Unknown action: ${params.action}` });
           }
         } catch (err) {
-          const authResp = await handleFeishuTokenError(err, firstAccount, redirectUri);
+          const authResp = await handleFeishuTokenError(err, firstAccount, redirectUri, getOAuthDirectSender(firstAccount));
           // oxlint-disable-next-line typescript/no-explicit-any
           const axiosData = (err as any)?.response?.data;
           if (axiosData?.code && axiosData?.msg) {
@@ -680,7 +682,7 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
           return json({ error: err instanceof Error ? err.message : String(err) });
         }
       },
-    },
+    }),
     { name: "feishu_calendar" },
   );
   api.logger.info?.("feishu: registered feishu_calendar tool (user_access_token mode)");

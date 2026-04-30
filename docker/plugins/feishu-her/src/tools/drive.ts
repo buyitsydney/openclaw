@@ -20,6 +20,7 @@ import {
   resolveOAuthRedirectUri,
 } from "../oauth.js";
 import { getFeishuClient } from "../outbound.js";
+import { getOAuthDirectSender } from "./oauth-direct.js";
 import { callChatApi } from "./chat-api.js";
 import { listDriveItemsByUser, type DriveBrowseItem } from "./drive-browse.js";
 import { resolveDriveShareUrl, type DriveDocType } from "./share-url.js";
@@ -604,6 +605,7 @@ export function registerFeishuDriveTools(api: OpenClawPluginApi) {
                 redirectUri: oauthRedirectUri,
                 tokenPromise: getValidUserToken(firstAccount),
                 toolLabel: "飞书云盘读取",
+                sendDirectToUser: getOAuthDirectSender(firstAccount),
               });
               if (!guard.ok) return guard.authResponse;
               return json(
@@ -620,6 +622,7 @@ export function registerFeishuDriveTools(api: OpenClawPluginApi) {
                 redirectUri: oauthRedirectUri,
                 tokenPromise: getValidUserToken(firstAccount),
                 toolLabel: "飞书云盘读取",
+                sendDirectToUser: getOAuthDirectSender(firstAccount),
               });
               if (!guard.ok) return guard.authResponse;
               return json(
@@ -664,7 +667,7 @@ export function registerFeishuDriveTools(api: OpenClawPluginApi) {
               return json({ error: `Unknown action: ${params.action}` });
           }
         } catch (err) {
-          const authResp = await handleFeishuTokenError(err, firstAccount, oauthRedirectUri);
+          const authResp = await handleFeishuTokenError(err, firstAccount, oauthRedirectUri, getOAuthDirectSender(firstAccount));
           if (authResp) return authResp;
           return json({ error: err instanceof Error ? err.message : String(err) });
         }

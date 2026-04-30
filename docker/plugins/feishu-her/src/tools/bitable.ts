@@ -16,6 +16,7 @@ import {
   resolveOAuthRedirectUri,
 } from "../oauth.js";
 import { getFeishuClient } from "../outbound.js";
+import { getOAuthDirectSender } from "./oauth-direct.js";
 
 function json(data: unknown) {
   return {
@@ -853,6 +854,7 @@ export function registerFeishuBitableTools(api: OpenClawPluginApi) {
               redirectUri: oauthRedirectUri,
               tokenPromise: getValidUserToken(firstAccount),
               toolLabel: "飞书多维表格读取",
+              sendDirectToUser: getOAuthDirectSender(firstAccount),
             });
           switch (params.action) {
             case "get_meta": {
@@ -968,7 +970,7 @@ export function registerFeishuBitableTools(api: OpenClawPluginApi) {
               return json({ error: `Unknown action: ${params.action}` });
           }
         } catch (err) {
-          const authResp = await handleFeishuTokenError(err, firstAccount, oauthRedirectUri);
+          const authResp = await handleFeishuTokenError(err, firstAccount, oauthRedirectUri, getOAuthDirectSender(firstAccount));
           if (authResp) return authResp;
           return json({ error: err instanceof Error ? err.message : String(err) });
         }

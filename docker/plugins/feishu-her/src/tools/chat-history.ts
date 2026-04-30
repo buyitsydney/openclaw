@@ -47,6 +47,7 @@ import {
   type FeishuUserToken,
 } from "../oauth.js";
 import { downloadFeishuFile, downloadFeishuImage, getFeishuClient } from "../outbound.js";
+import { buildSendDirectToUser, getOAuthDirectSender } from "./oauth-direct.js";
 import { parseTime } from "./time-utils.js";
 
 function json(data: unknown) {
@@ -906,6 +907,7 @@ export function registerFeishuChatHistoryTool(api: OpenClawPluginApi) {
             ? getValidUserTokenForOpenId(firstAccount, requesterSenderId)
             : getValidUserToken(firstAccount),
           toolLabel: "群聊历史",
+          sendDirectToUser: buildSendDirectToUser(firstAccount, toolCtx.deliveryContext?.to),
         });
         if (!guard.ok) return guard.authResponse;
         const userToken = guard.token;
@@ -922,7 +924,7 @@ export function registerFeishuChatHistoryTool(api: OpenClawPluginApi) {
               return json({ error: `Unknown action: ${params.action}` });
           }
         } catch (err) {
-          const authResp = await handleFeishuTokenError(err, firstAccount, redirectUri);
+          const authResp = await handleFeishuTokenError(err, firstAccount, redirectUri, getOAuthDirectSender(firstAccount));
           const msg = err instanceof Error ? err.message : String(err);
           if (authResp) return authResp;
 

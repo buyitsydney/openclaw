@@ -16,6 +16,7 @@ import {
   resolveOAuthRedirectUri,
 } from "../oauth.js";
 import { getFeishuClient } from "../outbound.js";
+import { getOAuthDirectSender } from "./oauth-direct.js";
 import { resolveDriveShareUrl, type DriveDocType } from "./share-url.js";
 
 function json(data: unknown) {
@@ -307,6 +308,7 @@ export function registerFeishuWikiTools(api: OpenClawPluginApi) {
                 redirectUri: oauthRedirectUri,
                 tokenPromise: getValidUserToken(firstAccount),
                 toolLabel: "飞书知识库读取",
+                sendDirectToUser: getOAuthDirectSender(firstAccount),
               });
               if (!guard.ok) return guard.authResponse;
               return json(await listSpacesByUser(guard.token.access_token));
@@ -317,6 +319,7 @@ export function registerFeishuWikiTools(api: OpenClawPluginApi) {
                 redirectUri: oauthRedirectUri,
                 tokenPromise: getValidUserToken(firstAccount),
                 toolLabel: "飞书知识库读取",
+                sendDirectToUser: getOAuthDirectSender(firstAccount),
               });
               if (!guard.ok) return guard.authResponse;
               return json(
@@ -333,6 +336,7 @@ export function registerFeishuWikiTools(api: OpenClawPluginApi) {
                 redirectUri: oauthRedirectUri,
                 tokenPromise: getValidUserToken(firstAccount),
                 toolLabel: "飞书知识库读取",
+                sendDirectToUser: getOAuthDirectSender(firstAccount),
               });
               if (!guard.ok) return guard.authResponse;
               return json(
@@ -378,6 +382,7 @@ export function registerFeishuWikiTools(api: OpenClawPluginApi) {
                 redirectUri: oauthRedirectUri,
                 tokenPromise: getValidUserToken(firstAccount),
                 toolLabel: "飞书知识库读取",
+                sendDirectToUser: getOAuthDirectSender(firstAccount),
               });
               if (!guard.ok) return guard.authResponse;
               if (!params.token) {
@@ -409,7 +414,7 @@ export function registerFeishuWikiTools(api: OpenClawPluginApi) {
               return json({ error: `Unknown action: ${params.action}` });
           }
         } catch (err) {
-          const authResp = await handleFeishuTokenError(err, firstAccount, oauthRedirectUri);
+          const authResp = await handleFeishuTokenError(err, firstAccount, oauthRedirectUri, getOAuthDirectSender(firstAccount));
           if (authResp) return authResp;
           return json({ error: err instanceof Error ? err.message : String(err) });
         }

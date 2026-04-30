@@ -23,6 +23,7 @@ import {
   resolveOAuthRedirectUri,
 } from "../oauth.js";
 import { getFeishuClient, downloadDocxImage, downloadWhiteboardImage } from "../outbound.js";
+import { getOAuthDirectSender } from "./oauth-direct.js";
 import { resolveDriveShareUrl } from "./share-url.js";
 
 // ── Helpers ──
@@ -1377,6 +1378,7 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
               redirectUri: oauthRedirectUri,
               tokenPromise: getValidUserToken(firstAccount),
               toolLabel: "飞书文档读取",
+              sendDirectToUser: getOAuthDirectSender(firstAccount),
             });
           switch (params.action) {
             case "read":
@@ -1650,7 +1652,7 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
               return json({ error: `Unknown action: ${params.action}` });
           }
         } catch (err) {
-          const authResp = await handleFeishuTokenError(err, firstAccount, oauthRedirectUri);
+          const authResp = await handleFeishuTokenError(err, firstAccount, oauthRedirectUri, getOAuthDirectSender(firstAccount));
           if (authResp) return authResp;
           return json({ error: err instanceof Error ? err.message : String(err) });
         }
