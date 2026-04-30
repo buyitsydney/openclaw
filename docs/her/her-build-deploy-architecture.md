@@ -4,7 +4,7 @@
 - [`her-image-architecture.md`](./her-image-architecture.md) — A+B 三轴镜像解耦
 - [`config-architecture.md`](./config-architecture.md) — 三层 config
 
-**状态**：PoC 已在 carher-101（Mac local tester）跑通；生产 S1/S3 尚未迁移。
+**状态**：PoC 已在 carher-101（Mac local tester）+ S1 carher-199（生产灰度）跑通。
 
 ---
 
@@ -244,6 +244,7 @@ cd deploy/carher-N && docker compose up -d
 
 ### 已解决
 - **Anthropic auth mirror** — compose.yaml 里显式 mirror `ANTHROPIC_AUTH_TOKEN → ANTHROPIC_API_KEY`（start-user.sh 在 bash 里做这件事；compose 需要显式声明，否则 bot 回 `Missing API key for provider "anthropic"`）
+- **Compose `${VAR}` substitution on server** — compose 的 `${VAR}` 展开发生在 parse 时，从 shell env / `--env-file` / project `.env` 读取，**不从 `env_file` 指令读取**。`scaffold.sh` 现在在生成 `.env` 时自动从 `docker/server.env` 提取 `ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_BASE_URL`、`CARHER_LAN_IP` 写入 `.env`，确保 server 部署时变量不为空。`compose.template.yaml` 的 `CARHER_LAN_IP` 改为 `${CARHER_LAN_IP:-127.0.0.1}` fallback。
 
 ### 首次启动慢（3-5 分钟，非 bug）
 
@@ -265,7 +266,7 @@ openclaw 2026.4.24+ 引入 **"lazy runtime deps"** 机制：plugin 依赖（`@an
 - **Image 签名**：`cosign sign` + `cosign verify` 供应链安全
 - **SBOM**：`syft` 生成 image 内容清单
 - **carher-102/103/104 volume state**：Mac 本地 tester 的 feishu 插件在某些 volume state 下启动后不触发 `starting Feishu bot`；需要 A/B 对照 start-user.sh 定位根因（独立任务）
-- **生产 fleet 迁移**：S1（carher-12/13/198/199/200）+ S3（carher-14/75）尚未从 start-user.sh 切到 compose
+- **生产 fleet 迁移**：S1 carher-199 已完成灰度；S1（carher-12/13/198/200）+ S3（carher-14/75）尚未从 start-user.sh 切到 compose
 
 ### 设计未覆盖
 - **K8s / Nomad**：容器数 <20 时 docker compose 足够；扩到 50+ 时换 orchestrator

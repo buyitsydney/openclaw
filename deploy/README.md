@@ -85,6 +85,13 @@ docker compose logs -f carher
 docker compose down           # keeps volumes
 ```
 
+### Important: `${VAR}` substitution in compose
+
+Compose resolves `${VAR}` at **parse time** from shell env / `--env-file` / project `.env`,
+**NOT** from `env_file:` directives. `scaffold.sh` automatically mirrors critical vars
+(`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `CARHER_LAN_IP`) from `docker/server.env`
+into each user's `.env` so they are available at parse time.
+
 ### What start-user.sh still does that compose doesn't (yet)
 - Voice token generation (first-boot)
 - Device pairing scope repair (first-boot)
@@ -92,3 +99,7 @@ docker compose down           # keeps volumes
 
 For the PoC these are deferred — first-boot state already exists in volumes
 for carher-101 tester. New users would need a separate init step.
+
+### Verified deployments
+- carher-101 (Mac local tester) — PoC validated 2026-04-29
+- carher-199 (S1 production grayscale) — validated 2026-04-30 (OAuth fix + compose ${VAR} fix)
