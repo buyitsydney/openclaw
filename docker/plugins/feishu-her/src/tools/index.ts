@@ -26,6 +26,7 @@ import { registerFeishuDocTools } from "./docx.js";
 import { registerFeishuDriveTools } from "./drive.js";
 import { registerGroupModeTool } from "./group-mode-tool.js";
 import { registerFeishuKnowledgeQATool } from "./knowledge-qa.js";
+import { registerFeishuMailTools } from "./mail.js";
 import { registerFeishuMessageSearchTool } from "./message-search.js";
 import { registerFeishuMessageTools } from "./message.js";
 import { registerFeishuMinutesTools } from "./minutes.js";
@@ -59,6 +60,7 @@ export async function registerAllFeishuTools(api: OpenClawPluginApi): Promise<vo
   registerFeishuMessageTools(api);
   registerFeishuMessageSearchTool(api);
   registerFeishuMinutesTools(api);
+  registerFeishuMailTools(api);
   registerDiscussionLeaderTool(api);
   registerDiscussionLifecycleTools(api);
   registerGroupModeTool(api);
