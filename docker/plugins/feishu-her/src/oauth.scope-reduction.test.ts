@@ -11,10 +11,16 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { __scopeReduction } from "./oauth";
+import { __scopeReduction, OAuthUrlTooLargeError } from "./oauth";
 
-const { dedupSubsumedScopes, applyDomainQuota, applyDynamicQuota, estimateAuthorizeUrlBytes, MAX_AUTHORIZE_URL_BYTES } =
-  __scopeReduction;
+const {
+  dedupSubsumedScopes,
+  applyDomainQuota,
+  applyDynamicQuota,
+  estimateAuthorizeUrlBytes,
+  MAX_AUTHORIZE_URL_BYTES,
+  PRIORITY_SCOPES,
+} = __scopeReduction;
 
 // Representative full-catalog scope list observed from the enterprise app
 // `cli_a96f044b4ef95cc0` on 2026-04-30 (234 entries, 169 after partial dedup
@@ -135,5 +141,59 @@ describe("scope reduction — 234-scope regression (Feishu 431 guard)", () => {
     expect(dyn.quota).toBe(15); // upper bound — small sets keep everything
     expect(dyn.kept.length).toBe(2);
     expect(dyn.dropped.length).toBe(0);
+    expect(dyn.priorityKept.length).toBe(0);
+  });
+});
+
+describe("scope reduction — priority scope preservation (A/B 2026-05-01)", () => {
+  it("PRIORITY_SCOPES is a non-empty readonly list that includes mail:message:readonly", () => {
+    expect(PRIORITY_SCOPES.length).toBeGreaterThan(0);
+    expect(PRIORITY_SCOPES).toContain("mail:user_mailbox.message:readonly");
+  });
+
+  it("priority scope is kept even when the mail domain would be quota-cut", () => {
+    const dedup = dedupSubsumedScopes(new Set(FIXTURE_SCOPES_234));
+    const dyn = applyDynamicQuota(dedup.kept, CLIENT_ID, REDIRECT_URI);
+    expect(dyn.kept).toContain("mail:user_mailbox.message:readonly");
+    expect(dyn.priorityKept).toContain("mail:user_mailbox.message:readonly");
+  });
+
+  it("priority scopes not present in backend are not hallucinated", () => {
+    const small = ["im:chat"];
+    const dyn = applyDynamicQuota(small, CLIENT_ID, REDIRECT_URI);
+    expect(dyn.priorityKept.length).toBe(0);
+    expect(dyn.kept).toEqual(["im:chat"]);
+  });
+});
+
+describe("scope reduction — hard guard against oversized URLs", () => {
+  it("estimator detects an oversized base URL before applyDynamicQuota throws", () => {
+    // Construct a synthetic client_id + ~5KB redirect_uri so that even a
+    // single scope plus priority set blows past MAX_AUTHORIZE_URL_BYTES.
+    const huge = "https://" + "a".repeat(5000) + ".example.com/cb";
+    expect(estimateAuthorizeUrlBytes(["im:chat"], CLIENT_ID, huge)).toBeGreaterThan(
+      MAX_AUTHORIZE_URL_BYTES,
+    );
+  });
+
+  it("applyDynamicQuota throws OAuthUrlTooLargeError when quota=1 still can't fit", () => {
+    const huge = "https://" + "a".repeat(5000) + ".example.com/cb";
+    expect(() => applyDynamicQuota(["im:chat"], CLIENT_ID, huge)).toThrow(
+      OAuthUrlTooLargeError,
+    );
+  });
+
+  it("OAuthUrlTooLargeError carries actionable telemetry", () => {
+    const huge = "https://" + "a".repeat(5000) + ".example.com/cb";
+    try {
+      applyDynamicQuota(["im:chat"], CLIENT_ID, huge);
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(OAuthUrlTooLargeError);
+      const e = err as OAuthUrlTooLargeError;
+      expect(e.maxBytes).toBe(MAX_AUTHORIZE_URL_BYTES);
+      expect(e.urlBytes).toBeGreaterThan(MAX_AUTHORIZE_URL_BYTES);
+      expect(e.finalScopeCount).toBeGreaterThanOrEqual(1);
+    }
   });
 });

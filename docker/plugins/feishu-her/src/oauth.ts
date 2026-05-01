@@ -155,6 +155,46 @@ export async function fetchBackendUserScopes(account: ResolvedFeishuAccount): Pr
 const SCOPE_DOMAIN_QUOTA = 15;
 /** Max raw authorize URL bytes. Empirical safe margin: passport URL ≤ ~4500. */
 const MAX_AUTHORIZE_URL_BYTES = 3700;
+
+/**
+ * Scopes that must survive quota reduction — user-facing capabilities that
+ * would be silently crippled if the domain quota happens to drop them.
+ * Verified cases that motivated this list (2026-05-01 A/B diff test):
+ *   - mail:user_mailbox.message:readonly was truncated by applyDomainQuota(8)
+ *     because the mail domain had 15 entries; tools asking for it returned
+ *     99991679 Unauthorized without any user-visible hint.
+ *
+ * Rule: only include scopes that (a) unlock an entire tool surface when
+ * present and (b) aren't covered by a parent scope on the backend.
+ */
+const PRIORITY_SCOPES: readonly string[] = [
+  "mail:user_mailbox.message:readonly",
+  "mail:user_mailbox.message:send",
+  "mail:user_mailbox.folder:read",
+  "mail:user_mailbox.mail_contact:read",
+  "offline_access",
+];
+
+/**
+ * Thrown when even the minimal-quota authorize URL exceeds the hard size
+ * guard. Callers must surface this to the user instead of silently building
+ * a URL that Feishu's passport will reject with HTTP 431.
+ */
+export class OAuthUrlTooLargeError extends Error {
+  constructor(
+    public readonly urlBytes: number,
+    public readonly maxBytes: number,
+    public readonly finalScopeCount: number,
+  ) {
+    super(
+      `OAuth authorize URL ${urlBytes} bytes exceeds hard limit ${maxBytes} ` +
+        `even at per-domain quota=1 (${finalScopeCount} scopes kept). ` +
+        `The app has so many scopes that even the minimum set cannot fit. ` +
+        `Reduce PRIORITY_SCOPES or prune backend scopes.`,
+    );
+    this.name = "OAuthUrlTooLargeError";
+  }
+}
 const SCOPE_DROP_SUFFIXES = ["readonly", "read", "write_only", "write"] as const;
 
 function dedupSubsumedScopes(scopes: Set<string>): {
@@ -245,26 +285,44 @@ function estimateAuthorizeUrlBytes(
 
 /**
  * Binary-search-ish: try quota values from SCOPE_DOMAIN_QUOTA down to 1 and
- * keep the largest one whose URL fits. Deterministic given the same backend
- * scope set.
+ * keep the largest one whose URL fits. Priority scopes (PRIORITY_SCOPES) are
+ * partitioned out before domain reduction so a shrinking quota never drops
+ * them. Throws OAuthUrlTooLargeError if even quota=1 + priority exceeds
+ * MAX_AUTHORIZE_URL_BYTES.
  */
 function applyDynamicQuota(
   scopes: string[],
   clientId: string,
   redirectUri: string,
-): { kept: string[]; dropped: string[]; quota: number; urlBytes: number } {
+): {
+  kept: string[];
+  dropped: string[];
+  quota: number;
+  urlBytes: number;
+  priorityKept: string[];
+} {
+  const granted = new Set(scopes);
+  const priorityKept = PRIORITY_SCOPES.filter((s) => granted.has(s));
+  const priorityKeptSet = new Set(priorityKept);
+  const regulars = scopes.filter((s) => !priorityKeptSet.has(s));
+
   for (let quota = SCOPE_DOMAIN_QUOTA; quota >= 1; quota--) {
-    const r = applyDomainQuota(scopes, quota);
-    const urlBytes = estimateAuthorizeUrlBytes(r.kept, clientId, redirectUri);
+    const r = applyDomainQuota(regulars, quota);
+    const combined = [...priorityKept, ...r.kept].sort();
+    const urlBytes = estimateAuthorizeUrlBytes(combined, clientId, redirectUri);
     if (urlBytes <= MAX_AUTHORIZE_URL_BYTES) {
-      return { ...r, quota, urlBytes };
+      return { kept: combined, dropped: r.dropped, quota, urlBytes, priorityKept };
     }
   }
-  // Absolute fallback: quota=1 (one scope per domain). Better to let the user
-  // authorize a minimal subset than to hand them a URL that 431s.
-  const r = applyDomainQuota(scopes, 1);
-  const urlBytes = estimateAuthorizeUrlBytes(r.kept, clientId, redirectUri);
-  return { ...r, quota: 1, urlBytes };
+
+  // Final attempt at quota=1; hard-fail if the guard can't be met.
+  const r = applyDomainQuota(regulars, 1);
+  const combined = [...priorityKept, ...r.kept].sort();
+  const urlBytes = estimateAuthorizeUrlBytes(combined, clientId, redirectUri);
+  if (urlBytes > MAX_AUTHORIZE_URL_BYTES) {
+    throw new OAuthUrlTooLargeError(urlBytes, MAX_AUTHORIZE_URL_BYTES, combined.length);
+  }
+  return { kept: combined, dropped: r.dropped, quota: 1, urlBytes, priorityKept };
 }
 
 /**
@@ -296,8 +354,13 @@ export async function resolveEffectiveOAuthScopes(
       `[feishu-oauth] scope quota: ${dyn.dropped.length} scope(s) dropped (dynamic domain cap=${dyn.quota}) to fit ${MAX_AUTHORIZE_URL_BYTES}-byte URL limit (actual=${dyn.urlBytes}). Sample: ${dyn.dropped.slice(0, 3).join(", ")}`,
     );
   }
+  if (dyn.priorityKept.length > 0) {
+    console.log(
+      `[feishu-oauth] priority scopes kept (never quota-cut): ${dyn.priorityKept.join(", ")}`,
+    );
+  }
   console.log(
-    `[feishu-oauth] effective scopes: backend=${backend.size} dedup_dropped=${dedupResult.dropped.length} quota_dropped=${dyn.dropped.length} final=${dyn.kept.length} quota=${dyn.quota} url_bytes=${dyn.urlBytes}`,
+    `[feishu-oauth] effective scopes: backend=${backend.size} dedup_dropped=${dedupResult.dropped.length} quota_dropped=${dyn.dropped.length} final=${dyn.kept.length} quota=${dyn.quota} url_bytes=${dyn.urlBytes} priority=${dyn.priorityKept.length}`,
   );
   return dyn.kept;
 }
@@ -310,6 +373,7 @@ export const __scopeReduction = {
   estimateAuthorizeUrlBytes,
   SCOPE_DOMAIN_QUOTA,
   MAX_AUTHORIZE_URL_BYTES,
+  PRIORITY_SCOPES,
 };
 
 /**
@@ -612,19 +676,27 @@ async function ensureValidUserToken(
   // Scope drift detection: compare the saved token's scopes against the
   // current backend-granted set. Backend is the single source of truth — if
   // it added new scopes since the user authorized, warn but do not invalidate
-  // the token (the user can re-authorize if they need the new scope). If the
-  // backend probe fails we skip the check silently (non-fatal).
-  try {
-    const backend = await fetchBackendUserScopes(account);
-    const granted = new Set(token.scopes ?? []);
-    const missing = Array.from(backend).filter((s) => !granted.has(s));
-    if (missing.length > 0) {
-      console.warn(
-        `[feishu-oauth] scope drift: token missing ${missing.length} backend-granted scope(s) (user can re-auth to pick up). Sample: ${missing.slice(0, 3).join(", ")}`,
-      );
+  // the token (the user can re-authorize if they need the new scope).
+  //
+  // Skipped when the token's stored scopes are empty: some Feishu OAuth
+  // responses do not include the `scope` field, and we save `scopes: []` in
+  // that case. Comparing against the backend set would then report every
+  // backend scope as "missing" — a false positive, because Feishu still
+  // enforces at request time and every tool call succeeds.
+  const storedScopes = token.scopes ?? [];
+  if (storedScopes.length > 0) {
+    try {
+      const backend = await fetchBackendUserScopes(account);
+      const granted = new Set(storedScopes);
+      const missing = Array.from(backend).filter((s) => !granted.has(s));
+      if (missing.length > 0) {
+        console.warn(
+          `[feishu-oauth] scope drift: token missing ${missing.length} backend-granted scope(s) (user can re-auth to pick up). Sample: ${missing.slice(0, 3).join(", ")}`,
+        );
+      }
+    } catch {
+      // Non-fatal: backend unavailable during token validity check.
     }
-  } catch {
-    // Non-fatal: backend unavailable during token validity check.
   }
 
   // access_token still valid
