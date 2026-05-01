@@ -29,150 +29,307 @@ import { getFeishuClient, sendFeishuRichText } from "./outbound.js";
 
 const FEISHU_ALLOWED_HOSTNAMES = ["open.feishu.cn", "accounts.feishu.cn"];
 
-// ── Backend scope detection ──
-// Cached per app: what user scopes are actually granted in the Feishu app backend.
-const backendUserScopesCache = new Map<string, Set<string>>();
+// ── Backend scope detection (single source of truth: Feishu app backend) ──
+//
+// Design (2026-04-30 — single source of truth refactor):
+// The Feishu app backend (open platform → permission management) is the ONLY
+// place where OAuth scopes are declared. This plugin does not maintain a local
+// hardcoded scope list. At authorization time we call `application.scope.list`
+// and request ALL user-type scopes with grant_status=1.
+//
+// Rationale: hardcoded lists drift from the backend (backend adds scope → code
+// forgets to add it → user cannot use the new API). Reading the backend keeps
+// both sides in lockstep with zero maintenance.
+//
+// Cache: 15-minute TTL so normal bursts of concurrent tool calls share a
+// single HTTP round-trip without blocking new-scope pickup for long.
+
+export class OAuthBackendUnavailableError extends Error {
+  constructor(appId: string, cause: unknown) {
+    super(
+      `Feishu backend scope query failed for appId=${appId}: ${String(cause)}. ` +
+        "OAuth cannot proceed without the backend scope list — check app secret / network / " +
+        "Feishu open platform status.",
+    );
+    this.name = "OAuthBackendUnavailableError";
+  }
+}
+
+type BackendScopeCacheEntry = {
+  scopes: Set<string>;
+  fetchedAt: number;
+};
+const SCOPE_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const backendUserScopesCache = new Map<string, BackendScopeCacheEntry>();
+
+// Inflight dedup so N concurrent callers share one HTTP round-trip.
+const inflightBackendProbes = new Map<string, Promise<Set<string>>>();
 
 /**
- * Fetch the user scopes actually granted in the Feishu app backend via
- * `application.scope.list` (tenant token). Results are cached per appId.
- * Returns null on failure (caller should fallback to full OAUTH_SCOPES).
+ * Fetch ALL user-type scopes (grant_status=1) from the Feishu app backend.
+ * Cached per appId with a 15-minute TTL; concurrent callers share one HTTP
+ * call via inflight dedup. Throws `OAuthBackendUnavailableError` on failure —
+ * callers must decide how to surface this (typically return a clear error
+ * to Her instead of silently falling back to a stale hardcoded list).
  */
-export async function fetchBackendUserScopes(
-  account: ResolvedFeishuAccount,
-): Promise<Set<string> | null> {
+export async function fetchBackendUserScopes(account: ResolvedFeishuAccount): Promise<Set<string>> {
   const cached = backendUserScopesCache.get(account.appId);
-  if (cached) return cached;
+  if (cached && Date.now() - cached.fetchedAt < SCOPE_CACHE_TTL_MS) {
+    return cached.scopes;
+  }
 
-  try {
-    const client = getFeishuClient(account);
-    // oxlint-disable-next-line typescript/no-explicit-any
-    const res: any = await (client.application as any).scope.list({});
-    if (res.code !== 0 || !Array.isArray(res.data?.scopes)) return null;
+  const inflight = inflightBackendProbes.get(account.appId);
+  if (inflight) {
+    return inflight;
+  }
 
-    const userScopes = new Set<string>();
-    for (const s of res.data.scopes) {
-      if (s.grant_status === 1 && s.scope_type === "user" && typeof s.scope_name === "string") {
-        userScopes.add(s.scope_name);
+  const probe = (async () => {
+    try {
+      const client = getFeishuClient(account);
+      // oxlint-disable-next-line typescript/no-explicit-any
+      const res: any = await (client.application as any).scope.list({});
+      if (res.code !== 0 || !Array.isArray(res.data?.scopes)) {
+        throw new Error(`Feishu responded code=${res.code} msg=${res.msg}`);
+      }
+      const userScopes = new Set<string>();
+      for (const s of res.data.scopes) {
+        if (s.grant_status === 1 && s.scope_type === "user" && typeof s.scope_name === "string") {
+          userScopes.add(s.scope_name);
+        }
+      }
+      if (userScopes.size === 0) {
+        throw new Error("backend returned zero user scopes — app misconfigured?");
+      }
+      backendUserScopesCache.set(account.appId, {
+        scopes: userScopes,
+        fetchedAt: Date.now(),
+      });
+      console.log(
+        `[feishu-oauth] backend scope probe ok: appId=${account.appId} user_scopes=${userScopes.size}`,
+      );
+      return userScopes;
+    } catch (err) {
+      console.warn(
+        `[feishu-oauth] backend scope probe FAILED for ${account.appId}: ${String(err)}. No fallback — callers will see OAuthBackendUnavailableError.`,
+      );
+      throw new OAuthBackendUnavailableError(account.appId, err);
+    } finally {
+      inflightBackendProbes.delete(account.appId);
+    }
+  })();
+
+  inflightBackendProbes.set(account.appId, probe);
+  return probe;
+}
+
+/**
+ * Feishu OAuth authorize URL size reduction.
+ *
+ * Empirical facts (2026-05-01 headless-Chrome E2E, admin her):
+ *   - `accounts.feishu.cn/open-apis/authen/v1/authorize` returns 302 to
+ *     `passport.feishu.cn/accounts/page/login`, which DOUBLE-encodes the
+ *     original URL into its `redirect_uri` parameter (%3A → %253A).
+ *   - The passport login endpoint returns HTTP 431 once the request-line +
+ *     headers (dominated by that embedded redirect_uri) exceed ~4700 bytes.
+ *     Browser then renders "HTTP ERROR 431" / blank page.
+ *   - Passport URL bytes ≈ raw URL bytes × 1.22 (measured across 5 scope
+ *     counts: 40/60/80/100/115/120/130/140/150/170).
+ *
+ * Threshold table (measured):
+ *   n=115 raw=3736 passport=4518 → 302 OK
+ *   n=120 raw=3882 passport=4690 → 431 FAIL
+ *   n=140 raw=4428 passport=5346 → 302 OK  (non-monotonic, scope-specific)
+ *   n=170 raw=5024 passport=6102 → 431 FAIL
+ *
+ * Safety: keep raw URL ≤ 3700 bytes so passport URL ≤ ~4500 bytes.
+ * MAX_AUTHORIZE_URL_BYTES below encodes this headroom directly.
+ *
+ * 2-step reduction:
+ *   1. dedupSubsumedScopes() — drop `X:readonly|read|write_only|write` when `X`
+ *      is also in the backend set (sub-scopes are implied by the parent).
+ *   2. applyDynamicQuota() — pick the largest per-domain quota such that the
+ *      resulting authorize URL fits MAX_AUTHORIZE_URL_BYTES. Stable under
+ *      scope-set growth (adding a new scope never silently drops an older one
+ *      from a different domain).
+ */
+const SCOPE_DOMAIN_QUOTA = 15;
+/** Max raw authorize URL bytes. Empirical safe margin: passport URL ≤ ~4500. */
+const MAX_AUTHORIZE_URL_BYTES = 3700;
+const SCOPE_DROP_SUFFIXES = ["readonly", "read", "write_only", "write"] as const;
+
+function dedupSubsumedScopes(scopes: Set<string>): {
+  kept: string[];
+  dropped: Array<{ scope: string; parent: string }>;
+} {
+  const kept: string[] = [];
+  const dropped: Array<{ scope: string; parent: string }> = [];
+  for (const scope of scopes) {
+    let subsumed = false;
+    for (const suffix of SCOPE_DROP_SUFFIXES) {
+      const trailer = `:${suffix}`;
+      if (scope.endsWith(trailer)) {
+        const parent = scope.slice(0, -trailer.length);
+        if (scopes.has(parent)) {
+          dropped.push({ scope, parent });
+          subsumed = true;
+          break;
+        }
       }
     }
-    backendUserScopesCache.set(account.appId, userScopes);
-    console.log(
-      `[feishu-oauth] backend scope probe: appId=${account.appId} user_scopes=${userScopes.size}`,
-    );
-    return userScopes;
-  } catch (err) {
-    console.warn(
-      `[feishu-oauth] backend scope probe failed for ${account.appId}: ${String(err)}. Falling back to full OAUTH_SCOPES.`,
-    );
-    return null;
+    if (!subsumed) {
+      kept.push(scope);
+    }
   }
+  return { kept, dropped };
+}
+
+function applyDomainQuota(scopes: string[], quota: number): { kept: string[]; dropped: string[] } {
+  const byDomain = new Map<string, string[]>();
+  for (const s of scopes) {
+    const domain = s.split(":")[0];
+    if (!byDomain.has(domain)) {
+      byDomain.set(domain, []);
+    }
+    byDomain.get(domain)!.push(s);
+  }
+  const kept: string[] = [];
+  const dropped: string[] = [];
+  for (const [, arr] of byDomain) {
+    arr.sort();
+    kept.push(...arr.slice(0, quota));
+    dropped.push(...arr.slice(quota));
+  }
+  kept.sort();
+  return { kept, dropped };
 }
 
 /**
- * Resolve the effective OAuth scopes: intersection of OAUTH_SCOPES (code)
- * and backend granted scopes (Feishu app config). Falls back to full
- * OAUTH_SCOPES if backend probe fails.
+ * Resolve the full set of OAuth scopes to request. Backend is the single
+ * source of truth; we then apply deterministic reductions to fit Feishu's
+ * authorize-URL size limit. Throws `OAuthBackendUnavailableError` if the
+ * backend is unreachable — by design, we refuse to authorize with a stale
+ * hardcoded list.
  */
+/**
+ * Estimate the authorize URL size without building the final URL. Used by
+ * applyDynamicQuota() to find the largest per-domain quota that still fits.
+ * Overhead calibrated against a known-good build (client_id + full callback
+ * URL + 64-char hex state). Returns bytes of the raw URL.
+ */
+function estimateAuthorizeUrlBytes(
+  scopes: string[],
+  clientId: string,
+  redirectUri: string,
+): number {
+  const encodedRedirect = encodeURIComponent(redirectUri);
+  // Each scope encoded with `+` joiner (URLSearchParams converts space → `+`
+  // and %-encodes `:`). Use encodeURIComponent to mirror that exactly; the
+  // joiner `+` is 1 byte per pair.
+  const encodedScopes = scopes.map((s) => encodeURIComponent(s)).join("+");
+  // Base template length (empirical, constant for this provider):
+  //   "https://accounts.feishu.cn/open-apis/authen/v1/authorize" = 57
+  //   + "?client_id=" (11) + clientId.length
+  //   + "&redirect_uri=" (14) + encodedRedirect.length
+  //   + "&response_type=code" (19)
+  //   + "&scope=" (7) + encodedScopes.length
+  //   + "&state=" (7) + 64
+  return (
+    57 +
+    11 + clientId.length +
+    14 + encodedRedirect.length +
+    19 +
+    7 + encodedScopes.length +
+    7 + 64
+  );
+}
+
+/**
+ * Binary-search-ish: try quota values from SCOPE_DOMAIN_QUOTA down to 1 and
+ * keep the largest one whose URL fits. Deterministic given the same backend
+ * scope set.
+ */
+function applyDynamicQuota(
+  scopes: string[],
+  clientId: string,
+  redirectUri: string,
+): { kept: string[]; dropped: string[]; quota: number; urlBytes: number } {
+  for (let quota = SCOPE_DOMAIN_QUOTA; quota >= 1; quota--) {
+    const r = applyDomainQuota(scopes, quota);
+    const urlBytes = estimateAuthorizeUrlBytes(r.kept, clientId, redirectUri);
+    if (urlBytes <= MAX_AUTHORIZE_URL_BYTES) {
+      return { ...r, quota, urlBytes };
+    }
+  }
+  // Absolute fallback: quota=1 (one scope per domain). Better to let the user
+  // authorize a minimal subset than to hand them a URL that 431s.
+  const r = applyDomainQuota(scopes, 1);
+  const urlBytes = estimateAuthorizeUrlBytes(r.kept, clientId, redirectUri);
+  return { ...r, quota: 1, urlBytes };
+}
+
+/**
+ * Conservative fallback when callers don't know the final redirect_uri yet.
+ * Matches typical CarHer callback length (~55 chars) plus a 30-byte margin so
+ * the dynamic quota still produces a safe URL.
+ */
+const FALLBACK_REDIRECT_URI = "https://example-very-long-subdomain.example.com/feishu/oauth/callback";
+
 export async function resolveEffectiveOAuthScopes(
   account: ResolvedFeishuAccount,
+  redirectUri?: string,
 ): Promise<string[]> {
   const backend = await fetchBackendUserScopes(account);
-  if (!backend) return OAUTH_SCOPES;
-  const effective = OAUTH_SCOPES.filter((s) => backend.has(s));
-  if (effective.length < OAUTH_SCOPES.length) {
-    const skipped = OAUTH_SCOPES.filter((s) => !backend.has(s));
+  const dedupResult = dedupSubsumedScopes(backend);
+  const effectiveRedirect = redirectUri || FALLBACK_REDIRECT_URI;
+  const dyn = applyDynamicQuota(dedupResult.kept, account.appId, effectiveRedirect);
+
+  if (dedupResult.dropped.length > 0) {
     console.log(
-      `[feishu-oauth] filtered ${skipped.length} scope(s) not in backend: ${skipped.join(", ")}`,
+      `[feishu-oauth] scope dedup: ${dedupResult.dropped.length} sub-scope(s) subsumed by parent. Sample: ${dedupResult.dropped
+        .slice(0, 3)
+        .map((d) => `${d.scope}⊂${d.parent}`)
+        .join(", ")}`,
     );
   }
-  return effective;
+  if (dyn.dropped.length > 0) {
+    console.warn(
+      `[feishu-oauth] scope quota: ${dyn.dropped.length} scope(s) dropped (dynamic domain cap=${dyn.quota}) to fit ${MAX_AUTHORIZE_URL_BYTES}-byte URL limit (actual=${dyn.urlBytes}). Sample: ${dyn.dropped.slice(0, 3).join(", ")}`,
+    );
+  }
+  console.log(
+    `[feishu-oauth] effective scopes: backend=${backend.size} dedup_dropped=${dedupResult.dropped.length} quota_dropped=${dyn.dropped.length} final=${dyn.kept.length} quota=${dyn.quota} url_bytes=${dyn.urlBytes}`,
+  );
+  return dyn.kept;
 }
+
+/** Test-only: exported internals for unit testing. */
+export const __scopeReduction = {
+  dedupSubsumedScopes,
+  applyDomainQuota,
+  applyDynamicQuota,
+  estimateAuthorizeUrlBytes,
+  SCOPE_DOMAIN_QUOTA,
+  MAX_AUTHORIZE_URL_BYTES,
+};
 
 /**
  * Check if a specific scope is available in this app's backend.
- * Returns true if backend probe hasn't been done yet (optimistic).
+ * Returns true if the probe hasn't run yet (optimistic — do not block tool
+ * registration on the probe). Returns accurate results once cache is populated.
  */
 export function isBackendScopeAvailable(appId: string, scope: string): boolean {
   const cached = backendUserScopesCache.get(appId);
-  if (!cached) return true; // optimistic: not probed yet
-  return cached.has(scope);
+  if (!cached) {
+    return true;
+  } // optimistic: not probed yet
+  return cached.scopes.has(scope);
 }
 
-// All desired user scopes. At runtime, resolveEffectiveOAuthScopes() intersects
-// this list with the app's actual backend scopes (via application.scope.list API),
-// so scopes not enabled in the Feishu app backend are automatically skipped.
-const OAUTH_SCOPES = [
-  // ── AI assistant (aily) ──
-  "aily:data_asset:read",
-  "aily:data_asset:upload_file",
-  "aily:data_asset:write",
-  "aily:file:read",
-  "aily:file:write",
-  "aily:knowledge:ask",
-  "aily:knowledge:read",
-  "aily:knowledge:write",
-  "aily:message:read",
-  "aily:message:write",
-  "aily:run:read",
-  "aily:run:write",
-  "aily:session:read",
-  "aily:session:write",
-  "aily:skill:read",
-  "aily:skill:write",
-  // ── Bitable ──
-  "bitable:app:readonly",
-  // ── Calendar ──
-  "calendar:calendar",
-  "calendar:calendar.acl:read",
-  "calendar:calendar.event:read",
-  "calendar:calendar.free_busy:read",
-  "calendar:calendar:read",
-  "calendar:calendar:readonly",
-  // ── Contact ──
-  "contact:user.base:readonly",
-  "contact:user:search", // auto-filtered if app backend doesn't have this scope
-  // ── Docs ──
-  "docs:doc:readonly",
-  "docx:document:readonly",
-  // ── Drive ──
-  "drive:drive.metadata:readonly",
-  "drive:drive.search:readonly",
-  "drive:drive:readonly",
-  "drive:export:readonly",
-  "drive:file:readonly",
-  // ── Messages & chat ──
-  "im:chat:readonly",
-  "im:message.group_msg:get_as_user",
-  "im:message.p2p_msg:get_as_user",
-  "im:message.pins:read",
-  "im:message.reactions:read",
-  "im:message:readonly",
-  // ── Minutes (妙记) ──
-  "minutes:minutes",
-  "minutes:minutes.basic:read",
-  "minutes:minutes.media:export",
-  "minutes:minutes.statistics:read",
-  "minutes:minutes.transcript:export",
-  "minutes:minutes:readonly",
-  // ── Search ──
-  "search:app",
-  "search:department:read",
-  "search:docs:read",
-  "search:knowledge_qa:read", // auto-filtered if app backend doesn't have this capability
-  "search:message",
-  // ── Sheets ──
-  "sheets:spreadsheet:readonly",
-  // ── Tasks ──
-  "task:task:readonly",
-  // ── Video conference ──
-  "vc:export",
-  "vc:meeting:readonly",
-  "vc:record:readonly",
-  "vc:room:readonly",
-  // ── Wiki ──
-  "wiki:wiki:readonly",
-];
+/** Test-only: clear the scope cache between unit tests. */
+export function __clearScopeCacheForTests(): void {
+  backendUserScopesCache.clear();
+  inflightBackendProbes.clear();
+}
 
 // ── Types ──
 
@@ -212,7 +369,9 @@ function ensureTokenDir(): string {
 
 export function loadUserToken(openId: string): FeishuUserToken | null {
   const filePath = join(resolveTokenDir(), `${openId}.json`);
-  if (!existsSync(filePath)) return null;
+  if (!existsSync(filePath)) {
+    return null;
+  }
   try {
     return JSON.parse(readFileSync(filePath, "utf-8")) as FeishuUserToken;
   } catch {
@@ -229,7 +388,9 @@ function saveUserToken(token: FeishuUserToken): void {
 /** Delete all user tokens so the next OAuth tool call triggers re-authorization. */
 function invalidateAllUserTokens(): void {
   const dir = resolveTokenDir();
-  if (!existsSync(dir)) return;
+  if (!existsSync(dir)) {
+    return;
+  }
   for (const file of readdirSync(dir)) {
     if (file.endsWith(".json")) {
       try {
@@ -238,20 +399,6 @@ function invalidateAllUserTokens(): void {
         // best-effort cleanup
       }
     }
-  }
-}
-
-/**
- * Invalidate a single user token by open_id.
- * Preferred over invalidateAllUserTokens() when we know which token failed,
- * to avoid nuking valid tokens for other users.
- */
-function invalidateUserToken(openId: string): void {
-  const filePath = join(resolveTokenDir(), `${openId}.json`);
-  try {
-    if (existsSync(filePath)) unlinkSync(filePath);
-  } catch {
-    // best-effort
   }
 }
 
@@ -278,7 +425,6 @@ export async function handleFeishuTokenError(
   err: unknown,
   account?: ResolvedFeishuAccount,
   redirectUri?: string,
-  sendDirectToUser?: (text: string) => Promise<void>,
 ): Promise<{ content: { type: "text"; text: string }[]; details: unknown } | null> {
   // Extract error code from various error shapes
   let code: number | undefined;
@@ -322,32 +468,28 @@ export async function handleFeishuTokenError(
     );
     invalidateAllUserTokens();
 
-    // Generate auth URL — send directly to user if callback available
+    // Generate auth URL so the tool can return it directly to her
     if (account && redirectUri) {
-      const effectiveScopes = await resolveEffectiveOAuthScopes(account);
-      const chatId = account.accountId;
-      const authUrl = getAuthUrlForChat(account, chatId, redirectUri, effectiveScopes);
-
-      if (sendDirectToUser) {
-        const cardText =
-          `🔐 授权已失效，需要重新授权\n\n` +
-          `[点击这里完成飞书授权](${authUrl})\n\n` +
-          `授权完成后请重新发送你的请求。`;
-        await sendDirectToUser(cardText);
+      let effectiveScopes: string[];
+      try {
+        effectiveScopes = await resolveEffectiveOAuthScopes(account, redirectUri);
+      } catch (scopeErr) {
+        console.warn(
+          `[feishu-oauth] cannot re-auth after token error: backend unavailable (${String(scopeErr)})`,
+        );
+        const details = {
+          error: "oauth_backend_unavailable",
+          message:
+            "用户 OAuth 授权已失效，且飞书后台权限列表查询失败，无法生成重新授权链接。" +
+            "请检查 app secret、网络、或飞书开放平台后台状态后重试。",
+        };
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({
-                status: "auth_link_sent",
-                message: "用户 OAuth 授权已失效，已直接发送重新授权链接给用户。",
-              }),
-            },
-          ],
-          details: { status: "auth_link_sent" },
+          content: [{ type: "text" as const, text: JSON.stringify(details, null, 2) }],
+          details,
         };
       }
-
+      const chatId = account.accountId;
+      const authUrl = getAuthUrlForChat(account, chatId, redirectUri, effectiveScopes);
       const details = {
         error: "user_auth_required",
         message:
@@ -380,14 +522,20 @@ export async function handleFeishuTokenError(
 /** Find the best user token from the store — prefer newest valid token over stale ones. */
 export function findAnyUserToken(): FeishuUserToken | null {
   const dir = resolveTokenDir();
-  if (!existsSync(dir)) return null;
+  if (!existsSync(dir)) {
+    return null;
+  }
   const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
   let best: FeishuUserToken | null = null;
   for (const file of files) {
     try {
       const token = JSON.parse(readFileSync(join(dir, file), "utf-8")) as FeishuUserToken;
-      if (!token.open_id || !token.refresh_token) continue;
-      if (!best || token.updated_at > best.updated_at) best = token;
+      if (!token.open_id || !token.refresh_token) {
+        continue;
+      }
+      if (!best || token.updated_at > best.updated_at) {
+        best = token;
+      }
     } catch {
       continue;
     }
@@ -414,7 +562,9 @@ async function refreshUserToken(
         refresh_token: token.refresh_token,
       },
     });
-    if (res.code !== 0 || !res.data?.access_token) return null;
+    if (res.code !== 0 || !res.data?.access_token) {
+      return null;
+    }
 
     const now = Date.now();
     // Update scopes from refresh response if Feishu returns them;
@@ -447,28 +597,40 @@ async function ensureValidUserToken(
   account: ResolvedFeishuAccount,
   token: FeishuUserToken | null,
 ): Promise<FeishuUserToken | null> {
-  if (!token) return null;
+  if (!token) {
+    return null;
+  }
 
   const now = Date.now();
   const REFRESH_MARGIN_MS = 10 * 60 * 1000; // refresh 10min before expiry
 
   // refresh_token expired → user must re-authorize
-  if (now >= token.refresh_token_expires_at) return null;
+  if (now >= token.refresh_token_expires_at) {
+    return null;
+  }
 
-  // Scope drift: if code now requests scopes the saved token doesn't have,
-  // log a warning but still use the token. Let the API call fail naturally
-  // rather than preemptively invalidating a token that may still work
-  // (Feishu's granted scopes in the token file are not always reliable).
-  const granted = new Set(token.scopes ?? []);
-  const missing = OAUTH_SCOPES.filter((s) => !granted.has(s));
-  if (missing.length > 0) {
-    console.warn(
-      `[feishu-oauth] scope drift: token missing ${missing.length} scope(s): ${missing.join(", ")}. Continuing with existing token.`,
-    );
+  // Scope drift detection: compare the saved token's scopes against the
+  // current backend-granted set. Backend is the single source of truth — if
+  // it added new scopes since the user authorized, warn but do not invalidate
+  // the token (the user can re-authorize if they need the new scope). If the
+  // backend probe fails we skip the check silently (non-fatal).
+  try {
+    const backend = await fetchBackendUserScopes(account);
+    const granted = new Set(token.scopes ?? []);
+    const missing = Array.from(backend).filter((s) => !granted.has(s));
+    if (missing.length > 0) {
+      console.warn(
+        `[feishu-oauth] scope drift: token missing ${missing.length} backend-granted scope(s) (user can re-auth to pick up). Sample: ${missing.slice(0, 3).join(", ")}`,
+      );
+    }
+  } catch {
+    // Non-fatal: backend unavailable during token validity check.
   }
 
   // access_token still valid
-  if (now < token.access_token_expires_at - REFRESH_MARGIN_MS) return token;
+  if (now < token.access_token_expires_at - REFRESH_MARGIN_MS) {
+    return token;
+  }
 
   // access_token expired or about to expire → refresh with inflight dedup
   const key = token.open_id;
@@ -511,13 +673,20 @@ export function buildOAuthAuthorizeUrl(
   appId: string,
   redirectUri: string,
   state: string,
-  scopes?: string[],
+  scopes: string[],
 ): string {
+  if (!Array.isArray(scopes) || scopes.length === 0) {
+    throw new Error(
+      "buildOAuthAuthorizeUrl: scopes is required and must be non-empty. " +
+        "Callers must resolve scopes from the Feishu backend (single source of truth) " +
+        "via resolveEffectiveOAuthScopes() before building the URL.",
+    );
+  }
   const params = new URLSearchParams({
     client_id: appId,
     redirect_uri: redirectUri,
     response_type: "code",
-    scope: (scopes ?? OAUTH_SCOPES).join(" "),
+    scope: scopes.join(" "),
     state,
   });
   return `https://accounts.feishu.cn/open-apis/authen/v1/authorize?${params.toString()}`;
@@ -535,7 +704,9 @@ function createOAuthState(chatId: string, accountId: string): string {
   // Prune expired states
   const now = Date.now();
   for (const [key, val] of pendingStates) {
-    if (now - val.createdAt > STATE_TTL_MS) pendingStates.delete(key);
+    if (now - val.createdAt > STATE_TTL_MS) {
+      pendingStates.delete(key);
+    }
   }
   return nonce;
 }
@@ -548,12 +719,18 @@ const COMPLETED_TTL_MS = 5 * 60 * 1000;
 function consumeOAuthState(nonce: string): OAuthState | null {
   // Already completed — return the state again for the success page.
   const done = completedStates.get(nonce);
-  if (done) return done;
+  if (done) {
+    return done;
+  }
 
   const state = pendingStates.get(nonce);
-  if (!state) return null;
+  if (!state) {
+    return null;
+  }
   pendingStates.delete(nonce);
-  if (Date.now() - state.createdAt > STATE_TTL_MS) return null;
+  if (Date.now() - state.createdAt > STATE_TTL_MS) {
+    return null;
+  }
   return state;
 }
 
@@ -679,15 +856,13 @@ export async function handleOAuthCallback(
 
     const now = Date.now();
 
-    // Use actual granted scopes from Feishu (not our requested list) so scope
-    // drift detection works correctly when the app backend is missing permissions.
+    // Use actual granted scopes from Feishu response so scope drift detection
+    // works correctly if backend permissions change later.
     const grantedScopeStr: string = tokenRes.data.scope ?? "";
-    const grantedScopes = grantedScopeStr
-      ? grantedScopeStr.split(/[\s,]+/).filter(Boolean)
-      : OAUTH_SCOPES;
+    const grantedScopes = grantedScopeStr ? grantedScopeStr.split(/[\s,]+/).filter(Boolean) : [];
     if (!grantedScopeStr) {
       callbackDeps.warn(
-        "OAuth token response did not include scope field; falling back to OAUTH_SCOPES. Actual granted scopes may differ.",
+        "OAuth token response did not include scope field; token saved with empty scopes (Feishu still enforces at request time).",
       );
     }
 
@@ -706,10 +881,20 @@ export async function handleOAuthCallback(
     saveUserToken(userToken);
     markStateCompleted(stateNonce, state);
 
-    const missing = OAUTH_SCOPES.filter((s) => !grantedScopes.includes(s));
+    // Diff against backend single-source-of-truth (best effort).
+    let missingFromGrant: string[] = [];
+    try {
+      const backend = await fetchBackendUserScopes(account);
+      const grantedSet = new Set(grantedScopes);
+      missingFromGrant = Array.from(backend).filter((s) => !grantedSet.has(s));
+    } catch {
+      // Backend probe failed; skip diff.
+    }
     callbackDeps.log(
       `OAuth success: ${userToken.name ?? userToken.open_id} (${userToken.open_id}) — ${grantedScopes.length} scopes granted` +
-        (missing.length > 0 ? `, MISSING: ${missing.join(", ")}` : ""),
+        (missingFromGrant.length > 0
+          ? `, ${missingFromGrant.length} backend-scope(s) not in grant: ${missingFromGrant.slice(0, 5).join(", ")}`
+          : ""),
     );
 
     // Respond with success page
@@ -749,7 +934,7 @@ export function getAuthUrlForChat(
   account: ResolvedFeishuAccount,
   chatId: string,
   redirectUri: string,
-  scopes?: string[],
+  scopes: string[],
 ): string {
   const state = createOAuthState(chatId, account.accountId);
   return buildOAuthAuthorizeUrl(account.appId, redirectUri, state, scopes);
@@ -760,6 +945,7 @@ export function getAuthUrlForChat(
 // Cloudflare tunnel. This standalone server binds to 0.0.0.0 so the tunnel can reach it.
 
 const DEFAULT_OAUTH_PORT = 18891;
+// oxlint-disable-next-line typescript-eslint/no-redundant-type-constituents
 let oauthServer: Server | null = null;
 let oauthServerPort: number | null = null;
 let oauthServerStartingPort: number | null = null;
@@ -922,7 +1108,9 @@ export async function downloadFeishuMessageResourceWithUserToken(params: {
       );
     }
     const buffer = Buffer.from(await response.arrayBuffer());
-    if (buffer.length === 0) return null;
+    if (buffer.length === 0) {
+      return null;
+    }
     return {
       buffer,
       contentType: response.headers.get("content-type")?.trim() ?? "application/octet-stream",
@@ -949,44 +1137,42 @@ export async function requireUserToken(params: {
   redirectUri: string;
   tokenPromise: Promise<FeishuUserToken | null>;
   toolLabel: string;
-  sendDirectToUser?: (text: string) => Promise<void>;
 }): Promise<RequireUserTokenResult> {
   const token = await params.tokenPromise;
-  if (token) return { ok: true as const, token };
+  if (token) {
+    return { ok: true as const, token };
+  }
 
-  // Use effective scopes (intersection with backend) to avoid 20027 errors
-  const effectiveScopes = await resolveEffectiveOAuthScopes(params.account);
-  const chatId = params.account.accountId;
-  const authUrl = getAuthUrlForChat(params.account, chatId, params.redirectUri, effectiveScopes);
-
-  if (params.sendDirectToUser) {
-    const cardText =
-      `🔐 需要授权才能使用「${params.toolLabel}」\n\n` +
-      `[点击这里完成飞书授权](${authUrl})\n\n` +
-      `授权完成后请重新发送你的请求。`;
-    await params.sendDirectToUser(cardText);
+  // Backend is the single source of truth for scopes. If the backend probe
+  // fails we refuse to authorize with a stale local list — return a clear
+  // error instead so the caller / user can investigate.
+  let effectiveScopes: string[];
+  try {
+    effectiveScopes = await resolveEffectiveOAuthScopes(params.account, params.redirectUri);
+  } catch (err) {
+    const details = {
+      error: "oauth_backend_unavailable",
+      message:
+        `需要用户 OAuth 授权才能使用${params.toolLabel}，` +
+        "但飞书后台权限列表查询失败，无法生成授权链接。" +
+        `原因：${String(err)}。请检查 app secret、网络、或飞书开放平台后台状态。`,
+    };
     return {
       ok: false as const,
       authResponse: {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({
-              status: "auth_link_sent",
-              message: `已直接发送${params.toolLabel}的 OAuth 授权链接给用户，请等待用户完成授权后重试。`,
-            }),
-          },
-        ],
-        details: { status: "auth_link_sent" },
+        content: [{ type: "text" as const, text: JSON.stringify(details, null, 2) }],
+        details,
       },
     };
   }
-
+  const chatId = params.account.accountId;
+  const authUrl = getAuthUrlForChat(params.account, chatId, params.redirectUri, effectiveScopes);
   const details = {
     error: "user_auth_required",
     message:
       `需要用户 OAuth 授权才能使用${params.toolLabel}。` +
-      "请将下方链接发送给用户，用户在飞书中点击后完成授权，然后重试。",
+      "请将下方链接发送给用户，用户在飞书中点击后完成授权，然后重试。" +
+      "链接一次性授权所有飞书后台已开通的权限（单一信源）。",
     auth_url: authUrl,
   };
   return {
@@ -1008,8 +1194,12 @@ export function resolveOAuthRedirectUri(config: Record<string, unknown>): string
     string,
     unknown
   >;
-  if (typeof feishuConfig.oauthRedirectUri === "string") return feishuConfig.oauthRedirectUri;
+  if (typeof feishuConfig.oauthRedirectUri === "string") {
+    return feishuConfig.oauthRedirectUri;
+  }
   const minutesConfig = (feishuConfig.minutes ?? {}) as Record<string, unknown>;
-  if (typeof minutesConfig.oauthRedirectUri === "string") return minutesConfig.oauthRedirectUri;
+  if (typeof minutesConfig.oauthRedirectUri === "string") {
+    return minutesConfig.oauthRedirectUri;
+  }
   return "https://auth.carher.net/feishu/oauth/callback";
 }
