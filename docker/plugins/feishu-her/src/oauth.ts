@@ -409,44 +409,85 @@ const inflightRefreshes = new Map<string, Promise<FeishuUserToken | null>>();
 async function refreshUserToken(
   client: Lark.Client,
   token: FeishuUserToken,
+  account?: ResolvedFeishuAccount,
 ): Promise<FeishuUserToken | null> {
+  // Context fragment used in every diagnostic line so the 2am on-call can
+  // `grep` a specific user/app from production logs without cross-referencing.
+  const ctx = `open_id=${token.open_id} appId=${account?.appId ?? "?"}`;
+  let res: unknown;
   try {
-    // oxlint-disable-next-line typescript/no-explicit-any
-    const res: any = await client.authen.refreshAccessToken.create({
+    res = await client.authen.refreshAccessToken.create({
       data: {
         grant_type: "refresh_token",
         refresh_token: token.refresh_token,
       },
     });
-    if (res.code !== 0 || !res.data?.access_token) {
-      return null;
-    }
-
-    const now = Date.now();
-    // Update scopes from refresh response if Feishu returns them;
-    // otherwise keep the existing scopes unchanged.
-    const refreshScopeStr: string = res.data.scope ?? "";
-    const refreshedScopes = refreshScopeStr
-      ? refreshScopeStr.split(/[\s,]+/).filter(Boolean)
-      : token.scopes;
-    const updated: FeishuUserToken = {
-      ...token,
-      access_token: res.data.access_token,
-      refresh_token: res.data.refresh_token ?? token.refresh_token,
-      access_token_expires_at: now + (res.data.expires_in ?? 7200) * 1000,
-      refresh_token_expires_at:
-        res.data.refresh_expires_in != null
-          ? now + res.data.refresh_expires_in * 1000
-          : token.refresh_token_expires_at,
-      scopes: refreshedScopes,
-      updated_at: now,
-    };
-    saveUserToken(updated);
-    console.log(`[feishu-oauth] token refreshed for ${token.open_id}`);
-    return updated;
-  } catch {
+  } catch (err) {
+    // Previously `catch { return null }` — silent. This was the primary
+    // production bug: refresh failures (network, SDK, timeout) were invisible,
+    // making every symptom look like "Device Flow is broken" to the user.
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[feishu-oauth] refresh FAILED (SDK threw) ${ctx}: ${msg}`,
+    );
     return null;
   }
+
+  // Defensive: SDK wrapper should always return an object, but a mock, a
+  // future SDK version, or a proxy could hand us null/undefined. Do not NPE.
+  if (res === null || typeof res !== "object") {
+    console.warn(
+      `[feishu-oauth] refresh FAILED (non-object response) ${ctx}: got ${String(res)}`,
+    );
+    return null;
+  }
+
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const r = res as { code?: number; msg?: string; data?: any };
+  if (r.code !== 0) {
+    console.warn(
+      `[feishu-oauth] refresh FAILED (code!=0) ${ctx}: code=${r.code} msg=${r.msg ?? ""}`,
+    );
+    return null;
+  }
+  if (!r.data || typeof r.data.access_token !== "string" || r.data.access_token.length === 0) {
+    console.warn(
+      `[feishu-oauth] refresh FAILED (missing access_token) ${ctx}: data=${JSON.stringify(r.data ?? null).slice(0, 200)}`,
+    );
+    return null;
+  }
+
+  const now = Date.now();
+  // Update scopes from refresh response if Feishu returns them;
+  // otherwise keep the existing scopes unchanged.
+  const refreshScopeStr: string = r.data.scope ?? "";
+  const refreshedScopes = refreshScopeStr
+    ? refreshScopeStr.split(/[\s,]+/).filter(Boolean)
+    : token.scopes;
+  const updated: FeishuUserToken = {
+    ...token,
+    access_token: r.data.access_token,
+    refresh_token: r.data.refresh_token ?? token.refresh_token,
+    access_token_expires_at: now + (r.data.expires_in ?? 7200) * 1000,
+    refresh_token_expires_at:
+      r.data.refresh_expires_in != null
+        ? now + r.data.refresh_expires_in * 1000
+        : token.refresh_token_expires_at,
+    scopes: refreshedScopes,
+    updated_at: now,
+  };
+  try {
+    saveUserToken(updated);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[feishu-oauth] refresh SAVE FAILED ${ctx}: ${msg} (token not persisted; caller will receive in-memory token)`,
+    );
+    // Return the in-memory token anyway — the caller already has a working
+    // access_token for this request; next process restart will re-refresh.
+  }
+  console.log(`[feishu-oauth] token refreshed for ${token.open_id}`);
+  return updated;
 }
 
 async function ensureValidUserToken(
@@ -511,7 +552,7 @@ async function ensureValidUserToken(
   }
 
   const client = getFeishuClient(account);
-  const promise = refreshUserToken(client, token).finally(() => {
+  const promise = refreshUserToken(client, token, account).finally(() => {
     inflightRefreshes.delete(key);
   });
   inflightRefreshes.set(key, promise);
