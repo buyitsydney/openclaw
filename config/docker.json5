@@ -12,6 +12,14 @@
 {
   "$include": "./base.json5",
 
+  // 2026-05-01: Fleet-wide bump. 默认 18k 对装 45+ skill 的容器(carher-13 等)
+  // 会触发 compact 模式砍掉所有 skill description,skill 触发判断基本瞎。32k 覆盖现况。
+  skills: {
+    limits: {
+      maxSkillsPromptChars: 32000,
+    },
+  },
+
   browser: {
     headless: true,
     noSandbox: true,
