@@ -20,6 +20,7 @@ const {
   estimateAuthorizeUrlBytes,
   MAX_AUTHORIZE_URL_BYTES,
   PRIORITY_SCOPES,
+  NO_DEDUP_DOMAINS,
 } = __scopeReduction;
 
 // Representative full-catalog scope list observed from the enterprise app
@@ -163,6 +164,48 @@ describe("scope reduction — priority scope preservation (A/B 2026-05-01)", () 
     const dyn = applyDynamicQuota(small, CLIENT_ID, REDIRECT_URI);
     expect(dyn.priorityKept.length).toBe(0);
     expect(dyn.kept).toEqual(["im:chat"]);
+  });
+});
+
+describe("scope reduction — NO_DEDUP_DOMAINS (Feishu sub-scope enforcement)", () => {
+  it("vc:record:readonly is kept even when vc:record parent is also granted", () => {
+    // Regression for 2026-05-01 Nova runtime: [calendar-discovery] recording
+    // FAILED with 99991679 because dedup dropped vc:record:readonly.
+    const input = new Set(["vc:record", "vc:record:readonly", "vc:meeting", "vc:meeting:readonly"]);
+    const r = dedupSubsumedScopes(input);
+    expect(r.kept).toEqual(expect.arrayContaining([
+      "vc:record",
+      "vc:record:readonly",
+      "vc:meeting",
+      "vc:meeting:readonly",
+    ]));
+    expect(r.dropped.length).toBe(0);
+  });
+
+  it("minutes domain is also no-dedup", () => {
+    const input = new Set(["minutes:minutes", "minutes:minutes:readonly"]);
+    const r = dedupSubsumedScopes(input);
+    expect(r.kept).toEqual(expect.arrayContaining(["minutes:minutes", "minutes:minutes:readonly"]));
+    expect(r.dropped.length).toBe(0);
+  });
+
+  it("other domains (calendar, docs) still dedup normally", () => {
+    const input = new Set([
+      "calendar:calendar",
+      "calendar:calendar:readonly",
+      "docs:doc",
+      "docs:doc:readonly",
+    ]);
+    const r = dedupSubsumedScopes(input);
+    expect(r.kept).toEqual(expect.arrayContaining(["calendar:calendar", "docs:doc"]));
+    expect(r.kept).not.toContain("calendar:calendar:readonly");
+    expect(r.kept).not.toContain("docs:doc:readonly");
+    expect(r.dropped.length).toBe(2);
+  });
+
+  it("NO_DEDUP_DOMAINS list is exported and non-empty", () => {
+    expect(NO_DEDUP_DOMAINS.length).toBeGreaterThan(0);
+    expect(NO_DEDUP_DOMAINS).toContain("vc");
   });
 });
 

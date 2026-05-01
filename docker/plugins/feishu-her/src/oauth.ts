@@ -168,11 +168,35 @@ const MAX_AUTHORIZE_URL_BYTES = 3700;
  * present and (b) aren't covered by a parent scope on the backend.
  */
 const PRIORITY_SCOPES: readonly string[] = [
+  // mail (added 2026-05-01 AM after quota(8) dropped message:readonly)
   "mail:user_mailbox.message:readonly",
   "mail:user_mailbox.message:send",
   "mail:user_mailbox.folder:read",
   "mail:user_mailbox.mail_contact:read",
+  // wiki space (added 2026-05-01 10:00 after v3 dropped wiki:space:* to fit im)
+  "wiki:space:read",
+  "wiki:space:retrieve",
+  "wiki:space:write_only",
+  // im message history (tool layer relies on this for group_history fallback)
+  "im:message.history:readonly",
+  // offline refresh
   "offline_access",
+];
+
+/**
+ * Domains where Feishu enforces `:readonly` sub-scope specifically and does NOT
+ * grant the API through the parent scope alone. Discovered 2026-05-01 AM by
+ * runtime 99991679 on Nova after dedup dropped `vc:record:readonly` because
+ * `vc:record` parent was also granted — the API then rejected with "required
+ * one of these privileges: [vc:record:readonly]".
+ *
+ * For each domain in this set, `dedupSubsumedScopes` skips the
+ * parent-kills-suffix rule. Both parent and `:readonly`-suffixed child
+ * survive and go into the final URL.
+ */
+const NO_DEDUP_DOMAINS: readonly string[] = [
+  "vc",
+  "minutes",
 ];
 
 /**
@@ -201,9 +225,17 @@ function dedupSubsumedScopes(scopes: Set<string>): {
   kept: string[];
   dropped: Array<{ scope: string; parent: string }>;
 } {
+  const noDedup = new Set(NO_DEDUP_DOMAINS);
   const kept: string[] = [];
   const dropped: Array<{ scope: string; parent: string }> = [];
   for (const scope of scopes) {
+    const domain = scope.split(":")[0];
+    // Skip dedup entirely for domains where Feishu enforces sub-scope
+    // specifically (vc, minutes) — parent does NOT cover `:readonly`.
+    if (noDedup.has(domain)) {
+      kept.push(scope);
+      continue;
+    }
     let subsumed = false;
     for (const suffix of SCOPE_DROP_SUFFIXES) {
       const trailer = `:${suffix}`;
@@ -383,6 +415,7 @@ export const __scopeReduction = {
   SCOPE_DOMAIN_QUOTA,
   MAX_AUTHORIZE_URL_BYTES,
   PRIORITY_SCOPES,
+  NO_DEDUP_DOMAINS,
 };
 
 /**
