@@ -306,23 +306,32 @@ function applyDynamicQuota(
   const priorityKeptSet = new Set(priorityKept);
   const regulars = scopes.filter((s) => !priorityKeptSet.has(s));
 
+  // Try quota values from SCOPE_DOMAIN_QUOTA down to 1 exactly once each.
+  // Remember the last attempt so we can throw with accurate telemetry if even
+  // quota=1 can't fit (no dead-code duplicate call after the loop).
+  let lastResult: { kept: string[]; dropped: string[]; urlBytes: number; quota: number } | null =
+    null;
   for (let quota = SCOPE_DOMAIN_QUOTA; quota >= 1; quota--) {
     const r = applyDomainQuota(regulars, quota);
     const combined = [...priorityKept, ...r.kept].sort();
     const urlBytes = estimateAuthorizeUrlBytes(combined, clientId, redirectUri);
+    lastResult = { kept: combined, dropped: r.dropped, urlBytes, quota };
     if (urlBytes <= MAX_AUTHORIZE_URL_BYTES) {
-      return { kept: combined, dropped: r.dropped, quota, urlBytes, priorityKept };
+      return { ...lastResult, priorityKept };
     }
   }
 
-  // Final attempt at quota=1; hard-fail if the guard can't be met.
-  const r = applyDomainQuota(regulars, 1);
-  const combined = [...priorityKept, ...r.kept].sort();
-  const urlBytes = estimateAuthorizeUrlBytes(combined, clientId, redirectUri);
-  if (urlBytes > MAX_AUTHORIZE_URL_BYTES) {
-    throw new OAuthUrlTooLargeError(urlBytes, MAX_AUTHORIZE_URL_BYTES, combined.length);
+  // Even quota=1 + priority set doesn't fit; surface a typed error so callers
+  // can tell the user instead of silently building a URL that Feishu 431s.
+  /* istanbul ignore next -- defensive: SCOPE_DOMAIN_QUOTA ≥ 1 guarantees the loop runs */
+  if (!lastResult) {
+    throw new Error("applyDynamicQuota: SCOPE_DOMAIN_QUOTA must be >= 1");
   }
-  return { kept: combined, dropped: r.dropped, quota: 1, urlBytes, priorityKept };
+  throw new OAuthUrlTooLargeError(
+    lastResult.urlBytes,
+    MAX_AUTHORIZE_URL_BYTES,
+    lastResult.kept.length,
+  );
 }
 
 /**

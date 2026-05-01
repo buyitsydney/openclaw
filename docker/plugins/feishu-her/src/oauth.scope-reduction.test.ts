@@ -184,10 +184,13 @@ describe("scope reduction — hard guard against oversized URLs", () => {
   });
 
   it("OAuthUrlTooLargeError carries actionable telemetry", () => {
+    // expect.assertions guards against the regression where applyDynamicQuota
+    // stops throwing — a bare try/catch body with zero assertions would
+    // silently pass. 4 = 1 toBeInstanceOf + 3 field checks.
+    expect.assertions(4);
     const huge = "https://" + "a".repeat(5000) + ".example.com/cb";
     try {
       applyDynamicQuota(["im:chat"], CLIENT_ID, huge);
-      throw new Error("expected throw");
     } catch (err) {
       expect(err).toBeInstanceOf(OAuthUrlTooLargeError);
       const e = err as OAuthUrlTooLargeError;
