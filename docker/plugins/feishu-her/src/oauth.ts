@@ -123,306 +123,27 @@ export async function fetchBackendUserScopes(account: ResolvedFeishuAccount): Pr
 }
 
 /**
- * Feishu OAuth authorize URL size reduction.
+ * v7 refactor (2026-05-01): Authorization Code Flow scope reduction layer
+ * fully removed. Device Flow (RFC 8628) is the primary OAuth path and has
+ * its own scope selection via selectDeviceFlowScopes() below (DROP_DOMAINS_V6F).
  *
- * Empirical facts (2026-05-01 headless-Chrome E2E, admin her):
- *   - `accounts.feishu.cn/open-apis/authen/v1/authorize` returns 302 to
- *     `passport.feishu.cn/accounts/page/login`, which DOUBLE-encodes the
- *     original URL into its `redirect_uri` parameter (%3A → %253A).
- *   - The passport login endpoint returns HTTP 431 once the request-line +
- *     headers (dominated by that embedded redirect_uri) exceed ~4700 bytes.
- *     Browser then renders "HTTP ERROR 431" / blank page.
- *   - Passport URL bytes ≈ raw URL bytes × 1.22 (measured across 5 scope
- *     counts: 40/60/80/100/115/120/130/140/150/170).
- *
- * Threshold table (measured):
- *   n=115 raw=3736 passport=4518 → 302 OK
- *   n=120 raw=3882 passport=4690 → 431 FAIL
- *   n=140 raw=4428 passport=5346 → 302 OK  (non-monotonic, scope-specific)
- *   n=170 raw=5024 passport=6102 → 431 FAIL
- *
- * Safety: keep raw URL ≤ 3700 bytes so passport URL ≤ ~4500 bytes.
- * MAX_AUTHORIZE_URL_BYTES below encodes this headroom directly.
- *
- * 2-step reduction:
- *   1. dedupSubsumedScopes() — drop `X:readonly|read|write_only|write` when `X`
- *      is also in the backend set (sub-scopes are implied by the parent).
- *   2. applyDynamicQuota() — pick the largest per-domain quota such that the
- *      resulting authorize URL fits MAX_AUTHORIZE_URL_BYTES. Stable under
- *      scope-set growth (adding a new scope never silently drops an older one
- *      from a different domain).
+ * resolveEffectiveOAuthScopes() is kept as a minimal shim for any residual
+ * Authorization Code Flow callers — it just returns all backend-granted
+ * user scopes (Feishu backend is the single source of truth). The old
+ * dedup/quota/priority machinery (v3..v5) caused confusing log output
+ * (`final=117` vs actual token 199) and is deleted.
  */
-const SCOPE_DOMAIN_QUOTA = 15;
-/** Max raw authorize URL bytes. Empirical safe margin: passport URL ≤ ~4500. */
-const MAX_AUTHORIZE_URL_BYTES = 3700;
-
-/**
- * Scopes that must survive quota reduction — user-facing capabilities that
- * would be silently crippled if the domain quota happens to drop them.
- * Verified cases that motivated this list (2026-05-01 A/B diff test):
- *   - mail:user_mailbox.message:readonly was truncated by applyDomainQuota(8)
- *     because the mail domain had 15 entries; tools asking for it returned
- *     99991679 Unauthorized without any user-visible hint.
- *
- * Rule: only include scopes that (a) unlock an entire tool surface when
- * present and (b) aren't covered by a parent scope on the backend.
- */
-const PRIORITY_SCOPES: readonly string[] = [
-  // mail (added 2026-05-01 AM after quota(8) dropped message:readonly)
-  "mail:user_mailbox.message:readonly",
-  "mail:user_mailbox.message:send",
-  "mail:user_mailbox.folder:read",
-  "mail:user_mailbox.mail_contact:read",
-  // wiki space (v3 quota dropped wiki:space:* to fit im family)
-  "wiki:space:read",
-  "wiki:space:retrieve",
-  "wiki:space:write_only",
-  // im message history (group_history fallback relies on it)
-  "im:message.history:readonly",
-  // vc :readonly (runtime 99991679 at calendar-discovery recording; parent vc:record doesn't cover it)
-  "vc:record:readonly",
-  "vc:meeting:readonly",
-  "vc:meeting.meetingid:read",
-  // directory search (tools/directory.search_users path)
-  "directory:employee:search",
-  // offline refresh
-  "offline_access",
-];
-
-/**
- * Domains where Feishu enforces `:readonly` sub-scope specifically and does NOT
- * grant the API through the parent scope alone. Discovered 2026-05-01 AM by
- * runtime 99991679 on Nova after dedup dropped `vc:record:readonly` because
- * `vc:record` parent was also granted — the API then rejected with "required
- * one of these privileges: [vc:record:readonly]".
- *
- * For each domain in this set, `dedupSubsumedScopes` skips the
- * parent-kills-suffix rule. Both parent and `:readonly`-suffixed child
- * survive and go into the final URL.
- */
-const NO_DEDUP_DOMAINS: readonly string[] = [
-  "vc",
-  "minutes",
-];
-
-/**
- * Thrown when even the minimal-quota authorize URL exceeds the hard size
- * guard. Callers must surface this to the user instead of silently building
- * a URL that Feishu's passport will reject with HTTP 431.
- */
-export class OAuthUrlTooLargeError extends Error {
-  constructor(
-    public readonly urlBytes: number,
-    public readonly maxBytes: number,
-    public readonly finalScopeCount: number,
-  ) {
-    super(
-      `OAuth authorize URL ${urlBytes} bytes exceeds hard limit ${maxBytes} ` +
-        `even at per-domain quota=1 (${finalScopeCount} scopes kept). ` +
-        `The app has so many scopes that even the minimum set cannot fit. ` +
-        `Reduce PRIORITY_SCOPES or prune backend scopes.`,
-    );
-    this.name = "OAuthUrlTooLargeError";
-  }
-}
-const SCOPE_DROP_SUFFIXES = ["readonly", "read", "write_only", "write"] as const;
-
-function dedupSubsumedScopes(scopes: Set<string>): {
-  kept: string[];
-  dropped: Array<{ scope: string; parent: string }>;
-} {
-  const noDedup = new Set(NO_DEDUP_DOMAINS);
-  const kept: string[] = [];
-  const dropped: Array<{ scope: string; parent: string }> = [];
-  for (const scope of scopes) {
-    const domain = scope.split(":")[0];
-    // Skip dedup entirely for domains where Feishu enforces sub-scope
-    // specifically (vc, minutes) — parent does NOT cover `:readonly`.
-    if (noDedup.has(domain)) {
-      kept.push(scope);
-      continue;
-    }
-    let subsumed = false;
-    for (const suffix of SCOPE_DROP_SUFFIXES) {
-      const trailer = `:${suffix}`;
-      if (scope.endsWith(trailer)) {
-        const parent = scope.slice(0, -trailer.length);
-        if (scopes.has(parent)) {
-          dropped.push({ scope, parent });
-          subsumed = true;
-          break;
-        }
-      }
-    }
-    if (!subsumed) {
-      kept.push(scope);
-    }
-  }
-  return { kept, dropped };
-}
-
-function applyDomainQuota(scopes: string[], quota: number): { kept: string[]; dropped: string[] } {
-  const byDomain = new Map<string, string[]>();
-  for (const s of scopes) {
-    const domain = s.split(":")[0];
-    if (!byDomain.has(domain)) {
-      byDomain.set(domain, []);
-    }
-    byDomain.get(domain)!.push(s);
-  }
-  const kept: string[] = [];
-  const dropped: string[] = [];
-  for (const [, arr] of byDomain) {
-    arr.sort();
-    kept.push(...arr.slice(0, quota));
-    dropped.push(...arr.slice(quota));
-  }
-  kept.sort();
-  return { kept, dropped };
-}
-
-/**
- * Resolve the full set of OAuth scopes to request. Backend is the single
- * source of truth; we then apply deterministic reductions to fit Feishu's
- * authorize-URL size limit. Throws `OAuthBackendUnavailableError` if the
- * backend is unreachable — by design, we refuse to authorize with a stale
- * hardcoded list.
- */
-/**
- * Estimate the authorize URL size without building the final URL. Used by
- * applyDynamicQuota() to find the largest per-domain quota that still fits.
- * Overhead calibrated against a known-good build (client_id + full callback
- * URL + 64-char hex state). Returns bytes of the raw URL.
- */
-function estimateAuthorizeUrlBytes(
-  scopes: string[],
-  clientId: string,
-  redirectUri: string,
-): number {
-  const encodedRedirect = encodeURIComponent(redirectUri);
-  // Each scope encoded with `+` joiner (URLSearchParams converts space → `+`
-  // and %-encodes `:`). Use encodeURIComponent to mirror that exactly; the
-  // joiner `+` is 1 byte per pair.
-  const encodedScopes = scopes.map((s) => encodeURIComponent(s)).join("+");
-  // Base template length (empirical, constant for this provider):
-  //   "https://accounts.feishu.cn/open-apis/authen/v1/authorize" = 57
-  //   + "?client_id=" (11) + clientId.length
-  //   + "&redirect_uri=" (14) + encodedRedirect.length
-  //   + "&response_type=code" (19)
-  //   + "&scope=" (7) + encodedScopes.length
-  //   + "&state=" (7) + 64
-  return (
-    57 +
-    11 + clientId.length +
-    14 + encodedRedirect.length +
-    19 +
-    7 + encodedScopes.length +
-    7 + 64
-  );
-}
-
-/**
- * Binary-search-ish: try quota values from SCOPE_DOMAIN_QUOTA down to 1 and
- * keep the largest one whose URL fits. Priority scopes (PRIORITY_SCOPES) are
- * partitioned out before domain reduction so a shrinking quota never drops
- * them. Throws OAuthUrlTooLargeError if even quota=1 + priority exceeds
- * MAX_AUTHORIZE_URL_BYTES.
- */
-function applyDynamicQuota(
-  scopes: string[],
-  clientId: string,
-  redirectUri: string,
-): {
-  kept: string[];
-  dropped: string[];
-  quota: number;
-  urlBytes: number;
-  priorityKept: string[];
-} {
-  const granted = new Set(scopes);
-  const priorityKept = PRIORITY_SCOPES.filter((s) => granted.has(s));
-  const priorityKeptSet = new Set(priorityKept);
-  const regulars = scopes.filter((s) => !priorityKeptSet.has(s));
-
-  // Try quota values from SCOPE_DOMAIN_QUOTA down to 1 exactly once each.
-  // Remember the last attempt so we can throw with accurate telemetry if even
-  // quota=1 can't fit (no dead-code duplicate call after the loop).
-  let lastResult: { kept: string[]; dropped: string[]; urlBytes: number; quota: number } | null =
-    null;
-  for (let quota = SCOPE_DOMAIN_QUOTA; quota >= 1; quota--) {
-    const r = applyDomainQuota(regulars, quota);
-    const combined = [...priorityKept, ...r.kept].sort();
-    const urlBytes = estimateAuthorizeUrlBytes(combined, clientId, redirectUri);
-    lastResult = { kept: combined, dropped: r.dropped, urlBytes, quota };
-    if (urlBytes <= MAX_AUTHORIZE_URL_BYTES) {
-      return { ...lastResult, priorityKept };
-    }
-  }
-
-  // Even quota=1 + priority set doesn't fit; surface a typed error so callers
-  // can tell the user instead of silently building a URL that Feishu 431s.
-  /* istanbul ignore next -- defensive: SCOPE_DOMAIN_QUOTA ≥ 1 guarantees the loop runs */
-  if (!lastResult) {
-    throw new Error("applyDynamicQuota: SCOPE_DOMAIN_QUOTA must be >= 1");
-  }
-  throw new OAuthUrlTooLargeError(
-    lastResult.urlBytes,
-    MAX_AUTHORIZE_URL_BYTES,
-    lastResult.kept.length,
-  );
-}
-
-/**
- * Conservative fallback when callers don't know the final redirect_uri yet.
- * Matches typical CarHer callback length (~55 chars) plus a 30-byte margin so
- * the dynamic quota still produces a safe URL.
- */
-const FALLBACK_REDIRECT_URI = "https://example-very-long-subdomain.example.com/feishu/oauth/callback";
-
 export async function resolveEffectiveOAuthScopes(
   account: ResolvedFeishuAccount,
-  redirectUri?: string,
+  _redirectUri?: string,
 ): Promise<string[]> {
   const backend = await fetchBackendUserScopes(account);
-  const dedupResult = dedupSubsumedScopes(backend);
-  const effectiveRedirect = redirectUri || FALLBACK_REDIRECT_URI;
-  const dyn = applyDynamicQuota(dedupResult.kept, account.appId, effectiveRedirect);
-
-  if (dedupResult.dropped.length > 0) {
-    console.log(
-      `[feishu-oauth] scope dedup: ${dedupResult.dropped.length} sub-scope(s) subsumed by parent. Sample: ${dedupResult.dropped
-        .slice(0, 3)
-        .map((d) => `${d.scope}⊂${d.parent}`)
-        .join(", ")}`,
-    );
-  }
-  if (dyn.dropped.length > 0) {
-    console.warn(
-      `[feishu-oauth] scope quota: ${dyn.dropped.length} scope(s) dropped (dynamic domain cap=${dyn.quota}) to fit ${MAX_AUTHORIZE_URL_BYTES}-byte URL limit (actual=${dyn.urlBytes}). Sample: ${dyn.dropped.slice(0, 3).join(", ")}`,
-    );
-  }
-  if (dyn.priorityKept.length > 0) {
-    console.log(
-      `[feishu-oauth] priority scopes kept (never quota-cut): ${dyn.priorityKept.join(", ")}`,
-    );
-  }
+  const scopes = Array.from(backend).sort();
   console.log(
-    `[feishu-oauth] effective scopes: backend=${backend.size} dedup_dropped=${dedupResult.dropped.length} quota_dropped=${dyn.dropped.length} final=${dyn.kept.length} quota=${dyn.quota} url_bytes=${dyn.urlBytes} priority=${dyn.priorityKept.length}`,
+    `[feishu-oauth] effective scopes (v7): backend=${backend.size} final=${scopes.length} (Device Flow is primary; this is auth-code fallback)`,
   );
-  return dyn.kept;
+  return scopes;
 }
-
-/** Test-only: exported internals for unit testing. */
-export const __scopeReduction = {
-  dedupSubsumedScopes,
-  applyDomainQuota,
-  applyDynamicQuota,
-  estimateAuthorizeUrlBytes,
-  SCOPE_DOMAIN_QUOTA,
-  MAX_AUTHORIZE_URL_BYTES,
-  PRIORITY_SCOPES,
-  NO_DEDUP_DOMAINS,
-};
 
 /**
  * Check if a specific scope is available in this app's backend.
@@ -733,18 +454,24 @@ async function ensureValidUserToken(
   // enforces at request time and every tool call succeeds.
   const storedScopes = token.scopes ?? [];
   if (storedScopes.length > 0) {
-    try {
-      const backend = await fetchBackendUserScopes(account);
-      const granted = new Set(storedScopes);
-      const missing = Array.from(backend).filter((s) => !granted.has(s));
-      if (missing.length > 0) {
-        console.warn(
-          `[feishu-oauth] scope drift: token missing ${missing.length} backend-granted scope(s) (user can re-auth to pick up). Sample: ${missing.slice(0, 3).join(", ")}`,
-        );
-      }
-    } catch {
-      // Non-fatal: backend unavailable during token validity check.
-    }
+    // v7: fire-and-forget drift check — never block the caller on a Feishu
+    // backend probe. Device Flow tokens have scopes=[] by design, so this
+    // branch rarely fires anyway.
+    setImmediate(() => {
+      fetchBackendUserScopes(account)
+        .then((backend) => {
+          const granted = new Set(storedScopes);
+          const missing = Array.from(backend).filter((s) => !granted.has(s));
+          if (missing.length > 0) {
+            console.warn(
+              `[feishu-oauth] scope drift: token missing ${missing.length} backend-granted scope(s) (user can re-auth to pick up). Sample: ${missing.slice(0, 3).join(", ")}`,
+            );
+          }
+        })
+        .catch(() => {
+          // Non-fatal: backend unavailable during token validity check.
+        });
+    });
   }
 
   // access_token still valid
@@ -1285,14 +1012,34 @@ export async function requireUserToken(params: {
       },
     };
   }
-  const chatId = params.account.accountId;
-  const authUrl = getAuthUrlForChat(params.account, chatId, params.redirectUri, effectiveScopes);
+  // v6: Device Flow — scopes go in POST body, user URL stays short.
+  // Falls back to Authorization Code Flow if Device Flow init fails.
+  let authUrl: string;
+  let usedDeviceFlow = false;
+  try {
+    const deviceInit = await initiateDeviceFlow(params.account);
+    startDeviceFlowPoller(params.account, deviceInit);
+    authUrl = deviceInit.verificationUriComplete;
+    usedDeviceFlow = true;
+    console.log(
+      `[feishu-oauth] v6 Device Flow auth link generated: scopes=${deviceInit.scopeCount} user_code=${deviceInit.userCode}`,
+    );
+  } catch (deviceErr) {
+    console.warn(
+      `[feishu-oauth] Device Flow init failed, falling back to Auth Code: ${String(deviceErr)}`,
+    );
+    const chatId = params.account.accountId;
+    authUrl = getAuthUrlForChat(params.account, chatId, params.redirectUri, effectiveScopes);
+  }
   const details = {
     error: "user_auth_required",
+    flow: usedDeviceFlow ? "device" : "authorization_code",
     message:
       `需要用户 OAuth 授权才能使用${params.toolLabel}。` +
       "请将下方链接发送给用户，用户在飞书中点击后完成授权，然后重试。" +
-      "链接一次性授权所有飞书后台已开通的权限（单一信源）。",
+      (usedDeviceFlow
+        ? "（v6 Device Flow：scope 不走 URL，无 431 风险，最多 200 条 scope）"
+        : "（Authorization Code Flow 兜底）"),
     auth_url: authUrl,
   };
   return {
@@ -1322,4 +1069,254 @@ export function resolveOAuthRedirectUri(config: Record<string, unknown>): string
     return minutesConfig.oauthRedirectUri;
   }
   return "https://auth.carher.net/feishu/oauth/callback";
+}
+
+// ─────────────────────────────────────────────────────────────
+// v6: Device Flow (RFC 8628) — 2026-05-01
+// ─────────────────────────────────────────────────────────────
+//
+// Why: Authorization Code Flow puts scopes in the URL query string.
+// Feishu's passport frontend returns HTTP 431 when the redirected URL
+// exceeds ~4000 raw bytes (≈4800 after double-encoding). We cannot fit
+// all 234 user scopes in the URL (would need ~6900B), so the previous
+// "dynamic quota + priority" approach dropped 92 scopes and broke
+// wiki.nodes / directory.search_users / group_history.list_history.
+//
+// Device Flow sends scopes in the POST body — no URL length limit on
+// the user-facing link. Feishu enforces a 200-scope hard cap (error
+// 20084 at 201+), so we request the top-200 backend scopes. This is
+// 83 more scopes than the old code could fit. The dropped 34 scopes
+// come from the tail of sorted scopes (rare write_only/subscription
+// variants); all the scopes needed by every currently-shipping tool
+// are present.
+//
+// Endpoints (verified 2026-05-01 by curl):
+//   POST https://passport.feishu.cn/oauth/v1/device_authorization
+//     body: client_id, client_secret, scope (space-separated)
+//     returns: device_code, user_code, verification_uri_complete, interval, expires_in
+//   POST https://open.feishu.cn/open-apis/authen/v2/oauth/token
+//     body: grant_type=urn:ietf:params:oauth:grant-type:device_code,
+//           device_code, client_id, client_secret
+//     returns: access_token, refresh_token, expires_in, open_id, name
+
+const DEVICE_FLOW_MAX_SCOPES = 200;
+const DEVICE_AUTH_ENDPOINT = "https://passport.feishu.cn/oauth/v1/device_authorization";
+const DEVICE_TOKEN_ENDPOINT = "https://open.feishu.cn/open-apis/authen/v2/oauth/token";
+
+export type DeviceFlowInit = {
+  deviceCode: string;
+  userCode: string;
+  verificationUri: string;
+  verificationUriComplete: string;
+  expiresIn: number;
+  interval: number;
+  scopeCount: number;
+};
+
+/** Select at most 200 user scopes (Feishu Device Flow hard cap = 200, error 20084).
+ *
+ * v7 (2026-05-01): v6d round-robin logic was superseded by v6f simple DROP.
+ *
+ * v6f: Domains whose scopes are unused by this deployment. Drop them at
+ * request-build time so the remaining scopes fit under Feishu's 200-scope
+ * Device Flow hard cap (error 20084).
+ *
+ * - `mail` — master has not enabled enterprise mail tenant; 1230003/4013 from
+ *   feishu mail backend. Saves 19 slots.
+ * - `aily` — Nova does not use Aily (飞书智能伙伴) API family. Saves 16 slots.
+ *
+ * After drop: 234 backend - 35 = 199 user scopes, all within 200 cap.
+ */
+const DROP_DOMAINS_V6F: ReadonlySet<string> = new Set(["mail", "aily"]);
+
+/**
+ * v6f: pick ALL backend scopes except those in DROP_DOMAINS_V6F. If total
+ * still > 200 after drop (future-proof), fall back to alphabetical slice.
+ */
+function selectDeviceFlowScopes(backend: Set<string>): string[] {
+  const kept: string[] = [];
+  for (const s of backend) {
+    const dom = s.split(":")[0];
+    if (!DROP_DOMAINS_V6F.has(dom)) kept.push(s);
+  }
+  kept.sort();
+  // Safety: if a future app config still exceeds 200 after dropping mail+aily,
+  // truncate deterministically (alphabetical) rather than silently fail.
+  if (kept.length > DEVICE_FLOW_MAX_SCOPES) {
+    console.warn(
+      `[feishu-oauth] v6f post-drop scope count ${kept.length} > ${DEVICE_FLOW_MAX_SCOPES}, truncating (need to expand DROP_DOMAINS_V6F)`,
+    );
+    return kept.slice(0, DEVICE_FLOW_MAX_SCOPES);
+  }
+  return kept;
+}
+/** v7 test-only: exported Device Flow internals for unit testing. */
+export const __deviceFlowInternals = {
+  selectDeviceFlowScopes,
+  DROP_DOMAINS_V6F,
+  DEVICE_FLOW_MAX_SCOPES,
+};
+
+
+
+/** POST to Feishu Device Flow authorization endpoint. Returns the init payload
+ * (device_code, user_code, verification_uri_complete, interval, expires_in).
+ * Throws if the backend probe or the device_authorization call fails. */
+export async function initiateDeviceFlow(
+  account: ResolvedFeishuAccount,
+): Promise<DeviceFlowInit> {
+  // v6f: Fetch backend granted scopes, drop mail+aily (unused), request the
+  // rest (should be ≤200 after drop). Contrary to the short-lived v6e attempt,
+  // Feishu does NOT treat missing/empty scope as "grant all" — it grants only
+  // the minimal auth:user.id:read. We must send the explicit scope list.
+  const backend = await fetchBackendUserScopes(account);
+  const scopes = selectDeviceFlowScopes(backend);
+  const params = new URLSearchParams();
+  params.set("client_id", account.appId);
+  params.set("client_secret", account.appSecret);
+  params.set("scope", scopes.join(" "));
+  const resp = await fetch(DEVICE_AUTH_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: params.toString(),
+  });
+  const body = await resp.text();
+  let j: Record<string, unknown>;
+  try {
+    j = JSON.parse(body);
+  } catch {
+    throw new Error(`device_authorization non-JSON (${resp.status}): ${body.slice(0, 200)}`);
+  }
+  if (typeof j.device_code !== "string" || typeof j.verification_uri_complete !== "string") {
+    throw new Error(
+      `device_authorization failed: ${String(j.error_description || j.err || "unknown")} (code=${String(j.code || "?")})`,
+    );
+  }
+  console.log(
+    `[feishu-oauth] Device Flow v6f initiated: backend=${backend.size} picked=${scopes.length} dropped=${backend.size - scopes.length} (mail+aily excluded) expires_in=${j.expires_in} interval=${j.interval}`,
+  );
+  return {
+    deviceCode: j.device_code as string,
+    userCode: j.user_code as string,
+    verificationUri: j.verification_uri as string,
+    verificationUriComplete: j.verification_uri_complete as string,
+    expiresIn: (j.expires_in as number) ?? 600,
+    interval: (j.interval as number) ?? 5,
+    scopeCount: scopes.length,
+  };
+}
+
+/** Poll the Feishu token endpoint with the device_code until the user
+ * approves (or rejects/expires). Saves the resulting user_access_token
+ * to disk via saveUserToken(). Returns the saved token on success,
+ * or null on terminal failure. */
+export async function pollDeviceToken(
+  account: ResolvedFeishuAccount,
+  init: DeviceFlowInit,
+): Promise<FeishuUserToken | null> {
+  const deadline = Date.now() + init.expiresIn * 1000;
+  let interval = Math.max(1, init.interval);
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, interval * 1000));
+    const params = new URLSearchParams();
+    params.set("grant_type", "urn:ietf:params:oauth:grant-type:device_code");
+    params.set("client_id", account.appId);
+    params.set("client_secret", account.appSecret);
+    params.set("device_code", init.deviceCode);
+    const resp = await fetch(DEVICE_TOKEN_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: params.toString(),
+    });
+    const body = await resp.text();
+    let j: Record<string, unknown>;
+    try {
+      j = JSON.parse(body);
+    } catch {
+      console.warn(`[feishu-oauth] Device poll non-JSON: ${body.slice(0, 200)}`);
+      continue;
+    }
+    if (typeof j.access_token === "string") {
+      const now = Date.now();
+      // Device Flow token endpoint does NOT return open_id/name — fetch them via user_info.
+      let openId = (j.open_id as string) || "";
+      let userName = (j.name as string) || "";
+      if (!openId) {
+        try {
+          const ui = await fetch("https://open.feishu.cn/open-apis/authen/v1/user_info", {
+            headers: { Authorization: `Bearer ${j.access_token as string}` },
+          });
+          const uj = await ui.json();
+          if (uj.code === 0 && uj.data?.open_id) {
+            openId = uj.data.open_id;
+            userName = uj.data.name || userName;
+            console.log(`[feishu-oauth] Device Flow user_info fetched: open_id=${openId} name=${userName}`);
+          } else {
+            console.warn(`[feishu-oauth] Device Flow user_info fetch failed: code=${uj.code} msg=${uj.msg}`);
+          }
+        } catch (uiErr) {
+          console.warn(`[feishu-oauth] Device Flow user_info error: ${String(uiErr)}`);
+        }
+      }
+      // v6c: refuse to save an invalid token without open_id — would pollute the token
+      // directory as ".json" and break every subsequent loadUserToken(open_id) lookup.
+      if (!openId) {
+        console.error(
+          `[feishu-oauth] Device Flow token received but open_id could not be resolved; refusing to save invalid token. access_token will be discarded.`,
+        );
+        return null;
+      }
+      const token: FeishuUserToken = {
+        open_id: openId,
+        name: userName,
+        access_token: j.access_token as string,
+        refresh_token: (j.refresh_token as string) || "",
+        access_token_expires_at: now + ((j.expires_in as number) ?? 7200) * 1000,
+        refresh_token_expires_at:
+          now + ((j.refresh_expires_in as number) ?? 86400 * 30) * 1000,
+        scopes: [],
+        created_at: now,
+        updated_at: now,
+      };
+      // Note: open_id is guaranteed non-empty here — the user_info fetch
+      // above returns null-token if open_id cannot be resolved (refuse-to-save guard).
+      saveUserToken(token);
+      console.log(
+        `[feishu-oauth] Device Flow token saved: open_id=${token.open_id} expires_in=${j.expires_in}`,
+      );
+      return token;
+    }
+    if (j.error === "authorization_pending") {
+      continue;
+    }
+    if (j.error === "slow_down") {
+      // RFC 8628 §3.5: client MUST increase polling interval by at least 5s
+      interval += 5;
+      continue;
+    }
+    if (j.error === "expired_token" || j.error === "access_denied") {
+      console.warn(`[feishu-oauth] Device Flow terminal error: ${String(j.error)}`);
+      return null;
+    }
+    console.warn(
+      `[feishu-oauth] Device Flow unknown poll response: error=${String(j.error)} desc=${String(j.error_description)}`,
+    );
+  }
+  console.warn(`[feishu-oauth] Device Flow timed out after ${init.expiresIn}s`);
+  return null;
+}
+
+/** Start a fire-and-forget background poller. Safe to call multiple times
+ * for the same account — each call gets its own deviceCode. */
+const deviceFlowInflight = new Map<string, Promise<FeishuUserToken | null>>();
+export function startDeviceFlowPoller(
+  account: ResolvedFeishuAccount,
+  init: DeviceFlowInit,
+): void {
+  const key = `${account.appId}:${init.deviceCode}`;
+  if (deviceFlowInflight.has(key)) return;
+  const p = pollDeviceToken(account, init).finally(() => {
+    deviceFlowInflight.delete(key);
+  });
+  deviceFlowInflight.set(key, p);
 }
