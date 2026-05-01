@@ -173,12 +173,18 @@ const PRIORITY_SCOPES: readonly string[] = [
   "mail:user_mailbox.message:send",
   "mail:user_mailbox.folder:read",
   "mail:user_mailbox.mail_contact:read",
-  // wiki space (added 2026-05-01 10:00 after v3 dropped wiki:space:* to fit im)
+  // wiki space (v3 quota dropped wiki:space:* to fit im family)
   "wiki:space:read",
   "wiki:space:retrieve",
   "wiki:space:write_only",
-  // im message history (tool layer relies on this for group_history fallback)
+  // im message history (group_history fallback relies on it)
   "im:message.history:readonly",
+  // vc :readonly (runtime 99991679 at calendar-discovery recording; parent vc:record doesn't cover it)
+  "vc:record:readonly",
+  "vc:meeting:readonly",
+  "vc:meeting.meetingid:read",
+  // directory search (tools/directory.search_users path)
+  "directory:employee:search",
   // offline refresh
   "offline_access",
 ];
