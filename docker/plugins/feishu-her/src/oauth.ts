@@ -414,21 +414,72 @@ async function refreshUserToken(
   // Context fragment used in every diagnostic line so the 2am on-call can
   // `grep` a specific user/app from production logs without cross-referencing.
   const ctx = `open_id=${token.open_id} appId=${account?.appId ?? "?"}`;
+  // v7.2: Device Flow tokens are issued by /authen/v2/oauth/token and the
+  // v1 SDK endpoint (`client.authen.refreshAccessToken.create`) returns
+  // code=20026 "refresh token not found" for them. Feishu official SDK has
+  // NO wrapper for the v2 refresh endpoint, so we go direct via fetch.
+  // Verified with /tmp/oauth-refresh-probe.sh on 2026-05-01: v1 → 20026,
+  // v2 → code=0 + new token + 7200s.
+  if (!account?.appId || !account?.appSecret) {
+    console.warn(
+      `[feishu-oauth] refresh FAILED (no account appId/appSecret) ${ctx}`,
+    );
+    return null;
+  }
   let res: unknown;
   try {
-    res = await client.authen.refreshAccessToken.create({
-      data: {
-        grant_type: "refresh_token",
-        refresh_token: token.refresh_token,
+    const body = new URLSearchParams();
+    body.set("grant_type", "refresh_token");
+    body.set("refresh_token", token.refresh_token);
+    body.set("client_id", account.appId);
+    body.set("client_secret", account.appSecret);
+    const httpRes = await fetch(
+      "https://open.feishu.cn/open-apis/authen/v2/oauth/token",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body,
       },
-    });
+    );
+    const text = await httpRes.text();
+    try {
+      res = JSON.parse(text);
+    } catch {
+      console.warn(
+        `[feishu-oauth] refresh FAILED (non-JSON response) ${ctx}: status=${httpRes.status} body=${text.slice(0, 200)}`,
+      );
+      return null;
+    }
+    // v2 endpoint is OAuth 2.0 style on error: {error, error_description, code}
+    // instead of Feishu-style {code, msg, data}. Normalize to shared path.
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const raw = res as any;
+    if (raw && typeof raw === "object" && typeof raw.error === "string" && raw.access_token == null) {
+      console.warn(
+        `[feishu-oauth] refresh FAILED (oauth_error) ${ctx}: error=${raw.error} desc=${raw.error_description ?? ""} code=${raw.code ?? ""}`,
+      );
+      return null;
+    }
+    // Success shape from v2: {token_type, access_token, refresh_token, expires_in, refresh_expires_in, scope, code:0}
+    // Wrap into the v1-compatible shape the rest of the function expects: {code, msg, data:{...}}
+    if (raw && typeof raw === "object" && typeof raw.access_token === "string") {
+      res = {
+        code: raw.code ?? 0,
+        msg: raw.msg ?? "",
+        data: {
+          access_token: raw.access_token,
+          refresh_token: raw.refresh_token,
+          expires_in: raw.expires_in,
+          refresh_expires_in: raw.refresh_expires_in,
+          scope: raw.scope,
+          token_type: raw.token_type,
+        },
+      };
+    }
   } catch (err) {
-    // Previously `catch { return null }` — silent. This was the primary
-    // production bug: refresh failures (network, SDK, timeout) were invisible,
-    // making every symptom look like "Device Flow is broken" to the user.
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(
-      `[feishu-oauth] refresh FAILED (SDK threw) ${ctx}: ${msg}`,
+      `[feishu-oauth] refresh FAILED (fetch threw) ${ctx}: ${msg}`,
     );
     return null;
   }
