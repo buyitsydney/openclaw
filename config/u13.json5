@@ -8,6 +8,14 @@
 
   // 2026-04-27: openclaw 2026.4.24 启动检查 root parsed gateway.mode 不展开
   // $include。每个 user config 都必须在顶层显式声明,否则会触发 clobber。
+  // 2026-05-01: 默认 maxSkillsPromptChars=18000 对 45+ skill 的 carher-13 触发 compact
+  // (descriptions omitted), skill 触发判断基本瞎。32k 覆盖现况。
+  skills: {
+    limits: {
+      maxSkillsPromptChars: 32000,
+    },
+  },
+
   gateway: {
     mode: "local",
   },
