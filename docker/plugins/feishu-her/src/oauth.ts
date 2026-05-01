@@ -322,12 +322,35 @@ export async function handleFeishuTokenError(
         };
       }
       const chatId = account.accountId;
-      const authUrl = getAuthUrlForChat(account, chatId, redirectUri, effectiveScopes);
+      // v7.1 hotfix: token-expire path was silently using Authorization Code Flow
+      // which produces a long URL (passport 431 on scope-heavy apps). Align with
+      // the primary getAuthUrl path: prefer Device Flow, fallback Auth Code only
+      // if Device Flow init fails.
+      let authUrl: string;
+      let usedDeviceFlow = false;
+      try {
+        const deviceInit = await initiateDeviceFlow(account);
+        startDeviceFlowPoller(account, deviceInit);
+        authUrl = deviceInit.verificationUriComplete;
+        usedDeviceFlow = true;
+        console.log(
+          `[feishu-oauth] v7.1 token-expire Device Flow link: scopes=${deviceInit.scopeCount} user_code=${deviceInit.userCode}`,
+        );
+      } catch (deviceErr) {
+        console.warn(
+          `[feishu-oauth] v7.1 token-expire Device Flow init failed, falling back to Auth Code: ${String(deviceErr)}`,
+        );
+        authUrl = getAuthUrlForChat(account, chatId, redirectUri, effectiveScopes);
+      }
       const details = {
         error: "user_auth_required",
+        flow: usedDeviceFlow ? "device" : "authorization_code",
         message:
           "用户 OAuth 授权已失效，需要重新授权。" +
-          "请将下方链接发送给用户，用户在飞书中点击后完成授权，然后重试。",
+          "请将下方链接发送给用户，用户在飞书中点击后完成授权，然后重试。" +
+          (usedDeviceFlow
+            ? "（v7 Device Flow：scope 不走 URL，无 431 风险）"
+            : "（Authorization Code Flow 兜底）"),
         auth_url: authUrl,
       };
       return {
