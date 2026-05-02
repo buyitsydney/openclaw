@@ -1,4 +1,6 @@
+import path from "node:path";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import { parseUsageCountedSessionIdFromFileName } from "openclaw/plugin-sdk/memory-core-host-engine-qmd";
 import {
   jsonResult,
   readNumberParam,
@@ -84,6 +86,13 @@ function normalizeActiveMemoryQmdSearchMode(
 
 function isActiveMemorySessionKey(sessionKey?: string): boolean {
   return typeof sessionKey === "string" && sessionKey.includes(":active-memory:");
+}
+
+function isUsageCountedArchiveSessionHit(pathname: string): boolean {
+  const fileName = path.basename(pathname.replace(/\\/g, "/"));
+  return (
+    fileName.includes(".jsonl.reset.") || fileName.includes(".jsonl.deleted.")
+  ) && !!parseUsageCountedSessionIdFromFileName(fileName);
 }
 
 function resolveActiveMemoryQmdSearchModeOverride(
@@ -246,7 +255,8 @@ export function createMemorySearchTool(options: {
               },
             });
             const status = memory.manager.status();
-            const decorated = decorateCitations(rawResults, includeCitations);
+            const visibleRawResults = rawResults.filter((result) => result.source !== "sessions" || isUsageCountedArchiveSessionHit(result.path) || result.path.endsWith(".jsonl") || result.path.endsWith(".md"));
+            const decorated = decorateCitations(visibleRawResults, includeCitations);
             const resolved = resolveMemoryBackendConfig({ cfg, agentId });
             const memoryResults =
               status.backend === "qmd"
@@ -263,7 +273,7 @@ export function createMemorySearchTool(options: {
             queueShortTermRecallTracking({
               workspaceDir: status.workspaceDir,
               query,
-              rawResults,
+              visibleRawResults,
               surfacedResults: memoryResults,
               timezone: sleepTimezone,
             });
@@ -281,7 +291,7 @@ export function createMemorySearchTool(options: {
                   : "n/a",
               fallback: latestDebug?.fallback,
               searchMs: Math.max(0, Date.now() - searchStartedAt),
-              hits: rawResults.length,
+              hits: visibleRawResults.length,
             };
           }
           const supplementResults = shouldQuerySupplements
