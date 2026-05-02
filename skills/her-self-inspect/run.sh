@@ -32,56 +32,53 @@ else
   HOT_PATCHES_COUNT="$(echo "$HOT_PATCHES" | wc -l | awk '{print $1}')"
 fi
 
-# Image identity from frozen JSON (prefer jq, fall back to python3)
-parse_json() {
-  local key="$1"
-  if [ ! -f "$IMAGE_INFO" ]; then
-    echo "$NA"
-    return
-  fi
-  if command -v jq >/dev/null 2>&1; then
-    local val
-    val="$(jq -r --arg k "$key" '.[$k] // empty' "$IMAGE_INFO" 2>/dev/null)"
-    [ -n "$val" ] && echo "$val" || echo "$NA"
-  else
-    python3 -c "import json,sys
+# Default all build_* fields to NA (missing image-info.json).
+BUILD_HASH_SHORT="$NA"
+BUILD_BRANCH="$NA"
+BUILD_TIME="$NA"
+BUILD_TAG=""
+TOP_COMMITS_BLOCK="  $NA"
+
+if [ -f "$IMAGE_INFO" ]; then
+  # Parse whole JSON once with python3 (always available in carher-core).
+  # Fallback order: jq → python3 (prefer python for uniformity & no dep).
+  eval "$(python3 - "$IMAGE_INFO" <<'PY'
+import json, sys, shlex
+p = sys.argv[1]
 try:
-  d=json.load(open('$IMAGE_INFO'))
-  print(d.get('$key') or '')
+    d = json.load(open(p))
 except Exception:
-  print('')
-" 2>/dev/null | awk 'NF{print; found=1} END{if(!found) print "'"$NA"'"}'
-  fi
-}
-
-BUILD_HASH_SHORT="$(parse_json build_hash_short)"
-BUILD_BRANCH="$(parse_json build_branch)"
-BUILD_TIME="$(parse_json build_time)"
-BUILD_TAG="$(parse_json build_tag)"
-
-# top-5 recent_commits
-top_commits() {
-  if [ ! -f "$IMAGE_INFO" ]; then
-    echo "  $NA"
-    return
-  fi
-  python3 <<PY
-import json
-try:
-  d = json.load(open("$IMAGE_INFO"))
-  commits = (d.get("recent_commits") or [])[:5]
-  if not commits:
-    print("  (none)")
-  for c in commits:
-    h = (c.get("hash") or "")[:12]
-    t = c.get("time") or ""
-    a = c.get("author") or ""
-    s = c.get("subject") or ""
-    print(f"  {h}  {t}  {a}: {s}")
-except Exception as e:
-  print("  $NA")
+    d = {}
+def emit(k, v):
+    print(f"{k}={shlex.quote(str(v or ''))}")
+emit("BUILD_HASH_SHORT", d.get("build_hash_short") or "")
+emit("BUILD_BRANCH",     d.get("build_branch") or "")
+emit("BUILD_TIME",       d.get("build_time") or "")
+emit("BUILD_TAG",        d.get("build_tag") or "")
+commits = (d.get("recent_commits") or [])[:5]
+if commits:
+    lines = []
+    for c in commits:
+        h = (c.get("hash") or "")[:12]
+        t = c.get("time") or ""
+        a = c.get("author") or ""
+        s = c.get("subject") or ""
+        lines.append(f"  {h}  {t}  {a}: {s}")
+    block = "\n".join(lines)
+else:
+    block = "  (none)"
+print(f"TOP_COMMITS_BLOCK={shlex.quote(block)}")
 PY
-}
+)"
+  # Any field that came back empty → keep NA? For an existing file, empty is
+  # a legitimate "no value" (e.g. no git tag on HEAD), so show "(none)".
+  : "${BUILD_HASH_SHORT:=(none)}"
+  : "${BUILD_BRANCH:=(none)}"
+  : "${BUILD_TIME:=(none)}"
+  [ -z "$BUILD_HASH_SHORT" ] && BUILD_HASH_SHORT="(none)"
+  [ -z "$BUILD_BRANCH" ]     && BUILD_BRANCH="(none)"
+  [ -z "$BUILD_TIME" ]       && BUILD_TIME="(none)"
+fi
 
 cat <<EOF
 🛠️  her-self-inspect
@@ -97,7 +94,7 @@ hot_patches       : $HOT_PATCHES_COUNT file(s)
 $(echo "$HOT_PATCHES_LINE" | sed 's/^/  /')
 
 recent_commits (top 5):
-$(top_commits)
+$TOP_COMMITS_BLOCK
 EOF
 
 exit 0
