@@ -86,6 +86,10 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY --from=openclaw-src-fetcher /src/src /app/openclaw-src/src
 
 # Entrypoint
+# ---- reset-archive-session-memory patch set (feat/reset-archive-session-memory-20260502 @ 0e692c385d)
+COPY scripts/apply-reset-archive-patches.sh /tmp/apply-reset-archive-patches.sh
+RUN chmod +x /tmp/apply-reset-archive-patches.sh && /tmp/apply-reset-archive-patches.sh
+# ---- end reset-archive-session-memory patch set
 COPY scripts/carher-entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
