@@ -1,15 +1,7 @@
 #!/usr/bin/env bash
-# freeze-git-info.sh — capture CarHer repo git metadata into JSON on stdout.
-#
-# Usage:
-#   ./scripts/freeze-git-info.sh                       # stdout
-#   ./scripts/freeze-git-info.sh > build/image-info.json
-#
-# Intended to run at image build time (on host, before `docker build`) so the
-# resulting image-info.json is baked into /opt/carher/image-info.json and
-# runtime containers need zero .git dependency (k8s/immutable-friendly).
-#
-# Always exits 0 (falls back to "N/A" fields) so the build is not blocked.
+# freeze-git-info.sh — capture CarHer repo git metadata (+ full body) into
+# JSON on stdout. Runs at image build time; image-info.json gets baked in,
+# so runtime containers read it without any .git dependency (k8s-friendly).
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -23,30 +15,59 @@ export CARHER_BUILD_BRANCH="$(git_safe rev-parse --abbrev-ref HEAD)"
 export CARHER_BUILD_TAG="$(git describe --tags --exact-match HEAD 2>/dev/null || echo '')"
 export CARHER_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-# Use ASCII unit-separator as field delimiter; newline as record separator.
-DELIM=$'\x1f'
-export CARHER_COMMITS_RAW="$(git log -n 50 --pretty=format:"%H${DELIM}%cI${DELIM}%an${DELIM}%s" 2>/dev/null || echo '')"
-export CARHER_DELIM="$DELIM"
+# Dump raw commit stream: NUL-separated records, unit-separator fields.
+# Fields: hash, ISO-date, author, subject, body. body may span multiple lines.
+# -z makes records NUL-separated.
+git log -n 50 -z --pretty=format:'%H%x1f%cI%x1f%an%x1f%s%x1f%b' > /tmp/carher-commits-raw.bin 2>/dev/null || true
+# per-commit diffstat (files_changed, insertions, deletions)
+python3 - <<'PY' > /tmp/carher-commits.json
+import json, subprocess, os
 
-python3 <<'PY'
-import json, os
+raw = b""
+try:
+    raw = open("/tmp/carher-commits-raw.bin", "rb").read()
+except FileNotFoundError:
+    pass
 
-delim = os.environ.get("CARHER_DELIM", "\x1f")
-raw = os.environ.get("CARHER_COMMITS_RAW", "")
-
+records = [r for r in raw.split(b"\x00") if r]
 commits = []
-for line in raw.splitlines():
-    line = line.rstrip("\n")
-    if not line.strip():
+for rec in records:
+    # decode tolerantly
+    try:
+        txt = rec.decode("utf-8", errors="replace")
+    except Exception:
         continue
-    parts = line.split(delim, 3)
-    if len(parts) < 4:
-        continue
+    parts = txt.split("\x1f", 4)
+    if len(parts) < 5:
+        # no body (initial commit w/o body) → pad
+        while len(parts) < 5:
+            parts.append("")
+    h, t, a, s, b = parts[0], parts[1], parts[2], parts[3], parts[4]
+    # files_changed via git diff-tree (cheap, no diff content)
+    files = 0; ins = 0; dels = 0
+    try:
+        r = subprocess.run(
+            ["git", "show", "--stat=200", "--format=", h],
+            capture_output=True, text=True, timeout=10
+        )
+        # Last line looks like:  "12 files changed, 345 insertions(+), 67 deletions(-)"
+        tail = [ln for ln in r.stdout.strip().splitlines() if "changed" in ln]
+        if tail:
+            import re
+            m = re.search(r"(\d+) files? changed", tail[-1]);      files = int(m.group(1)) if m else 0
+            m = re.search(r"(\d+) insertions?\(\+\)", tail[-1]);   ins   = int(m.group(1)) if m else 0
+            m = re.search(r"(\d+) deletions?\(-\)",  tail[-1]);    dels  = int(m.group(1)) if m else 0
+    except Exception:
+        pass
     commits.append({
-        "hash": parts[0],
-        "time": parts[1],
-        "author": parts[2],
-        "subject": parts[3],
+        "hash": h,
+        "time": t,
+        "author": a,
+        "subject": s,
+        "body": b.strip(),
+        "files_changed": files,
+        "insertions": ins,
+        "deletions": dels,
     })
 
 def v(name, default="N/A"):
@@ -63,5 +84,6 @@ out = {
 }
 print(json.dumps(out, ensure_ascii=False, indent=2))
 PY
-
+cat /tmp/carher-commits.json
+rm -f /tmp/carher-commits-raw.bin /tmp/carher-commits.json
 exit 0

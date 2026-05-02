@@ -63,8 +63,20 @@ if commits:
         t = c.get("time") or ""
         a = c.get("author") or ""
         s = c.get("subject") or ""
-        lines.append(f"  {h}  {t}  {a}: {s}")
-    block = "\n".join(lines)
+        body = (c.get("body") or "").strip()
+        fc = c.get("files_changed") or 0
+        ins = c.get("insertions") or 0
+        dels = c.get("deletions") or 0
+        stat = f"{fc} files, +{ins} -{dels}" if fc else ""
+        header = f"  {h}  {t}  {a}: {s}"
+        if stat:
+            header += f"   [{stat}]"
+        lines.append(header)
+        if body:
+            for bl in body.splitlines():
+                lines.append(f"      {bl}")
+            lines.append("")
+    block = "\n".join(lines).rstrip()
 else:
     block = "  (none)"
 print(f"TOP_COMMITS_BLOCK={shlex.quote(block)}")
