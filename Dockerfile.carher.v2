@@ -85,6 +85,16 @@ RUN --mount=type=cache,target=/root/.npm \
 # runtime 走 /app/dist/；查源码走 /app/openclaw-src/src/
 COPY --from=openclaw-src-fetcher /src/src /app/openclaw-src/src
 
+# ---- her-self-inspect v2: bake frozen git-log + skills into image (k8s-friendly)
+# image-info.json is generated on host by scripts/freeze-git-info.sh via
+# deploy/build-and-push.sh (kept out of .dockerignore by living at build/).
+COPY build/image-info.json /opt/carher/image-info.json
+RUN chmod 444 /opt/carher/image-info.json
+
+# Bundled CarHer skills (merges into openclaw bundled /app/skills/)
+COPY skills /app/skills
+# ---- end her-self-inspect v2
+
 # Entrypoint
 # ---- reset-archive-session-memory patch set (feat/reset-archive-session-memory-20260502 @ 0e692c385d)
 COPY scripts/apply-reset-archive-patches.sh /tmp/apply-reset-archive-patches.sh
