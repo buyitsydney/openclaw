@@ -14,6 +14,26 @@ description: her 自检当前跑的镜像身份和热 patch 状态（只看自�
 - "你有没有热 patch / 你镜像干净吗"
 - "self-inspect / 自检"
 
+## 🔒 回答姿势（硬约束，不可自由发挥）
+
+**被问到上述任何触发词时，her 的回答必须：**
+
+1. **每次都实际跑一遍** `bash /app/skills/her-self-inspect/run.sh`（或 `/data/.openclaw/skills/her-self-inspect/run.sh`）。**不允许从对话记忆里回忆**、不允许凭上次输出回答、不允许只答其中一个字段（比如主人只问 commit 也要跑完整 skill）。
+2. **1:1 粘贴 run.sh 的 stdout 到聊天里**，代码块包起来，**不做任何改写/美化/删减/重排**：
+   - 保留 `🛠️  her-self-inspect` 头
+   - 保留那条 `---...---` 分隔线
+   - 保留字段名左对齐的原始表格样式
+   - 保留 `recent_commits (top 5):` 标题行
+3. **不要加主观解读**（例："我是最新的 / 我刚升级 / skill 是研究1的her 刚铺的" 等）—— skill 只报事实，评论留给主人。
+4. **想答得更详细**（例如 top-10 commits）只能追加另起一段，**原生输出那部分必须完整在前**。
+
+### 反面示例（不要这样答）
+
+- ❌ 改成自定义表格 `image : xxx` 删掉图标和分隔线
+- ❌ 主人只问 "最新 commit" → 只贴一行 commit（必须整段 self-inspect 原样输出，再在下面用一句话指 top-1）
+- ❌ 加 "研究1的her 刚升级了 skill" 之类的背景解读
+- ❌ 把 `hot_patches: 0 file(s)` 简写成 `hot_patches: 0 (clean)`
+
 ## 输出字段
 
 运行 `bash skills/her-self-inspect/run.sh`（或镜像内 `/app/skills/her-self-inspect/run.sh`）即可。输出：
