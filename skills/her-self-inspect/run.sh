@@ -136,7 +136,7 @@ else LABEL="recent_commits (top 5 of $TOTAL_COMMITS)"
 fi
 
 cat <<EOF
-🛠️  her-self-inspect
+🛠️  her-self-inspect  (v2.4-publish-test)
 ---------------------------------------------
 hostname          : $HOSTNAME_VAL
 openclaw_version  : $OPENCLAW_VERSION
