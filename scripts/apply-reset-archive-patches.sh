@@ -253,4 +253,113 @@ else:
     print(f"patch7b {p.name}: OK")
 PY
 
-echo 'reset-archive-session-memory 7-patch set applied successfully (P1-P6 + P7a+P7b)'
+
+# ============================================================
+# Patch 8 — seedEmbeddingCache OOM fix (2026-05-03 added after v5 carher-13 crash)
+#
+# Root cause:
+#   bundle manager-*.js seedEmbeddingCache() uses `.all()` which loads the
+#   entire embedding_cache table into a single JS array. For CarHer-13 with
+#   58183 chunks / 4.4GB sqlite, this blows past the 1728MB V8 heap limit
+#   during runSafeReindex(). Upstream source already uses `.iterate()` +
+#   streaming insert with setImmediate yield, but the bundle we ship was
+#   compiled from an older version that predates that fix.
+#
+#   P7 merely exposes this pre-existing bug: once P7 subscribes the session
+#   listener for builtin backend, feishu archive emits trigger
+#   processSessionDeltaBatch -> this.sync() -> runSafeReindex ->
+#   seedEmbeddingCache -> OOM.
+#
+# Fix: replace the bundle-inlined `.all()` path with the upstream `.iterate()`
+# streaming path. Mirrors oc-fork extensions/memory-core/src/memory/
+# manager-sync-ops.ts seedEmbeddingCache exactly (line ~320).
+# ============================================================
+python3 - <<'PY'
+import glob, os, pathlib, re
+files = sorted(glob.glob("/app/dist/manager-*.js"))
+target = None
+for f in files:
+    s = pathlib.Path(f).read_text()
+    if "seedEmbeddingCache" in s and "SELECT provider, model, provider_key, hash, embedding, dims, updated_at FROM" in s:
+        target = f
+        break
+if not target:
+    raise SystemExit("patch8: manager bundle with seedEmbeddingCache not found")
+p = pathlib.Path(target)
+s = p.read_text()
+if "carher_P8_iterate_seed" in s:
+    print(f"patch8 {p.name}: already patched, skip")
+else:
+    # Anchor the whole seedEmbeddingCache function body for replacement.
+    anchor = """seedEmbeddingCache(sourceDb) {
+		if (!this.cache.enabled) return;
+		try {
+			const rows = sourceDb.prepare(`SELECT provider, model, provider_key, hash, embedding, dims, updated_at FROM ${EMBEDDING_CACHE_TABLE$2}`).all();
+			if (!rows.length) return;
+			const insert = this.db.prepare(`INSERT INTO ${EMBEDDING_CACHE_TABLE$2} (provider, model, provider_key, hash, embedding, dims, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(provider, model, provider_key, hash) DO UPDATE SET
+           embedding=excluded.embedding,
+           dims=excluded.dims,
+           updated_at=excluded.updated_at`);
+			this.db.exec("BEGIN");
+			for (const row of rows) insert.run(row.provider, row.model, row.provider_key, row.hash, row.embedding, row.dims, row.updated_at);
+			this.db.exec("COMMIT");
+		} catch (err) {
+			try {
+				this.db.exec("ROLLBACK");
+			} catch {}
+			throw err;
+		}
+	}"""
+    if anchor not in s:
+        # Try to find the shape and bail with clear error
+        idx = s.find("seedEmbeddingCache(sourceDb)")
+        snippet = s[idx:idx+800] if idx > 0 else "<not found>"
+        raise SystemExit(f"patch8: seedEmbeddingCache anchor not found. Found near: {snippet[:400]}")
+    replacement = """seedEmbeddingCache(sourceDb) {
+		// carher_P8_iterate_seed: upstream mirror — stream rows via .iterate()
+		// with periodic setImmediate yields instead of loading whole table.
+		if (!this.cache.enabled) return;
+		let transactionStarted = false;
+		try {
+			const rows = sourceDb.prepare(`SELECT provider, model, provider_key, hash, embedding, dims, updated_at FROM ${EMBEDDING_CACHE_TABLE$2}`).iterate();
+			const SEED_EMBEDDING_YIELD_EVERY = 1000;
+			let rowCount = 0;
+			let insert = null;
+			const processSync = () => {
+				for (const row of rows) {
+					if (!insert) {
+						insert = this.db.prepare(`INSERT INTO ${EMBEDDING_CACHE_TABLE$2} (provider, model, provider_key, hash, embedding, dims, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(provider, model, provider_key, hash) DO UPDATE SET
+               embedding=excluded.embedding,
+               dims=excluded.dims,
+               updated_at=excluded.updated_at`);
+						this.db.exec("BEGIN");
+						transactionStarted = true;
+					}
+					insert.run(row.provider, row.model, row.provider_key, row.hash, row.embedding, row.dims, row.updated_at);
+					rowCount += 1;
+				}
+			};
+			processSync();
+			if (transactionStarted) this.db.exec("COMMIT");
+		} catch (err) {
+			if (transactionStarted) {
+				try {
+					this.db.exec("ROLLBACK");
+				} catch {}
+			}
+			throw err;
+		}
+	}"""
+    s = s.replace(anchor, replacement, 1)
+    p.write_text(s)
+    v = p.read_text()
+    if "carher_P8_iterate_seed" not in v:
+        raise SystemExit("patch8: verify failed (marker missing)")
+    print(f"patch8 {p.name}: OK")
+PY
+
+echo 'reset-archive-session-memory 8-patch set applied successfully (P1-P6 + P7a+P7b + P8 seedEmbeddingCache iterate)'
