@@ -18,7 +18,7 @@ export CARHER_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # Dump raw commit stream: NUL-separated records, unit-separator fields.
 # Fields: hash, ISO-date, author, subject, body. body may span multiple lines.
 # -z makes records NUL-separated.
-git log --all -n ${CARHER_FREEZE_DEPTH:-500} -z --pretty=format:'%H%x1f%cI%x1f%an%x1f%s%x1f%b' > /tmp/carher-commits-raw.bin 2>/dev/null || true
+git log --all -n ${CARHER_FREEZE_DEPTH:-999999} -z --pretty=format:'%H%x1f%cI%x1f%an%x1f%s%x1f%b' > /tmp/carher-commits-raw.bin 2>/dev/null || true
 # per-commit diffstat (files_changed, insertions, deletions)
 python3 - <<'PY' > /tmp/carher-commits.json
 import json, subprocess, os
