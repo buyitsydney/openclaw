@@ -80,17 +80,15 @@ UPTIME_VAL="$(ps -o etime= -p 1 2>/dev/null | awk '{$1=$1;print}' || echo N/A)"
 
 # ---- hot-patch detection: .bak* files AND sha256 drift vs dist-manifest ----
 BAK_FILES="$(ls /app/dist/*.bak* 2>/dev/null || true)"
-BAK_COUNT=$(echo -n "$BAK_FILES" | grep -c '^' 2>/dev/null || echo 0)
+if [ -z "$BAK_FILES" ]; then BAK_COUNT=0; else BAK_COUNT=$(printf '%s\n' "$BAK_FILES" | wc -l); fi
 
 DRIFT_COUNT=0
 DRIFT_SAMPLE=""
+MANIFEST_STATUS="$NA"
 if [ -f "$DIST_MANIFEST" ]; then
-  # compare current dist/*.js sha256 vs manifest
-  DRIFT_SAMPLE="$(cd / && sha256sum -c "$DIST_MANIFEST" 2>/dev/null | grep -v ': OK$' | grep -v '^$' | head -5 || true)"
-  DRIFT_COUNT=$(echo -n "$DRIFT_SAMPLE" | grep -c '^' 2>/dev/null || echo 0)
   MANIFEST_STATUS="active"
-else
-  MANIFEST_STATUS="$NA"
+  DRIFT_SAMPLE="$(cd / && sha256sum -c "$DIST_MANIFEST" 2>/dev/null | grep -v ': OK$' | grep -v '^$' | head -5 || true)"
+  if [ -n "$DRIFT_SAMPLE" ]; then DRIFT_COUNT=$(printf '%s\n' "$DRIFT_SAMPLE" | wc -l); fi
 fi
 
 TOTAL_DRIFT=$((BAK_COUNT + DRIFT_COUNT))
