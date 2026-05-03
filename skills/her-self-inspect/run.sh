@@ -1,48 +1,57 @@
 #!/usr/bin/env bash
-# her-self-inspect run.sh — report THIS container's image identity + hot-patch
-# status. Single-container only: no SSH, no cross-host IO, no secret paths.
+# her-self-inspect — report THIS container's image identity + drift detection.
+# Single-container only: no SSH, no cross-host IO, no secret paths.
 #
 # Usage:
-#   run.sh                  → default: 6 core fields + top-5 commits
-#   run.sh top-N            → show top-N commits (with body + diffstat)
-#   run.sh all              → show all commits in image-info.json
-#   run.sh <hash-prefix>    → show single commit detail (full body + stat)
+#   run.sh                 default: 6 core fields + top-5 commits
+#   run.sh -n N | top-N    show top-N commits (with body + diffstat)
+#   run.sh 5               bare digits 1-4 chars treated as top-N
+#   run.sh -a | --all | all  show all commits
+#   run.sh <hash-prefix>   show single commit detail (hex, >=4 chars)
+#   run.sh -h | --help     this help
 #
-# Exits 0 even when /opt/carher/image-info.json is missing (old image) — fields
+# Exits 0 even when image-info.json is missing (old image) — build_* fields
 # degrade to "N/A · upgrade required to see this".
 
 set -u
 IMAGE_INFO=/opt/carher/image-info.json
+DIST_MANIFEST=/opt/carher/dist-manifest.txt
 NA="N/A · upgrade required to see this"
 
-# -------- arg parsing --------
+# -------- arg parsing (with aliases) --------
 MODE="default"
 ARG=""
+show_help() { sed -n '3,14p' "$0"; }
 if [ $# -ge 1 ]; then
   case "$1" in
-    top-*) MODE="topN"; ARG="${1#top-}" ;;
-    all)   MODE="all" ;;
-    help|-h|--help) sed -n '3,11p' "$0"; exit 0 ;;
-    *)     MODE="hash"; ARG="$1" ;;
+    -h|--help|help) show_help; exit 0 ;;
+    -a|--all|all)   MODE="all" ;;
+    -n|--top)       MODE="topN"; ARG="${2:-5}" ;;
+    top-*)          MODE="topN"; ARG="${1#top-}" ;;
+    *)
+      if   [[ "$1" =~ ^[0-9]{1,4}$ ]]; then MODE="topN"; ARG="$1"
+      elif [[ "$1" =~ ^[0-9a-fA-F]{4,}$ ]]; then MODE="hash"; ARG="$1"
+      else echo "❌ unrecognized arg: $1"; show_help; exit 0
+      fi ;;
   esac
 fi
 
-# -------- hash lookup mode: show single commit --------
+# -------- hash lookup mode --------
 if [ "$MODE" = "hash" ] && [ -f "$IMAGE_INFO" ]; then
   python3 - "$IMAGE_INFO" "$ARG" <<'PY'
 import json, sys
 p, prefix = sys.argv[1], sys.argv[2]
 d = json.load(open(p))
-matches = [c for c in d.get("recent_commits", []) if c.get("hash","").startswith(prefix)]
-if not matches:
+m = [c for c in d.get("recent_commits", []) if c.get("hash","").startswith(prefix)]
+if not m:
     print(f"❌ no commit matches prefix '{prefix}' in image-info.json ({len(d.get('recent_commits',[]))} commits indexed)")
     sys.exit(0)
-if len(matches) > 1:
-    print(f"⚠ {len(matches)} ambiguous matches for '{prefix}':")
-    for c in matches[:10]:
+if len(m) > 1:
+    print(f"⚠ {len(m)} ambiguous matches for '{prefix}':")
+    for c in m[:10]:
         print(f"  {c['hash'][:12]}  {c.get('subject','')}")
     sys.exit(0)
-c = matches[0]
+c = m[0]
 print(f"🛠️  commit {c['hash'][:12]} (full)")
 print("-" * 45)
 print(f"hash      : {c['hash']}")
@@ -61,19 +70,42 @@ PY
   exit 0
 fi
 
-# -------- default / topN / all mode: standard self-inspect --------
+# -------- self-inspect fields --------
 HOSTNAME_VAL="$(hostname 2>/dev/null || echo unknown)"
 OPENCLAW_VERSION="$NA"
 if [ -f /app/package.json ]; then
   OPENCLAW_VERSION="$(python3 -c 'import json;print(json.load(open("/app/package.json")).get("version","N/A"))' 2>/dev/null || echo N/A)"
 fi
 UPTIME_VAL="$(ps -o etime= -p 1 2>/dev/null | awk '{$1=$1;print}' || echo N/A)"
-HOT_PATCHES="$(ls /app/dist/*.bak* 2>/dev/null || true)"
-if [ -z "$HOT_PATCHES" ]; then HOT_PATCHES_LINE="(clean)"; HOT_PATCHES_COUNT=0
-else HOT_PATCHES_LINE="$HOT_PATCHES"; HOT_PATCHES_COUNT="$(echo "$HOT_PATCHES" | wc -l | awk '{print $1}')"
+
+# ---- hot-patch detection: .bak* files AND sha256 drift vs dist-manifest ----
+BAK_FILES="$(ls /app/dist/*.bak* 2>/dev/null || true)"
+BAK_COUNT=$(echo -n "$BAK_FILES" | grep -c '^' 2>/dev/null || echo 0)
+
+DRIFT_COUNT=0
+DRIFT_SAMPLE=""
+if [ -f "$DIST_MANIFEST" ]; then
+  # compare current dist/*.js sha256 vs manifest
+  DRIFT_SAMPLE="$(cd / && sha256sum -c "$DIST_MANIFEST" 2>/dev/null | grep -v ': OK$' | grep -v '^$' | head -5 || true)"
+  DRIFT_COUNT=$(echo -n "$DRIFT_SAMPLE" | grep -c '^' 2>/dev/null || echo 0)
+  MANIFEST_STATUS="active"
+else
+  MANIFEST_STATUS="$NA"
 fi
 
-# decide how many commits to print
+TOTAL_DRIFT=$((BAK_COUNT + DRIFT_COUNT))
+if [ "$TOTAL_DRIFT" -eq 0 ]; then
+  HOT_STATUS="(clean)"
+else
+  HOT_STATUS=""
+  [ "$BAK_COUNT" -gt 0 ] && HOT_STATUS="$HOT_STATUS  .bak files ($BAK_COUNT):
+$(echo "$BAK_FILES" | sed 's/^/    /')"
+  [ "$DRIFT_COUNT" -gt 0 ] && HOT_STATUS="$HOT_STATUS
+  sha256 drift ($DRIFT_COUNT):
+$(echo "$DRIFT_SAMPLE" | sed 's/^/    /')"
+fi
+
+# -------- commits --------
 if [ "$MODE" = "topN" ]; then TOPN="${ARG:-5}"
 elif [ "$MODE" = "all" ]; then TOPN="999999"
 else TOPN="5"
@@ -124,19 +156,15 @@ PY
   : "${BUILD_HASH_SHORT:=(none)}"
   : "${BUILD_BRANCH:=(none)}"
   : "${BUILD_TIME:=(none)}"
-  [ -z "$BUILD_HASH_SHORT" ] && BUILD_HASH_SHORT="(none)"
-  [ -z "$BUILD_BRANCH" ]     && BUILD_BRANCH="(none)"
-  [ -z "$BUILD_TIME" ]       && BUILD_TIME="(none)"
 fi
 
-LABEL="recent_commits"
+LABEL="recent_commits (top 5 of $TOTAL_COMMITS)"
 if [ "$MODE" = "topN" ]; then LABEL="recent_commits (top $TOPN of $TOTAL_COMMITS)"
 elif [ "$MODE" = "all" ]; then LABEL="recent_commits (all $TOTAL_COMMITS)"
-else LABEL="recent_commits (top 5 of $TOTAL_COMMITS)"
 fi
 
 cat <<EOF
-🛠️  her-self-inspect  (v2.4-publish-test)
+🛠️  her-self-inspect
 ---------------------------------------------
 hostname          : $HOSTNAME_VAL
 openclaw_version  : $OPENCLAW_VERSION
@@ -145,8 +173,9 @@ build_branch      : $BUILD_BRANCH
 build_time        : $BUILD_TIME
 build_tag         : ${BUILD_TAG:-(none)}
 uptime            : $UPTIME_VAL
-hot_patches       : $HOT_PATCHES_COUNT file(s)
-$(echo "$HOT_PATCHES_LINE" | sed 's/^/  /')
+dist_manifest     : $MANIFEST_STATUS
+hot_patches       : $TOTAL_DRIFT (bak=$BAK_COUNT, sha256_drift=$DRIFT_COUNT)
+$HOT_STATUS
 
 $LABEL:
 $TOP_COMMITS_BLOCK
