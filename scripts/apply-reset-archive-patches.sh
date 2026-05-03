@@ -162,44 +162,4 @@ else:
     print(f"patch6 {os.path.basename(target)}: OK")
 PY
 
-# ============================================================
-# Patch 7 — added 2026-05-03 19:05 (bug-C: memory manager eager preload)
-# Root cause: gateway startup's startGatewayMemoryBackend short-circuits
-#   for non-qmd backends (CarHer uses builtin) → MemoryIndexManager is never
-#   instantiated at boot → ensureSessionListener() never runs →
-#   SESSION_TRANSCRIPT_LISTENERS set stays empty → archiveFileOnDisk's emit
-#   (P5) fires to an empty listener set → archives never enter chunks until
-#   something else (user memory_search tool call) wakes the manager.
-# Fix: also preload memory manager for any agent whose memorySearch.sources
-#   includes "sessions", regardless of backend. Manager stays cached, so the
-#   listener persists for the entire gateway lifetime. Upstream-friendly
-#   because it’s additive and only fires when sessions source is configured.
-# ============================================================
-python3 - <<'PY'
-import glob, os, pathlib
-files = sorted(glob.glob("/app/dist/server-startup-memory-*.js"))
-if not files:
-    raise SystemExit("patch7: server-startup-memory-*.js bundle not found")
-p = pathlib.Path(files[0])
-s = p.read_text()
-if "wantSessionListener" in s:
-    print(f"patch7 {p.name}: already patched, skip")
-else:
-    anchor = 'if (resolved.backend !== "qmd" || !resolved.qmd) continue;\n\t\tconst { manager, error } = await getActiveMemorySearchManager({'
-    if anchor not in s:
-        raise SystemExit("patch7: startGatewayMemoryBackend anchor not found (bundle may have changed)")
-    replacement = (
-        'const settings = resolveMemorySearchConfig(params.cfg, agentId);\n'
-        '\t\tconst wantSessionListener = !!settings?.sources?.includes("sessions");\n'
-        '\t\tif ((resolved.backend !== "qmd" || !resolved.qmd) && !wantSessionListener) continue;\n'
-        '\t\tconst { manager, error } = await getActiveMemorySearchManager({'
-    )
-    s = s.replace(anchor, replacement, 1)
-    p.write_text(s)
-    v = p.read_text()
-    if v.count("wantSessionListener") < 2:
-        raise SystemExit("patch7: verify failed (wantSessionListener count < 2)")
-    print(f"patch7 {p.name}: OK")
-PY
-
-echo 'reset-archive-session-memory 7-patch set applied successfully'
+echo 'reset-archive-session-memory 6-patch set applied successfully'
