@@ -91,8 +91,9 @@ COPY --from=openclaw-src-fetcher /src/src /app/openclaw-src/src
 COPY build/image-info.json /opt/carher/image-info.json
 RUN chmod 444 /opt/carher/image-info.json
 
-# Bundled CarHer skills (merges into openclaw bundled /app/skills/)
-COPY skills /app/skills
+# NOTE: shared skills are NOT baked into the image.
+# They live on hosts at ~cltx/.openclaw/skills/ (bind-mount :ro → /data/.openclaw/skills/)
+# and are distributed via scripts/publish-shared-skills.sh (rsync). Single source of truth.
 # ---- end her-self-inspect v2
 
 # Entrypoint
