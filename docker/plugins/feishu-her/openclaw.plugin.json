@@ -5,6 +5,10 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {}
+    "properties": {
+      "name": { "type": "string" },
+      "botOpenId": { "type": "string" },
+      "oauthRedirectUri": { "type": "string" }
+    }
   }
 }

@@ -15,7 +15,6 @@
   agents: {
     defaults: {
       userTimezone: "Asia/Shanghai",
-      llm: { idleTimeoutSeconds: 300 },
       maxConcurrent: 16,
       subagents: { maxConcurrent: 64 },
       compaction: { mode: "safeguard", reserveTokens: 200000 },
@@ -54,7 +53,7 @@
   channels: {
     feishu: {
       enabled: true,
-      groups: { enabled: true, archive: true },
+      groupPolicy: "open",
     },
   },
 
@@ -98,6 +97,10 @@
     // Array-field rule (see header): since paths is NOT declared here, any
     // overlay may declare it once without the deep-merge concat bug.
     entries: {
+      // Disable bundled feishu plugin — openclaw-lark (runtime npm) replaces it.
+      // Using entries.feishu.enabled=false instead of deny because 0503 deny
+      // validation requires the plugin to be loadable.
+      feishu: { enabled: false },
       "feishu-her": { enabled: true },
       "a2a-gateway": {
         enabled: true,

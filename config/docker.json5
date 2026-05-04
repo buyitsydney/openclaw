@@ -30,10 +30,7 @@
       // Docker users default to open group policy; admin host defaults to
       // allowlist in users/admin.json5.
       groupPolicy: "open",
-      // Fleet kill switch for feishu-her plugin: 默认 off → 历史 session store 里的
-      // "stream" 也被忽略。用户仍可通过 /reasoning:stream 内联指令 per-session 临时打开。
       // Deep-merged with per-user channels.feishu (appId/secret/etc) via $include.
-      reasoning: { defaultLevel: "off" },
     },
   },
 
@@ -115,7 +112,7 @@
     // mDNS 本来就用不上,直接禁用规避。
     // bonjour: CIAO PROBING CANCELLED → unhandled rejection crash loop (2026.4.24)
     // feishu: bundled upstream channel conflicts with openclaw-lark (both register "feishu")
-    deny: ["bonjour", "feishu"],
+    deny: ["bonjour"],
     // Three-component architecture plugin paths:
     //   - feishu-her / a2a-gateway / shadow-daemon: baked in image at /app/docker/plugins/
     //   - openclaw-lark: runtime npm install to /data/.openclaw/extensions/
@@ -129,6 +126,9 @@
       ],
     },
     entries: {
+      // openclaw-lark must be explicitly enabled because $include config
+      // blocks auto-enable persistence.
+      "openclaw-lark": { enabled: true },
       acpx: { enabled: true },
     },
   },

@@ -104,6 +104,16 @@ function getChannelSection(cfg: OpenClawConfig): Record<string, unknown> | undef
   return cfg.channels?.["feishu"] as Record<string, unknown> | undefined;
 }
 
+// Three-component architecture: feishu-her-specific config lives under
+// plugins.entries.feishu-her.config (not channels.feishu) because openclaw-lark
+// owns the channel schema and strips unknown keys.
+function getPluginConfig(cfg: OpenClawConfig): Record<string, unknown> | undefined {
+  const plugins = (cfg as Record<string, unknown>).plugins as Record<string, unknown> | undefined;
+  const entries = plugins?.entries as Record<string, unknown> | undefined;
+  const herEntry = entries?.["feishu-her"] as Record<string, unknown> | undefined;
+  return herEntry?.config as Record<string, unknown> | undefined;
+}
+
 function listConfiguredAccountIds(cfg: OpenClawConfig): string[] {
   const section = getChannelSection(cfg);
   const accounts = section?.accounts;
@@ -170,10 +180,14 @@ export function resolveFeishuAccount(params: {
     }
   }
 
-  const name = trimIfString(merged.name) || undefined;
+  // Merge feishu-her plugin config (botOpenId etc. live here now,
+  // because openclaw-lark strips unknown keys from channels.feishu)
+  const pluginCfg = getPluginConfig(params.cfg) ?? {};
+
+  const name = trimIfString(merged.name) || trimIfString(pluginCfg.name) || undefined;
   const knownBots = normalizeKnownBots(merged.knownBots);
   const knownBotOpenIds = normalizeKnownBotOpenIds(merged.knownBotOpenIds);
-  const botOpenId = trimIfString(merged.botOpenId) || undefined;
+  const botOpenId = trimIfString(merged.botOpenId) || trimIfString(pluginCfg.botOpenId) || undefined;
   const label = resolveFeishuAccountLabel({ accountId, name });
   if (appId && label) {
     knownBots[appId] = label;

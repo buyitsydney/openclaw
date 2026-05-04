@@ -10,7 +10,7 @@
 #   - feishu-her / a2a-gateway / shadow-daemon still baked in (not yet npm packages)
 #   - openclaw-lark + lark-cli installed at runtime by entrypoint
 
-ARG OPENCLAW_TAG=2026.4.24
+ARG OPENCLAW_TAG=2026.5.3
 
 # Her 可读的 upstream openclaw src（只读、不参与 runtime）
 # 用 openclaw 官方 image 本身作 builder —— 它已经装了 git 2.39，省掉 docker.io 依赖
@@ -104,6 +104,23 @@ RUN chmod 444 /opt/carher/image-info.json
 # ---- reset-archive-session-memory patch set (feat/reset-archive-session-memory-20260502 @ 0e692c385d)
 COPY scripts/apply-reset-archive-patches.sh /tmp/apply-reset-archive-patches.sh
 RUN chmod +x /tmp/apply-reset-archive-patches.sh && /tmp/apply-reset-archive-patches.sh
+
+# ---- SDK compat shim: openclaw/plugin-sdk/feishu ----
+# The bundled feishu plugin is disabled (replaced by openclaw-lark), but
+# feishu-her still imports from "openclaw/plugin-sdk/feishu" for runtime
+# values (emptyPluginConfigSchema, DEFAULT_ACCOUNT_ID, fetchWithSsrFGuard).
+# The npm-published openclaw package does not ship plugin-sdk/feishu.js,
+# so we create a thin ESM shim that re-exports from standard SDK subpaths,
+# and register the subpath in package.json exports so jiti alias resolution
+# picks it up.
+COPY docker/sdk-shims/feishu-sdk-shim.js /app/dist/plugin-sdk/feishu.js
+RUN node -e " \
+  const fs = require('fs'); \
+  const pkg = JSON.parse(fs.readFileSync('/app/package.json', 'utf8')); \
+  pkg.exports['./plugin-sdk/feishu'] = { default: './dist/plugin-sdk/feishu.js' }; \
+  fs.writeFileSync('/app/package.json', JSON.stringify(pkg, null, 2)); \
+  console.log('SDK shim: ./plugin-sdk/feishu registered in exports'); \
+"
 
 # NOTE: dist-manifest MUST be frozen AFTER apply-reset-archive-patches,
 #       otherwise manifest captures pre-patch baseline and sha256_drift=4 forever.

@@ -20,13 +20,25 @@
 
   channels: {
     feishu: {
-      name: "tester的her",
+      // Only fields recognized by BOTH bundled feishu schema (additionalProperties:false)
+      // AND openclaw-lark schema. "name" is NOT in bundled schema → moved to plugin config.
       appId: "cli_a92c99d102b8dbca",
       appSecret: "${FEISHU_APP_SECRET}",
-      botOpenId: "ou_1a9c02079fef1f5f0f4daaaaffd2326c",
-      oauthRedirectUri: "https://u101-auth.carher.net/feishu/oauth/callback",
-      dm: {
-        allowFrom: ["ou_a7afacbb81237891a181832ac7a76294"],
+      dmPolicy: "allowlist",
+      allowFrom: ["ou_a7afacbb81237891a181832ac7a76294"],
+    },
+  },
+
+  plugins: {
+    entries: {
+      // feishu-her-specific config: fields NOT in bundled feishu schema
+      // (name, botOpenId, oauthRedirectUri) live here.
+      "feishu-her": {
+        config: {
+          name: "tester的her",
+          botOpenId: "ou_1a9c02079fef1f5f0f4daaaaffd2326c",
+          oauthRedirectUri: "https://u101-auth.carher.net/feishu/oauth/callback",
+        },
       },
     },
   },
