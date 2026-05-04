@@ -1,82 +1,27 @@
 /**
- * Feishu ecosystem tools — register all tools absorbed from the community plugin.
- * Called from the plugin's register() entry point.
+ * Feishu-her unique tools — only business logic that has no replacement in
+ * openclaw-lark or lark-cli. All commodity Feishu API tools (doc, wiki, drive,
+ * bitable, chat, calendar, task, message, search, etc.) are now provided by
+ * openclaw-lark (channel + 40 tools) and lark-cli (24 skills, 17 domains).
+ *
+ * Three-component architecture:
+ *   openclaw-lark  = channel + commodity tools
+ *   lark-cli       = 24 AI skills (mail, slides, approval, OKR, etc.)
+ *   feishu-her     = unique business logic only (this plugin)
  */
 
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
-import { registerFeishuBitableTools } from "./bitable.js";
-import { registerFeishuBoardTools } from "./board.js";
 import { registerFeishuBotDirectoryTool } from "./bot-directory.js";
-import { registerFeishuCalendarTools } from "./calendar.js";
-import { registerFeishuChatCapabilityTool } from "./chat-capability.js";
-import { registerFeishuChatControlTools } from "./chat-controls.js";
-import { registerFeishuChatHistoryTool } from "./chat-history.js";
-import { registerFeishuChatManageTools } from "./chat-manage.js";
-import { registerFeishuChatMemberTools } from "./chat-members.js";
-import { registerFeishuChatPinTools } from "./chat-pins.js";
-import { registerFeishuChatTabTools } from "./chat-tabs.js";
-import { registerFeishuChatTopNoticeTools } from "./chat-top-notice.js";
-import { registerFeishuChatTools } from "./chat.js";
-import { registerFeishuDeepSearchTool } from "./deep-search.js";
-import { registerFeishuDirectoryTools } from "./directory.js";
 import { registerDiscussionLeaderTool } from "./discussion-leader.js";
 import { registerDiscussionLifecycleTools } from "./discussion-lifecycle.js";
-import { registerFeishuDocCommentsTools } from "./doc-comments.js";
-import { registerFeishuDocTools } from "./docx.js";
-import { registerFeishuDriveTools } from "./drive.js";
 import { registerGroupModeTool } from "./group-mode-tool.js";
 import { registerFeishuKnowledgeQATool } from "./knowledge-qa.js";
-import { registerFeishuMailTools } from "./mail.js";
-import { registerFeishuMessageSearchTool } from "./message-search.js";
-import { registerFeishuMessageTools } from "./message.js";
-import { registerFeishuMinutesTools } from "./minutes.js";
-import { registerFeishuSearchTool } from "./search.js";
-import { registerFeishuSheetTools } from "./sheet.js";
-import { registerFeishuTaskTools } from "./task.js";
-import { registerFeishuWikiTools } from "./wiki.js";
 
-/** Register all feishu ecosystem tools (doc, wiki, drive, bitable, chat, directory, calendar, task, message, minutes). */
+/** Register feishu-her unique tools (discussion, knowledge_qa, group mode, bot directory). */
 export async function registerAllFeishuTools(api: OpenClawPluginApi): Promise<void> {
-  registerFeishuDocTools(api);
-  registerFeishuSearchTool(api);
-  registerFeishuDeepSearchTool(api);
-  registerFeishuWikiTools(api);
-  registerFeishuDriveTools(api);
-  registerFeishuDocCommentsTools(api);
-  registerFeishuBitableTools(api);
-  registerFeishuSheetTools(api);
-  registerFeishuChatTools(api);
-  registerFeishuChatManageTools(api);
-  registerFeishuChatMemberTools(api);
-  registerFeishuChatControlTools(api);
-  registerFeishuChatTabTools(api);
-  registerFeishuChatPinTools(api);
-  registerFeishuChatTopNoticeTools(api);
-  registerFeishuChatCapabilityTool(api);
-  registerFeishuChatHistoryTool(api);
-  registerFeishuDirectoryTools(api);
-  registerFeishuCalendarTools(api);
-  registerFeishuTaskTools(api);
-  registerFeishuMessageTools(api);
-  registerFeishuMessageSearchTool(api);
-  registerFeishuMinutesTools(api);
-  registerFeishuMailTools(api);
   registerDiscussionLeaderTool(api);
   registerDiscussionLifecycleTools(api);
   registerGroupModeTool(api);
   registerFeishuBotDirectoryTool(api);
-  registerFeishuBoardTools(api);
-  // knowledge-qa: register synchronously so it makes the plugin capture
-  // window. openclaw snapshots captured.tools immediately after this
-  // register() returns (registry-*.js: `registry.tools.push(...captured.tools.map(...))`),
-  // so any tool pushed AFTER the snapshot never reaches registry.tools →
-  // Her's LLM never sees it. We register sync unconditionally; the tool's
-  // own execute() returns an auth_url if scope is missing at invocation.
-  //
-  // IMPORTANT: no async probe here. An earlier revision added
-  // `void fetchBackendUserScopes(...).then(warn)` which correlated with
-  // a plugin re-register storm on openclaw 2026.4.26 (every inbound
-  // feishu message triggered an extra register cycle, CPU 100%,
-  // inbound queue starvation). Strictly sync is the safe contract.
   registerFeishuKnowledgeQATool(api);
 }

@@ -1,6 +1,6 @@
 {
   "id": "feishu-her",
-  "channels": ["feishu"],
+  "channels": [],
   "skills": ["./skills"],
   "configSchema": {
     "type": "object",

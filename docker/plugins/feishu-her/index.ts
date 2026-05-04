@@ -1,18 +1,14 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk/feishu";
 import { listEnabledFeishuAccounts } from "./src/accounts.js";
-import { feishuPlugin } from "./src/channel.js";
 import {
   buildReportFromSessionFile,
   saveReport,
   type BuildReportOpts,
 } from "./src/compaction-report.js";
-import { syncGroupArchivesToMemory } from "./src/memory-bridge.js";
 import { initOAuthCallback, startOAuthServer } from "./src/oauth.js";
 import { setFeishuRuntime } from "./src/runtime.js";
 import { registerAllFeishuTools } from "./src/tools/index.js";
-
-let initialArchiveSyncScheduled = false;
 
 function extractConfigOpts(config: Record<string, unknown> | undefined): BuildReportOpts {
   if (!config) return {};
@@ -37,7 +33,8 @@ const plugin = {
   configSchema: emptyPluginConfigSchema(),
   register(api: OpenClawPluginApi) {
     setFeishuRuntime(api.runtime);
-    api.registerChannel({ plugin: feishuPlugin });
+    // Channel layer is now owned by openclaw-lark (three-component architecture).
+    // feishu-her only registers tools + hooks.
     registerAllFeishuTools(api);
 
     // OAuth callback for user_access_token (minutes/calendar/drive)
@@ -55,21 +52,6 @@ const plugin = {
       const minutesConfig = (feishuConfig.minutes ?? {}) as Record<string, unknown>;
       const oauthPort = (minutesConfig.oauthPort as number) ?? undefined;
       startOAuthServer({ port: oauthPort, log: logOAuth, warn: warnOAuth });
-    }
-
-    // Background sync: write group archives to memory dir for semantic indexing
-    if (!initialArchiveSyncScheduled) {
-      initialArchiveSyncScheduled = true;
-      setTimeout(() => {
-        try {
-          const result = syncGroupArchivesToMemory();
-          if (result.synced > 0) {
-            api.logger.info?.(`memory-bridge: synced ${result.synced} group archives to memory`);
-          }
-        } catch (e) {
-          api.logger.info?.(`memory-bridge: initial archive sync failed: ${String(e)}`);
-        }
-      }, 5_000);
     }
 
     api.on("after_compaction", (event, ctx) => {
