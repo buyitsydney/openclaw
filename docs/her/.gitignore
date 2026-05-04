@@ -1,5 +1,0 @@
-# docs/her/ — local-only documentation, not tracked by upstream
-# These files contain internal architecture docs, deployment logs,
-# and session data specific to the CarHer enterprise deployment.
-*
-!.gitignore
