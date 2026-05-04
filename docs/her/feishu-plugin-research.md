@@ -351,16 +351,80 @@ interface DiscussionChannelInterface {
 }
 ```
 
-### 5.3 可行性评估
+### 5.3 Hook 可行性深度分析（2026-05-04 验证完毕）
 
-| 问题 | 评估 |
-|------|------|
-| `injectSyntheticTurn` 能否实现？ | **最大难点**。需要构造 openclaw-lark 格式的假 inbound 事件并注入其 channel pipeline。需要 openclaw-lark 暴露 hook 或 feishu-her 直接调用 openclaw-lark 的内部 API |
-| `canSendVisibleReply` 能否拦截？ | **可行**。OpenClaw plugin SDK 有 `onReplyStart`/`deliver` callback，可以在 deliver 层加 gate |
-| `onMessageSent` 能否 hook？ | **可行**。openclaw-lark 的 deliver callback 完成后可以 emit 事件 |
-| 两个插件能否共存？ | **可行但需改造**: feishu-her 删除 `"channels": ["feishu"]`，改为 `"channels": []`，只注册 tools + hooks |
+> **结论: ✅ FEASIBLE — OpenClaw Plugin SDK 已有完整 hook 体系，Discussion Mode 可零耦合迁移，不需要 fork/修改 openclaw-lark 源码。**
 
-**结论: Discussion Mode 拆分技术上可行，但 `injectSyntheticTurn` 需要 openclaw-lark 配合暴露内部 hook。** 这不是 0 风险 — 如果 openclaw-lark 的 inbound pipeline 不支持外部注入，Discussion Mode 无法独立运行。
+OpenClaw 插件 hook 系统提供 29 个事件（`src/plugins/hook-types.ts`），其中 6 个直接覆盖 Discussion Mode 全部需求：
+
+#### 5.3.1 Hook 映射表
+
+| Discussion Mode 需求 | Hook 事件 | 类型 | 说明 |
+|---|---|---|---|
+| **Turn 门控**（压制非轮次 bot） | `before_dispatch` | claiming (first-wins) | 检查 Redis turn state → `{ handled: true }` 压制非 owner bot |
+| **出站压制**（取消未授权回复） | `message_sending` | modifying (sequential) | `{ cancel: true }` 取消未授权出站 |
+| **入站观测**（跟踪用户消息） | `message_received` | void (fire-and-forget) | 记录 activity，重置 auto-exit 计时器 |
+| **出站观测**（跟踪已发消息） | `message_sent` | void (fire-and-forget) | 推进 turn state，通知 Redis pub/sub |
+| **合成 turn 注入** | `chat.send` gateway RPC | — | `originatingChannel: "feishu"` 经 gateway dispatch pipeline，openclaw-lark 自动渲染 |
+| **回复 dispatch 接管** | `reply_dispatch` | claiming (first-wins) | 高级场景：完全接管某 session 的回复路由 |
+
+#### 5.3.2 合成 Turn 注入方案 (`chat.send` via gateway RPC)
+
+这是 Discussion Mode 迁移的核心机制——替代原来的 `buildDiscussionTurnEvent()` + `handleInboundMessage(fakeEvent)`:
+
+```typescript
+// feishu-her timer 触发 → 通过 gateway RPC 注入合成 turn（零 openclaw-lark import）
+await callGateway({
+  method: "chat.send",
+  params: {
+    sessionKey: `agent:main:feishu:group:${chatId}`,
+    message: "[discussion-turn] ...",
+    originatingChannel: "feishu",
+    originatingTo: `chat:${chatId}`,
+    originatingAccountId: accountId,
+    idempotencyKey: crypto.randomUUID(),
+  },
+});
+// gateway 处理完整 dispatch pipeline:
+//   → inbound_claim → message_received → before_dispatch → agent inference
+//   → message_sending → openclaw-lark CardKit v2 渲染 → message_sent
+```
+
+**关键**: `chat.send` 的 `originatingChannel` 字段（`src/gateway/server-methods/chat.ts:1751`）让消息像真实飞书消息一样路由，openclaw-lark 自动处理 CardKit v2 流式渲染。
+
+#### 5.3.3 前置门控方案 (`before_dispatch` hook)
+
+```typescript
+api.registerHook("before_dispatch", async (event, ctx) => {
+  if (ctx.channelId !== "feishu" || !event.isGroup) return;
+  const groupMode = await readGroupMode(event.sessionKey);
+  if (groupMode !== "discussion") return;
+  const isMyTurn = await isDiscussionTurnOutputAllowed(ctx.conversationId, myBotId);
+  if (!isMyTurn) return { handled: true }; // 不是我的轮次 → 静默消费
+}, { name: "discussion-turn-gate" });
+```
+
+#### 5.3.4 出站门控方案 (`message_sending` hook)
+
+```typescript
+api.registerHook("message_sending", async (event, ctx) => {
+  if (ctx.channelId !== "feishu") return;
+  const isAllowed = await authorizeDiscussionOutbound(ctx.conversationId, myBotId);
+  if (!isAllowed) return { cancel: true };
+}, { name: "discussion-outbound-gate" });
+```
+
+#### 5.3.5 耦合度变化
+
+| 耦合点 | 现状（channel 内） | Hook 方案 | 变化 |
+|---|---|---|---|
+| H1-H3: `buildDiscussionTurnEvent` + `handleInboundMessage` | 直接构造飞书假消息 + 调用 channel 入站函数 | `chat.send` RPC，无需知道飞书消息格式 | **HARD → ZERO** |
+| H4/K3: `canEmitVisibleDiscussionReply` | 在 5 处嵌入 channel 代码 | `before_dispatch` + `message_sending` hook | **HARD → ZERO** |
+| H6-H8: `handleDiscussionOutboundMessage` | 在 3 处嵌入 channel 代码 | `message_sent` hook 推进 turn state | **HARD → ZERO** |
+| K1-K2: Redis pub/sub + timer | 直接调用 channel 注入 | Timer → `chat.send` RPC | **HOOK → ZERO** |
+| discussion-state.ts | 纯 Redis | 不变 | **ZERO** |
+
+**feishu-her 的 openclaw-lark import 数量: 0**
 
 ### 5.4 降风险方案: 分阶段迁移
 
@@ -369,9 +433,9 @@ interface DiscussionChannelInterface {
 | **Phase 0** | 只删 tools + group-archive，保留 channel 层不动 | **极低** |
 | **Phase 1** | 安装 openclaw-lark + lark-cli，feishu-her 保持 channel | **极低** |
 | **Phase 2** | 让 openclaw-lark 的 tools 替代 feishu-her 的 tools，验证功能 | **低** |
-| **Phase 3** | 将 feishu-her 的 channel 迁移到 openclaw-lark，Discussion Mode 通过 hook 接入 | **高** |
+| **Phase 3** | 将 channel 从 feishu-her 迁移到 openclaw-lark，Discussion Mode 通过 hook 接入 | **中低 ✅** |
 
-**Phase 0-2 是 0 风险的**，可以立即执行。Phase 3 需要深入 openclaw-lark 源码确认 hook 可行性。
+**Phase 0-2 是 0 风险的**，可立即执行。**Phase 3 已验证可行** — OpenClaw hook 系统完整覆盖 Discussion Mode 全部需求，不需要深度耦合 openclaw-lark 源码。
 
 ---
 
@@ -396,11 +460,13 @@ interface DiscussionChannelInterface {
 - 与 feishu-her / openclaw-lark 的 token 完全独立
 - **风险低**: 飞书 App 允许多个 token 并存
 
-### 6.4 Discussion Mode injectSyntheticTurn
+### 6.4 Discussion Mode injectSyntheticTurn — ✅ 已解决
 
-- 这是唯一的 **高风险** 技术点
-- 需要 openclaw-lark 暴露 channel inbound 注入 API
-- **备选**: fork openclaw-lark 加入 hook，或在 feishu-her 中保留一个极简的 inbound injector
+- ~~这是唯一的高风险技术点~~ → **已通过 `chat.send` gateway RPC 解决**
+- 无需 fork/修改 openclaw-lark，无需暴露内部 API
+- 合成 turn 通过 `chat.send` + `originatingChannel: "feishu"` 注入 gateway dispatch pipeline
+- Turn 门控通过 `before_dispatch` hook 实现，出站压制通过 `message_sending` hook 实现
+- 详见 §5.3 Hook 可行性深度分析
 
 ---
 
@@ -456,7 +522,7 @@ interface DiscussionChannelInterface {
 | **Phase 0** | 删除 feishu-her 的 29 个自研 tools + group-archive + memory-bridge，保留 channel | 极低 | LOC -72%, 消除 tools 重复 |
 | **Phase 1** | 安装 openclaw-lark (tools only) + lark-cli skills | 极低 | 飞书域覆盖 17 域 |
 | **Phase 2** | 验证 openclaw-lark + lark-cli 完全覆盖删除的 tools | 低 | 功能验证 |
-| **Phase 3** | 将 channel 从 feishu-her 迁移到 openclaw-lark，feishu-her 变为无 channel 插件 | **高** | outbound.ts -100%, channel bug 归零 |
+| **Phase 3** | 将 channel 从 feishu-her 迁移到 openclaw-lark，Discussion Mode 通过 hook 接入 | **中低 ✅** | outbound.ts -100%, channel bug 归零 |
 
 ### 关键指标
 
@@ -466,3 +532,4 @@ interface DiscussionChannelInterface {
 - **Channel 层 bug 面**: 5,700 行自研 → **0** (由 openclaw-lark 生产级代码接管)
 - **飞书域覆盖**: ~10 → **17** (+70%)
 - **消灭 bug**: "睡着"(sequential queue) + "重复消息"(deliveredFinalTexts) — openclaw-lark 都已内置
+- **Discussion Mode 耦合**: 8 HARD → **0** (全部通过 Plugin SDK hook + gateway RPC 实现)
