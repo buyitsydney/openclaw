@@ -45,6 +45,47 @@ else
   echo "  ✓ lark-cli already installed"
 fi
 
+# ── openclaw-lark 0503 compat: declare contracts.tools ─────────────
+# openclaw 0503 requires plugins to list tool names in manifest
+# contracts.tools before registerTool() calls are accepted. openclaw-lark
+# 2026.4.x was built for 0424 and lacks this field, so all 41 tools are
+# silently rejected. Patch the manifest after install.
+LARK_MANIFEST="$LARK_PKG/openclaw.plugin.json"
+if [ -f "$LARK_MANIFEST" ]; then
+  echo "  ▶ Ensuring openclaw-lark manifest has contracts.tools (0503 compat)..."
+  node -e "
+    const fs = require('fs');
+    const TOOLS = [
+      'feishu_ask_user_question',
+      'feishu_bitable_app', 'feishu_bitable_app_table', 'feishu_bitable_app_table_field',
+      'feishu_bitable_app_table_record', 'feishu_bitable_app_table_view',
+      'feishu_calendar_calendar', 'feishu_calendar_event', 'feishu_calendar_event_attendee',
+      'feishu_calendar_freebusy',
+      'feishu_chat', 'feishu_chat_members',
+      'feishu_create_doc', 'feishu_doc_comments', 'feishu_doc_media',
+      'feishu_drive_file', 'feishu_fetch_doc', 'feishu_get_user',
+      'feishu_im_bot_image', 'feishu_im_user_fetch_resource', 'feishu_im_user_get_messages',
+      'feishu_im_user_get_thread_messages', 'feishu_im_user_message', 'feishu_im_user_search_messages',
+      'feishu_my_tool', 'feishu_oauth', 'feishu_oauth_batch_auth',
+      'feishu_search_doc_wiki', 'feishu_search_user', 'feishu_sheet',
+      'feishu_task_agent', 'feishu_task_attachment', 'feishu_task_comment',
+      'feishu_task_section', 'feishu_task_subtask', 'feishu_task_task', 'feishu_task_tasklist',
+      'feishu_update_doc', 'feishu_wiki_space', 'feishu_wiki_space_node'
+    ];
+    const m = JSON.parse(fs.readFileSync('$LARK_MANIFEST', 'utf8'));
+    const cur = JSON.stringify(m.contracts?.tools ?? []);
+    const want = JSON.stringify(TOOLS);
+    if (cur !== want) {
+      m.contracts = { ...m.contracts, tools: TOOLS };
+      fs.writeFileSync('$LARK_MANIFEST', JSON.stringify(m, null, 2));
+      console.log('    ✓ contracts.tools updated (' + TOOLS.length + ' tools)');
+    } else {
+      console.log('    ✓ contracts.tools already correct (' + TOOLS.length + ' tools)');
+    }
+  "
+fi
+# ── end openclaw-lark 0503 compat ─────────────────────────────────
+
 # Re-symlink after plugin install (new binaries may have been added)
 ln -sf /data/.openclaw/local/bin/* /usr/local/bin/ 2>/dev/null || true
 # ── end three-component runtime plugin install ──────────────────────
