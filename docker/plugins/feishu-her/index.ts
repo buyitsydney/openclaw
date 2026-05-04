@@ -6,6 +6,7 @@ import {
   saveReport,
   type BuildReportOpts,
 } from "./src/compaction-report.js";
+import { registerDiscussionHooks } from "./src/discussion-hooks.js";
 import { initOAuthCallback, startOAuthServer } from "./src/oauth.js";
 import { setFeishuRuntime } from "./src/runtime.js";
 import { registerAllFeishuTools } from "./src/tools/index.js";
@@ -37,8 +38,16 @@ const plugin = {
     // feishu-her only registers tools + hooks.
     registerAllFeishuTools(api);
 
-    // OAuth callback for user_access_token (minutes/calendar/drive)
+    // Discussion Mode hooks (turn gating, outbound gate, broadcast, activity tracking).
+    // Registered per-account so each bot instance gates its own turns.
     const accounts = listEnabledFeishuAccounts(api.config);
+    const hookCleanups: Array<() => void> = [];
+    for (const account of accounts) {
+      const { cleanup } = registerDiscussionHooks({ api, account });
+      hookCleanups.push(cleanup);
+    }
+
+    // OAuth callback for user_access_token (minutes/calendar/drive)
     if (accounts.length > 0) {
       const accountMap = new Map(accounts.map((a) => [a.accountId, a]));
       const logOAuth = (msg: string) => api.logger.info?.(`feishu-oauth: ${msg}`);
