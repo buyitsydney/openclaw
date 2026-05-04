@@ -53,12 +53,14 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # 独立插件 —— 拷贝 + npm install --omit=dev（每个插件各自一层，缓存友好）
 WORKDIR /app
 
-# 官方 image 内打包了 bundled feishu（id=feishu）：
-#   - 源码插件目录：/app/extensions/feishu
-#   - 预编译 dist：/app/dist/extensions/feishu（core 从这里加载 schema / runtime）
-# 我们用自己 fork 的 feishu-her（id=feishu，路径 /app/docker/plugins/feishu-her），
-# 两份都要清掉，否则 bundled 的 strict schema 会拒绝我们 overlay 里的 appId/botOpenId 等字段。
-RUN rm -rf /app/extensions/feishu /app/dist/extensions/feishu /app/dist-runtime/extensions/feishu
+# Three-component architecture: keep bundled feishu (id=feishu, channels=["feishu"])
+# as the channel provider. feishu-her (id=feishu-her, channels=[]) is tool-only.
+# The bundled feishu handles: CardKit v2 streaming, abort-detect, typing indicator,
+# sequential queue, deliveredFinalTexts dedup, 12 basic tools.
+# feishu-her handles: Discussion Mode, Bot Registry, knowledge_qa, group-mode.
+#
+# Legacy note: previously removed bundled feishu because feishu-her also registered
+# channels: ["feishu"]. Now feishu-her has channels: [] so they coexist.
 
 COPY docker/plugins/feishu-her  /app/docker/plugins/feishu-her
 RUN --mount=type=cache,target=/root/.npm \
