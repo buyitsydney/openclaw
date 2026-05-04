@@ -196,80 +196,64 @@ feishu-her 的 channel 层（gateway.ts 3809 行 + outbound.ts 1891 行）是 bu
 3. **feishu-her 只保留独有业务逻辑**: Discussion Mode、Bot Registry、knowledge_qa 等完全独创的能力，无替代品
 4. **feishu-her 的 outbound.ts 整个删除**: 这是 1891 行 bug 最多的代码，全部由 openclaw-lark 接管
 
-### 4.2 架构设计
+### 4.4 架构设计（四轴独立 npm 模型）
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                         OpenClaw Gateway                              │
+┌─────────────────────────────────────────────────────────────────────┐
+│              Docker Image (immutable, ZERO plugins)                   │
+│  FROM ghcr.io/openclaw/openclaw:${OPENCLAW_TAG}                      │
+│  + python3 + ffmpeg + chromium + fonts  (runtime deps only)          │
 │                                                                      │
-│  ┌──────────────────────────────┐  ┌──────────────────────────────┐  │
-│  │     feishu-her (瘦身版)       │  │     lark-cli (24 Skills)      │  │
-│  │                              │  │                              │  │
-│  │  Channel 层 (保留):          │  │  注册为 OpenClaw skills:     │  │
-│  │  - WebSocket transport       │  │  - lark-im (消息/群管理)     │  │
-│  │  - Sequential Queue ←PORT   │  │  - lark-calendar (日历)      │  │
-│  │  - deliveredFinalTexts ←PORT │  │  - lark-doc (云文档)         │  │
-│  │  - Card Stream V1/V2        │  │  - lark-base (多维表格)       │  │
-│  │  - ACK emoji reaction       │  │  - lark-sheets (电子表格)     │  │
-│  │  - Group Mode dispatch      │  │  - lark-task (任务)           │  │
-│  │  - Reasoning stream          │  │  - lark-mail (邮箱)          │  │
-│  │                              │  │  - lark-wiki (知识库)         │  │
-│  │  独有业务 (保留):             │  │  - lark-drive (云盘)         │  │
-│  │  - Discussion Mode           │  │  - lark-contact (通讯录)     │  │
-│  │  - Bot Registry              │  │  - lark-minutes (会议纪要)   │  │
-│  │  - knowledge_qa              │  │  - lark-approval (审批)      │  │
-│  │  - /voice, /quota, /summary  │  │  - lark-slides (幻灯片)      │  │
-│  │  - OAuth Direct Card         │  │  - lark-vc (会议)            │  │
-│  │                              │  │  - lark-okr                  │  │
-│  │  删除:                        │  │  - lark-attendance (考勤)    │  │
-│  │  - ❌ group-archive.ts       │  │  - lark-whiteboard           │  │
-│  │  - ❌ memory-bridge.ts       │  │  - ...等 24 个               │  │
-│  │  - ❌ sent-message-log.ts    │  │                              │  │
-│  │  - ❌ 29 个自研 feishu_* tools│  │  认证: lark-cli auth login  │  │
-│  │  - ❌ Group Context Injection │  │  (独立 OAuth, 不干扰 her)    │  │
-│  └──────────────────────────────┘  └──────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────────┘
-```
+│  升级: 改 OPENCLAW_TAG → rebuild image                               │
+│  频率: 随 OpenClaw 上游发版，通常 2-4 周                               │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │  runtime npm install →
+                               │  /data/.openclaw/extensions/
+┌──────────────────────────────▼──────────────────────────────────────┐
+│              Persistent Volume (/data/)                               │
+│                                                                      │
+│  /data/.openclaw/extensions/                                         │
+│  ├── @larksuite/openclaw-lark/   (Channel + 40 Tools)                │
+│  │   升级: npm update → restart                                      │
+│  ├── @larksuite/cli/             (24 AI Skills, Go binary)           │
+│  │   升级: npm update -g → restart                                   │
+│  └── @carher/feishu-her/         (纯业务: Discussion, Bot Registry)  │
+│      升级: npm update → restart                                      │
+│      peerDependencies: { "openclaw": ">=2026.4.24" }                 │
+└─────────────────────────────────────────────────────────────────────┘
 
-### 4.3 瘦身目标
+四条升级轴完全独立，零 CI/CD 耦合:
+  轴 1: OPENCLAW_TAG      → rebuild image (不影响任何插件)
+  轴 2: openclaw-lark npm  → npm update + restart (不 rebuild image)
+  轴 3: lark-cli npm       → npm update + restart (不 rebuild image)
+  轴 4: feishu-her npm     → npm update + restart (不 rebuild image)
 
-| 指标 | 当前 | 目标 | 变化 |
-|------|-----:|-----:|------|
-| gateway.ts | 3,809 行 | ~1,800 行 | -53% |
-| outbound.ts | 1,891 行 | ~1,200 行 | -37% |
-| tools/*.ts | ~15,000 行 | ~800 行（仅 knowledge_qa + discussion + bot-directory） | -95% |
-| 总 LOC | ~28,771 | ~8,000 | **-72%** |
-| 自研 tools 数量 | 33 | 4 | -88% |
-| 飞书业务域覆盖 | ~10 | **17**（lark-cli 补齐） | +70% |
-
-### 4.4 架构设计
-
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│                          OpenClaw Gateway                              │
-│                                                                        │
-│  ┌─────────────────────┐ ┌──────────────────┐ ┌────────────────────┐  │
-│  │  openclaw-lark       │ │  lark-cli        │ │  feishu-her (瘦身)  │  │
-│  │  (Channel + Tools)   │ │  (24 Skills)     │ │  (纯业务, 无channel)│  │
-│  │                     │ │                  │ │                    │  │
-│  │  Channel 层:        │ │  补全域:          │ │  独有业务:          │  │
-│  │  - CardKit v2 流式   │ │  - lark-mail     │ │  - Discussion Mode │  │
-│  │  - abort-detect     │ │  - lark-slides   │ │  - Bot Registry    │  │
-│  │  - UnavailableGuard │ │  - lark-approval │ │  - knowledge_qa    │  │
-│  │  - FlushController  │ │  - lark-okr      │ │  - /voice /quota   │  │
-│  │  - ImageResolver    │ │  - lark-attendance│ │  - /summary        │  │
-│  │  - tool-use trace   │ │  - lark-vc       │ │  - Reasoning stream│  │
-│  │  - 20+ msg types    │ │  - lark-whiteboard│ │  - OAuth Direct    │  │
-│  │                     │ │  - ...           │ │                    │  │
-│  │  Tools:             │ │  已有 on docker13 │ │  删除:              │  │
-│  │  - IM history/search│ │                  │ │  - ❌ outbound.ts   │  │
-│  │  - bitable/doc/wiki │ │                  │ │  - ❌ gateway 收发  │  │
-│  │  - calendar/task    │ │                  │ │  - ❌ card stream   │  │
-│  │  - sheets/drive/chat│ │                  │ │  - ❌ 29 个 tools   │  │
-│  │                     │ │                  │ │  - ❌ group-archive │  │
-│  └─────────────────────┘ └──────────────────┘ │  - ❌ memory-bridge │  │
-│                                               └────────────────────┘  │
-└────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│                    OpenClaw Gateway (runtime)                       │
+│                                                                    │
+│  ┌──────────────────┐ ┌────────────────┐ ┌─────────────────────┐  │
+│  │ openclaw-lark     │ │ lark-cli       │ │ feishu-her          │  │
+│  │ (npm package)     │ │ (npm package)  │ │ (npm package)       │  │
+│  │                  │ │                │ │                     │  │
+│  │ Channel "feishu":│ │ 补全域:         │ │ 独有业务:            │  │
+│  │ - CardKit v2 流式│ │ - lark-mail    │ │ - Discussion Mode   │  │
+│  │ - abort-detect   │ │ - lark-slides  │ │ - Bot Registry      │  │
+│  │ - UnavailableGuard│ │ - lark-approval│ │ - knowledge_qa      │  │
+│  │ - FlushController│ │ - lark-okr     │ │ - /voice /quota     │  │
+│  │ - ImageResolver  │ │ - lark-vc      │ │ - /summary          │  │
+│  │ - tool-use trace │ │ - lark-contact │ │ - Reasoning stream  │  │
+│  │ - 20+ msg types  │ │ - ...共24 skill│ │ - OAuth Direct Card │  │
+│  │                  │ │                │ │                     │  │
+│  │ Tools:           │ │                │ │ channels: []        │  │
+│  │ - IM history     │ │                │ │ (无 channel 注册)    │  │
+│  │ - bitable/doc    │ │                │ │                     │  │
+│  │ - calendar/task  │ │                │ │ Hook 接入:           │  │
+│  │ - sheets/drive   │ │                │ │ - before_dispatch   │  │
+│  │ - wiki/chat      │ │                │ │ - message_sending   │  │
+│  │                  │ │                │ │ - message_sent      │  │
+│  │                  │ │                │ │ - message_received  │  │
+│  └──────────────────┘ └────────────────┘ └─────────────────────┘  │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 4.5 瘦身目标
@@ -282,6 +266,94 @@ feishu-her 的 channel 层（gateway.ts 3809 行 + outbound.ts 1891 行）是 bu
 | 总 LOC | ~28,771 | ~3,000 | **-90%** |
 | Channel 层 bug 面 | 5,700 行自研 | **0（由 openclaw-lark 接管）** | **-100%** |
 | 飞书业务域覆盖 | ~10 | **17**（openclaw-lark + lark-cli 合计） | +70% |
+
+### 4.6 部署模型：全 npm 运行时安装
+
+**核心原则**: Docker 镜像内零插件，所有插件由每个 Her 实例在运行时安装到持久卷。
+
+#### 4.6.1 Dockerfile 变化
+
+```dockerfile
+# BEFORE (v2): 插件 COPY + npm install 进镜像
+COPY docker/plugins/feishu-her  /app/docker/plugins/feishu-her
+RUN cd /app/docker/plugins/feishu-her && npm install --omit=dev
+
+# AFTER (v3): 镜像内零插件
+# 只保留 openclaw base + runtime deps (python3, ffmpeg, chromium, fonts)
+# 插件由每个 Her 实例 runtime 安装到 /data/.openclaw/extensions/
+```
+
+#### 4.6.2 npm 包发布
+
+| 包名 | 发布者 | 说明 |
+|------|--------|------|
+| `@larksuite/openclaw-lark` | 字节跳动 | 已在 npm，Channel "feishu" + 40 Tools |
+| `@larksuite/cli` | 字节跳动 | 已在 npm，24 AI Skills (Go binary) |
+| `@carher/feishu-her` | CarHer 团队 | **新发布**，纯业务插件 (Discussion Mode, Bot Registry, knowledge_qa) |
+
+#### 4.6.3 feishu-her 作为 npm 包
+
+```json
+{
+  "name": "@carher/feishu-her",
+  "version": "1.0.0",
+  "peerDependencies": {
+    "openclaw": ">=2026.4.24"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.x",
+    "ioredis": "^5.x"
+  }
+}
+```
+
+**peerDependencies 的作用**: npm 在安装 `@carher/feishu-her` 时会检查宿主 openclaw 版本。
+如果 openclaw 升级到不兼容版本（比如 Plugin SDK 破坏性变更），npm 会发出警告。
+feishu-her 维护者只需更新 peerDependencies 范围并发布新版本。
+
+#### 4.6.4 运行时安装流程
+
+每个 Her 实例启动时（entrypoint 或 Her 自身逻辑）：
+
+```bash
+# 1. 安装 channel + tools  (到 /data/.openclaw/extensions/)
+npm install --prefix /data/.openclaw/extensions @larksuite/openclaw-lark@latest
+
+# 2. 安装 lark-cli skills  (全局二进制)
+npm install -g @larksuite/cli@latest
+
+# 3. 安装 feishu-her 业务插件
+npm install --prefix /data/.openclaw/extensions @carher/feishu-her@latest
+```
+
+OpenClaw 的 `plugins.load.paths` 配置指向 `/data/.openclaw/extensions/node_modules/@larksuite/openclaw-lark` 等路径，
+或者直接用 OpenClaw 的 global extensions 发现机制（`~/.openclaw/extensions/`），无需手动配置路径。
+
+#### 4.6.5 四条升级轴对比
+
+| 升级什么 | 操作 | 影响范围 | 需要 rebuild image? | 需要重启? |
+|----------|------|----------|:-------------------:|:---------:|
+| **OpenClaw core** | 改 `OPENCLAW_TAG` → rebuild + redeploy | 全体 Her | ✅ | ✅ |
+| **openclaw-lark** | `npm update @larksuite/openclaw-lark` | 单个 Her | ❌ | ✅ restart |
+| **lark-cli** | `npm update -g @larksuite/cli` | 单个 Her | ❌ | ✅ restart |
+| **feishu-her** | `npm update @carher/feishu-her` | 单个 Her | ❌ | ✅ restart |
+
+**关键优势**:
+- 插件升级不需要 rebuild Docker image → 零 CI/CD 耦合
+- 可以逐个 Her 灰度升级（先升 docker199，验证后再升其他）
+- openclaw core 升级不影响插件（只要 Plugin SDK 兼容）
+- 插件之间互不影响（openclaw-lark 升级不影响 feishu-her）
+
+#### 4.6.6 解决 "openclaw 升级后 her 不可用" 问题
+
+**根因**: 以前 feishu-her 依赖 openclaw 内部 API（gateway.ts, outbound.ts），
+上游重构经常破坏这些内部接口。
+
+**npm 方案如何解决**:
+1. feishu-her 只依赖 Plugin SDK 公开接口：`api.registerTool()`, `api.registerHook()`, `api.runtime.subagent.run()`
+2. Plugin SDK 有版本承诺，不会随意破坏（向后兼容）
+3. peerDependencies 声明兼容范围，不兼容时 npm install 会警告
+4. 即使 openclaw 升级到不兼容版本，feishu-her 可以 pin 旧版本继续运行，等待适配
 
 ---
 
@@ -470,59 +542,59 @@ api.registerHook("message_sending", async (event, ctx) => {
 
 ---
 
-## 7. PoC 实验计划
+## 7. 实施计划
 
-### 实验 1: openclaw-lark 安装 + channel 共存测试
+### Phase 0: feishu-her 瘦身（已完成 ✅）
 
-**目标**: 验证 openclaw-lark 能否与 feishu-her 共存（只用 tools，不注册 channel）
+1. 删除 29 个自研 feishu_* tools，只保留 knowledge_qa + discussion + bot-directory
+2. 删除 group-archive, memory-bridge, sent-message-log
+3. feishu-her `channels: []`，不再注册 channel
 
-**步骤**:
-1. 在 docker-199 安装 `@larksuite/openclaw-lark`
-2. 确认是否支持只注册 tools 不注册 channel
-3. 如果不支持，确认修改 manifest 的可行性
+### Phase 1: Dockerfile v3 — 零插件镜像
 
-### 实验 2: lark-cli Skills 功能验证
+1. 从 `Dockerfile.carher.v2` 删除所有 `COPY docker/plugins/...` 和对应 `npm install`
+2. 只保留: openclaw base + python3 + ffmpeg + chromium + fonts + live-frontend
+3. `plugins.load.paths` 改为指向 `/data/.openclaw/extensions/` 下的 npm 包
 
-**目标**: 验证 lark-cli 的 24 个 skills 在 Docker 内正常工作
+### Phase 2: feishu-her npm 发布
 
-**步骤**:
-1. docker-199 已安装 lark-cli（docker13 也有）
-2. 让 AI 调用 lark-calendar 查日程、lark-im 拉群历史
-3. 确认输出格式和工具调用是否正确
+1. 将 `docker/plugins/feishu-her/` 重构为标准 npm 包结构
+2. 添加 `peerDependencies: { "openclaw": ">=2026.4.24" }`
+3. 发布到 npm registry（`@carher/feishu-her`）
+4. 验证 `npm install @carher/feishu-her` 后 OpenClaw 能正确发现并加载
 
-### 实验 3: feishu-her tools 删除验证
+### Phase 3: 运行时安装集成
 
-**目标**: 验证删除 feishu-her 自研 tools 后，openclaw-lark + lark-cli 能完全覆盖
+1. entrypoint 或 start-user.sh 中添加运行时 npm install 逻辑
+2. 安装三个插件到 `/data/.openclaw/extensions/`
+3. 配置 `plugins.load.paths` 或使用 OpenClaw global extensions 发现
 
-**步骤**:
-1. 在 docker-199 的 feishu-her 中注释掉 `registerAllFeishuTools(api)` 调用
-2. 只保留 knowledge_qa + discussion + bot-directory 的注册
-3. 让 AI 使用 openclaw-lark/lark-cli 完成: 查文档、读日历、搜消息、查多维表格
-4. 对比与之前 feishu-her tools 的结果差异
+### Phase 4: 灰度验证
 
-### 实验 4: Group History API 替代验证
-
-**目标**: 验证 `lark-cli im +chat-messages-list` 能替代 Group Archive
-
-**步骤**:
-1. 用 lark-cli 拉取测试群最近 20 条消息
-2. 对比返回数据与 feishu-her 的 group-archive JSONL
-3. 确认消息格式 (text, @mention, 附件, reply) 是否完整
+1. docker199（tester）先部署新镜像 + 运行时安装
+2. 验证: channel 收发、Discussion Mode、tools、lark-cli skills
+3. 逐步推广到其他 Her 实例
 
 ---
 
 ## 8. 最终推荐
 
-**方案: 三件套 — openclaw-lark (Channel+Tools) + lark-cli (24 Skills) + feishu-her (纯业务)**
+**方案: 三件套 npm 运行时安装 — 四轴独立升级，零 CI/CD 耦合**
 
-### 分阶段执行
+### 架构总结
 
-| 阶段 | 内容 | 风险 | 效果 |
-|------|------|:----:|------|
-| **Phase 0** | 删除 feishu-her 的 29 个自研 tools + group-archive + memory-bridge，保留 channel | 极低 | LOC -72%, 消除 tools 重复 |
-| **Phase 1** | 安装 openclaw-lark (tools only) + lark-cli skills | 极低 | 飞书域覆盖 17 域 |
-| **Phase 2** | 验证 openclaw-lark + lark-cli 完全覆盖删除的 tools | 低 | 功能验证 |
-| **Phase 3** | 将 channel 从 feishu-her 迁移到 openclaw-lark，Discussion Mode 通过 hook 接入 | **中低 ✅** | outbound.ts -100%, channel bug 归零 |
+| 组件 | npm 包 | 职责 | Channel |
+|------|--------|------|:-------:|
+| **openclaw-lark** | `@larksuite/openclaw-lark` | Channel "feishu" + 40 Tools (CardKit v2, abort-detect, ImageResolver) | ✅ |
+| **lark-cli** | `@larksuite/cli` | 24 AI Skills (17 域: mail, slides, approval, OKR, attendance, meetings...) | ❌ |
+| **feishu-her** | `@carher/feishu-her` | Discussion Mode, Bot Registry, knowledge_qa, /voice /quota /summary | ❌ |
+
+### 部署模型
+
+- **Docker 镜像**: 纯 openclaw base + runtime deps，**零插件**
+- **运行时安装**: 每个 Her 启动时 `npm install` 三个包到持久卷
+- **升级**: 任意一个包 `npm update` + restart，不需要 rebuild image
+- **灰度**: 逐个 Her 升级，互不影响
 
 ### 关键指标
 
@@ -532,4 +604,6 @@ api.registerHook("message_sending", async (event, ctx) => {
 - **Channel 层 bug 面**: 5,700 行自研 → **0** (由 openclaw-lark 生产级代码接管)
 - **飞书域覆盖**: ~10 → **17** (+70%)
 - **消灭 bug**: "睡着"(sequential queue) + "重复消息"(deliveredFinalTexts) — openclaw-lark 都已内置
-- **Discussion Mode 耦合**: 8 HARD → **0** (全部通过 Plugin SDK hook + gateway RPC 实现)
+- **Discussion Mode 耦合**: 8 HARD → **0** (全部通过 Plugin SDK hook + `api.runtime.subagent.run()` 实现)
+- **CI/CD 耦合**: 4 组件共享一个 Dockerfile → **4 条独立升级轴**
+- **openclaw 升级容灾**: 内部 API 依赖 → **peerDependencies + Plugin SDK 公开接口**
