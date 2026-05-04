@@ -1,7 +1,7 @@
 {
-  "name": "@openclaw/feishu-her",
-  "version": "2026.2.1",
-  "description": "OpenClaw Feishu (Lark) channel plugin",
+  "name": "@carher/feishu-her",
+  "version": "1.0.0",
+  "description": "CarHer business logic plugin: Discussion Mode, Bot Registry, knowledge_qa (no channel — channel owned by openclaw-lark)",
   "type": "module",
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.50.0",
@@ -9,31 +9,17 @@
     "ioredis": "^5.10.1"
   },
   "devDependencies": {
-    "openclaw": "^2026.4.14"
+    "openclaw": "^2026.4.24"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.1.26 <2026.5.0"
+    "openclaw": ">=2026.4.24"
   },
   "openclaw": {
     "extensions": [
       "./index.ts"
     ],
-    "channel": {
-      "id": "feishu",
-      "label": "Feishu",
-      "selectionLabel": "Feishu (Lark Bot)",
-      "detailLabel": "Feishu Bot",
-      "docsPath": "/channels/feishu",
-      "docsLabel": "feishu",
-      "blurb": "Feishu/Lark bot via WebSocket long connection.",
-      "aliases": [
-        "lark",
-        "fs"
-      ],
-      "order": 60
-    },
     "install": {
-      "npmSpec": "@openclaw/feishu-her",
+      "npmSpec": "@carher/feishu-her",
       "localPath": "docker/plugins/feishu-her",
       "defaultChoice": "npm"
     }

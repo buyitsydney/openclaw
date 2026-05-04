@@ -1,10 +1,14 @@
-# Car Her v2 — A+B 架构：openclaw 官方镜像作为 base，feishu-her/a2a-gateway 作为独立插件
+# Car Her v2 — A+B 架构：openclaw 官方镜像作为 base，插件作为独立组件
 #
-# 升级 openclaw：只改 FROM 行一个 tag
-# 升级 feishu-her：只重装 /app/docker/plugins/feishu-her (独立语义化版本)
-# 升级 a2a-gateway：只重装 /app/docker/plugins/a2a-gateway (独立语义化版本)
+# Three-component architecture (target: v3 全 npm 运行时安装):
+#   轴 1: OPENCLAW_TAG      → rebuild image
+#   轴 2: openclaw-lark npm  → npm update + restart (runtime install, not in image)
+#   轴 3: lark-cli npm       → npm update + restart (runtime install, not in image)
+#   轴 4: feishu-her npm     → npm update + restart (TODO: publish to npm, remove from image)
 #
-# 三条轴独立，互不耦合。
+# Current state (v2→v3 transition):
+#   - feishu-her / a2a-gateway / shadow-daemon still baked in (not yet npm packages)
+#   - openclaw-lark + lark-cli installed at runtime by entrypoint
 
 ARG OPENCLAW_TAG=2026.4.24
 
@@ -53,14 +57,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # 独立插件 —— 拷贝 + npm install --omit=dev（每个插件各自一层，缓存友好）
 WORKDIR /app
 
-# Three-component architecture: keep bundled feishu (id=feishu, channels=["feishu"])
-# as the channel provider. feishu-her (id=feishu-her, channels=[]) is tool-only.
-# The bundled feishu handles: CardKit v2 streaming, abort-detect, typing indicator,
-# sequential queue, deliveredFinalTexts dedup, 12 basic tools.
-# feishu-her handles: Discussion Mode, Bot Registry, knowledge_qa, group-mode.
-#
-# Legacy note: previously removed bundled feishu because feishu-her also registered
-# channels: ["feishu"]. Now feishu-her has channels: [] so they coexist.
+# Three-component architecture:
+#   openclaw-lark (npm, runtime) → channel "feishu" + 40 tools (CardKit v2, abort-detect)
+#   lark-cli (npm, runtime)      → 24 AI skills (17 飞书域)
+#   feishu-her (baked, TODO npm) → Discussion Mode, Bot Registry, knowledge_qa
+# feishu-her has channels: [] — channel owned by openclaw-lark at runtime.
 
 COPY docker/plugins/feishu-her  /app/docker/plugins/feishu-her
 RUN --mount=type=cache,target=/root/.npm \

@@ -15,6 +15,40 @@ mkdir -p /data/.openclaw/local/bin
 # NPM_CONFIG_PREFIX and PATH are set in Dockerfile ENV (survives docker exec too).
 ln -sf /data/.openclaw/local/bin/* /usr/local/bin/ 2>/dev/null || true
 
+# ── Three-component runtime plugin install ──────────────────────────
+# openclaw-lark (channel "feishu" + 40 tools) and lark-cli (24 AI skills)
+# are npm packages installed at runtime into the persistent volume.
+# This decouples plugin versions from the Docker image — upgrade by
+# npm update + restart, no image rebuild needed.
+PLUGIN_DIR="/data/.openclaw/extensions"
+mkdir -p "$PLUGIN_DIR"
+
+# openclaw-lark: channel provider + tools
+LARK_WANT="${CARHER_OPENCLAW_LARK_VERSION:-latest}"
+LARK_PKG="$PLUGIN_DIR/node_modules/@larksuite/openclaw-lark"
+if [ ! -d "$LARK_PKG" ] || [ "${CARHER_FORCE_PLUGIN_INSTALL:-}" = "1" ]; then
+  echo "▶ Installing @larksuite/openclaw-lark@${LARK_WANT}..."
+  npm install --prefix "$PLUGIN_DIR" "@larksuite/openclaw-lark@${LARK_WANT}" --omit=dev 2>&1 | tail -3
+  echo "  ✓ openclaw-lark installed"
+else
+  echo "  ✓ openclaw-lark already installed"
+fi
+
+# lark-cli: 24 AI skills (Go binary)
+LARK_CLI_WANT="${CARHER_LARK_CLI_VERSION:-latest}"
+if ! command -v lark-cli &>/dev/null || [ "${CARHER_FORCE_PLUGIN_INSTALL:-}" = "1" ]; then
+  echo "▶ Installing @larksuite/cli@${LARK_CLI_WANT}..."
+  npm install -g "@larksuite/cli@${LARK_CLI_WANT}" --prefix /data/.openclaw/local 2>&1 | tail -3
+  ln -sf /data/.openclaw/local/bin/lark-cli /usr/local/bin/lark-cli 2>/dev/null || true
+  echo "  ✓ lark-cli installed"
+else
+  echo "  ✓ lark-cli already installed"
+fi
+
+# Re-symlink after plugin install (new binaries may have been added)
+ln -sf /data/.openclaw/local/bin/* /usr/local/bin/ 2>/dev/null || true
+# ── end three-component runtime plugin install ──────────────────────
+
 # ACP: install Claude Code CLI + acpx on first startup (only if ACP enabled)
 if [ "${CARHER_ACP_ENABLED:-}" = "1" ]; then
   if ! command -v claude &>/dev/null; then

@@ -113,14 +113,16 @@
     // 2026-04-27: bonjour 在 openclaw 2026.4.24 base 里 CIAO PROBING CANCELLED
     // 抛 unhandled rejection,把 gateway 30s 一循环 kill 掉。Docker 容器内
     // mDNS 本来就用不上,直接禁用规避。
-    deny: ["bonjour"],
-    // Image contract: Dockerfile.carher.v2 COPYs plugins to /app/docker/plugins/*.
-    // Absolute paths (openclaw-idiomatic for env overlays) make loader behavior
-    // CWD-independent, so both gateway (CWD=/app) and her-side tool-call
-    // subprocesses (CWD=/data/.openclaw/workspace) resolve to the same location.
-    // See base.json5 for why this doesn't belong in the env-agnostic layer.
+    // bonjour: CIAO PROBING CANCELLED → unhandled rejection crash loop (2026.4.24)
+    // feishu: bundled upstream channel conflicts with openclaw-lark (both register "feishu")
+    deny: ["bonjour", "feishu"],
+    // Three-component architecture plugin paths:
+    //   - feishu-her / a2a-gateway / shadow-daemon: baked in image at /app/docker/plugins/
+    //   - openclaw-lark: runtime npm install to /data/.openclaw/extensions/
+    // Absolute paths make loader CWD-independent (gateway CWD=/app, tools CWD=/data/...).
     load: {
       paths: [
+        "/data/.openclaw/extensions/node_modules/@larksuite/openclaw-lark",
         "/app/docker/plugins/feishu-her",
         "/app/docker/plugins/a2a-gateway",
         "/app/docker/plugins/shadow-daemon",
