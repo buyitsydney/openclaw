@@ -16,7 +16,7 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
@@ -149,8 +149,8 @@ function buildSourcesParam(params: Params): Record<string, unknown> {
     }
     if (params.time_start || params.time_end) {
       const timeRange: Record<string, number> = {};
-      if (params.time_start) timeRange.start = toUnixSeconds(params.time_start);
-      if (params.time_end) timeRange.end = toUnixSeconds(params.time_end);
+      if (params.time_start) {timeRange.start = toUnixSeconds(params.time_start);}
+      if (params.time_end) {timeRange.end = toUnixSeconds(params.time_end);}
       filter.time_range = timeRange;
     }
     if (Object.keys(filter).length > 0) {
@@ -185,11 +185,11 @@ function buildSourcesParam(params: Params): Record<string, unknown> {
 type QualityLevel = "direct_answer" | "partial" | "no_answer" | "quota_exceeded" | "error";
 
 function judgeQuality(code: number, answer?: string): QualityLevel {
-  if (code === 1270002) return "quota_exceeded";
-  if (code !== 0) return "error";
-  if (!answer) return "no_answer";
-  if (answer.startsWith("抱歉，在可访问的企业知识中未找到答案")) return "partial";
-  if (answer === "找不到相关信息") return "no_answer";
+  if (code === 1270002) {return "quota_exceeded";}
+  if (code !== 0) {return "error";}
+  if (!answer) {return "no_answer";}
+  if (answer.startsWith("抱歉，在可访问的企业知识中未找到答案")) {return "partial";}
+  if (answer === "找不到相关信息") {return "no_answer";}
   return "direct_answer";
 }
 
@@ -357,7 +357,7 @@ async function askKnowledgeQA(userToken: string, params: Params): Promise<unknow
           errorMsg = chunk.msg ?? "";
           continue;
         }
-        if (chunk.event) lastEvent = chunk.event;
+        if (chunk.event) {lastEvent = chunk.event;}
         // Step 3: parse inner data (may be a JSON string or already an object)
         let d = chunk.data;
         if (typeof d === "string") {
@@ -368,19 +368,19 @@ async function askKnowledgeQA(userToken: string, params: Params): Promise<unknow
           }
         }
         if (d) {
-          if (d.answer) finalAnswer = d.answer;
-          if (d.reasoning_content) finalReasoning = d.reasoning_content;
-          if (d.references) finalRefs = d.references;
+          if (d.answer) {finalAnswer = d.answer;}
+          if (d.reasoning_content) {finalReasoning = d.reasoning_content;}
+          if (d.references) {finalRefs = d.references;}
         }
       } catch {
         // Try raw JSON parse as fallback (in case format changes)
         try {
           const chunk = JSON.parse(line);
-          if (chunk.event) lastEvent = chunk.event;
+          if (chunk.event) {lastEvent = chunk.event;}
           const d = chunk.data;
-          if (d?.answer) finalAnswer = d.answer;
-          if (d?.reasoning_content) finalReasoning = d.reasoning_content;
-          if (d?.references) finalRefs = d.references;
+          if (d?.answer) {finalAnswer = d.answer;}
+          if (d?.reasoning_content) {finalReasoning = d.reasoning_content;}
+          if (d?.references) {finalRefs = d.references;}
         } catch {
           // skip unparseable lines
         }
@@ -479,7 +479,7 @@ export const KNOWLEDGE_QA_REQUIRED_SCOPE = "search:knowledge_qa:read";
 
 export function registerFeishuKnowledgeQATool(api: OpenClawPluginApi): void {
   const accounts = listEnabledFeishuAccounts(api.config);
-  if (accounts.length === 0) return;
+  if (accounts.length === 0) {return;}
   const firstAccount: ResolvedFeishuAccount = accounts[0];
   const redirectUri = resolveOAuthRedirectUri(api.config as Record<string, unknown>);
 
@@ -504,7 +504,7 @@ export function registerFeishuKnowledgeQATool(api: OpenClawPluginApi): void {
             toolLabel: "飞书知识问答",
             sendDirectToUser: getOAuthDirectSender(firstAccount),
           });
-          if (!guard.ok) return guard.authResponse;
+          if (!guard.ok) {return guard.authResponse;}
           const userToken = guard.token;
 
           const action = params.action ?? "search";
@@ -538,7 +538,7 @@ export function registerFeishuKnowledgeQATool(api: OpenClawPluginApi): void {
               toolLabel: "飞书知识问答",
               sendDirectToUser: getOAuthDirectSender(firstAccount),
             });
-            if (!reauth.ok) return reauth.authResponse;
+            if (!reauth.ok) {return reauth.authResponse;}
           }
 
           return json(result);
@@ -558,7 +558,7 @@ export function registerFeishuKnowledgeQATool(api: OpenClawPluginApi): void {
               toolLabel: "飞书知识问答",
               sendDirectToUser: getOAuthDirectSender(firstAccount),
             });
-            if (!reauth.ok) return reauth.authResponse;
+            if (!reauth.ok) {return reauth.authResponse;}
           }
           return json({ error: message });
         }

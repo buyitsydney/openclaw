@@ -9,7 +9,7 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import { listEnabledFeishuAccounts } from "../accounts.js";
 import { getFeishuClient } from "../outbound.js";
@@ -258,7 +258,7 @@ function extractLarkErrorDetail(err: unknown): string | undefined {
 
 export function registerFeishuBoardTools(api: OpenClawPluginApi): void {
   const accounts = listEnabledFeishuAccounts(api.config);
-  if (accounts.length === 0) return;
+  if (accounts.length === 0) {return;}
   const firstAccount = accounts[0];
 
   api.registerTool(
@@ -377,7 +377,7 @@ export function registerFeishuBoardTools(api: OpenClawPluginApi): void {
                   const idMap = new Map<string, string>();
                   let serverIdx = 0;
                   for (const raw of rawNodes) {
-                    if (raw.type === "connector") continue;
+                    if (raw.type === "connector") {continue;}
                     if (raw.id && allIds[serverIdx]) {
                       idMap.set(raw.id, allIds[serverIdx]);
                     }

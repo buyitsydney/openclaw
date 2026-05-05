@@ -1,5 +1,5 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/feishu";
-import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/account-core";
+import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/channel-plugin-common";
 import { normalizeAccountId } from "openclaw/plugin-sdk/core";
 
 export type FeishuCredentialSource = "config" | "env" | "none";
@@ -34,7 +34,7 @@ export type FeishuAccountConfig = {
  *  Priority: groups.ownerIds > dm.allowFrom. */
 export function resolveGroupOwnerIds(accountConfig: FeishuAccountConfig): string[] {
   const groupOwners = accountConfig.groups?.ownerIds;
-  if (groupOwners && groupOwners.length > 0) return groupOwners;
+  if (groupOwners && groupOwners.length > 0) {return groupOwners;}
   return accountConfig.dm?.allowFrom ?? [];
 }
 
@@ -66,7 +66,7 @@ function normalizeKnownBots(value: unknown): Record<string, string> {
   for (const [appId, label] of Object.entries(value as Record<string, unknown>)) {
     const normalizedAppId = trimIfString(appId);
     const normalizedLabel = trimIfString(label);
-    if (!normalizedAppId || !normalizedLabel) continue;
+    if (!normalizedAppId || !normalizedLabel) {continue;}
     normalized[normalizedAppId] = normalizedLabel;
   }
   return normalized;
@@ -80,7 +80,7 @@ function normalizeKnownBotOpenIds(value: unknown): Record<string, string> {
   for (const [openId, appId] of Object.entries(value as Record<string, unknown>)) {
     const normalizedOpenId = trimIfString(openId);
     const normalizedAppId = trimIfString(appId);
-    if (!normalizedOpenId || !normalizedAppId) continue;
+    if (!normalizedOpenId || !normalizedAppId) {continue;}
     normalized[normalizedOpenId] = normalizedAppId;
   }
   return normalized;

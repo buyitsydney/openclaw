@@ -3,7 +3,7 @@
  * Called from the plugin's register() entry point.
  */
 
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { registerFeishuBitableTools } from "./bitable.js";
 import { registerFeishuBoardTools } from "./board.js";
 import { registerFeishuBotDirectoryTool } from "./bot-directory.js";

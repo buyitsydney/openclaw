@@ -23,7 +23,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { homedir } from "node:os";
 import { join } from "node:path";
 import * as Lark from "@larksuiteoapi/node-sdk";
-import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/feishu";
+import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { getFeishuClient, sendFeishuRichText } from "./outbound.js";
 
@@ -138,7 +138,7 @@ export async function resolveEffectiveOAuthScopes(
   _redirectUri?: string,
 ): Promise<string[]> {
   const backend = await fetchBackendUserScopes(account);
-  const scopes = Array.from(backend).sort();
+  const scopes = Array.from(backend).toSorted();
   console.log(
     `[feishu-oauth] effective scopes (v7): backend=${backend.size} final=${scopes.length} (Device Flow is primary; this is auth-code fallback)`,
   );
@@ -1252,7 +1252,7 @@ function selectDeviceFlowScopes(backend: Set<string>): string[] {
   const kept: string[] = [];
   for (const s of backend) {
     const dom = s.split(":")[0];
-    if (!DROP_DOMAINS_V6F.has(dom)) kept.push(s);
+    if (!DROP_DOMAINS_V6F.has(dom)) {kept.push(s);}
   }
   kept.sort();
   // Safety: if a future app config still exceeds 200 after dropping mail+aily,
@@ -1311,10 +1311,10 @@ export async function initiateDeviceFlow(
     `[feishu-oauth] Device Flow v6f initiated: backend=${backend.size} picked=${scopes.length} dropped=${backend.size - scopes.length} (mail+aily excluded) expires_in=${j.expires_in} interval=${j.interval}`,
   );
   return {
-    deviceCode: j.device_code as string,
+    deviceCode: j.device_code,
     userCode: j.user_code as string,
     verificationUri: j.verification_uri as string,
-    verificationUriComplete: j.verification_uri_complete as string,
+    verificationUriComplete: j.verification_uri_complete,
     expiresIn: (j.expires_in as number) ?? 600,
     interval: (j.interval as number) ?? 5,
     scopeCount: scopes.length,
@@ -1359,7 +1359,7 @@ export async function pollDeviceToken(
       if (!openId) {
         try {
           const ui = await fetch("https://open.feishu.cn/open-apis/authen/v1/user_info", {
-            headers: { Authorization: `Bearer ${j.access_token as string}` },
+            headers: { Authorization: `Bearer ${j.access_token}` },
           });
           const uj = await ui.json();
           if (uj.code === 0 && uj.data?.open_id) {
@@ -1384,7 +1384,7 @@ export async function pollDeviceToken(
       const token: FeishuUserToken = {
         open_id: openId,
         name: userName,
-        access_token: j.access_token as string,
+        access_token: j.access_token,
         refresh_token: (j.refresh_token as string) || "",
         access_token_expires_at: now + ((j.expires_in as number) ?? 7200) * 1000,
         refresh_token_expires_at:
@@ -1429,7 +1429,7 @@ export function startDeviceFlowPoller(
   init: DeviceFlowInit,
 ): void {
   const key = `${account.appId}:${init.deviceCode}`;
-  if (deviceFlowInflight.has(key)) return;
+  if (deviceFlowInflight.has(key)) {return;}
   const p = pollDeviceToken(account, init).finally(() => {
     deviceFlowInflight.delete(key);
   });

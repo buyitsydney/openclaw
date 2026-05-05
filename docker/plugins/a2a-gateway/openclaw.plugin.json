@@ -7,7 +7,13 @@
     "agentCard": {
       "name": "OpenClaw A2A Gateway",
       "description": "A2A bridge for OpenClaw agents",
-      "skills": [{ "id": "chat", "name": "chat", "description": "Chat bridge" }]
+      "skills": [
+        {
+          "id": "chat",
+          "name": "chat",
+          "description": "Chat bridge"
+        }
+      ]
     }
   },
   "configSchema": {
@@ -18,22 +24,38 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "name": { "type": "string" },
-          "description": { "type": "string" },
-          "url": { "type": "string" },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
           "skills": {
             "type": "array",
             "items": {
               "oneOf": [
-                { "type": "string" },
+                {
+                  "type": "string"
+                },
                 {
                   "type": "object",
                   "properties": {
-                    "id": { "type": "string" },
-                    "name": { "type": "string" },
-                    "description": { "type": "string" }
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "description": {
+                      "type": "string"
+                    }
                   },
-                  "required": ["name"]
+                  "required": [
+                    "name"
+                  ]
                 }
               ]
             }
@@ -44,15 +66,24 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "host": { "type": "string", "default": "0.0.0.0" },
-          "port": { "type": "number", "default": 18800 }
+          "host": {
+            "type": "string",
+            "default": "0.0.0.0"
+          },
+          "port": {
+            "type": "number",
+            "default": 18800
+          }
         }
       },
       "storage": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "tasksDir": { "type": "string", "default": "~/.openclaw/a2a-tasks" },
+          "tasksDir": {
+            "type": "string",
+            "default": "~/.openclaw/a2a-tasks"
+          },
           "taskTtlHours": {
             "type": "number",
             "default": 72,
@@ -73,22 +104,37 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "name": { "type": "string" },
-            "agentCardUrl": { "type": "string" },
+            "name": {
+              "type": "string"
+            },
+            "agentCardUrl": {
+              "type": "string"
+            },
             "auth": {
               "type": "object",
               "additionalProperties": false,
               "properties": {
                 "type": {
                   "type": "string",
-                  "enum": ["bearer", "apiKey"]
+                  "enum": [
+                    "bearer",
+                    "apiKey"
+                  ]
                 },
-                "token": { "type": "string" }
+                "token": {
+                  "type": "string"
+                }
               },
-              "required": ["type", "token"]
+              "required": [
+                "type",
+                "token"
+              ]
             }
           },
-          "required": ["name", "agentCardUrl"]
+          "required": [
+            "name",
+            "agentCardUrl"
+          ]
         }
       },
       "security": {
@@ -97,18 +143,27 @@
         "properties": {
           "inboundAuth": {
             "type": "string",
-            "enum": ["none", "bearer"],
+            "enum": [
+              "none",
+              "bearer"
+            ],
             "default": "none"
           },
-          "token": { "type": "string" },
+          "token": {
+            "type": "string"
+          },
           "tokens": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "description": "Multiple tokens for zero-downtime rotation. Used alongside or instead of 'token'."
           },
           "allowedMimeTypes": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "description": "Allowed MIME type patterns for file transfer (e.g. \"image/*\", \"application/pdf\")"
           },
           "maxFileSizeBytes": {
@@ -125,7 +180,9 @@
           },
           "fileUriAllowlist": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "description": "URI hostname allowlist patterns (e.g. \"*.example.com\"). Empty allows all public hosts."
           }
         }
@@ -145,9 +202,16 @@
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["name", "match", "target"],
+              "required": [
+                "name",
+                "match",
+                "target"
+              ],
               "properties": {
-                "name": { "type": "string", "description": "Human-readable rule name" },
+                "name": {
+                  "type": "string",
+                  "description": "Human-readable rule name"
+                },
                 "match": {
                   "type": "object",
                   "additionalProperties": false,
@@ -158,12 +222,16 @@
                     },
                     "tags": {
                       "type": "array",
-                      "items": { "type": "string" },
+                      "items": {
+                        "type": "string"
+                      },
                       "description": "Match any tag (OR)"
                     },
                     "skills": {
                       "type": "array",
-                      "items": { "type": "string" },
+                      "items": {
+                        "type": "string"
+                      },
                       "description": "Match peer skills"
                     }
                   }
@@ -171,10 +239,18 @@
                 "target": {
                   "type": "object",
                   "additionalProperties": false,
-                  "required": ["peer"],
+                  "required": [
+                    "peer"
+                  ],
                   "properties": {
-                    "peer": { "type": "string", "description": "Target peer name" },
-                    "agentId": { "type": "string", "description": "Route to specific agentId" }
+                    "peer": {
+                      "type": "string",
+                      "description": "Target peer name"
+                    },
+                    "agentId": {
+                      "type": "string",
+                      "description": "Route to specific agentId"
+                    }
                   }
                 },
                 "priority": {
@@ -232,7 +308,10 @@
           },
           "metricsAuth": {
             "type": "string",
-            "enum": ["none", "bearer"],
+            "enum": [
+              "none",
+              "bearer"
+            ],
             "default": "none",
             "description": "Authentication for the metrics endpoint. When set to 'bearer', reuses security.token/tokens."
           },
@@ -262,26 +341,57 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "enabled": { "type": "boolean", "default": true },
-              "intervalMs": { "type": "number", "default": 30000, "minimum": 1000 },
-              "timeoutMs": { "type": "number", "default": 5000, "minimum": 500 }
+              "enabled": {
+                "type": "boolean",
+                "default": true
+              },
+              "intervalMs": {
+                "type": "number",
+                "default": 30000,
+                "minimum": 1000
+              },
+              "timeoutMs": {
+                "type": "number",
+                "default": 5000,
+                "minimum": 500
+              }
             }
           },
           "retry": {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "maxRetries": { "type": "number", "default": 3, "minimum": 0 },
-              "baseDelayMs": { "type": "number", "default": 1000, "minimum": 100 },
-              "maxDelayMs": { "type": "number", "default": 10000, "minimum": 100 }
+              "maxRetries": {
+                "type": "number",
+                "default": 3,
+                "minimum": 0
+              },
+              "baseDelayMs": {
+                "type": "number",
+                "default": 1000,
+                "minimum": 100
+              },
+              "maxDelayMs": {
+                "type": "number",
+                "default": 10000,
+                "minimum": 100
+              }
             }
           },
           "circuitBreaker": {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "failureThreshold": { "type": "number", "default": 5, "minimum": 1 },
-              "resetTimeoutMs": { "type": "number", "default": 30000, "minimum": 1000 }
+              "failureThreshold": {
+                "type": "number",
+                "default": 5,
+                "minimum": 1
+              },
+              "resetTimeoutMs": {
+                "type": "number",
+                "default": 30000,
+                "minimum": 1000
+              }
             }
           }
         }
@@ -343,13 +453,30 @@
     "peers": {
       "items": {
         "auth": {
-          "token": { "sensitive": true }
+          "token": {
+            "sensitive": true
+          }
         }
       }
     },
     "security": {
-      "token": { "sensitive": true },
-      "tokens": { "items": { "sensitive": true } }
+      "token": {
+        "sensitive": true
+      },
+      "tokens": {
+        "items": {
+          "sensitive": true
+        }
+      }
     }
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "a2a_send",
+      "a2a_send_file"
+    ]
   }
 }

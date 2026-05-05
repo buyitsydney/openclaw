@@ -5,7 +5,7 @@
 
 import type * as Lark from "@larksuiteoapi/node-sdk";
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
@@ -132,9 +132,9 @@ function parseBitableUrl(url: string): { token: string; tableId?: string; isWiki
     const u = new URL(url);
     const tableId = u.searchParams.get("table") ?? undefined;
     const wikiMatch = u.pathname.match(/\/wiki\/([A-Za-z0-9]+)/);
-    if (wikiMatch) return { token: wikiMatch[1], tableId, isWiki: true };
+    if (wikiMatch) {return { token: wikiMatch[1], tableId, isWiki: true };}
     const baseMatch = u.pathname.match(/\/base\/([A-Za-z0-9]+)/);
-    if (baseMatch) return { token: baseMatch[1], tableId, isWiki: false };
+    if (baseMatch) {return { token: baseMatch[1], tableId, isWiki: false };}
     return null;
   } catch {
     return null;
@@ -145,12 +145,12 @@ async function resolveAppToken(
   client: Lark.Client,
   parsed: { token: string; isWiki: boolean },
 ): Promise<string> {
-  if (!parsed.isWiki) return parsed.token;
+  if (!parsed.isWiki) {return parsed.token;}
   // oxlint-disable-next-line typescript/no-explicit-any
   const res: any = await client.wiki.space.getNode({ params: { token: parsed.token } });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   if (res.data?.node?.obj_type !== "bitable")
-    throw new Error(`Node is not a bitable (type: ${res.data?.node?.obj_type})`);
+    {throw new Error(`Node is not a bitable (type: ${res.data?.node?.obj_type})`);}
   return res.data.node.obj_token!;
 }
 
@@ -158,29 +158,29 @@ async function resolveAppTokenByUser(
   userToken: string,
   parsed: { token: string; isWiki: boolean },
 ): Promise<string> {
-  if (!parsed.isWiki) return parsed.token;
+  if (!parsed.isWiki) {return parsed.token;}
   const res = await callBitableUserApi<WikiNodeResolveResponse>({
     userToken,
     method: "GET",
     endpoint: "/wiki/v2/spaces/get_node",
     query: { token: parsed.token },
   });
-  if (!res.ok) throw new Error(res.msg);
+  if (!res.ok) {throw new Error(res.msg);}
   if (res.data?.node?.obj_type !== "bitable") {
     throw new Error(`Node is not a bitable (type: ${res.data?.node?.obj_type})`);
   }
   const objToken = res.data?.node?.obj_token?.trim();
-  if (!objToken) throw new Error("bitable obj_token missing");
+  if (!objToken) {throw new Error("bitable obj_token missing");}
   return objToken;
 }
 
 async function getBitableMeta(client: Lark.Client, url: string) {
   const parsed = parseBitableUrl(url);
-  if (!parsed) throw new Error("Invalid URL format. Expected /base/XXX or /wiki/XXX URL");
+  if (!parsed) {throw new Error("Invalid URL format. Expected /base/XXX or /wiki/XXX URL");}
   const appToken = await resolveAppToken(client, parsed);
   // oxlint-disable-next-line typescript/no-explicit-any
   const res: any = await client.bitable.app.get({ path: { app_token: appToken } });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   let tables: { table_id: string; name: string }[] = [];
   if (!parsed.tableId) {
     // oxlint-disable-next-line typescript/no-explicit-any
@@ -207,14 +207,14 @@ async function getBitableMeta(client: Lark.Client, url: string) {
 
 async function getBitableMetaByUser(userToken: string, url: string) {
   const parsed = parseBitableUrl(url);
-  if (!parsed) throw new Error("Invalid URL format. Expected /base/XXX or /wiki/XXX URL");
+  if (!parsed) {throw new Error("Invalid URL format. Expected /base/XXX or /wiki/XXX URL");}
   const appToken = await resolveAppTokenByUser(userToken, parsed);
   const res = await callBitableUserApi<BitableAppResponse>({
     userToken,
     method: "GET",
     endpoint: `/bitable/v1/apps/${encodeURIComponent(appToken)}`,
   });
-  if (!res.ok) throw new Error(res.msg);
+  if (!res.ok) {throw new Error(res.msg);}
   let tables: { table_id: string; name: string }[] = [];
   if (!parsed.tableId) {
     const tablesRes = await callBitableUserApi<BitableTableListResponse>({
@@ -248,7 +248,7 @@ async function listFields(client: Lark.Client, appToken: string, tableId: string
   const res: any = await client.bitable.appTableField.list({
     path: { app_token: appToken, table_id: tableId },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   // oxlint-disable-next-line typescript/no-explicit-any
   return {
     fields: (res.data?.items ?? []).map((f: any) => ({
@@ -269,7 +269,7 @@ async function listFieldsByUser(userToken: string, appToken: string, tableId: st
     method: "GET",
     endpoint: `/bitable/v1/apps/${encodeURIComponent(appToken)}/tables/${encodeURIComponent(tableId)}/fields`,
   });
-  if (!res.ok) throw new Error(res.msg);
+  if (!res.ok) {throw new Error(res.msg);}
   return {
     fields: (res.data?.items ?? []).map((f) => ({
       field_id: f.field_id,
@@ -295,7 +295,7 @@ async function listRecords(
     path: { app_token: appToken, table_id: tableId },
     params: { page_size: pageSize ?? 100, ...(pageToken && { page_token: pageToken }) },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return {
     records: res.data?.items ?? [],
     has_more: res.data?.has_more ?? false,
@@ -325,7 +325,7 @@ function coerceRecordFields(
   numberFieldNames: Set<string>,
   // oxlint-disable-next-line typescript/no-explicit-any
 ): any {
-  if (!record?.fields) return record;
+  if (!record?.fields) {return record;}
   const fields = { ...record.fields };
   for (const key of Object.keys(fields)) {
     // Normalize rich text arrays to plain strings
@@ -333,7 +333,7 @@ function coerceRecordFields(
     // Coerce Number fields from string to number
     if (numberFieldNames.has(key) && typeof fields[key] === "string" && fields[key] !== "") {
       const n = Number(fields[key]);
-      if (Number.isFinite(n)) fields[key] = n;
+      if (Number.isFinite(n)) {fields[key] = n;}
     }
   }
   return { ...record, fields };
@@ -377,7 +377,7 @@ async function listRecordsByUser(
     }),
     getNumberFieldNames(userToken, appToken, tableId),
   ]);
-  if (!res.ok) throw new Error(res.msg);
+  if (!res.ok) {throw new Error(res.msg);}
   const records = (res.data?.items ?? []).map((r) => coerceRecordFields(r, numberFields));
   return {
     records,
@@ -392,7 +392,7 @@ async function getRecord(client: Lark.Client, appToken: string, tableId: string,
   const res: any = await client.bitable.appTableRecord.get({
     path: { app_token: appToken, table_id: tableId, record_id: recordId },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return { record: res.data?.record };
 }
 
@@ -410,7 +410,7 @@ async function getRecordByUser(
     }),
     getNumberFieldNames(userToken, appToken, tableId),
   ]);
-  if (!res.ok) throw new Error(res.msg);
+  if (!res.ok) {throw new Error(res.msg);}
   return { record: coerceRecordFields(res.data?.record, numberFields) };
 }
 
@@ -426,7 +426,7 @@ async function createRecord(
     // oxlint-disable-next-line typescript/no-explicit-any
     data: { fields: fields as any },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return { record: res.data?.record };
 }
 
@@ -443,7 +443,7 @@ async function updateRecord(
     // oxlint-disable-next-line typescript/no-explicit-any
     data: { fields: fields as any },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return { record: res.data?.record };
 }
 
@@ -507,9 +507,9 @@ async function cleanupNewBitable(
     // oxlint-disable-next-line typescript/no-explicit-any
     const emptyIds = recordsRes.data.items
       .filter((r: any) => {
-        if (!r.fields) return true;
+        if (!r.fields) {return true;}
         const keys = Object.keys(r.fields);
-        if (keys.length === 0) return true;
+        if (keys.length === 0) {return true;}
         return keys.every((k: string) => r.fields[k] == null || r.fields[k] === "");
       })
       .map((r: any) => r.record_id)
@@ -546,9 +546,9 @@ async function createApp(client: Lark.Client, name: string, folderToken?: string
   const res: any = await client.bitable.app.create({
     data: { name, ...(folderToken && { folder_token: folderToken }) },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   const appToken = res.data?.app?.app_token;
-  if (!appToken) throw new Error("Failed to create Bitable: no app_token returned");
+  if (!appToken) {throw new Error("Failed to create Bitable: no app_token returned");}
 
   let tableId: string | undefined;
   let cleanedRows = 0;
@@ -594,7 +594,7 @@ async function createField(
     path: { app_token: appToken, table_id: tableId },
     data: { field_name: fieldName, type: fieldType, ...(property && { property }) },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return {
     field_id: res.data?.field?.field_id,
     field_name: res.data?.field?.field_name,
@@ -609,13 +609,13 @@ async function deleteRecords(
   tableId: string,
   recordIds: string[],
 ) {
-  if (recordIds.length === 0) throw new Error("No record IDs provided");
+  if (recordIds.length === 0) {throw new Error("No record IDs provided");}
   // oxlint-disable-next-line typescript/no-explicit-any
   const res: any = await client.bitable.appTableRecord.batchDelete({
     path: { app_token: appToken, table_id: tableId },
     data: { records: recordIds },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return { deleted: recordIds.length };
 }
 
@@ -632,7 +632,7 @@ async function searchRecordsByUser(
   // Filter: accept structured JSON object (Feishu native format)
   // e.g. { conjunction: "and", conditions: [{ field_name: "Status", operator: "is", value: ["Done"] }] }
   if (opts.filter)
-    body.filter = typeof opts.filter === "string" ? JSON.parse(opts.filter) : opts.filter;
+    {body.filter = typeof opts.filter === "string" ? JSON.parse(opts.filter) : opts.filter;}
   if (opts.sort?.length) {
     body.sort = opts.sort.map((s) => {
       const [field, order] = s.split(":");
@@ -641,8 +641,8 @@ async function searchRecordsByUser(
   }
   // page_size and page_token go as query params, not body (Feishu search API requirement)
   const query: Record<string, string> = {};
-  if (opts.pageSize) query.page_size = String(Math.min(opts.pageSize, 500));
-  if (opts.pageToken) query.page_token = opts.pageToken;
+  if (opts.pageSize) {query.page_size = String(Math.min(opts.pageSize, 500));}
+  if (opts.pageToken) {query.page_token = opts.pageToken;}
   const res = await callBitableUserApi<BitableRecordListResponse>({
     userToken,
     method: "POST",
@@ -650,7 +650,7 @@ async function searchRecordsByUser(
     body,
     query: Object.keys(query).length > 0 ? query : undefined,
   });
-  if (!res.ok) throw new Error(res.msg);
+  if (!res.ok) {throw new Error(res.msg);}
   const records = (res.data?.items ?? []).map((r) => coerceRecordFields(r, numberFields));
   return {
     records,
@@ -666,15 +666,15 @@ async function batchCreateRecords(
   tableId: string,
   records: Array<{ fields: Record<string, unknown> }>,
 ) {
-  if (records.length === 0) throw new Error("No records provided");
-  if (records.length > 500) throw new Error("Max 500 records per batch");
+  if (records.length === 0) {throw new Error("No records provided");}
+  if (records.length > 500) {throw new Error("Max 500 records per batch");}
   // oxlint-disable-next-line typescript/no-explicit-any
   const res: any = await client.bitable.appTableRecord.batchCreate({
     path: { app_token: appToken, table_id: tableId },
     // oxlint-disable-next-line typescript/no-explicit-any
     data: { records: records as any },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return { records: res.data?.records ?? [], total: res.data?.records?.length ?? 0 };
 }
 
@@ -684,15 +684,15 @@ async function batchUpdateRecords(
   tableId: string,
   records: Array<{ record_id: string; fields: Record<string, unknown> }>,
 ) {
-  if (records.length === 0) throw new Error("No records provided");
-  if (records.length > 500) throw new Error("Max 500 records per batch");
+  if (records.length === 0) {throw new Error("No records provided");}
+  if (records.length > 500) {throw new Error("Max 500 records per batch");}
   // oxlint-disable-next-line typescript/no-explicit-any
   const res: any = await client.bitable.appTableRecord.batchUpdate({
     path: { app_token: appToken, table_id: tableId },
     // oxlint-disable-next-line typescript/no-explicit-any
     data: { records: records as any },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return { records: res.data?.records ?? [], total: res.data?.records?.length ?? 0 };
 }
 
@@ -724,7 +724,7 @@ async function updateField(
     path: { app_token: appToken, table_id: tableId, field_id: fieldId },
     data,
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return {
     field_id: res.data?.field?.field_id,
     field_name: res.data?.field?.field_name,
@@ -743,7 +743,7 @@ async function deleteField(
   const res: any = await client.bitable.appTableField.delete({
     path: { app_token: appToken, table_id: tableId, field_id: fieldId },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return { deleted: true, field_id: fieldId };
 }
 
@@ -832,7 +832,7 @@ const FeishuBitableSchema = Type.Object({
 
 export function registerFeishuBitableTools(api: OpenClawPluginApi) {
   const accounts = listEnabledFeishuAccounts(api.config);
-  if (accounts.length === 0) return;
+  if (accounts.length === 0) {return;}
   const firstAccount: ResolvedFeishuAccount = accounts[0];
   const getClient = () => getFeishuClient(firstAccount);
   const oauthRedirectUri = resolveOAuthRedirectUri(api.config as Record<string, unknown>);
@@ -859,19 +859,19 @@ export function registerFeishuBitableTools(api: OpenClawPluginApi) {
           switch (params.action) {
             case "get_meta": {
               const guard = await requireReadAccess();
-              if (!guard.ok) return guard.authResponse;
+              if (!guard.ok) {return guard.authResponse;}
               return json(await getBitableMetaByUser(guard.token.access_token, params.url));
             }
             case "list_fields": {
               const guard = await requireReadAccess();
-              if (!guard.ok) return guard.authResponse;
+              if (!guard.ok) {return guard.authResponse;}
               return json(
                 await listFieldsByUser(guard.token.access_token, params.app_token, params.table_id),
               );
             }
             case "list_records": {
               const guard = await requireReadAccess();
-              if (!guard.ok) return guard.authResponse;
+              if (!guard.ok) {return guard.authResponse;}
               return json(
                 await listRecordsByUser(
                   guard.token.access_token,
@@ -884,7 +884,7 @@ export function registerFeishuBitableTools(api: OpenClawPluginApi) {
             }
             case "get_record": {
               const guard = await requireReadAccess();
-              if (!guard.ok) return guard.authResponse;
+              if (!guard.ok) {return guard.authResponse;}
               return json(
                 await getRecordByUser(
                   guard.token.access_token,
@@ -910,7 +910,7 @@ export function registerFeishuBitableTools(api: OpenClawPluginApi) {
               );
             case "search_records": {
               const guard = await requireReadAccess();
-              if (!guard.ok) return guard.authResponse;
+              if (!guard.ok) {return guard.authResponse;}
               return json(
                 await searchRecordsByUser(
                   guard.token.access_token,
@@ -971,7 +971,7 @@ export function registerFeishuBitableTools(api: OpenClawPluginApi) {
           }
         } catch (err) {
           const authResp = await handleFeishuTokenError(err, firstAccount, oauthRedirectUri, getOAuthDirectSender(firstAccount));
-          if (authResp) return authResp;
+          if (authResp) {return authResp;}
           return json({ error: err instanceof Error ? err.message : String(err) });
         }
       },

@@ -11,12 +11,9 @@ import os from "node:os";
 import { homedir } from "node:os";
 import { join, dirname, extname } from "node:path";
 import * as Lark from "@larksuiteoapi/node-sdk";
-import type {
-  ChannelAccountSnapshot,
-  ChannelLogSink,
-  OpenClawConfig,
-  RuntimeEnv,
-} from "openclaw/plugin-sdk/feishu";
+import type { ChannelAccountSnapshot, ChannelLogSink } from "openclaw/plugin-sdk/channel-contract";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/account-core";
+import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
 import {
   extractReasoningDirective,
   normalizeReasoningLevel,

@@ -8,7 +8,7 @@
 import type * as Lark from "@larksuiteoapi/node-sdk";
 import { Type } from "@sinclair/typebox";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
   callFeishuApiWithUserToken,
@@ -35,7 +35,7 @@ const toTimestamp = toUnixSecondsStr;
 
 /** Convert a Feishu calendar timestamp to human-readable ISO 8601. */
 function humanizeTimestamp(t: { timestamp?: string; timezone?: string } | undefined) {
-  if (!t?.timestamp) return t;
+  if (!t?.timestamp) {return t;}
   return { ...t, datetime: new Date(Number(t.timestamp) * 1000).toISOString() };
 }
 
@@ -66,7 +66,7 @@ function formatEvent(e: any) {
 
 async function listCalendarsUser(userToken: string, pageSize?: number, pageToken?: string) {
   const query: Record<string, string> = { page_size: String(pageSize ?? 500) };
-  if (pageToken) query.page_token = pageToken;
+  if (pageToken) {query.page_token = pageToken;}
   const res = await callFeishuApiWithUserToken<{
     calendar_list?: {
       calendar_id: string;
@@ -79,7 +79,7 @@ async function listCalendarsUser(userToken: string, pageSize?: number, pageToken
     has_more?: boolean;
     page_token?: string;
   }>({ method: "GET", endpoint: "/calendar/v4/calendars", userToken, query });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return {
     // oxlint-disable-next-line typescript/no-explicit-any
     calendars: (res.data?.calendar_list ?? []).map((c: any) => ({
@@ -120,7 +120,7 @@ async function searchCalendarsUser(userToken: string, query: string, pageSize?: 
     body: { query },
     query: { page_size: String(pageSize ?? 50) },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   // oxlint-disable-next-line typescript/no-explicit-any
   return {
     calendars: (res.data?.items ?? []).map((c: any) => ({
@@ -138,7 +138,7 @@ async function subscribeCalendarUser(userToken: string, calendarId: string) {
   const res = await callFeishuApiWithUserToken<{
     calendar?: { calendar_id: string; summary: string; type: string; role: string };
   }>({ method: "POST", endpoint: `/calendar/v4/calendars/${calendarId}/subscribe`, userToken });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   const cal = res.data?.calendar;
   return {
     subscribed: true,
@@ -158,15 +158,15 @@ async function listEventsUser(
   pageToken?: string,
 ) {
   const query: Record<string, string> = { page_size: String(Math.max(pageSize ?? 50, 50)) };
-  if (startTime) query.start_time = toTimestamp(startTime);
-  if (endTime) query.end_time = toTimestamp(endTime);
-  if (pageToken) query.page_token = pageToken;
+  if (startTime) {query.start_time = toTimestamp(startTime);}
+  if (endTime) {query.end_time = toTimestamp(endTime);}
+  if (pageToken) {query.page_token = pageToken;}
   const res = await callFeishuApiWithUserToken<{
     items?: unknown[];
     has_more?: boolean;
     page_token?: string;
   }>({ method: "GET", endpoint: `/calendar/v4/calendars/${calendarId}/events`, userToken, query });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return {
     // oxlint-disable-next-line typescript/no-explicit-any
     events: (res.data?.items ?? []).map((e: any) => formatEvent(e)),
@@ -182,7 +182,7 @@ async function getEventUser(userToken: string, calendarId: string, eventId: stri
     userToken,
     query: { need_attendee: "true", user_id_type: "open_id" },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return { event: formatEvent(res.data?.event ?? {}) };
 }
 
@@ -216,7 +216,7 @@ async function createEventUser(
     body: data,
     query: { user_id_type: "open_id" },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   // oxlint-disable-next-line typescript/no-explicit-any
   const event = res.data?.event as any;
 
@@ -249,7 +249,7 @@ async function addAttendeesUser(
     body: { attendees, need_notification: true },
     query: { user_id_type: "open_id" },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return res.data;
 }
 
@@ -263,7 +263,7 @@ async function listRooms(
   const res: any = await client.vc.room.list({
     params: { page_size: pageSize ?? 50, ...(pageToken ? { page_token: pageToken } : {}) },
   });
-  if (res.code !== 0) throw new Error(res.msg ?? `vc.room.list failed: ${res.code}`);
+  if (res.code !== 0) {throw new Error(res.msg ?? `vc.room.list failed: ${res.code}`);}
   const allRooms = (res.data?.rooms ?? []).map((r: any) => ({
     room_id: r.room_id,
     name: r.name,
@@ -287,7 +287,7 @@ async function checkRoomFreebusy(
   const res: any = await client.calendar.freebusy.list({
     data: { time_min: startTime, time_max: endTime, room_id: roomId },
   });
-  if (res.code !== 0) throw new Error(res.msg ?? `freebusy.list failed: ${res.code}`);
+  if (res.code !== 0) {throw new Error(res.msg ?? `freebusy.list failed: ${res.code}`);}
   const busy = res.data?.freebusy_list ?? [];
   return { room_id: roomId, is_free: busy.length === 0, busy_slots: busy };
 }
@@ -307,7 +307,7 @@ async function removeAttendeesUser(
     userToken,
     query: { user_id_type: "open_id", page_size: "50" },
   });
-  if (listRes.code !== 0) throw new Error(listRes.msg);
+  if (listRes.code !== 0) {throw new Error(listRes.msg);}
 
   const items = listRes.data?.items ?? [];
   const toRemove = items
@@ -323,7 +323,7 @@ async function removeAttendeesUser(
     userToken,
     body: { attendee_ids: toRemove, need_notification: true },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return { removed: toRemove.length };
 }
 
@@ -343,11 +343,11 @@ async function updateEventUser(
   const tz = timezone ?? "Asia/Shanghai";
   // oxlint-disable-next-line typescript/no-explicit-any
   const data: any = {};
-  if (summary !== undefined) data.summary = summary;
-  if (description !== undefined) data.description = description;
-  if (startTime) data.start_time = { timestamp: toTimestamp(startTime), timezone: tz };
-  if (endTime) data.end_time = { timestamp: toTimestamp(endTime), timezone: tz };
-  if (location) data.location = { name: location };
+  if (summary !== undefined) {data.summary = summary;}
+  if (description !== undefined) {data.description = description;}
+  if (startTime) {data.start_time = { timestamp: toTimestamp(startTime), timezone: tz };}
+  if (endTime) {data.end_time = { timestamp: toTimestamp(endTime), timezone: tz };}
+  if (location) {data.location = { name: location };}
 
   if (Object.keys(data).length > 0) {
     const res = await callFeishuApiWithUserToken({
@@ -357,7 +357,7 @@ async function updateEventUser(
       body: data,
       query: { user_id_type: "open_id" },
     });
-    if (res.code !== 0) throw new Error(res.msg);
+    if (res.code !== 0) {throw new Error(res.msg);}
   }
 
   if (attendeeIds?.length || roomIds?.length) {
@@ -375,7 +375,7 @@ async function deleteEventUser(userToken: string, calendarId: string, eventId: s
     userToken,
     query: { need_notification: "true" },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return { deleted: true, event_id: eventId };
 }
 
@@ -396,7 +396,7 @@ async function checkFreebusy(
     },
     params: { user_id_type: "open_id" },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return {
     user_open_id: userOpenId,
     freebusy_list: res.data?.freebusy_list ?? [],
@@ -505,7 +505,7 @@ const FeishuCalendarSchema = Type.Object({
 
 export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
   const accounts = listEnabledFeishuAccounts(api.config);
-  if (accounts.length === 0) return;
+  if (accounts.length === 0) {return;}
   const firstAccount: ResolvedFeishuAccount = accounts[0];
   const getClient = () => getFeishuClient(firstAccount);
   const redirectUri = resolveOAuthRedirectUri(api.config);
@@ -534,7 +534,7 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
 
           if (params.action === "check_room_freebusy") {
             if (!params.room_id || !params.start_time || !params.end_time)
-              return json({ error: "room_id, start_time, and end_time are required" });
+              {return json({ error: "room_id, start_time, and end_time are required" });}
             const client = getClient();
             return json(
               await checkRoomFreebusy(client, params.room_id, params.start_time, params.end_time),
@@ -543,7 +543,7 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
 
           if (params.action === "check_freebusy") {
             if (!params.user_open_id || !params.start_time || !params.end_time)
-              return json({ error: "user_open_id, start_time, and end_time are required" });
+              {return json({ error: "user_open_id, start_time, and end_time are required" });}
             const client = getClient();
             return json(
               await checkFreebusy(client, params.user_open_id, params.start_time, params.end_time),
@@ -558,7 +558,7 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
             toolLabel: "日历",
             sendDirectToUser: buildSendDirectToUser(firstAccount, toolCtx.deliveryContext?.to),
           });
-          if (!tokenResult.ok) return tokenResult.authResponse;
+          if (!tokenResult.ok) {return tokenResult.authResponse;}
           const userToken = tokenResult.token.access_token;
 
           switch (params.action) {
@@ -569,21 +569,21 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
               return json(await listCalendarsUser(userToken, params.page_size, params.page_token));
 
             case "search_calendars": {
-              if (!params.query) return json({ error: "query is required for search_calendars" });
+              if (!params.query) {return json({ error: "query is required for search_calendars" });}
               return json(await searchCalendarsUser(userToken, params.query, params.page_size));
             }
 
             case "subscribe_calendar": {
               if (!params.calendar_id)
-                return json({
+                {return json({
                   error: "calendar_id is required. Only public/shared calendars can be subscribed.",
-                });
+                });}
               return json(await subscribeCalendarUser(userToken, params.calendar_id));
             }
 
             case "list_events": {
               if (!params.calendar_id)
-                return json({ error: "calendar_id is required. Use get_primary first." });
+                {return json({ error: "calendar_id is required. Use get_primary first." });}
               return json(
                 await listEventsUser(
                   userToken,
@@ -598,15 +598,15 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
 
             case "get_event": {
               if (!params.calendar_id || !params.event_id)
-                return json({ error: "calendar_id and event_id are required" });
+                {return json({ error: "calendar_id and event_id are required" });}
               return json(await getEventUser(userToken, params.calendar_id, params.event_id));
             }
 
             case "create_event": {
               if (!params.calendar_id || !params.summary || !params.start_time || !params.end_time)
-                return json({
+                {return json({
                   error: "calendar_id, summary, start_time, and end_time are required",
-                });
+                });}
               return json(
                 await createEventUser(
                   userToken,
@@ -625,7 +625,7 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
 
             case "update_event": {
               if (!params.calendar_id || !params.event_id)
-                return json({ error: "calendar_id and event_id are required" });
+                {return json({ error: "calendar_id and event_id are required" });}
               return json(
                 await updateEventUser(
                   userToken,
@@ -645,15 +645,15 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
 
             case "delete_event": {
               if (!params.calendar_id || !params.event_id)
-                return json({ error: "calendar_id and event_id are required" });
+                {return json({ error: "calendar_id and event_id are required" });}
               return json(await deleteEventUser(userToken, params.calendar_id, params.event_id));
             }
 
             case "remove_attendees": {
               if (!params.calendar_id || !params.event_id || !params.attendee_ids?.length)
-                return json({
+                {return json({
                   error: "calendar_id, event_id, and attendee_ids are required",
-                });
+                });}
               return json(
                 await removeAttendeesUser(
                   userToken,
@@ -672,7 +672,7 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi) {
           // oxlint-disable-next-line typescript/no-explicit-any
           const axiosData = (err as any)?.response?.data;
           if (axiosData?.code && axiosData?.msg) {
-            if (authResp) return authResp;
+            if (authResp) {return authResp;}
 
             return json({
               error: `Feishu API error ${axiosData.code}: ${axiosData.msg}`,

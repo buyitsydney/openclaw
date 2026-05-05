@@ -22,9 +22,14 @@
     mode: "local",
   },
 
+  // 2026-05-04 bug #11 fix · heartbeat.target=last lets wake/heartbeat reply auto-route to session.lastChannel (feishu group)
+  agents: { defaults: { heartbeat: { target: "last" } } },
+
   // A2A hub mode: 13/198/199/200 are permanent hubs (god-mode peers).
   plugins: {
     entries: {
+      "her-antitalker-poc": { enabled: true, hooks: { allowConversationAccess: true } },
+      "hook-probe": { enabled: true, hooks: { allowConversationAccess: true } },
       "a2a-gateway": {
         config: {
           outbound: { enabled: true },
@@ -45,4 +50,7 @@
       },
     },
   },
+
+  // 2026-05-03 admin her fix: async exec completion wake MUST relay to user
+  // (default target=none tells LLM to HEARTBEAT_OK silence); see MEMORY.md heartbeat section.
 }

@@ -9,8 +9,8 @@ import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import type * as Lark from "@larksuiteoapi/node-sdk";
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
-import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
+import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
@@ -123,7 +123,7 @@ function requireListFolderToken(value: unknown): string {
 }
 
 function rejectFolderTokenForRoot(value: unknown): void {
-  if (value === undefined) return;
+  if (value === undefined) {return;}
   throw new Error(
     "list_root does not accept folder_token. To browse a specific folder, use action=list_folder.",
   );
@@ -257,7 +257,7 @@ async function callDriveMultipartApi<TData>(
         ok: code === 0,
         code,
         msg,
-        data: (envelope.data as TData | undefined) ?? null,
+        data: (envelope.data) ?? null,
         http_status: response.status,
       };
     } finally {
@@ -321,7 +321,7 @@ async function createFolder(client: Lark.Client, name: string, folderToken: stri
   const res: any = await client.drive.file.createFolder({
     data: { name, folder_token: folderToken },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return { token: res.data?.token, url: res.data?.url };
 }
 
@@ -337,7 +337,7 @@ async function moveFile(
     // oxlint-disable-next-line typescript/no-explicit-any
     data: { type: fileType as any, folder_token: folderToken },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return { success: true, task_id: res.data?.task_id };
 }
 
@@ -348,7 +348,7 @@ async function deleteFile(client: Lark.Client, fileToken: string, fileType: stri
     // oxlint-disable-next-line typescript/no-explicit-any
     params: { type: fileType as any },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return { success: true, task_id: res.data?.task_id };
 }
 
@@ -579,7 +579,7 @@ const FeishuDriveSchema = Type.Object({
 
 export function registerFeishuDriveTools(api: OpenClawPluginApi) {
   const accounts = listEnabledFeishuAccounts(api.config);
-  if (accounts.length === 0) return;
+  if (accounts.length === 0) {return;}
   const firstAccount: ResolvedFeishuAccount = accounts[0];
   const getClient = () => getFeishuClient(firstAccount);
   const oauthRedirectUri = resolveOAuthRedirectUri(api.config as Record<string, unknown>);
@@ -607,7 +607,7 @@ export function registerFeishuDriveTools(api: OpenClawPluginApi) {
                 toolLabel: "飞书云盘读取",
                 sendDirectToUser: getOAuthDirectSender(firstAccount),
               });
-              if (!guard.ok) return guard.authResponse;
+              if (!guard.ok) {return guard.authResponse;}
               return json(
                 toDriveListResult({
                   scope: "root",
@@ -624,7 +624,7 @@ export function registerFeishuDriveTools(api: OpenClawPluginApi) {
                 toolLabel: "飞书云盘读取",
                 sendDirectToUser: getOAuthDirectSender(firstAccount),
               });
-              if (!guard.ok) return guard.authResponse;
+              if (!guard.ok) {return guard.authResponse;}
               return json(
                 toDriveListResult({
                   scope: "folder",
@@ -668,7 +668,7 @@ export function registerFeishuDriveTools(api: OpenClawPluginApi) {
           }
         } catch (err) {
           const authResp = await handleFeishuTokenError(err, firstAccount, oauthRedirectUri, getOAuthDirectSender(firstAccount));
-          if (authResp) return authResp;
+          if (authResp) {return authResp;}
           return json({ error: err instanceof Error ? err.message : String(err) });
         }
       },

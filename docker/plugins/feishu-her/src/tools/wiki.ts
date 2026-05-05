@@ -5,7 +5,7 @@
 
 import type * as Lark from "@larksuiteoapi/node-sdk";
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
@@ -89,7 +89,7 @@ function extractTokenFromUrl(input: string): { token: string; docType: DriveDocT
     }
     // Fallback: last path segment as token
     const last = segments[segments.length - 1];
-    if (last) return { token: last, docType: "wiki" };
+    if (last) {return { token: last, docType: "wiki" };}
   } catch {
     // Not a valid URL, use as-is
   }
@@ -139,7 +139,7 @@ async function listSpacesByUser(userToken: string) {
     endpoint: "/wiki/v2/spaces",
     userToken,
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   const spaces = (res.data?.items ?? []).map((s) => ({
     space_id: s.space_id,
     name: s.name,
@@ -156,7 +156,7 @@ async function listNodesByUser(userToken: string, spaceId: string, parentNodeTok
     userToken,
     query: parentNodeToken ? { parent_node_token: parentNodeToken } : undefined,
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   const nodes = (res.data?.items ?? []).map((n) => ({
     node_token: n.node_token,
     obj_token: n.obj_token,
@@ -180,7 +180,7 @@ async function getNodeByUser(userToken: string, token: string) {
     userToken,
     query: { token },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   const node = res.data?.node;
   return {
     node_token: node?.node_token,
@@ -215,7 +215,7 @@ async function createNode(
       parent_node_token: parentNodeToken,
     },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   const node = res.data?.node;
   return {
     node_token: node?.node_token,
@@ -237,7 +237,7 @@ async function moveNode(
     path: { space_id: spaceId, node_token: nodeToken },
     data: { target_space_id: targetSpaceId, target_parent_token: targetParentToken },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return { success: true, node_token: res.data?.node?.node_token };
 }
 
@@ -247,7 +247,7 @@ async function renameNode(client: Lark.Client, spaceId: string, nodeToken: strin
     path: { space_id: spaceId, node_token: nodeToken },
     data: { title },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return { success: true, node_token: nodeToken, title };
 }
 
@@ -285,7 +285,7 @@ const FeishuWikiSchema = Type.Object({
 
 export function registerFeishuWikiTools(api: OpenClawPluginApi) {
   const accounts = listEnabledFeishuAccounts(api.config);
-  if (accounts.length === 0) return;
+  if (accounts.length === 0) {return;}
   const firstAccount: ResolvedFeishuAccount = accounts[0];
   const getClient = () => getFeishuClient(firstAccount);
   const oauthRedirectUri = resolveOAuthRedirectUri(api.config as Record<string, unknown>);
@@ -310,7 +310,7 @@ export function registerFeishuWikiTools(api: OpenClawPluginApi) {
                 toolLabel: "飞书知识库读取",
                 sendDirectToUser: getOAuthDirectSender(firstAccount),
               });
-              if (!guard.ok) return guard.authResponse;
+              if (!guard.ok) {return guard.authResponse;}
               return json(await listSpacesByUser(guard.token.access_token));
             }
             case "nodes": {
@@ -321,7 +321,7 @@ export function registerFeishuWikiTools(api: OpenClawPluginApi) {
                 toolLabel: "飞书知识库读取",
                 sendDirectToUser: getOAuthDirectSender(firstAccount),
               });
-              if (!guard.ok) return guard.authResponse;
+              if (!guard.ok) {return guard.authResponse;}
               return json(
                 await listNodesByUser(
                   guard.token.access_token,
@@ -338,7 +338,7 @@ export function registerFeishuWikiTools(api: OpenClawPluginApi) {
                 toolLabel: "飞书知识库读取",
                 sendDirectToUser: getOAuthDirectSender(firstAccount),
               });
-              if (!guard.ok) return guard.authResponse;
+              if (!guard.ok) {return guard.authResponse;}
               return json(
                 await getNodeByUser(
                   guard.token.access_token,
@@ -384,7 +384,7 @@ export function registerFeishuWikiTools(api: OpenClawPluginApi) {
                 toolLabel: "飞书知识库读取",
                 sendDirectToUser: getOAuthDirectSender(firstAccount),
               });
-              if (!guard.ok) return guard.authResponse;
+              if (!guard.ok) {return guard.authResponse;}
               if (!params.token) {
                 return json({ error: "token is required for resolve_url" });
               }
@@ -415,7 +415,7 @@ export function registerFeishuWikiTools(api: OpenClawPluginApi) {
           }
         } catch (err) {
           const authResp = await handleFeishuTokenError(err, firstAccount, oauthRedirectUri, getOAuthDirectSender(firstAccount));
-          if (authResp) return authResp;
+          if (authResp) {return authResp;}
           return json({ error: err instanceof Error ? err.message : String(err) });
         }
       },

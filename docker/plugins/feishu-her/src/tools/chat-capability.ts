@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 
 const CAPABILITY_ACTIONS = ["status"] as const;

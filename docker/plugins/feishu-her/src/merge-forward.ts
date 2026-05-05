@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ChannelLogSink } from "openclaw/plugin-sdk/feishu";
+import type { ChannelLogSink } from "openclaw/plugin-sdk/channel-contract";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { parseFeishuInteractiveText, parseFeishuPostText } from "./feishu-message.js";
 import { createArchiveTextForBuffer } from "./group-archive.js";
@@ -62,7 +62,7 @@ const MIME_TO_EXT: Record<string, string> = {
 function resolveInboundMediaDir(): string {
   const base = process.env.OPENCLAW_HOME ?? join(homedir(), ".openclaw");
   const dir = join(base, "media", "inbound");
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  if (!existsSync(dir)) {mkdirSync(dir, { recursive: true });}
   return dir;
 }
 
@@ -84,8 +84,8 @@ function mergeCoverage(
   left: ExpandedFeishuContent["coverage"],
   right: ExpandedFeishuContent["coverage"],
 ): ExpandedFeishuContent["coverage"] {
-  if (left === "none" || right === "none") return "none";
-  if (left === "partial" || right === "partial") return "partial";
+  if (left === "none" || right === "none") {return "none";}
+  if (left === "partial" || right === "partial") {return "partial";}
   return "full";
 }
 
@@ -139,7 +139,7 @@ function isSourcePermissionDenied(error: unknown): boolean {
 
 function getCachedExpandedMessage(messageId: string): ExpandedFeishuContent | null {
   const cachedText = getCachedMessageText(messageId);
-  if (!cachedText) return null;
+  if (!cachedText) {return null;}
   return {
     text: cachedText,
     coverage: inferCoverageFromArchiveText(cachedText),
@@ -244,7 +244,7 @@ async function resolveOriginalMessageItem(params: {
   log?: ChannelLogSink;
 }): Promise<FeishuFetchedMessageItem | null> {
   const messageId = params.item.message_id?.trim();
-  if (!messageId) return null;
+  if (!messageId) {return null;}
   const items = await params.fetchItems(messageId);
   const original = items.find((item) => item.message_id === messageId) ?? items[0] ?? null;
   if (!original) {
@@ -343,7 +343,7 @@ export async function expandFetchedMessageItem(params: {
     if (resourceDownloadMode === "resolve_origin") {
       const fileName = `image-${messageId || "unknown"}.png`;
       const cached = getCachedExpandedMessage(messageId);
-      if (cached) return cached;
+      if (cached) {return cached;}
       try {
         const originalItem = await resolveOriginalMessageItem({
           account: params.account,
@@ -355,7 +355,7 @@ export async function expandFetchedMessageItem(params: {
           return buildMergedForwardAttachmentPlaceholder({ msgType, fileName });
         }
         const cachedOriginal = getCachedExpandedMessage(originalItem.message_id ?? "");
-        if (cachedOriginal) return cachedOriginal;
+        if (cachedOriginal) {return cachedOriginal;}
         return await expandFetchedMessageItem({
           account: params.account,
           item: originalItem,
@@ -384,7 +384,7 @@ export async function expandFetchedMessageItem(params: {
     }
     try {
       const imageData = await downloadImage({ messageId, imageKey });
-      if (!imageData) return { text: "[image]", coverage: "partial" };
+      if (!imageData) {return { text: "[image]", coverage: "partial" };}
       const archive = await expandDownloadedFile({
         buffer: imageData.buffer,
         contentType: imageData.contentType,
@@ -418,7 +418,7 @@ export async function expandFetchedMessageItem(params: {
         : `file-${messageId}`;
     if (resourceDownloadMode === "resolve_origin") {
       const cached = getCachedExpandedMessage(messageId);
-      if (cached) return cached;
+      if (cached) {return cached;}
       try {
         const originalItem = await resolveOriginalMessageItem({
           account: params.account,
@@ -430,7 +430,7 @@ export async function expandFetchedMessageItem(params: {
           return buildMergedForwardAttachmentPlaceholder({ msgType, fileName });
         }
         const cachedOriginal = getCachedExpandedMessage(originalItem.message_id ?? "");
-        if (cachedOriginal) return cachedOriginal;
+        if (cachedOriginal) {return cachedOriginal;}
         return await expandFetchedMessageItem({
           account: params.account,
           item: originalItem,
@@ -456,7 +456,7 @@ export async function expandFetchedMessageItem(params: {
     }
     try {
       const fileData = await downloadFile({ messageId, fileKey });
-      if (!fileData) return { text: `[file: ${fileName}]`, coverage: "partial" };
+      if (!fileData) {return { text: `[file: ${fileName}]`, coverage: "partial" };}
       return expandDownloadedFile({
         buffer: fileData.buffer,
         contentType: fileData.contentType,
@@ -493,7 +493,7 @@ export async function expandFetchedMessageItem(params: {
         : defaultName;
     if (resourceDownloadMode === "resolve_origin") {
       const cached = getCachedExpandedMessage(messageId);
-      if (cached) return cached;
+      if (cached) {return cached;}
       try {
         const originalItem = await resolveOriginalMessageItem({
           account: params.account,
@@ -505,7 +505,7 @@ export async function expandFetchedMessageItem(params: {
           return buildMergedForwardAttachmentPlaceholder({ msgType, fileName });
         }
         const cachedOriginal = getCachedExpandedMessage(originalItem.message_id ?? "");
-        if (cachedOriginal) return cachedOriginal;
+        if (cachedOriginal) {return cachedOriginal;}
         return await expandFetchedMessageItem({
           account: params.account,
           item: originalItem,
@@ -585,7 +585,7 @@ export async function expandFetchedMessageItem(params: {
     return { text: `[video: ${fileName}]`, coverage: "partial" };
   }
 
-  if (msgType === "sticker") return { text: "[sticker]", coverage: "partial" };
+  if (msgType === "sticker") {return { text: "[sticker]", coverage: "partial" };}
   if (msgType === "nonsupport") {
     return {
       text: "[unsupported message type — likely video, cannot recover full text]",
@@ -741,8 +741,8 @@ export async function expandMergeForwardItems(params: {
             blocks.push(prefixBulletBlock(`[${msgType}: ${fileName} — already included above]`));
             continue;
           }
-          if (msgType === "audio") mediaType = "audio";
-          else if (msgType === "media" || msgType === "video") mediaType = "video";
+          if (msgType === "audio") {mediaType = "audio";}
+          else if (msgType === "media" || msgType === "video") {mediaType = "video";}
         }
 
         if (downloaded) {
@@ -781,8 +781,8 @@ export async function expandMergeForwardItems(params: {
       resourceDownloadMode: isAttachmentMessageType(msgType) ? "forbid" : "allow",
     });
     coverage = mergeCoverage(coverage, expanded.coverage);
-    if (expanded.text) blocks.push(prefixBulletBlock(`${senderPrefix} ${expanded.text}`));
-    if (expanded.mediaFiles) mediaFiles.push(...expanded.mediaFiles);
+    if (expanded.text) {blocks.push(prefixBulletBlock(`${senderPrefix} ${expanded.text}`));}
+    if (expanded.mediaFiles) {mediaFiles.push(...expanded.mediaFiles);}
   }
 
   return {

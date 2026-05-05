@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import { callChatApi, makeLocalErrorResult, makeToolResult } from "./chat-api.js";
@@ -60,7 +60,7 @@ function getFirstAccountOrNull(api: OpenClawPluginApi): ResolvedFeishuAccount | 
 
 export function registerFeishuChatTabTools(api: OpenClawPluginApi) {
   const account = getFirstAccountOrNull(api);
-  if (!account) return;
+  if (!account) {return;}
 
   api.registerTool(
     {
@@ -70,12 +70,12 @@ export function registerFeishuChatTabTools(api: OpenClawPluginApi) {
       parameters: FeishuChatTabsSchema,
       async execute(_toolCallId: string, rawParams: unknown) {
         const params = rawParams as TabParams;
-        if (!params.chat_id) return makeLocalErrorResult("chat_id is required");
+        if (!params.chat_id) {return makeLocalErrorResult("chat_id is required");}
 
         switch (params.action) {
           case "add": {
-            if (!params.tab_name) return makeLocalErrorResult("tab_name is required for add");
-            if (!params.tab_type) return makeLocalErrorResult("tab_type is required for add");
+            if (!params.tab_name) {return makeLocalErrorResult("tab_name is required for add");}
+            if (!params.tab_type) {return makeLocalErrorResult("tab_type is required for add");}
 
             if (params.tab_type === "url" && !params.url) {
               return makeLocalErrorResult("url is required when tab_type=url");

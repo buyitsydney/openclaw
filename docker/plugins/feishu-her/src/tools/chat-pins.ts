@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import { callChatApi, makeLocalErrorResult, makeToolResult } from "./chat-api.js";
@@ -29,7 +29,7 @@ function getFirstAccountOrNull(api: OpenClawPluginApi): ResolvedFeishuAccount | 
 
 export function registerFeishuChatPinTools(api: OpenClawPluginApi) {
   const account = getFirstAccountOrNull(api);
-  if (!account) return;
+  if (!account) {return;}
 
   api.registerTool(
     {

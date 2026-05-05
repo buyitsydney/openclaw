@@ -10,7 +10,7 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
@@ -104,9 +104,9 @@ function json(data: unknown) {
 }
 
 function toUnixSecondsStr(input: string | number): string {
-  if (typeof input === "number") return String(Math.floor(input));
+  if (typeof input === "number") {return String(Math.floor(input));}
   const parsed = Date.parse(input);
-  if (!Number.isNaN(parsed)) return String(Math.floor(parsed / 1000));
+  if (!Number.isNaN(parsed)) {return String(Math.floor(parsed / 1000));}
   return String(input);
 }
 
@@ -126,8 +126,8 @@ function parseMessageItem(msg: any): MessageSearchResult {
   let contentText = msg.body?.content ?? "";
   try {
     const parsed = JSON.parse(contentText);
-    if (parsed.text) contentText = parsed.text;
-    else if (parsed.content) contentText = JSON.stringify(parsed);
+    if (parsed.text) {contentText = parsed.text;}
+    else if (parsed.content) {contentText = JSON.stringify(parsed);}
   } catch {
     // keep as-is
   }
@@ -193,7 +193,7 @@ async function readMessageContent(
 
 export function registerFeishuMessageSearchTool(api: OpenClawPluginApi): void {
   const accounts = listEnabledFeishuAccounts(api.config);
-  if (accounts.length === 0) return;
+  if (accounts.length === 0) {return;}
   const firstAccount: ResolvedFeishuAccount = accounts[0];
   const redirectUri = resolveOAuthRedirectUri(api.config as Record<string, unknown>);
 
@@ -218,7 +218,7 @@ export function registerFeishuMessageSearchTool(api: OpenClawPluginApi): void {
             toolLabel: "飞书消息搜索",
             sendDirectToUser: getOAuthDirectSender(firstAccount),
           });
-          if (!guard.ok) return guard.authResponse;
+          if (!guard.ok) {return guard.authResponse;}
           const userToken = guard.token;
 
           const maxResults = Math.min(Math.max(params.max_results ?? 10, 1), 50);
@@ -226,14 +226,14 @@ export function registerFeishuMessageSearchTool(api: OpenClawPluginApi): void {
 
           // Build request body
           const body: Record<string, unknown> = { query: params.query };
-          if (params.from_ids?.length) body.from_ids = params.from_ids;
-          if (params.chat_ids?.length) body.chat_ids = params.chat_ids;
-          if (params.at_chatter_ids?.length) body.at_chatter_ids = params.at_chatter_ids;
-          if (params.message_type) body.message_type = params.message_type;
-          if (params.chat_type) body.chat_type = params.chat_type;
-          if (params.from_type) body.from_type = params.from_type;
-          if (params.start_time) body.start_time = toUnixSecondsStr(params.start_time);
-          if (params.end_time) body.end_time = toUnixSecondsStr(params.end_time);
+          if (params.from_ids?.length) {body.from_ids = params.from_ids;}
+          if (params.chat_ids?.length) {body.chat_ids = params.chat_ids;}
+          if (params.at_chatter_ids?.length) {body.at_chatter_ids = params.at_chatter_ids;}
+          if (params.message_type) {body.message_type = params.message_type;}
+          if (params.chat_type) {body.chat_type = params.chat_type;}
+          if (params.from_type) {body.from_type = params.from_type;}
+          if (params.start_time) {body.start_time = toUnixSecondsStr(params.start_time);}
+          if (params.end_time) {body.end_time = toUnixSecondsStr(params.end_time);}
 
           // Search — collect message IDs (paginate if needed)
           const allMessageIds: string[] = [];
@@ -244,7 +244,7 @@ export function registerFeishuMessageSearchTool(api: OpenClawPluginApi): void {
             const query: Record<string, string> = {
               page_size: String(pageSize),
             };
-            if (pageToken) query.page_token = pageToken;
+            if (pageToken) {query.page_token = pageToken;}
 
             const res = await callFeishuApiWithUserToken<{
               items?: string[];
@@ -269,7 +269,7 @@ export function registerFeishuMessageSearchTool(api: OpenClawPluginApi): void {
             const ids = res.data?.items ?? [];
             allMessageIds.push(...ids);
 
-            if (!res.data?.has_more || ids.length === 0) break;
+            if (!res.data?.has_more || ids.length === 0) {break;}
             pageToken = res.data.page_token;
           }
 
@@ -309,7 +309,7 @@ export function registerFeishuMessageSearchTool(api: OpenClawPluginApi): void {
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           const authResp = await handleFeishuTokenError(err, firstAccount, redirectUri, getOAuthDirectSender(firstAccount));
-          if (authResp) return authResp;
+          if (authResp) {return authResp;}
           return json({ error: message });
         }
       },

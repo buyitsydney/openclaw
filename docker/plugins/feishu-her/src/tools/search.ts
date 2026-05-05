@@ -8,7 +8,7 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
@@ -138,7 +138,7 @@ function requireQuery(value: unknown): string {
 }
 
 function parseScope(value: unknown): SearchScope {
-  if (value === undefined) return "all";
+  if (value === undefined) {return "all";}
   if (value === "all" || value === "drive" || value === "wiki") {
     return value;
   }
@@ -146,7 +146,7 @@ function parseScope(value: unknown): SearchScope {
 }
 
 function parseLimit(value: unknown): number {
-  if (value === undefined) return 10;
+  if (value === undefined) {return 10;}
   if (typeof value !== "number" || !Number.isInteger(value)) {
     throw new Error("limit must be an integer");
   }
@@ -336,7 +336,7 @@ async function searchWiki(
 
 export function registerFeishuSearchTool(api: OpenClawPluginApi): void {
   const accounts = listEnabledFeishuAccounts(api.config);
-  if (accounts.length === 0) return;
+  if (accounts.length === 0) {return;}
   const firstAccount: ResolvedFeishuAccount = accounts[0];
   const redirectUri = resolveOAuthRedirectUri(api.config as Record<string, unknown>);
 
@@ -372,7 +372,7 @@ export function registerFeishuSearchTool(api: OpenClawPluginApi): void {
             toolLabel: "飞书搜索",
             sendDirectToUser: getOAuthDirectSender(firstAccount),
           });
-          if (!guard.ok) return guard.authResponse;
+          if (!guard.ok) {return guard.authResponse;}
 
           const userToken = guard.token.access_token;
           const [driveResults, wikiResults] = await Promise.all([
@@ -411,7 +411,7 @@ export function registerFeishuSearchTool(api: OpenClawPluginApi): void {
           });
         } catch (err) {
           const authResp = await handleFeishuTokenError(err, firstAccount, redirectUri, getOAuthDirectSender(firstAccount));
-          if (authResp) return authResp;
+          if (authResp) {return authResp;}
           return json({ error: err instanceof Error ? err.message : String(err) });
         }
       },

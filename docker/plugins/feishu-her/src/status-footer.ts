@@ -1,25 +1,25 @@
 import { readFileSync } from "node:fs";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/account-core";
 
 /** Shorten model ID to a display name (e.g., "claude-sonnet-4-20250514" → "Sonnet 4"). */
 function shortenModelName(model?: string): string {
-  if (!model) return "unknown";
+  if (!model) {return "unknown";}
   const claude = model.match(/claude-(\w+)-([\d][\d.-]*)/);
   if (claude) {
     const family = claude[1].charAt(0).toUpperCase() + claude[1].slice(1);
     const version = claude[2].replace(/-/g, ".");
     return `${family} ${version}`;
   }
-  if (model.startsWith("gpt-")) return model.replace(/-\d{4}-\d{2}-\d{2}$/, "");
-  if (model.startsWith("gemini-")) return model.replace(/-\d{4,}$/, "");
+  if (model.startsWith("gpt-")) {return model.replace(/-\d{4}-\d{2}-\d{2}$/, "");}
+  if (model.startsWith("gemini-")) {return model.replace(/-\d{4,}$/, "");}
   return model.length > 24 ? model.slice(0, 24) + "…" : model;
 }
 
 /** Format token count for compact display (e.g., 42000 → "42k"). */
 function formatTokenCompact(value?: number): string {
-  if (value === undefined || !Number.isFinite(value) || value <= 0) return "?";
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k`;
+  if (value === undefined || !Number.isFinite(value) || value <= 0) {return "?";}
+  if (value >= 1_000_000) {return `${(value / 1_000_000).toFixed(1)}m`;}
+  if (value >= 1_000) {return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k`;}
   return String(Math.round(value));
 }
 
@@ -44,7 +44,7 @@ export function buildFeishuStatusFooter(params: {
     const raw = readFileSync(params.storePath, "utf-8");
     const store = JSON.parse(raw);
     const entry = store?.[params.sessionKey];
-    if (!entry) return "";
+    if (!entry) {return "";}
 
     const model = entry.modelOverride ?? entry.model;
     const totalTokens = entry.totalTokens ?? (entry.inputTokens ?? 0) + (entry.outputTokens ?? 0);
@@ -74,11 +74,11 @@ export function buildFeishuStatusFooter(params: {
 }
 
 export function accumulateGroupedReplyText(current: string, next?: string): string {
-  if (!next) return current;
+  if (!next) {return current;}
   return current ? `${current}\n\n${next}` : next;
 }
 
 export function finalizeGroupedReplyText(text: string, footer: string): string {
-  if (!text || !footer) return text;
+  if (!text || !footer) {return text;}
   return text.endsWith(footer) ? text : `${text}${footer}`;
 }

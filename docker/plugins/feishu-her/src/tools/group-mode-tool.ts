@@ -4,7 +4,7 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { writeGroupMode, readGroupMode } from "../group-mode.js";
 
 function json(data: unknown) {

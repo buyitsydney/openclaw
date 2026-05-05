@@ -1,14 +1,14 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/browser-support";
+import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import type { TaskClient } from "./task-common.js";
 import { runTaskApiCall } from "./task-common.js";
 import { toUnixMsStr } from "./time-utils.js";
 
 // oxlint-disable-next-line typescript/no-explicit-any
 function normalizeDateParam(due: any): any {
-  if (!due?.timestamp) return due;
+  if (!due?.timestamp) {return due;}
   return { ...due, timestamp: toUnixMsStr(due.timestamp) };
 }
 import type {
@@ -79,7 +79,7 @@ function ensureTasklistMemberRoles(
 }
 
 function ensureTasklistOwnerType(owner: Record<string, unknown> | undefined) {
-  if (!owner) return;
+  if (!owner) {return;}
   const ownerType = owner.type;
   if (ownerType !== undefined && ownerType !== "user") {
     throw new Error("unsupported tasklist owner.type: only user is allowed");
@@ -87,7 +87,7 @@ function ensureTasklistOwnerType(owner: Record<string, unknown> | undefined) {
 }
 
 function formatTask(task: Record<string, unknown> | undefined) {
-  if (!task) return undefined;
+  if (!task) {return undefined;}
   return {
     guid: task.guid,
     task_id: task.task_id,
@@ -107,7 +107,7 @@ function formatTask(task: Record<string, unknown> | undefined) {
 }
 
 function formatTasklist(tasklist: Record<string, unknown> | undefined) {
-  if (!tasklist) return undefined;
+  if (!tasklist) {return undefined;}
   return {
     guid: tasklist.guid,
     name: tasklist.name,
@@ -122,7 +122,7 @@ function formatTasklist(tasklist: Record<string, unknown> | undefined) {
 }
 
 function formatComment(comment: Record<string, unknown> | undefined) {
-  if (!comment) return undefined;
+  if (!comment) {return undefined;}
   return {
     comment_id: comment.id,
     content: comment.content,
@@ -135,7 +135,7 @@ function formatComment(comment: Record<string, unknown> | undefined) {
 }
 
 function formatAttachment(attachment: Record<string, unknown> | undefined) {
-  if (!attachment) return undefined;
+  if (!attachment) {return undefined;}
   return {
     guid: attachment.guid,
     file_token: attachment.file_token,
@@ -171,7 +171,7 @@ async function downloadToTempFile(fileUrl: string, filename?: string) {
       return "";
     }
   })();
-  const name = (filename?.trim() || parsedName || "attachment.bin").replace(/[^\w.\-]/g, "_");
+  const name = (filename?.trim() || parsedName || "attachment.bin").replace(/[^\w.-]/g, "_");
   const tmpPath = path.join(
     resolvePreferredOpenClawTmpDir(),
     `feishu-task-attachment-${Date.now()}-${crypto.randomBytes(8).toString("hex")}-${name}`,
@@ -297,8 +297,8 @@ export async function updateTask(client: TaskClient, params: UpdateTaskParams) {
   };
   const rawTask = omitUndefined(params.task);
   // Normalize ISO 8601 date params before sending to Feishu API
-  if (rawTask.due) rawTask.due = normalizeDateParam(rawTask.due);
-  if (rawTask.start) rawTask.start = normalizeDateParam(rawTask.start);
+  if (rawTask.due) {rawTask.due = normalizeDateParam(rawTask.due);}
+  if (rawTask.start) {rawTask.start = normalizeDateParam(rawTask.start);}
   const taskBody = rawTask;
   const updateFields = params.update_fields?.length
     ? [...params.update_fields]
@@ -649,7 +649,7 @@ export async function uploadTaskAttachment(client: TaskClient, params: UploadTas
     const data = res as { items?: Record<string, unknown>[] } | undefined;
     return { items: (data?.items ?? []).map((i) => formatAttachment(i)) };
   } finally {
-    if (cleanup) await cleanup();
+    if (cleanup) {await cleanup();}
   }
 }
 

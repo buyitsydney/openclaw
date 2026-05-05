@@ -12,7 +12,7 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
@@ -221,7 +221,7 @@ async function enrichNormalizedMessages(params: {
       continue;
     }
 
-    if (!message.sender_actor) continue;
+    if (!message.sender_actor) {continue;}
     const resolved = await resolveFeishuMessageActors({
       account: params.account,
       sender: message.sender_actor,
@@ -247,7 +247,7 @@ async function enrichNormalizedMessages(params: {
       });
     } catch {}
     for (const message of bucket) {
-      if (!message.sender_actor) continue;
+      if (!message.sender_actor) {continue;}
       const resolved = await resolveFeishuMessageActors({
         account: params.account,
         sender: message.sender_actor,
@@ -295,8 +295,8 @@ function buildHistoryApiError(code: number | undefined, msg: string | undefined)
   const error = new Error(
     `Feishu API error: code=${code ?? "unknown"} msg=${msg ?? ""}`,
   ) as HistoryApiError;
-  if (typeof code === "number") error.feishuCode = code;
-  if (isUnsupportedForCurrentToken(code, msg)) error.unsupportedForCurrentToken = true;
+  if (typeof code === "number") {error.feishuCode = code;}
+  if (isUnsupportedForCurrentToken(code, msg)) {error.unsupportedForCurrentToken = true;}
   return error;
 }
 
@@ -346,9 +346,9 @@ function shouldRefetchMessageForStableMentions(raw: unknown): raw is {
   message_id?: string;
   mentions?: unknown[];
 } {
-  if (!raw || typeof raw !== "object") return false;
+  if (!raw || typeof raw !== "object") {return false;}
   const message = raw as { message_id?: unknown; mentions?: unknown };
-  if (typeof message.message_id !== "string" || !message.message_id.trim()) return false;
+  if (typeof message.message_id !== "string" || !message.message_id.trim()) {return false;}
   return Array.isArray(message.mentions) && message.mentions.length > 0;
 }
 
@@ -372,7 +372,7 @@ async function hydrateMergeForwardMessage(params: {
   message: NormalizedMessage;
   account: ResolvedFeishuAccount;
 }) {
-  if (params.message.msg_type !== "merge_forward" || !params.message.message_id) return;
+  if (params.message.msg_type !== "merge_forward" || !params.message.message_id) {return;}
   try {
     const expanded = await expandMergeForwardMessage({
       account: params.account,
@@ -422,7 +422,7 @@ const ARCHIVE_SUPPLEMENTABLE = new Set([
 function stripLocalArchiveSuffix(text: string): string {
   const marker = "\n[local archive: ";
   const idx = text.indexOf(marker);
-  if (idx === -1) return text;
+  if (idx === -1) {return text;}
   return text.substring(0, idx).trimEnd();
 }
 
@@ -449,14 +449,14 @@ function compactMessageForOutput(msg: NormalizedMessage): Record<string, unknown
   }
 
   // Optional fields — only include when present
-  if (msg.thread_id) compact.thread_id = msg.thread_id;
-  if (msg.parent_id) compact.parent_id = msg.parent_id;
-  if (msg.root_id) compact.root_id = msg.root_id;
-  if (msg.mentions && msg.mentions.length > 0) compact.mentions = msg.mentions;
-  if (msg.attachments && msg.attachments.length > 0) compact.attachments = msg.attachments;
-  if (msg.file_name) compact.file_name = msg.file_name;
-  if (msg.file_key) compact.file_key = msg.file_key;
-  if (msg.image_key) compact.image_key = msg.image_key;
+  if (msg.thread_id) {compact.thread_id = msg.thread_id;}
+  if (msg.parent_id) {compact.parent_id = msg.parent_id;}
+  if (msg.root_id) {compact.root_id = msg.root_id;}
+  if (msg.mentions && msg.mentions.length > 0) {compact.mentions = msg.mentions;}
+  if (msg.attachments && msg.attachments.length > 0) {compact.attachments = msg.attachments;}
+  if (msg.file_name) {compact.file_name = msg.file_name;}
+  if (msg.file_key) {compact.file_key = msg.file_key;}
+  if (msg.image_key) {compact.image_key = msg.image_key;}
 
   return compact;
 }
@@ -467,12 +467,12 @@ function compactMessagesForOutput(messages: NormalizedMessage[]): Record<string,
 
 function buildCoverageSummary(messages: NormalizedMessage[]) {
   const coverage = { full: 0, partial: 0, none: 0 };
-  for (const message of messages) coverage[message.coverage]++;
+  for (const message of messages) {coverage[message.coverage]++;}
   return coverage;
 }
 
 function buildArchiveFileName(message: NormalizedMessage): string {
-  if (message.file_name) return message.file_name;
+  if (message.file_name) {return message.file_name;}
   switch (message.msg_type) {
     case "image":
       return `image-${message.message_id}.jpg`;
@@ -486,7 +486,7 @@ function buildArchiveFileName(message: NormalizedMessage): string {
 }
 
 function buildArchiveErrorReason(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) return error.message.trim();
+  if (error instanceof Error && error.message.trim()) {return error.message.trim();}
   const message = String(error).trim();
   return message || "archive_failed";
 }
@@ -515,7 +515,7 @@ async function ensureArchivedMessages(params: {
       continue;
     }
 
-    if (!ARCHIVE_SUPPLEMENTABLE.has(message.msg_type)) continue;
+    if (!ARCHIVE_SUPPLEMENTABLE.has(message.msg_type)) {continue;}
 
     const chatId = params.chatId ?? message.chat_id;
     const archive = chatId ? resolveArchive(chatId) : undefined;
@@ -527,11 +527,11 @@ async function ensureArchivedMessages(params: {
         message.sender_actor = existing.actor;
         applySenderIdentityFields(message);
       }
-      if (message.msg_type === "nonsupport") message.msg_type = "media_local";
+      if (message.msg_type === "nonsupport") {message.msg_type = "media_local";}
       continue;
     }
 
-    if (!hydrateMissingAttachments) continue;
+    if (!hydrateMissingAttachments) {continue;}
 
     let archiveText: string | null = null;
     const fileName = buildArchiveFileName(message);
@@ -573,7 +573,7 @@ async function ensureArchivedMessages(params: {
       archiveText = buildArchiveFailureText(fileName, buildArchiveErrorReason(error));
     }
 
-    if (!archiveText) continue;
+    if (!archiveText) {continue;}
 
     if (chatId) {
       const ts = message.create_time ? Math.floor(Number(message.create_time) / 1000) : undefined;
@@ -611,7 +611,7 @@ async function ensureArchivedMessages(params: {
     }
 
     applyArchiveTextToMessage(message, archiveText);
-    if (message.msg_type === "nonsupport") message.msg_type = "media_local";
+    if (message.msg_type === "nonsupport") {message.msg_type = "media_local";}
   }
 }
 
@@ -630,7 +630,7 @@ type TokenClient = {
 export async function getTenantAccessToken(account: ResolvedFeishuAccount): Promise<string> {
   const client = getFeishuClient(account) as unknown as TokenClient;
   const token = await client.tokenManager?.getTenantAccessToken({});
-  if (!token) throw new Error("failed_to_get_tenant_access_token");
+  if (!token) {throw new Error("failed_to_get_tenant_access_token");}
   return token;
 }
 
@@ -673,7 +673,7 @@ export async function fetchChatHistory(params: {
       sort_type: "ByCreateTimeDesc",
       page_size: String(perPage),
     };
-    if (pageToken) query.page_token = pageToken;
+    if (pageToken) {query.page_token = pageToken;}
 
     const res = await callFeishuApiWithUserToken<{
       items: unknown[];
@@ -704,12 +704,12 @@ export async function fetchChatHistory(params: {
       });
       messages.push(normalized);
       remaining--;
-      if (remaining <= 0) break;
+      if (remaining <= 0) {break;}
     }
 
     hasMore = res.data?.has_more ?? false;
     pageToken = res.data?.page_token;
-    if (!hasMore || !pageToken || remaining <= 0) break;
+    if (!hasMore || !pageToken || remaining <= 0) {break;}
   }
 
   await enrichNormalizedMessages({
@@ -750,7 +750,7 @@ async function fetchThreadMessages(params: {
     sort_type: "ByCreateTimeAsc",
     page_size: String(params.pageSize),
   };
-  if (params.pageToken) query.page_token = params.pageToken;
+  if (params.pageToken) {query.page_token = params.pageToken;}
 
   const res = await callFeishuApiWithUserToken<{
     items: unknown[];
@@ -803,7 +803,7 @@ async function fetchSingleMessage(params: {
     token: params.token,
     messageId: params.messageId,
   });
-  if (items.length === 0) throw new Error("Message not found");
+  if (items.length === 0) {throw new Error("Message not found");}
   const message = normalizeMessage(items[0]);
   await hydrateMergeForwardMessage({
     message,
@@ -874,7 +874,7 @@ const ChatHistorySchema = Type.Object({
 
 export function registerFeishuChatHistoryTool(api: OpenClawPluginApi) {
   const accounts = listEnabledFeishuAccounts(api.config);
-  if (accounts.length === 0) return;
+  if (accounts.length === 0) {return;}
   const firstAccount: ResolvedFeishuAccount = accounts[0];
   const redirectUri = resolveOAuthRedirectUri(api.config as Record<string, unknown>);
 
@@ -909,7 +909,7 @@ export function registerFeishuChatHistoryTool(api: OpenClawPluginApi) {
           toolLabel: "群聊历史",
           sendDirectToUser: buildSendDirectToUser(firstAccount, toolCtx.deliveryContext?.to),
         });
-        if (!guard.ok) return guard.authResponse;
+        if (!guard.ok) {return guard.authResponse;}
         const userToken = guard.token;
 
         try {
@@ -926,7 +926,7 @@ export function registerFeishuChatHistoryTool(api: OpenClawPluginApi) {
         } catch (err) {
           const authResp = await handleFeishuTokenError(err, firstAccount, redirectUri, getOAuthDirectSender(firstAccount));
           const msg = err instanceof Error ? err.message : String(err);
-          if (authResp) return authResp;
+          if (authResp) {return authResp;}
 
           return json({ error: msg });
         }

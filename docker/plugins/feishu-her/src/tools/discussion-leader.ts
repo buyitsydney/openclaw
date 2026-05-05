@@ -5,7 +5,7 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { setDiscussionLeader, getDiscussionParticipants } from "../discussion-state.js";
 import { readGroupMode } from "../group-mode.js";
 

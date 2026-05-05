@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import { callChatApi, makeLocalErrorResult, makeToolResult } from "./chat-api.js";
@@ -63,7 +63,7 @@ function getFirstAccountOrNull(api: OpenClawPluginApi): ResolvedFeishuAccount | 
 
 export function registerFeishuChatManageTools(api: OpenClawPluginApi) {
   const account = getFirstAccountOrNull(api);
-  if (!account) return;
+  if (!account) {return;}
 
   api.registerTool(
     {
@@ -78,7 +78,7 @@ export function registerFeishuChatManageTools(api: OpenClawPluginApi) {
 
         switch (params.action) {
           case "create": {
-            if (!params.name) return makeLocalErrorResult("name is required for create");
+            if (!params.name) {return makeLocalErrorResult("name is required for create");}
             const result = await callChatApi({
               account,
               method: "POST",
@@ -94,7 +94,7 @@ export function registerFeishuChatManageTools(api: OpenClawPluginApi) {
             return makeToolResult(result);
           }
           case "get": {
-            if (!params.chat_id) return makeLocalErrorResult("chat_id is required for get");
+            if (!params.chat_id) {return makeLocalErrorResult("chat_id is required for get");}
             const result = await callChatApi({
               account,
               method: "GET",
@@ -104,7 +104,7 @@ export function registerFeishuChatManageTools(api: OpenClawPluginApi) {
             return makeToolResult(result);
           }
           case "update": {
-            if (!params.chat_id) return makeLocalErrorResult("chat_id is required for update");
+            if (!params.chat_id) {return makeLocalErrorResult("chat_id is required for update");}
             if (!params.name && !params.description) {
               return makeLocalErrorResult("update requires at least one of: name, description");
             }
@@ -122,7 +122,7 @@ export function registerFeishuChatManageTools(api: OpenClawPluginApi) {
           }
           case "update_owner": {
             if (!params.chat_id)
-              return makeLocalErrorResult("chat_id is required for update_owner");
+              {return makeLocalErrorResult("chat_id is required for update_owner");}
             if (!params.description) {
               return makeLocalErrorResult("description is required for update_owner");
             }
@@ -136,7 +136,7 @@ export function registerFeishuChatManageTools(api: OpenClawPluginApi) {
             return makeToolResult(result);
           }
           case "delete": {
-            if (!params.chat_id) return makeLocalErrorResult("chat_id is required for delete");
+            if (!params.chat_id) {return makeLocalErrorResult("chat_id is required for delete");}
             const result = await callChatApi({
               account,
               method: "DELETE",

@@ -12,7 +12,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
   getArchiveEntryDisplaySender,
@@ -158,18 +158,18 @@ async function searchDriveKeyword(
       docs_types: DRIVE_DOC_TYPES_WITHOUT_BITABLE,
     },
   });
-  if (res.code !== 0) return [];
+  if (res.code !== 0) {return [];}
 
   const results: DeepSearchResult[] = [];
   for (const item of res.data?.docs_entities ?? []) {
-    if (!item.docs_token || !item.title) continue;
+    if (!item.docs_token || !item.title) {continue;}
     const docType = toDriveDocType(item.docs_type ?? "");
     let url: string | undefined;
     if (docType) {
       const resolved = await resolveDriveShareUrl(account, item.docs_token, docType, {
         userToken,
       });
-      if (resolved.ok) url = resolved.share_url;
+      if (resolved.ok) {url = resolved.share_url;}
     }
     results.push({
       source: "drive",
@@ -191,7 +191,7 @@ async function searchDriveKeyword(
     results.map((item) => item.token).filter((item): item is string => !!item),
   );
   for (const folder of rootFolders) {
-    if (seenTokens.has(folder.token)) continue;
+    if (seenTokens.has(folder.token)) {continue;}
     results.push({
       source: "drive",
       title: folder.name,
@@ -220,7 +220,7 @@ async function searchWikiKeyword(
     body: { query: keyword },
     query: { page_size: String(PER_KEYWORD_LIMIT) },
   });
-  if (res.code !== 0) return [];
+  if (res.code !== 0) {return [];}
 
   return (res.data?.items ?? [])
     .filter((item) => item.node_id && item.title)
@@ -254,7 +254,7 @@ async function searchMinutesKeyword(
       docs_types: [22],
     },
   });
-  if (res.code !== 0) return [];
+  if (res.code !== 0) {return [];}
 
   return (res.data?.docs_entities ?? [])
     .filter((item) => item.docs_token && item.title)
@@ -276,7 +276,7 @@ function resolveGroupArchiveDir(): string {
 
 function searchGroupArchives(keyword: string): DeepSearchResult[] {
   const archiveDir = resolveGroupArchiveDir();
-  if (!existsSync(archiveDir)) return [];
+  if (!existsSync(archiveDir)) {return [];}
 
   const indexPath = join(archiveDir, "index.json");
   let index: Record<string, { name: string }> = {};
@@ -300,7 +300,7 @@ function searchGroupArchives(keyword: string): DeepSearchResult[] {
 
   for (const chatId of chatDirs) {
     const messagesPath = join(archiveDir, chatId, "messages.jsonl");
-    if (!existsSync(messagesPath)) continue;
+    if (!existsSync(messagesPath)) {continue;}
 
     let content: string;
     try {
@@ -313,12 +313,12 @@ function searchGroupArchives(keyword: string): DeepSearchResult[] {
     let matchCount = 0;
 
     for (const line of content.split("\n")) {
-      if (!line.trim()) continue;
-      if (matchCount >= ARCHIVE_MAX_MATCHES_PER_GROUP) break;
+      if (!line.trim()) {continue;}
+      if (matchCount >= ARCHIVE_MAX_MATCHES_PER_GROUP) {break;}
       try {
         const entry = normalizeArchiveEntry(JSON.parse(line) as GroupArchiveEntry);
         const text = getArchiveEntryDisplayText(entry);
-        if (!text?.toLowerCase().includes(lowerKeyword)) continue;
+        if (!text?.toLowerCase().includes(lowerKeyword)) {continue;}
 
         matchCount++;
         const idx = text.toLowerCase().indexOf(lowerKeyword);
@@ -355,7 +355,7 @@ function dedup(results: DeepSearchResult[]): DeepSearchResult[] {
   const out: DeepSearchResult[] = [];
   for (const r of results) {
     const key = r.token ?? `${r.source}:${r.title}`;
-    if (seen.has(key)) continue;
+    if (seen.has(key)) {continue;}
     seen.add(key);
     out.push(r);
   }
@@ -366,7 +366,7 @@ function dedup(results: DeepSearchResult[]): DeepSearchResult[] {
 
 export function registerFeishuDeepSearchTool(api: OpenClawPluginApi): void {
   const accounts = listEnabledFeishuAccounts(api.config);
-  if (accounts.length === 0) return;
+  if (accounts.length === 0) {return;}
   const firstAccount = accounts[0];
   const redirectUri = resolveOAuthRedirectUri(api.config as Record<string, unknown>);
 
@@ -412,7 +412,7 @@ export function registerFeishuDeepSearchTool(api: OpenClawPluginApi): void {
             toolLabel: "飞书深度搜索",
             sendDirectToUser: getOAuthDirectSender(firstAccount),
           });
-          if (!guard.ok) return guard.authResponse;
+          if (!guard.ok) {return guard.authResponse;}
           const userToken = guard.token.access_token;
 
           const allResults: DeepSearchResult[] = [];
@@ -424,7 +424,7 @@ export function registerFeishuDeepSearchTool(api: OpenClawPluginApi): void {
 
           for (const keyword of keywords) {
             const kw = keyword.trim();
-            if (!kw) continue;
+            if (!kw) {continue;}
 
             tasks.push(
               searchDriveKeyword(firstAccount, userToken, kw)
@@ -485,7 +485,7 @@ export function registerFeishuDeepSearchTool(api: OpenClawPluginApi): void {
           });
         } catch (err) {
           const authResp = await handleFeishuTokenError(err, firstAccount, redirectUri, getOAuthDirectSender(firstAccount));
-          if (authResp) return authResp;
+          if (authResp) {return authResp;}
           return json({ error: err instanceof Error ? err.message : String(err) });
         }
       },

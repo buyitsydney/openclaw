@@ -5,7 +5,7 @@
 
 import type * as Lark from "@larksuiteoapi/node-sdk";
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import { getFeishuClient } from "../outbound.js";
@@ -28,7 +28,7 @@ async function listChats(client: Lark.Client, pageSize?: number, pageToken?: str
       ...(pageToken && { page_token: pageToken }),
     },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return {
     // oxlint-disable-next-line typescript/no-explicit-any
     chats: (res.data?.items ?? []).map((c: any) => ({
@@ -49,7 +49,7 @@ async function listChats(client: Lark.Client, pageSize?: number, pageToken?: str
 async function getChatInfo(client: Lark.Client, chatId: string) {
   // oxlint-disable-next-line typescript/no-explicit-any
   const res: any = await client.im.chat.get({ path: { chat_id: chatId } });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return {
     chat_id: chatId,
     name: res.data?.name,
@@ -77,7 +77,7 @@ async function listChatMembers(
       ...(pageToken && { page_token: pageToken }),
     },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return {
     // oxlint-disable-next-line typescript/no-explicit-any
     members: (res.data?.items ?? []).map((m: any) => ({
@@ -112,7 +112,7 @@ const FeishuChatSchema = Type.Object({
 
 export function registerFeishuChatTools(api: OpenClawPluginApi) {
   const accounts = listEnabledFeishuAccounts(api.config);
-  if (accounts.length === 0) return;
+  if (accounts.length === 0) {return;}
   const firstAccount: ResolvedFeishuAccount = accounts[0];
   const getClient = () => getFeishuClient(firstAccount);
 
@@ -131,11 +131,11 @@ export function registerFeishuChatTools(api: OpenClawPluginApi) {
             case "list":
               return json(await listChats(client, params.page_size, params.page_token));
             case "get": {
-              if (!params.chat_id) return json({ error: "chat_id is required for get action" });
+              if (!params.chat_id) {return json({ error: "chat_id is required for get action" });}
               return json(await getChatInfo(client, params.chat_id));
             }
             case "members": {
-              if (!params.chat_id) return json({ error: "chat_id is required for members action" });
+              if (!params.chat_id) {return json({ error: "chat_id is required for members action" });}
               return json(
                 await listChatMembers(client, params.chat_id, params.page_size, params.page_token),
               );

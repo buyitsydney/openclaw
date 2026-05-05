@@ -15,7 +15,8 @@
   agents: {
     defaults: {
       userTimezone: "Asia/Shanghai",
-      llm: { idleTimeoutSeconds: 300 },
+      // 2026-05-04: removed for OpenClaw v2026.5.3 schema (legacy key, release notes "doctor --fix migrates"). 主人授权升级到 v2026.5.3
+      // llm: { idleTimeoutSeconds: 300 },
       maxConcurrent: 16,
       subagents: { maxConcurrent: 64 },
       compaction: { mode: "safeguard", reserveTokens: 200000 },

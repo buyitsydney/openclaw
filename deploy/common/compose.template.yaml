@@ -22,8 +22,8 @@ services:
       OPENCLAW_INSTANCE_ID: carher-{{USER_ID}}-compose
       GOOGLE_APPLICATION_CREDENTIALS: /gcloud/application_default_credentials.json
 
-      REDIS_URL: redis://carher-redis:6379
-      CARHER_SERVER: local
+      REDIS_URL: ${REDIS_URL:-redis://carher-redis:6379}
+      CARHER_SERVER: ${CARHER_SERVER:-local}
       CARHER_LAN_IP: ${CARHER_LAN_IP:-127.0.0.1}
       CARHER_A2A_PORT: "{{PORT_A2A}}"
 

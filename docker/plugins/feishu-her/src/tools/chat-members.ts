@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import { callChatApi, makeLocalErrorResult, makeToolResult } from "./chat-api.js";
@@ -56,7 +56,7 @@ function getFirstAccountOrNull(api: OpenClawPluginApi): ResolvedFeishuAccount | 
 
 export function registerFeishuChatMemberTools(api: OpenClawPluginApi) {
   const account = getFirstAccountOrNull(api);
-  if (!account) return;
+  if (!account) {return;}
 
   api.registerTool(
     {
@@ -181,9 +181,9 @@ async function detectGroupBots(
     for (const m of result.messages) {
       const isBot =
         m.sender_actor_kind === "bot" || m.sender_type === "app" || m.sender_type === "bot";
-      if (!isBot) continue;
+      if (!isBot) {continue;}
       const senderId = m.sender_id?.trim();
-      if (!senderId || seen.has(senderId)) continue;
+      if (!senderId || seen.has(senderId)) {continue;}
       // sender_id is typically cli_xxx (app_id) for bots
       if (senderId.startsWith("cli_") && senderId in knownBots && !seen.has(senderId)) {
         seen.add(senderId);

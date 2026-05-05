@@ -1,4 +1,4 @@
-import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/feishu";
+import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { createArchiveTextForBuffer } from "./group-archive.js";
 import { callFeishuApiWithUserToken, getValidUserToken } from "./oauth.js";
@@ -58,7 +58,7 @@ async function getDriveFileMeta(params: {
 }
 
 function extractFilenameFromContentDisposition(header: string | null): string | null {
-  if (!header) return null;
+  if (!header) {return null;}
   // RFC 6266: filename*=UTF-8''encoded or filename="quoted"
   const utf8Match = header.match(/filename\*\s*=\s*UTF-8''([^\s;]+)/i);
   if (utf8Match?.[1]) {
@@ -69,7 +69,7 @@ function extractFilenameFromContentDisposition(header: string | null): string | 
     }
   }
   const quotedMatch = header.match(/filename\s*=\s*"([^"]+)"/i);
-  if (quotedMatch?.[1]) return quotedMatch[1];
+  if (quotedMatch?.[1]) {return quotedMatch[1];}
   const plainMatch = header.match(/filename\s*=\s*([^\s;]+)/i);
   return plainMatch?.[1]?.trim() || null;
 }

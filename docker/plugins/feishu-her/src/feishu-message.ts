@@ -1,4 +1,4 @@
-import type { ChannelLogSink } from "openclaw/plugin-sdk/feishu";
+import type { ChannelLogSink } from "openclaw/plugin-sdk/channel-contract";
 import { resolveFeishuAccountLabel, type ResolvedFeishuAccount } from "./accounts.js";
 import { formatFeishuAtText } from "./mention-text.js";
 import { getFeishuClient } from "./outbound.js";

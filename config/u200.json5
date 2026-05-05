@@ -11,13 +11,29 @@
     mode: "local",
   },
 
+
   // A2A hub mode: 13/198/199/200 are permanent hubs (god-mode peers).
   plugins: {
     entries: {
+      "her-antitalker-poc": { enabled: true, hooks: { allowConversationAccess: true } },
+      "hook-probe": { enabled: true, hooks: { allowConversationAccess: true } },
       "a2a-gateway": {
         config: {
           outbound: { enabled: true },
         },
+      },
+    },
+  },
+
+  // 2026-05-03 v7.3 · antitalker Bug 4/5 fix
+  // heartbeat.target='last' tells OpenClaw to use session.lastChannel (feishu)
+  // instead of 'none' → canRelayToUser flips true → exec completion prompt
+  // becomes 'The command completion details are:' instead of 'reply HEARTBEAT_OK only'.
+  // Boundary: A2A/cron isolated sessions still silence (no feishu lastChannel).
+  agents: {
+    defaults: {
+      heartbeat: {
+        target: "last",
       },
     },
   },

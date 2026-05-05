@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import { callChatApi, makeLocalErrorResult, makeToolResult } from "./chat-api.js";
@@ -42,7 +42,7 @@ function getFirstAccountOrNull(api: OpenClawPluginApi): ResolvedFeishuAccount | 
 
 export function registerFeishuChatControlTools(api: OpenClawPluginApi) {
   const account = getFirstAccountOrNull(api);
-  if (!account) return;
+  if (!account) {return;}
 
   api.registerTool(
     {
@@ -52,7 +52,7 @@ export function registerFeishuChatControlTools(api: OpenClawPluginApi) {
       parameters: FeishuChatControlsSchema,
       async execute(_toolCallId: string, rawParams: unknown) {
         const params = rawParams as ControlParams;
-        if (!params.chat_id) return makeLocalErrorResult("chat_id is required");
+        if (!params.chat_id) {return makeLocalErrorResult("chat_id is required");}
 
         switch (params.action) {
           case "get_moderation": {

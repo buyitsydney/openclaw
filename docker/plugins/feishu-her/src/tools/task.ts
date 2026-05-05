@@ -7,7 +7,7 @@
  */
 
 import type { TSchema } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import { getFeishuClient } from "../outbound.js";
 import {
@@ -110,7 +110,7 @@ type TaskToolSpec<P> = {
 
 function registerTaskTool<P>(api: OpenClawPluginApi, spec: TaskToolSpec<P>) {
   const accounts = listEnabledFeishuAccounts(api.config);
-  if (accounts.length === 0) return;
+  if (accounts.length === 0) {return;}
   const firstAccount: ResolvedFeishuAccount = accounts[0];
   const getClient = () => getFeishuClient(firstAccount);
 
@@ -125,7 +125,7 @@ function registerTaskTool<P>(api: OpenClawPluginApi, spec: TaskToolSpec<P>) {
         try {
           const client = getClient();
           return json(
-            await spec.run({ client: client as TaskClient, account: firstAccount }, params as P),
+            await spec.run({ client: client, account: firstAccount }, params as P),
           );
         } catch (err) {
           return errorResult(err);
@@ -138,7 +138,7 @@ function registerTaskTool<P>(api: OpenClawPluginApi, spec: TaskToolSpec<P>) {
 
 export function registerFeishuTaskTools(api: OpenClawPluginApi) {
   const accounts = listEnabledFeishuAccounts(api.config);
-  if (accounts.length === 0) return;
+  if (accounts.length === 0) {return;}
 
   registerTaskTool<CreateTaskParams>(api, {
     name: "feishu_task_create",

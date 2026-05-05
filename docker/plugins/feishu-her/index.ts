@@ -1,5 +1,5 @@
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
-import { emptyPluginConfigSchema } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
+import { emptyPluginConfigSchema } from "openclaw/plugin-sdk/channel-plugin-common";
 import { listEnabledFeishuAccounts } from "./src/accounts.js";
 import { feishuPlugin } from "./src/channel.js";
 import {
@@ -15,7 +15,7 @@ import { registerAllFeishuTools } from "./src/tools/index.js";
 let initialArchiveSyncScheduled = false;
 
 function extractConfigOpts(config: Record<string, unknown> | undefined): BuildReportOpts {
-  if (!config) return {};
+  if (!config) {return {};}
   const agents = config.agents as Record<string, unknown> | undefined;
   const defaults = agents?.defaults as Record<string, unknown> | undefined;
   const compaction = defaults?.compaction as Record<string, unknown> | undefined;
@@ -74,7 +74,7 @@ const plugin = {
 
     api.on("after_compaction", (event, ctx) => {
       const sessionFile = event.sessionFile;
-      if (!sessionFile) return;
+      if (!sessionFile) {return;}
       try {
         const opts = extractConfigOpts(api.config as Record<string, unknown> | undefined);
         const report = buildReportFromSessionFile(sessionFile, opts);

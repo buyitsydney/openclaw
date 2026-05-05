@@ -13,7 +13,7 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import { listEnabledFeishuAccounts } from "../accounts.js";
 import {
@@ -160,7 +160,7 @@ async function fetchAllReplies(
       file_type: fileType,
       page_size: "50",
     };
-    if (pageToken) query.page_token = pageToken;
+    if (pageToken) {query.page_token = pageToken;}
 
     const res = await callFeishuApiWithUserToken<CommentReplyListData>({
       method: "GET",
@@ -168,9 +168,9 @@ async function fetchAllReplies(
       userToken,
       query,
     });
-    if (res.code !== 0) break;
+    if (res.code !== 0) {break;}
 
-    if (res.data?.items) replies.push(...res.data.items);
+    if (res.data?.items) {replies.push(...res.data.items);}
     hasMore = res.data?.has_more ?? false;
     pageToken = res.data?.page_token;
   }
@@ -248,7 +248,7 @@ export function registerFeishuDocCommentsTools(api: OpenClawPluginApi): void {
         toolLabel: "文档评论",
         sendDirectToUser: getOAuthDirectSender(account),
       });
-      if (!tokenResult.ok) return tokenResult.authResponse;
+      if (!tokenResult.ok) {return tokenResult.authResponse;}
       const userToken = tokenResult.token.access_token;
 
       try {
@@ -258,7 +258,7 @@ export function registerFeishuDocCommentsTools(api: OpenClawPluginApi): void {
 
         if (fileType === "wiki") {
           const resolved = await resolveWikiToken(userToken, fileToken);
-          if ("error" in resolved) return json({ error: resolved.error });
+          if ("error" in resolved) {return json({ error: resolved.error });}
           fileToken = resolved.objToken;
           fileType = resolved.objType;
         }
@@ -269,9 +269,9 @@ export function registerFeishuDocCommentsTools(api: OpenClawPluginApi): void {
             file_type: fileType,
             page_size: String(params.page_size ?? 50),
           };
-          if (params.is_whole !== undefined) query.is_whole = String(params.is_whole);
-          if (params.is_solved !== undefined) query.is_solved = String(params.is_solved);
-          if (params.page_token) query.page_token = params.page_token;
+          if (params.is_whole !== undefined) {query.is_whole = String(params.is_whole);}
+          if (params.is_solved !== undefined) {query.is_solved = String(params.is_solved);}
+          if (params.page_token) {query.page_token = params.page_token;}
 
           const res = await callFeishuApiWithUserToken<CommentListData>({
             method: "GET",
@@ -279,7 +279,7 @@ export function registerFeishuDocCommentsTools(api: OpenClawPluginApi): void {
             userToken,
             query,
           });
-          if (res.code !== 0) return json({ error: res.msg });
+          if (res.code !== 0) {return json({ error: res.msg });}
 
           const items = res.data?.items ?? [];
           const assembled = await assembleCommentsWithReplies(
@@ -298,7 +298,7 @@ export function registerFeishuDocCommentsTools(api: OpenClawPluginApi): void {
 
         // ── CREATE ──
         if (action === "create") {
-          if (!params.content) return json({ error: "content is required for create action" });
+          if (!params.content) {return json({ error: "content is required for create action" });}
 
           const elements = buildCreateElements(params.content, params.mention_open_id);
 
@@ -313,16 +313,16 @@ export function registerFeishuDocCommentsTools(api: OpenClawPluginApi): void {
               },
             },
           });
-          if (res.code !== 0) return json({ error: res.msg });
+          if (res.code !== 0) {return json({ error: res.msg });}
 
           return json({ success: true, comment_id: res.data?.comment_id });
         }
 
         // ── PATCH (resolve / unresolve) ──
         if (action === "patch") {
-          if (!params.comment_id) return json({ error: "comment_id is required for patch action" });
+          if (!params.comment_id) {return json({ error: "comment_id is required for patch action" });}
           if (params.is_solved_value === undefined)
-            return json({ error: "is_solved_value is required for patch action" });
+            {return json({ error: "is_solved_value is required for patch action" });}
 
           const res = await callFeishuApiWithUserToken({
             method: "PATCH",
@@ -331,7 +331,7 @@ export function registerFeishuDocCommentsTools(api: OpenClawPluginApi): void {
             query: { file_type: fileType },
             body: { is_solved: params.is_solved_value },
           });
-          if (res.code !== 0) return json({ error: res.msg });
+          if (res.code !== 0) {return json({ error: res.msg });}
 
           return json({ success: true });
         }

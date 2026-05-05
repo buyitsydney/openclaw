@@ -12,9 +12,14 @@
     mode: "local",
   },
 
+  // 2026-05-04 bug #11 fix · heartbeat.target=last lets wake/heartbeat reply auto-route to session.lastChannel (feishu group)
+  agents: { defaults: { heartbeat: { target: "last" } } },
+
   // A2A hub 模式:carher-13 (弋天) 是 god mode/hub,可以主动调度其他 peer。
   plugins: {
     entries: {
+      "her-antitalker-poc": { enabled: true, hooks: { allowConversationAccess: true } },
+      "hook-probe": { enabled: true, hooks: { allowConversationAccess: true } },
       "a2a-gateway": {
         config: {
           outbound: { enabled: true },

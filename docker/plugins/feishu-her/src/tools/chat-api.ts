@@ -1,4 +1,4 @@
-import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/feishu";
+import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import type { ResolvedFeishuAccount } from "../accounts.js";
 import { getFeishuClient } from "../outbound.js";
 
@@ -43,7 +43,7 @@ function buildOpenApiUrl(endpoint: string, query?: QueryParams): string {
   const url = new URL(`${FEISHU_OPEN_API_BASE}${path}`);
   if (query) {
     for (const [key, value] of Object.entries(query)) {
-      if (value === undefined) continue;
+      if (value === undefined) {continue;}
       url.searchParams.set(key, String(value));
     }
   }
@@ -60,14 +60,14 @@ async function getTenantAccessToken(account: ResolvedFeishuAccount): Promise<str
 }
 
 function parseFeishuEnvelope<TData>(raw: string): FeishuEnvelope<TData> | null {
-  if (!raw) return null;
+  if (!raw) {return null;}
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
     return null;
   }
-  if (!parsed || typeof parsed !== "object") return null;
+  if (!parsed || typeof parsed !== "object") {return null;}
   return parsed as FeishuEnvelope<TData>;
 }
 
@@ -115,7 +115,7 @@ export async function callChatApi<TData = unknown>(
         ok: code === 0,
         code,
         msg,
-        data: (payload.data as TData | undefined) ?? null,
+        data: (payload.data) ?? null,
         http_status: response.status,
         method: request.method,
         endpoint: request.endpoint,

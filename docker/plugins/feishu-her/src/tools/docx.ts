@@ -9,8 +9,8 @@ import { homedir } from "os";
 import { isAbsolute, join, resolve, basename } from "path";
 import type * as Lark from "@larksuiteoapi/node-sdk";
 import { Type } from "@sinclair/typebox";
-import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/browser-support";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import { sniffMimeFromBase64 } from "../media-helpers.js";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
@@ -36,8 +36,8 @@ function extractLarkError(err: unknown): { code?: number; msg: string } {
     // oxlint-disable-next-line typescript/no-explicit-any
     const axiosErr = err as any;
     const data = axiosErr?.response?.data;
-    if (data?.code && data?.msg) return { code: data.code, msg: data.msg };
-    if (data?.error?.message) return { msg: data.error.message };
+    if (data?.code && data?.msg) {return { code: data.code, msg: data.msg };}
+    if (data?.error?.message) {return { msg: data.error.message };}
   }
   return { msg: String(err) };
 }
@@ -56,7 +56,7 @@ function describeLarkError(code: number | undefined, msg: string): string {
       "operation count exceeds limit — too many cell operations; split into multiple requests",
     1770035: "resource count exceeds limit — max 20 images per request",
   };
-  if (code && explanations[code]) return `Feishu API error ${code}: ${explanations[code]}`;
+  if (code && explanations[code]) {return `Feishu API error ${code}: ${explanations[code]}`;}
   return msg;
 }
 
@@ -139,7 +139,7 @@ function extractTableData(
 ): { rowSize: number; columnSize: number; cellElements: any[][] } {
   const tableBlock = blockMap.get(tableBlockId);
   if (!tableBlock || tableBlock.block_type !== TABLE_BLOCK_TYPE)
-    throw new Error(`Block ${tableBlockId} is not a Table`);
+    {throw new Error(`Block ${tableBlockId} is not a Table`);}
 
   const { row_size: rowSize, column_size: columnSize } = tableBlock.table.property;
   const cellIds: string[] = tableBlock.children ?? tableBlock.table?.cells ?? [];
@@ -181,15 +181,15 @@ function collectDescendantsForIds(
   const included = new Set<string>();
 
   function collect(blockId: string) {
-    if (included.has(blockId)) return;
+    if (included.has(blockId)) {return;}
     included.add(blockId);
     const block = blockMap.get(blockId);
     if (block?.children && Array.isArray(block.children)) {
-      for (const childId of block.children) collect(childId);
+      for (const childId of block.children) {collect(childId);}
     }
   }
 
-  for (const id of rootIds) collect(id);
+  for (const id of rootIds) {collect(id);}
 
   const descendants = blocks
     .filter((b) => included.has(b.block_id))
@@ -287,7 +287,7 @@ async function createAndFillTable(
   } catch (err) {
     const { code, msg } = extractLarkError(err);
     throw new Error(
-      `Failed to create ${rowSize}×${columnSize} table: ${describeLarkError(code, msg)}`,
+      `Failed to create ${rowSize}×${columnSize} table: ${describeLarkError(code, msg)}`, { cause: err },
     );
   }
   if (createRes.code !== 0) {
@@ -299,7 +299,7 @@ async function createAndFillTable(
   const createdBlocks = createRes.data?.children ?? [];
   // oxlint-disable-next-line typescript/no-explicit-any
   const tableBlock = createdBlocks.find((b: any) => b.block_type === TABLE_BLOCK_TYPE);
-  if (!tableBlock) throw new Error("Table not found in creation response");
+  if (!tableBlock) {throw new Error("Table not found in creation response");}
   const tableBlockId = tableBlock.block_id as string;
 
   // Step 2: Extend columns if needed (>9 cols), respecting rate limit.
@@ -312,7 +312,7 @@ async function createAndFillTable(
       });
     } catch (err) {
       const { code, msg } = extractLarkError(err);
-      throw new Error(`Failed to add column ${c + 1}: ${describeLarkError(code, msg)}`);
+      throw new Error(`Failed to add column ${c + 1}: ${describeLarkError(code, msg)}`, { cause: err });
     }
   }
 
@@ -326,7 +326,7 @@ async function createAndFillTable(
       });
     } catch (err) {
       const { code, msg } = extractLarkError(err);
-      throw new Error(`Failed to add row ${r + 1}: ${describeLarkError(code, msg)}`);
+      throw new Error(`Failed to add row ${r + 1}: ${describeLarkError(code, msg)}`, { cause: err });
     }
   }
 
@@ -357,9 +357,9 @@ async function createAndFillTable(
   const batchRequests: any[] = [];
   for (let i = 0; i < Math.min(allCellIds.length, cellElements.length); i++) {
     const elements = cellElements[i];
-    if (elements.length === 0) continue;
+    if (elements.length === 0) {continue;}
     const textBlockId = cellTextMap.get(allCellIds[i]);
-    if (!textBlockId) continue;
+    if (!textBlockId) {continue;}
     batchRequests.push({
       block_id: textBlockId,
       update_text_elements: { elements },
@@ -407,7 +407,7 @@ async function listAllDocBlocks(client: Lark.Client, docToken: string): Promise<
       path: { document_id: docToken },
       params: pageToken ? { page_token: pageToken, page_size: 500 } : { page_size: 500 },
     });
-    if (res.code !== 0) throw new Error(res.msg);
+    if (res.code !== 0) {throw new Error(res.msg);}
     allBlocks.push(...(res.data?.items ?? []));
     pageToken = res.data?.has_more ? res.data?.page_token : undefined;
   } while (pageToken);
@@ -425,7 +425,7 @@ async function listAllDocBlocksByUser(userToken: string, docToken: string): Prom
       userToken,
       query: pageToken ? { page_token: pageToken, page_size: "500" } : { page_size: "500" },
     });
-    if (res.code !== 0) throw new Error(res.msg);
+    if (res.code !== 0) {throw new Error(res.msg);}
     allBlocks.push(...(res.data?.items ?? []));
     pageToken = res.data?.has_more ? res.data?.page_token : undefined;
   } while (pageToken);
@@ -443,7 +443,7 @@ async function convertMarkdown(client: Lark.Client, markdown: string) {
   const res: any = await client.docx.document.convert({
     data: { content_type: "markdown", content: escaped },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return {
     blocks: res.data?.blocks ?? [],
     firstLevelBlockIds: res.data?.first_level_block_ids ?? [],
@@ -465,7 +465,7 @@ async function insertBlocksWithTables(
 ): Promise<{ children: any[]; tablesCreated: number }> {
   // oxlint-disable-next-line typescript/no-explicit-any
   const blockMap = new Map<string, any>();
-  for (const b of blocks) blockMap.set(b.block_id, b);
+  for (const b of blocks) {blockMap.set(b.block_id, b);}
   // oxlint-disable-next-line typescript/no-explicit-any
   const allInserted: any[] = [];
   let tablesCreated = 0;
@@ -475,7 +475,7 @@ async function insertBlocksWithTables(
 
   // Flush accumulated non-table blocks via descendant API.
   async function flushBatch() {
-    if (currentBatch.length === 0) return;
+    if (currentBatch.length === 0) {return;}
     const { descendants, childrenId } = collectDescendantsForIds(blocks, blockMap, currentBatch);
     if (childrenId.length > 0) {
       try {
@@ -488,13 +488,13 @@ async function insertBlocksWithTables(
             ...(currentIndex != null && { index: currentIndex }),
           },
         });
-        if (res.code !== 0) throw new Error(describeLarkError(res.code, res.msg));
+        if (res.code !== 0) {throw new Error(describeLarkError(res.code, res.msg));}
         allInserted.push(...(res.data?.children ?? []));
-        if (currentIndex != null) currentIndex += childrenId.length;
+        if (currentIndex != null) {currentIndex += childrenId.length;}
       } catch (err) {
         const { code, msg } = extractLarkError(err);
         throw new Error(
-          `Failed to insert ${childrenId.length} blocks (${descendants.length} total descendants): ${describeLarkError(code, msg)}`,
+          `Failed to insert ${childrenId.length} blocks (${descendants.length} total descendants): ${describeLarkError(code, msg)}`, { cause: err },
         );
       }
     }
@@ -510,7 +510,7 @@ async function insertBlocksWithTables(
       const created = await createAndFillTable(client, docToken, tableData, currentIndex);
       allInserted.push(...created);
       tablesCreated++;
-      if (currentIndex != null) currentIndex += 1;
+      if (currentIndex != null) {currentIndex += 1;}
     } else {
       currentBatch.push(flId);
     }
@@ -536,7 +536,7 @@ async function clearDocumentContent(client: Lark.Client, docToken: string) {
       data: { start_index: 0, end_index: childIds.length },
     });
     // oxlint-disable-next-line typescript/no-explicit-any
-    if ((res as any).code !== 0) throw new Error((res as any).msg);
+    if ((res as any).code !== 0) {throw new Error((res as any).msg);}
   }
   return childIds.length;
 }
@@ -552,7 +552,7 @@ async function processImages(
   insertedBlocks: any[],
 ): Promise<{ processed: number; errors: string[] }> {
   const imageSources = extractImageSources(markdown);
-  if (imageSources.length === 0) return { processed: 0, errors: [] };
+  if (imageSources.length === 0) {return { processed: 0, errors: [] };}
 
   // Try to find Image blocks from the API response first.
   // oxlint-disable-next-line typescript/no-explicit-any
@@ -769,7 +769,7 @@ async function buildInlineDocxImages(docxImages: DocxImageBlockInfo[]) {
 function extractBoardBlocks(blocks: any[]): BoardBlockInfo[] {
   const results: BoardBlockInfo[] = [];
   for (const b of blocks) {
-    if (b.block_type !== 43) continue;
+    if (b.block_type !== 43) {continue;}
     // Board blocks store their token in different possible locations.
     // Try known fields: b.board?.token, b.board?.board_token, or the block_id itself
     // may serve as the whiteboard token.
@@ -799,7 +799,7 @@ function extractBoardBlocks(blocks: any[]): BoardBlockInfo[] {
 function extractDocxImageBlocks(blocks: any[]): DocxImageBlockInfo[] {
   const results: DocxImageBlockInfo[] = [];
   for (const block of blocks) {
-    if (block.block_type !== 27) continue;
+    if (block.block_type !== 27) {continue;}
     const token = block.image?.token;
     if (!token || typeof token !== "string") {
       results.push({
@@ -890,7 +890,7 @@ async function readDoc(client: Lark.Client, docToken: string, account?: Resolved
     listAllDocBlocks(client, docToken),
   ]);
   // oxlint-disable-next-line typescript/no-explicit-any
-  if ((contentRes as any).code !== 0) throw new Error((contentRes as any).msg);
+  if ((contentRes as any).code !== 0) {throw new Error((contentRes as any).msg);}
   const blockCounts: Record<string, number> = {};
   const structuredTypes: string[] = [];
   for (const b of blocks) {
@@ -898,7 +898,7 @@ async function readDoc(client: Lark.Client, docToken: string, account?: Resolved
     const name = BLOCK_TYPE_NAMES[type] || `type_${type}`;
     blockCounts[name] = (blockCounts[name] || 0) + 1;
     if (STRUCTURED_BLOCK_TYPES.has(type) && !structuredTypes.includes(name))
-      structuredTypes.push(name);
+      {structuredTypes.push(name);}
   }
 
   // Detect embedded whiteboards (block type 43) and fetch their images.
@@ -983,8 +983,8 @@ async function readDocByUser(
     }),
     listAllDocBlocksByUser(userToken, docToken),
   ]);
-  if (contentRes.code !== 0) throw new Error(contentRes.msg);
-  if (infoRes.code !== 0) throw new Error(infoRes.msg);
+  if (contentRes.code !== 0) {throw new Error(contentRes.msg);}
+  if (infoRes.code !== 0) {throw new Error(infoRes.msg);}
 
   // Truncation: slice content from offset, cap at DOC_READ_MAX_CHARS
   const raw = contentRes.data?.content ?? "";
@@ -1007,7 +1007,7 @@ async function readDocByUser(
     const name = BLOCK_TYPE_NAMES[type] || `type_${type}`;
     blockCounts[name] = (blockCounts[name] || 0) + 1;
     if (STRUCTURED_BLOCK_TYPES.has(type) && !structuredTypes.includes(name))
-      structuredTypes.push(name);
+      {structuredTypes.push(name);}
   }
 
   const boardBlocks = extractBoardBlocks(blocks);
@@ -1085,7 +1085,7 @@ async function getBlockByUser(userToken: string, docToken: string, blockId: stri
     endpoint: `/docx/v1/documents/${encodeURIComponent(docToken)}/blocks/${encodeURIComponent(blockId)}`,
     userToken,
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return { block: res.data?.block };
 }
 
@@ -1114,7 +1114,7 @@ async function backupDocContent(
     // oxlint-disable-next-line typescript/no-explicit-any
     const res: any = await client.docx.document.rawContent({ path: { document_id: docToken } });
     const text = res?.data?.content;
-    if (!text) return undefined;
+    if (!text) {return undefined;}
     const dir = join(homedir(), ".openclaw", "feishu-doc-backups");
     mkdirSync(dir, { recursive: true });
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
@@ -1132,13 +1132,13 @@ async function writeDoc(client: Lark.Client, docToken: string, markdown: string)
   const deleted = await clearDocumentContent(client, docToken);
   const { blocks, firstLevelBlockIds } = await convertMarkdown(client, markdown);
   if (blocks.length === 0)
-    return {
+    {return {
       success: true,
       blocks_deleted: deleted,
       blocks_added: 0,
       images_processed: 0,
       ...(backupPath && { backup_path: backupPath }),
-    };
+    };}
   try {
     const { children: inserted, tablesCreated } = await insertBlocksWithTables(
       client,
@@ -1165,14 +1165,14 @@ async function writeDoc(client: Lark.Client, docToken: string, markdown: string)
         `Content had ${blocks.length} blocks (${firstLevelBlockIds.length} first-level). ` +
         (backupPath
           ? `Backup saved at ${backupPath} — use feishu_doc write with smaller sections or split tables into separate append calls.`
-          : ""),
+          : ""), { cause: err },
     );
   }
 }
 
 async function appendDoc(client: Lark.Client, docToken: string, markdown: string) {
   const { blocks, firstLevelBlockIds } = await convertMarkdown(client, markdown);
-  if (blocks.length === 0) throw new Error("Content is empty");
+  if (blocks.length === 0) {throw new Error("Content is empty");}
   try {
     const { children: inserted, tablesCreated } = await insertBlocksWithTables(
       client,
@@ -1195,7 +1195,7 @@ async function appendDoc(client: Lark.Client, docToken: string, markdown: string
     throw new Error(
       `append failed. ${detail}. ` +
         `Content had ${blocks.length} blocks (${firstLevelBlockIds.length} first-level). ` +
-        "Try splitting into smaller sections. Tables should be appended separately from text content.",
+        "Try splitting into smaller sections. Tables should be appended separately from text content.", { cause: err },
     );
   }
 }
@@ -1210,7 +1210,7 @@ async function createDoc(
   const res: any = await client.docx.document.create({
     data: { title, folder_token: folderToken },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   const documentId =
     typeof res.data?.document?.document_id === "string" ? res.data.document.document_id.trim() : "";
   if (!documentId) {
@@ -1356,7 +1356,7 @@ function resolveContent(params: { content?: string; source_file?: string }): str
 
 export function registerFeishuDocTools(api: OpenClawPluginApi) {
   const accounts = listEnabledFeishuAccounts(api.config);
-  if (accounts.length === 0) return;
+  if (accounts.length === 0) {return;}
   const firstAccount: ResolvedFeishuAccount = accounts[0];
   const getClient = () => getFeishuClient(firstAccount);
   const oauthRedirectUri = resolveOAuthRedirectUri(api.config as Record<string, unknown>);
@@ -1387,7 +1387,7 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
               }
               return await (async () => {
                 const guard = await requireReadAccess();
-                if (!guard.ok) return guard.authResponse;
+                if (!guard.ok) {return guard.authResponse;}
                 return readDocByUser(
                   firstAccount,
                   guard.token.access_token,
@@ -1426,7 +1426,7 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
             }
             case "list_blocks": {
               const guard = await requireReadAccess();
-              if (!guard.ok) return guard.authResponse;
+              if (!guard.ok) {return guard.authResponse;}
               // Paginated: fetches all blocks even for 500+ block documents.
               const items = await listAllDocBlocksByUser(
                 guard.token.access_token,
@@ -1476,7 +1476,7 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
             }
             case "get_block": {
               const guard = await requireReadAccess();
-              if (!guard.ok) return guard.authResponse;
+              if (!guard.ok) {return guard.authResponse;}
               return json(
                 await getBlockByUser(guard.token.access_token, params.doc_token, params.block_id),
               );
@@ -1487,7 +1487,7 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
                 path: { document_id: params.doc_token, block_id: params.block_id },
               });
               // oxlint-disable-next-line typescript/no-explicit-any
-              if ((blockInfo as any).code !== 0) throw new Error((blockInfo as any).msg);
+              if ((blockInfo as any).code !== 0) {throw new Error((blockInfo as any).msg);}
               // oxlint-disable-next-line typescript/no-explicit-any
               const block = (blockInfo as any).data?.block;
 
@@ -1536,7 +1536,7 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
                 data: { update_text_elements: { elements: newElements } },
               });
               // oxlint-disable-next-line typescript/no-explicit-any
-              if ((res as any).code !== 0) throw new Error((res as any).msg);
+              if ((res as any).code !== 0) {throw new Error((res as any).msg);}
               return json({ success: true, block_id: params.block_id, mode });
             }
             case "delete_block": {
@@ -1552,7 +1552,7 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
               const items = (children as any).data?.items ?? [];
               // oxlint-disable-next-line typescript/no-explicit-any
               const index = items.findIndex((item: any) => item.block_id === params.block_id);
-              if (index === -1) throw new Error("Block not found");
+              if (index === -1) {throw new Error("Block not found");}
               await client.docx.documentBlockChildren.batchDelete({
                 path: { document_id: params.doc_token, block_id: parentId },
                 data: { start_index: index, end_index: index + 1 },
@@ -1578,19 +1578,19 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
                   // oxlint-disable-next-line typescript/no-explicit-any
                   (item: any) => item.block_id === params.after_block_id,
                 );
-                if (idx === -1) throw new Error(`Block ${params.after_block_id} not found`);
+                if (idx === -1) {throw new Error(`Block ${params.after_block_id} not found`);}
                 insertIndex = idx + 1;
               } else {
                 const idx = childItems.findIndex(
                   // oxlint-disable-next-line typescript/no-explicit-any
                   (item: any) => item.block_id === params.before_block_id,
                 );
-                if (idx === -1) throw new Error(`Block ${params.before_block_id} not found`);
+                if (idx === -1) {throw new Error(`Block ${params.before_block_id} not found`);}
                 insertIndex = idx;
               }
 
               const { blocks, firstLevelBlockIds } = await convertMarkdown(client, content);
-              if (blocks.length === 0) throw new Error("Content is empty");
+              if (blocks.length === 0) {throw new Error("Content is empty");}
 
               const { children: inserted, tablesCreated } = await insertBlocksWithTables(
                 client,
@@ -1627,12 +1627,12 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
                 (item: any) => item.block_id === params.start_block_id,
               );
               if (startIdx === -1)
-                throw new Error(`Start block ${params.start_block_id} not found`);
+                {throw new Error(`Start block ${params.start_block_id} not found`);}
               const endIdx = childItems.findIndex(
                 // oxlint-disable-next-line typescript/no-explicit-any
                 (item: any) => item.block_id === params.end_block_id,
               );
-              if (endIdx === -1) throw new Error(`End block ${params.end_block_id} not found`);
+              if (endIdx === -1) {throw new Error(`End block ${params.end_block_id} not found`);}
               if (endIdx < startIdx) {
                 throw new Error("end_block_id must come after start_block_id in the document");
               }
@@ -1653,7 +1653,7 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
           }
         } catch (err) {
           const authResp = await handleFeishuTokenError(err, firstAccount, oauthRedirectUri, getOAuthDirectSender(firstAccount));
-          if (authResp) return authResp;
+          if (authResp) {return authResp;}
           return json({ error: err instanceof Error ? err.message : String(err) });
         }
       },

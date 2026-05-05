@@ -4,7 +4,7 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import { getTenantAccessToken, fetchChatHistory } from "./chat-history.js";
@@ -59,9 +59,9 @@ async function listGroupBots(account: ResolvedFeishuAccount, chatId: string): Pr
   for (const m of result.messages) {
     const isBot =
       m.sender_actor_kind === "bot" || m.sender_type === "app" || m.sender_type === "bot";
-    if (!isBot) continue;
+    if (!isBot) {continue;}
     const senderId = m.sender_id?.trim();
-    if (!senderId || seen.has(senderId)) continue;
+    if (!senderId || seen.has(senderId)) {continue;}
 
     let appId: string | undefined;
     let openId: string | undefined;
@@ -99,7 +99,7 @@ const BotDirectorySchema = Type.Object({
 
 export function registerFeishuBotDirectoryTool(api: OpenClawPluginApi) {
   const accounts = listEnabledFeishuAccounts(api.config);
-  if (accounts.length === 0) return;
+  if (accounts.length === 0) {return;}
   const firstAccount = accounts[0];
 
   api.registerTool(
@@ -115,7 +115,7 @@ export function registerFeishuBotDirectoryTool(api: OpenClawPluginApi) {
           switch (params.action) {
             case "search": {
               const q = (params.query ?? "").toLowerCase().trim();
-              if (!q) return json({ error: "query is required for search" });
+              if (!q) {return json({ error: "query is required for search" });}
               const all = listAllBots(firstAccount);
               const matches = all.filter(
                 (b) =>
@@ -139,7 +139,7 @@ export function registerFeishuBotDirectoryTool(api: OpenClawPluginApi) {
               });
             }
             case "group_bots": {
-              if (!params.chat_id) return json({ error: "chat_id is required for group_bots" });
+              if (!params.chat_id) {return json({ error: "chat_id is required for group_bots" });}
               const bots = await listGroupBots(firstAccount, params.chat_id);
               return json({ bots, total: bots.length, chat_id: params.chat_id });
             }

@@ -20,21 +20,25 @@
     mode: "local",
   },
 
-  // Admin uses Wangsu LiteLLM as primary (matches docker.json5 default).
-  agents: {
-    defaults: {
-      model: { primary: "anthropic/anthropic.claude-opus-4-7" },
-    },
-  },
+  // 2026-05-04 bug #11 fix · heartbeat.target=last lets wake/heartbeat reply auto-route to session.lastChannel (feishu group)
+  agents: { defaults: { heartbeat: { target: "last" } } },
 
-  // A2A hub mode: outbound enabled so admin can dispatch to other peers.
   plugins: {
     entries: {
+      "her-antitalker-poc": { enabled: true, hooks: { allowConversationAccess: true } },
+      "hook-probe": { enabled: true, hooks: { allowConversationAccess: true } },
       "a2a-gateway": {
         config: {
           outbound: { enabled: true },
         },
       },
+    },
+  },
+
+  // Admin uses Wangsu LiteLLM as primary (matches docker.json5 default).
+  agents: {
+    defaults: {
+      model: { primary: "anthropic/anthropic.claude-opus-4-7" },
     },
   },
 

@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { writeFileSync, readFileSync, unlinkSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import * as Lark from "@larksuiteoapi/node-sdk";
-import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/feishu";
+import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import type { ResolvedFeishuAccount } from "./accounts.js";
 import { buildFeishuSentMessageRef, type FeishuSentMessageRef } from "./message-metadata.js";
 
@@ -53,12 +53,12 @@ export function getFeishuClient(account: ResolvedFeishuAccount): Lark.Client {
  *  Needed for @mention detection in group chats. */
 export async function getBotOpenId(account: ResolvedFeishuAccount): Promise<string | null> {
   const cached = botOpenIdCache.get(account.appId);
-  if (cached) return cached;
+  if (cached) {return cached;}
   try {
     const client = getFeishuClient(account);
     // oxlint-disable-next-line typescript/no-explicit-any
     const token = await (client as any).tokenManager.getTenantAccessToken({});
-    if (!token) return null;
+    if (!token) {return null;}
 
     const { response: res, release } = await fetchWithSsrFGuard({
       url: "https://open.feishu.cn/open-apis/bot/v3/info/",
@@ -113,9 +113,9 @@ function resolveReceiveId(raw: string): {
   receiveIdType: "chat_id" | "open_id" | "union_id";
 } {
   const stripped = raw.replace(/^feishu:/i, "");
-  if (stripped.startsWith("oc_")) return { receiveId: stripped, receiveIdType: "chat_id" };
-  if (stripped.startsWith("ou_")) return { receiveId: stripped, receiveIdType: "open_id" };
-  if (stripped.startsWith("on_")) return { receiveId: stripped, receiveIdType: "union_id" };
+  if (stripped.startsWith("oc_")) {return { receiveId: stripped, receiveIdType: "chat_id" };}
+  if (stripped.startsWith("ou_")) {return { receiveId: stripped, receiveIdType: "open_id" };}
+  if (stripped.startsWith("on_")) {return { receiveId: stripped, receiveIdType: "union_id" };}
   // Default to open_id for unknown prefixes.
   return { receiveId: stripped, receiveIdType: "open_id" };
 }
@@ -154,7 +154,7 @@ export function markdownToPost(md: string): { zh_cn: { content: PostElement[][] 
         i++;
       }
       // Skip closing ```
-      if (i < lines.length) i++;
+      if (i < lines.length) {i++;}
       paragraphs.push([
         { tag: "code_block", language: language || "plain", text: codeLines.join("\n") },
       ]);
@@ -519,7 +519,7 @@ function stripTableCellBackticks(cell: string): string {
  *  due to inconsistent emoji widths across clients.
  *  Bold + bullets: always looks consistent, 100% API readable, 100% forwardable. */
 function convertMarkdownTableToFeishuList(tableLines: string[]): string {
-  if (tableLines.length < 2) return tableLines.join("\n");
+  if (tableLines.length < 2) {return tableLines.join("\n");}
   const headerCells = parseMarkdownTableRow(tableLines[0]);
   const dataStartIndex = MD_TABLE_SEPARATOR_RE.test(tableLines[1].trim()) ? 2 : 1;
   const sep = " | ";
@@ -540,9 +540,9 @@ function convertMarkdownTableToFeishuList(tableLines: string[]): string {
 function convertMarkdownTableToFeishuTableElement(
   tableLines: string[],
 ): { tag: string; page_size: number; columns: object[]; rows: object[] } | null {
-  if (tableLines.length < 2) return null;
+  if (tableLines.length < 2) {return null;}
   const headerCells = parseMarkdownTableRow(tableLines[0]);
-  if (headerCells.length === 0) return null;
+  if (headerCells.length === 0) {return null;}
   const dataStartIndex = MD_TABLE_SEPARATOR_RE.test(tableLines[1].trim()) ? 2 : 1;
 
   const columns = headerCells.map((header, i) => ({
@@ -562,7 +562,7 @@ function convertMarkdownTableToFeishuTableElement(
     rows.push(row);
   }
 
-  if (rows.length === 0) return null;
+  if (rows.length === 0) {return null;}
 
   return {
     tag: "table",
@@ -578,9 +578,9 @@ function convertMarkdownTableToFeishuTableElement(
  *  See docs/her/feishu-card-markdown-official-spec.md */
 function convertHeadingToBold(line: string): string {
   const m = line.match(/^(#{1,6})\s+(.*)/);
-  if (!m) return line;
+  if (!m) {return line;}
   const level = m[1].length;
-  if (level === 1) return `**${m[2]}**\n---`;
+  if (level === 1) {return `**${m[2]}**\n---`;}
   return `**${m[2]}**`;
 }
 
@@ -589,7 +589,7 @@ function convertHeadingToBold(line: string): string {
  *  `>` alone would be swallowed or render as raw `>`. */
 function convertBlockquote(line: string): string {
   const m = line.match(/^>\s?(.*)/);
-  if (!m) return line;
+  if (!m) {return line;}
   return `｜${m[1]}`;
 }
 
@@ -724,7 +724,7 @@ export async function sendFeishuUserFacingCardDetailed(params: {
     replyToMessageId: params.replyToMessageId,
     version,
   });
-  if (!stream.started || !stream.messageId) return undefined;
+  if (!stream.started || !stream.messageId) {return undefined;}
   // Pass raw text — stream.sendFinal renders it through the correct V1/V2 renderer.
   await stream.sendFinal(params.text);
   await stream.finalize(params.text);
@@ -812,7 +812,7 @@ export async function uploadFeishuImage(params: {
   // Obtain tenant access token via the SDK's token manager.
   // oxlint-disable-next-line typescript/no-explicit-any
   const token = await (client as any).tokenManager.getTenantAccessToken({});
-  if (!token) throw new Error("Feishu: failed to obtain tenant access token");
+  if (!token) {throw new Error("Feishu: failed to obtain tenant access token");}
 
   const blob = new Blob([new Uint8Array(params.buffer)]);
   const form = new FormData();
@@ -849,17 +849,17 @@ export async function downloadFeishuImage(params: {
     params: { type: "image" },
     path: { message_id: params.messageId, file_key: params.imageKey },
   });
-  if (!resp) return null;
+  if (!resp) {return null;}
   const stream = resp.getReadableStream();
   const chunks: Buffer[] = [];
   for await (const chunk of stream) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
-  if (chunks.length === 0) return null;
+  if (chunks.length === 0) {return null;}
   const buffer = Buffer.concat(chunks);
   // Try to extract content-type from response headers.
   // oxlint-disable-next-line typescript/no-explicit-any
-  const headers = resp.headers as any;
+  const headers = resp.headers;
   const contentType =
     (typeof headers?.get === "function"
       ? headers.get("content-type")
@@ -876,7 +876,7 @@ export async function downloadDocxImage(params: {
   const client = getFeishuClient(params.account);
   // oxlint-disable-next-line typescript/no-explicit-any
   const token = await (client as any).tokenManager.getTenantAccessToken({});
-  if (!token) return null;
+  if (!token) {return null;}
 
   const url = `https://open.feishu.cn/open-apis/drive/v1/medias/${params.imageToken}/download`;
   const { response: res, release } = await fetchWithSsrFGuard({
@@ -888,10 +888,10 @@ export async function downloadDocxImage(params: {
     auditContext: "feishu-download-docx-image",
   });
   try {
-    if (!res.ok) return null;
+    if (!res.ok) {return null;}
     const contentType = res.headers.get("content-type") ?? "application/octet-stream";
     const buffer = Buffer.from(await res.arrayBuffer());
-    if (buffer.length === 0) return null;
+    if (buffer.length === 0) {return null;}
     return {
       buffer,
       contentType: typeof contentType === "string" ? contentType : "application/octet-stream",
@@ -915,16 +915,16 @@ export async function downloadFeishuFile(params: {
     params: { type: "file" },
     path: { message_id: params.messageId, file_key: params.fileKey },
   });
-  if (!resp) return null;
+  if (!resp) {return null;}
   const stream = resp.getReadableStream();
   const chunks: Buffer[] = [];
   for await (const chunk of stream) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
-  if (chunks.length === 0) return null;
+  if (chunks.length === 0) {return null;}
   const buffer = Buffer.concat(chunks);
   // oxlint-disable-next-line typescript/no-explicit-any
-  const headers = resp.headers as any;
+  const headers = resp.headers;
   const contentType =
     (typeof headers?.get === "function"
       ? headers.get("content-type")
@@ -1076,11 +1076,11 @@ export async function sendFeishuAudio(params: {
  *  Feishu IM file upload accepts: mp4, pdf, doc, xls, ppt, stream (generic). */
 function mapFileType(ext: string): string {
   const e = ext.toLowerCase().replace(/^\./, "");
-  if (e === "mp4" || e === "mov") return "mp4";
-  if (e === "pdf") return "pdf";
-  if (e === "doc" || e === "docx") return "doc";
-  if (e === "xls" || e === "xlsx") return "xls";
-  if (e === "ppt" || e === "pptx") return "ppt";
+  if (e === "mp4" || e === "mov") {return "mp4";}
+  if (e === "pdf") {return "pdf";}
+  if (e === "doc" || e === "docx") {return "doc";}
+  if (e === "xls" || e === "xlsx") {return "xls";}
+  if (e === "ppt" || e === "pptx") {return "ppt";}
   return "stream";
 }
 
@@ -1122,7 +1122,7 @@ export async function uploadFeishuFile(params: {
     const data = axiosErr.response?.data;
     if (status === 400) {
       throw new Error(
-        `飞书文件上传失败 (400)：${params.fileName} (${sizeMb}MB)。${data ? JSON.stringify(data) : "请检查文件格式和大小（限制 30MB）。"}`,
+        `飞书文件上传失败 (400)：${params.fileName} (${sizeMb}MB)。${data ? JSON.stringify(data) : "请检查文件格式和大小（限制 30MB）。"}`, { cause: err },
       );
     }
     throw err;
@@ -1239,7 +1239,7 @@ export async function downloadWhiteboardImage(params: {
   const client = getFeishuClient(params.account);
   // oxlint-disable-next-line typescript/no-explicit-any
   const token = await (client as any).tokenManager.getTenantAccessToken({});
-  if (!token) return null;
+  if (!token) {return null;}
 
   const url = `https://open.feishu.cn/open-apis/board/v1/whiteboards/${params.whiteboardToken}/download_as_image`;
   const { response: res, release } = await fetchWithSsrFGuard({
@@ -1251,11 +1251,11 @@ export async function downloadWhiteboardImage(params: {
     auditContext: "feishu-download-whiteboard-image",
   });
   try {
-    if (!res.ok) return null;
+    if (!res.ok) {return null;}
 
     const contentType = res.headers.get("content-type") ?? "image/png";
     const buffer = Buffer.from(await res.arrayBuffer());
-    if (buffer.length === 0) return null;
+    if (buffer.length === 0) {return null;}
     return { buffer, contentType };
   } finally {
     await release();
@@ -1451,9 +1451,9 @@ function buildCardStreamFromTransport(
   let stopped = false;
 
   const doSendUpdate = async (text: string) => {
-    if (stopped) return;
+    if (stopped) {return;}
     const rendered = transport.renderText(text);
-    if (!rendered || rendered === lastSentText) return;
+    if (!rendered || rendered === lastSentText) {return;}
     lastSentText = rendered;
     lastSentAt = Date.now();
     await transport.sendUpdate(rendered);
@@ -1480,11 +1480,11 @@ function buildCardStreamFromTransport(
     } finally {
       inFlight = false;
     }
-    if (pendingText) schedule();
+    if (pendingText) {schedule();}
   };
 
   const schedule = () => {
-    if (timer) return;
+    if (timer) {return;}
     const delay = Math.max(0, throttleMs - (Date.now() - lastSentAt));
     timer = setTimeout(() => {
       timer = undefined;
@@ -1493,7 +1493,7 @@ function buildCardStreamFromTransport(
   };
 
   const update = (text: string) => {
-    if (stopped) return;
+    if (stopped) {return;}
     pendingText = text;
     if (inFlight) {
       schedule();
@@ -1517,7 +1517,7 @@ function buildCardStreamFromTransport(
 
   const sendFinal = async (text: string) => {
     const rendered = transport.renderText(text);
-    if (!rendered) return;
+    if (!rendered) {return;}
     await transport.sendFinal(rendered);
   };
 
@@ -1596,7 +1596,7 @@ async function createFeishuCardStreamV1(params: FeishuCardStreamParams): Promise
   const transport: CardStreamTransport = {
     renderText: (text) => renderFeishuUserFacingCardText(text, params.account),
     sendUpdate: async (rendered) => {
-      if (stopped) return;
+      if (stopped) {return;}
       const token = await getToken();
       if (!token) {
         stopped = true;
@@ -1767,7 +1767,7 @@ async function createFeishuCardStreamV2(params: FeishuCardStreamParams): Promise
   const transport: CardStreamTransport = {
     renderText: (text) => renderFeishuUserFacingCardTextV2(text, params.account),
     sendUpdate: async (rendered) => {
-      if (stopped) return;
+      if (stopped) {return;}
       const tok = await getToken();
       if (!tok) {
         stopped = true;
@@ -1849,7 +1849,7 @@ export async function addFeishuReaction(params: {
     path: { message_id: params.messageId },
     data: { reaction_type: { emoji_type: params.emoji } },
   });
-  if (res?.code !== 0) return null;
+  if (res?.code !== 0) {return null;}
   return res?.data?.reaction_id ?? null;
 }
 

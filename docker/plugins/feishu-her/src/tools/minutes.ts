@@ -15,7 +15,7 @@
 
 import * as Lark from "@larksuiteoapi/node-sdk";
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
@@ -123,7 +123,7 @@ async function searchMinutesDocsPage(
       total: res.data?.total ?? 0,
     };
   } catch (err) {
-    throw new Error(`Drive search error: ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(`Drive search error: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
   }
 }
 
@@ -158,7 +158,7 @@ async function extractMinuteTokensFromDoc(
       },
       Lark.withUserAccessToken(userAccessToken),
     );
-    if (res.code !== 0) break;
+    if (res.code !== 0) {break;}
 
     const blocks = res.data?.items ?? [];
     for (const block of blocks) {
@@ -200,7 +200,7 @@ async function extractDocxLinks(
       },
       Lark.withUserAccessToken(userAccessToken),
     );
-    if (res.code !== 0) break;
+    if (res.code !== 0) {break;}
 
     const blocks = res.data?.items ?? [];
     for (const block of blocks) {
@@ -244,14 +244,14 @@ async function extractLinkedSmartMinutesDocToken(
       },
       Lark.withUserAccessToken(userAccessToken),
     );
-    if (res.code !== 0) return null;
+    if (res.code !== 0) {return null;}
 
     for (const block of res.data?.items ?? []) {
       const blockJson = JSON.stringify(block);
       let match: RegExpExecArray | null;
       DOCX_URL_PATTERN.lastIndex = 0;
       while ((match = DOCX_URL_PATTERN.exec(blockJson)) !== null) {
-        if (match[1] !== docToken) return match[1];
+        if (match[1] !== docToken) {return match[1];}
       }
     }
   } catch {
@@ -286,7 +286,7 @@ async function getMinuteInfo(
       { path: { minute_token: minuteToken } },
       Lark.withUserAccessToken(userAccessToken),
     );
-    if (res.code !== 0) return null;
+    if (res.code !== 0) {return null;}
     const m = res.data?.minute;
     return {
       minute_token: m?.minute_token ?? minuteToken,
@@ -313,7 +313,7 @@ async function getTranscript(
       { path: { minute_token: minuteToken } },
       Lark.withUserAccessToken(userAccessToken),
     );
-    if (!res) return null;
+    if (!res) {return null;}
     const stream = res.getReadableStream();
     const chunks: Buffer[] = [];
     for await (const chunk of stream) {
@@ -338,7 +338,7 @@ async function getDocxRawContent(
       { path: { document_id: docToken } },
       Lark.withUserAccessToken(userAccessToken),
     );
-    if (res.code !== 0) return null;
+    if (res.code !== 0) {return null;}
     return res.data?.content ?? null;
   } catch {
     return null;
@@ -373,7 +373,7 @@ async function listUserCalendars(
   const res = await callFeishuApiWithUserToken<{
     calendar_list?: Array<{ calendar_id: string; type: string; role: string }>;
   }>({ method: "GET", endpoint: "/calendar/v4/calendars", userToken });
-  if (res.code !== 0) return [];
+  if (res.code !== 0) {return [];}
   return res.data?.calendar_list ?? [];
 }
 
@@ -392,7 +392,7 @@ async function listCalendarEvents(
       end_time: String(endTime),
       page_size: "50",
     };
-    if (pageToken) query.page_token = pageToken;
+    if (pageToken) {query.page_token = pageToken;}
 
     const res = await callFeishuApiWithUserToken<{
       items?: CalendarEvent[];
@@ -404,7 +404,7 @@ async function listCalendarEvents(
       userToken,
       query,
     });
-    if (res.code !== 0) break;
+    if (res.code !== 0) {break;}
     events.push(...(res.data?.items ?? []));
     pageToken = res.data?.has_more ? res.data.page_token : undefined;
   } while (pageToken);
@@ -438,7 +438,7 @@ async function getMeetingIdsByNo(
     );
     return [];
   }
-  if (!res.data?.meeting_briefs?.length) return [];
+  if (!res.data?.meeting_briefs?.length) {return [];}
   return res.data.meeting_briefs.map((b) => b.id);
 }
 
@@ -501,7 +501,7 @@ async function discoverViaCalendar(
   for (const meeting of vcMeetings) {
     try {
       const meetingNo = meeting.vchat!.meeting_url!.match(MEETING_NO_FROM_URL)?.[1];
-      if (!meetingNo) continue;
+      if (!meetingNo) {continue;}
 
       const eventStart = Number(meeting.start_time?.timestamp ?? startTime);
       const lookupStart = eventStart - 86400;
@@ -526,7 +526,7 @@ async function discoverViaCalendar(
         }
 
         const minuteToken = recordingUrl.match(MINUTES_TOKEN_FROM_URL)?.[1];
-        if (!minuteToken || seen.has(minuteToken)) continue;
+        if (!minuteToken || seen.has(minuteToken)) {continue;}
         seen.add(minuteToken);
         _log(`[calendar-discovery]   → minute_token=${minuteToken}`);
 
@@ -559,7 +559,7 @@ async function discoverViaCalendar(
 /** Parse date from smart minutes title like "智能纪要：XXX 2026年3月4日" */
 function parseDateFromTitle(title: string): Date | null {
   const m = title.match(/(\d{4})年(\d{1,2})月(\d{1,2})日/);
-  if (!m) return null;
+  if (!m) {return null;}
   return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
 }
 
@@ -618,22 +618,22 @@ function isDocxType(docsType: string): boolean {
 }
 
 function getMinutesDocKind(doc: DriveSearchDoc): SearchMatchSource | null {
-  if (!isDocxType(doc.docs_type)) return null;
-  if (doc.title.startsWith("智能纪要")) return "summary";
-  if (doc.title.startsWith("文字记录")) return "transcript";
+  if (!isDocxType(doc.docs_type)) {return null;}
+  if (doc.title.startsWith("智能纪要")) {return "summary";}
+  if (doc.title.startsWith("文字记录")) {return "transcript";}
   return null;
 }
 
 function includesQuery(text: string | null | undefined, query: string): boolean {
   const normalizedQuery = query.trim().toLowerCase();
-  if (!text || !normalizedQuery) return false;
+  if (!text || !normalizedQuery) {return false;}
   return text.toLowerCase().includes(normalizedQuery);
 }
 
 function orderedMatchSources(matchSources: Set<SearchMatchSource>): SearchMatchSource[] {
   const ordered: SearchMatchSource[] = [];
-  if (matchSources.has("summary")) ordered.push("summary");
-  if (matchSources.has("transcript")) ordered.push("transcript");
+  if (matchSources.has("summary")) {ordered.push("summary");}
+  if (matchSources.has("transcript")) {ordered.push("transcript");}
   return ordered;
 }
 
@@ -682,10 +682,10 @@ function addSearchCandidate(
 
 function buildTranscriptSnippet(rawContent: string, query: string): SearchTranscriptSnippet | null {
   const normalizedQuery = query.trim().toLowerCase();
-  if (!normalizedQuery) return null;
+  if (!normalizedQuery) {return null;}
 
   const matchIndex = rawContent.toLowerCase().indexOf(normalizedQuery);
-  if (matchIndex === -1) return null;
+  if (matchIndex === -1) {return null;}
 
   const start = Math.max(0, matchIndex - SEARCH_SNIPPET_RADIUS);
   const end = Math.min(rawContent.length, matchIndex + query.length + SEARCH_SNIPPET_RADIUS);
@@ -707,14 +707,14 @@ function buildTranscriptSnippet(rawContent: string, query: string): SearchTransc
   let timestamp: string | undefined;
   for (let i = matchLineIndex; i >= 0 && i >= matchLineIndex - 3; i--) {
     const line = lines[i].trim();
-    if (!line) continue;
+    if (!line) {continue;}
     if (!timestamp) {
       timestamp = line.match(/\d{2}:\d{2}:\d{2}(?:\.\d{3})?/)?.[0];
     }
     if (!speaker) {
       speaker = line.match(/^(说话人\s*\d+)/)?.[1];
     }
-    if (speaker || timestamp) break;
+    if (speaker || timestamp) {break;}
   }
 
   return {
@@ -734,17 +734,17 @@ function buildWhyMatched(params: {
   if (params.summaryTextMatch && params.transcriptTextMatch) {
     return "关键词同时命中 AI 摘要和文字记录原文";
   }
-  if (params.summaryTextMatch) return "关键词命中 AI 摘要";
-  if (params.transcriptTextMatch) return "关键词命中文字记录原文";
+  if (params.summaryTextMatch) {return "关键词命中 AI 摘要";}
+  if (params.transcriptTextMatch) {return "关键词命中文字记录原文";}
   if (params.summaryTitleMatch && params.transcriptTitleMatch) {
     return "关键词同时命中智能纪要和文字记录标题";
   }
-  if (params.summaryTitleMatch) return "关键词命中智能纪要标题";
-  if (params.transcriptTitleMatch) return "关键词命中文字记录标题";
+  if (params.summaryTitleMatch) {return "关键词命中智能纪要标题";}
+  if (params.transcriptTitleMatch) {return "关键词命中文字记录标题";}
   if (params.matchSources.has("summary") && params.matchSources.has("transcript")) {
     return "飞书搜索同时命中智能纪要和文字记录文档";
   }
-  if (params.matchSources.has("summary")) return "飞书搜索命中智能纪要文档";
+  if (params.matchSources.has("summary")) {return "飞书搜索命中智能纪要文档";}
   return "飞书搜索命中文字记录文档";
 }
 
@@ -766,7 +766,7 @@ async function listMinutes(
     cutoff.setDate(cutoff.getDate() - days);
     cutoff.setHours(0, 0, 0, 0);
     const recentDocs = docs.filter((d) => {
-      if (!d.title.startsWith("智能纪要")) return false;
+      if (!d.title.startsWith("智能纪要")) {return false;}
       const date = parseDateFromTitle(d.title);
       return date ? date >= cutoff : true;
     });
@@ -783,8 +783,8 @@ async function listMinutes(
         // minute.get consistently returns 403/2091005 on production apps.
         const mt = minuteTokens[0];
         const info = docxFallbackInfo(doc, mt);
-        if (linkedDocToken) info.text_record_doc_token = linkedDocToken;
-        if (mt) info.url = `https://meetings.feishu.cn/minutes/${mt}`;
+        if (linkedDocToken) {info.text_record_doc_token = linkedDocToken;}
+        if (mt) {info.url = `https://meetings.feishu.cn/minutes/${mt}`;}
         driveResults.push(info);
       } catch (err) {
         errors.push(`${doc.title}: ${err instanceof Error ? err.message : String(err)}`);
@@ -994,7 +994,7 @@ async function searchMinutes(
     const pendingTranscriptDocs: Array<{ doc: DriveSearchDoc; rank: number }> = [];
     for (const doc of page.docs) {
       const docKind = getMinutesDocKind(doc);
-      if (!docKind) continue;
+      if (!docKind) {continue;}
 
       const currentRank = rank++;
       if (docKind === "summary") {
@@ -1012,7 +1012,7 @@ async function searchMinutes(
     }
 
     for (const item of pendingTranscriptDocs) {
-      if (candidates.size >= SEARCH_MAX_CANDIDATES) break;
+      if (candidates.size >= SEARCH_MAX_CANDIDATES) {break;}
       const linkedToken = await extractLinkedSmartMinutesDocToken(
         client,
         item.doc.docs_token,
@@ -1033,12 +1033,12 @@ async function searchMinutes(
       });
     }
 
-    if (candidates.size >= SEARCH_MAX_CANDIDATES) break;
-    if (!page.hasMore || page.docs.length < SEARCH_PAGE_SIZE) break;
+    if (candidates.size >= SEARCH_MAX_CANDIDATES) {break;}
+    if (!page.hasMore || page.docs.length < SEARCH_PAGE_SIZE) {break;}
   }
 
   const orderedCandidates = [...candidates.values()]
-    .sort((a, b) => a.rank - b.rank)
+    .toSorted((a, b) => a.rank - b.rank)
     .slice(0, SEARCH_MAX_RESULTS);
 
   const seenMinuteTokens = new Set<string>();
@@ -1088,7 +1088,7 @@ async function searchMinutes(
 
     if (minuteTokens.length > 0) {
       for (const minuteToken of minuteTokens) {
-        if (seenMinuteTokens.has(minuteToken)) continue;
+        if (seenMinuteTokens.has(minuteToken)) {continue;}
         seenMinuteTokens.add(minuteToken);
 
         const info = await getMinuteInfo(client, minuteToken, userToken.access_token);
@@ -1155,7 +1155,7 @@ async function searchMinutes(
 
 export function registerFeishuMinutesTools(api: OpenClawPluginApi): void {
   const accounts = listEnabledFeishuAccounts(api.config);
-  if (accounts.length === 0) return;
+  if (accounts.length === 0) {return;}
   const firstAccount: ResolvedFeishuAccount = accounts[0];
   const getClient = () => getFeishuClient(firstAccount);
   const redirectUri = resolveOAuthRedirectUri(api.config as Record<string, unknown>);
@@ -1181,7 +1181,7 @@ export function registerFeishuMinutesTools(api: OpenClawPluginApi): void {
             toolLabel: "飞书妙记",
             sendDirectToUser: getOAuthDirectSender(firstAccount),
           });
-          if (!guard.ok) return guard.authResponse;
+          if (!guard.ok) {return guard.authResponse;}
           const userToken = guard.token;
 
           const client = getClient();
@@ -1225,7 +1225,7 @@ export function registerFeishuMinutesTools(api: OpenClawPluginApi): void {
         } catch (err) {
           const authResp = await handleFeishuTokenError(err, firstAccount, redirectUri, getOAuthDirectSender(firstAccount));
           const message = err instanceof Error ? err.message : String(err);
-          if (authResp) return authResp;
+          if (authResp) {return authResp;}
 
           return json({ error: message });
         }

@@ -8,7 +8,7 @@
 
 import type * as Lark from "@larksuiteoapi/node-sdk";
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
@@ -45,7 +45,7 @@ async function listUsers(
       ...(pageToken && { page_token: pageToken }),
     },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return {
     // oxlint-disable-next-line typescript/no-explicit-any
     users: (res.data?.items ?? []).map((u: any) => ({
@@ -77,7 +77,7 @@ async function getUser(client: Lark.Client, userId: string, userIdType?: string)
     path: { user_id: userId },
     params: { user_id_type: idType as "open_id" | "union_id" | "user_id" },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   const u = res.data?.user;
   return {
     open_id: u?.open_id,
@@ -111,7 +111,7 @@ async function listDepartments(
       ...(pageToken && { page_token: pageToken }),
     },
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return {
     // oxlint-disable-next-line typescript/no-explicit-any
     departments: (res.data?.items ?? []).map((d: any) => ({
@@ -139,7 +139,7 @@ async function searchUsers(
     query,
     page_size: String(Math.min(pageSize ?? 20, 200)),
   };
-  if (pageToken) params.page_token = pageToken;
+  if (pageToken) {params.page_token = pageToken;}
 
   const res = await callFeishuApiWithUserToken<{
     users?: {
@@ -157,7 +157,7 @@ async function searchUsers(
     userToken,
     query: params,
   });
-  if (res.code !== 0) throw new Error(res.msg);
+  if (res.code !== 0) {throw new Error(res.msg);}
   return {
     // oxlint-disable-next-line typescript/no-explicit-any
     users: (res.data?.users ?? []).map((u: any) => ({
@@ -209,7 +209,7 @@ const FeishuDirectorySchema = Type.Object({
 
 export function registerFeishuDirectoryTools(api: OpenClawPluginApi) {
   const accounts = listEnabledFeishuAccounts(api.config);
-  if (accounts.length === 0) return;
+  if (accounts.length === 0) {return;}
   const firstAccount: ResolvedFeishuAccount = accounts[0];
   const getClient = () => getFeishuClient(firstAccount);
   const redirectUri = resolveOAuthRedirectUri(api.config);
@@ -229,7 +229,7 @@ export function registerFeishuDirectoryTools(api: OpenClawPluginApi) {
           switch (params.action) {
             case "search_users": {
               if (!params.query)
-                return json({ error: "query is required for search_users action" });
+                {return json({ error: "query is required for search_users action" });}
               const tokenResult = await requireUserToken({
                 account: firstAccount,
                 redirectUri,
@@ -237,7 +237,7 @@ export function registerFeishuDirectoryTools(api: OpenClawPluginApi) {
                 toolLabel: "通讯录搜索",
                 sendDirectToUser: getOAuthDirectSender(firstAccount),
               });
-              if (!tokenResult.ok) return tokenResult.authResponse;
+              if (!tokenResult.ok) {return tokenResult.authResponse;}
               return json(
                 await searchUsers(
                   tokenResult.token.access_token,
@@ -255,7 +255,7 @@ export function registerFeishuDirectoryTools(api: OpenClawPluginApi) {
             }
             case "get_user": {
               if (!params.user_id)
-                return json({ error: "user_id is required for get_user action" });
+                {return json({ error: "user_id is required for get_user action" });}
               const client = getClient();
               return json(await getUser(client, params.user_id, params.user_id_type));
             }

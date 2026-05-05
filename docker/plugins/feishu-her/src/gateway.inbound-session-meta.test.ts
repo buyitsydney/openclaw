@@ -1,4 +1,4 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/account-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { finalizeInboundContext } from "../../../src/auto-reply/reply/inbound-context.js";
 import type { ResolvedFeishuAccount } from "./accounts.js";

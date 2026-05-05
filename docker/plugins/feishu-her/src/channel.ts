@@ -8,7 +8,7 @@ import {
   type ChannelPlugin,
 } from "openclaw/plugin-sdk/channel-plugin-common";
 import { normalizeAccountId } from "openclaw/plugin-sdk/core";
-import type { ChannelMessageActionName } from "openclaw/plugin-sdk/feishu";
+import type { ChannelMessageActionName } from "openclaw/plugin-sdk/channel-contract";
 import {
   listFeishuAccountIds,
   resolveDefaultFeishuAccountId,

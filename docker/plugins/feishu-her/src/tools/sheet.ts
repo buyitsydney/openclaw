@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-plugin-common";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import { listEnabledFeishuAccounts, type ResolvedFeishuAccount } from "../accounts.js";
 import {
@@ -127,7 +127,7 @@ function parseSpreadsheetUrl(url: string): { spreadsheetToken: string; sheetId?:
   try {
     const parsed = new URL(url);
     const match = parsed.pathname.match(/\/sheets\/([A-Za-z0-9_-]+)/);
-    if (!match) return null;
+    if (!match) {return null;}
     const sheetId = parsed.searchParams.get("sheet") ?? undefined;
     return { spreadsheetToken: match[1], sheetId };
   } catch {
@@ -144,7 +144,7 @@ function encodePathSegmentStrict(value: string): string {
 
 function resolveSpreadsheetToken(params: SheetParams): { token: string } | { error: string } {
   const directToken = params.spreadsheet_token?.trim();
-  if (directToken) return { token: directToken };
+  if (directToken) {return { token: directToken };}
   const url = params.url?.trim();
   if (!url) {
     return { error: "spreadsheet_token is required (or provide url)" };
@@ -157,14 +157,14 @@ function resolveSpreadsheetToken(params: SheetParams): { token: string } | { err
 }
 
 function validateRange(range: string | undefined, fieldName: "range" | "ranges"): string | null {
-  if (!range) return `${fieldName} is required`;
-  if (!range.includes("!")) return `${fieldName} must include sheetId prefix, e.g. sheetId!A1:B5`;
+  if (!range) {return `${fieldName} is required`;}
+  if (!range.includes("!")) {return `${fieldName} must include sheetId prefix, e.g. sheetId!A1:B5`;}
   return null;
 }
 
 function validateAppendRange(range: string | undefined): string | null {
   const rangeError = validateRange(range, "range");
-  if (rangeError) return rangeError;
+  if (rangeError) {return rangeError;}
   const cells = range!.split("!")[1];
   if (!cells || !/^[A-Za-z]+:[A-Za-z]+$/.test(cells)) {
     return "append range must be column range like sheetId!A:A or sheetId!A:J";
@@ -174,8 +174,8 @@ function validateAppendRange(range: string | undefined): string | null {
 
 function validateValues(values: unknown[][] | undefined, fieldName: "values"): string | null {
   if (!Array.isArray(values) || values.length === 0)
-    return `${fieldName} must be a non-empty 2D array`;
-  if (!values.every((row) => Array.isArray(row))) return `${fieldName} must be a 2D array`;
+    {return `${fieldName} must be a non-empty 2D array`;}
+  if (!values.every((row) => Array.isArray(row))) {return `${fieldName} must be a 2D array`;}
   return null;
 }
 
@@ -187,9 +187,9 @@ function validateValueRanges(
   }
   for (const item of valueRanges) {
     const rangeError = validateRange(item.range, "ranges");
-    if (rangeError) return `value_ranges item invalid: ${rangeError}`;
+    if (rangeError) {return `value_ranges item invalid: ${rangeError}`;}
     const valuesError = validateValues(item.values, "values");
-    if (valuesError) return `value_ranges item invalid: ${valuesError}`;
+    if (valuesError) {return `value_ranges item invalid: ${valuesError}`;}
   }
   return null;
 }
@@ -219,7 +219,7 @@ async function callSheetUserApi<TData>(params: {
 
 export function registerFeishuSheetTools(api: OpenClawPluginApi) {
   const account = getFirstAccountOrNull(api);
-  if (!account) return;
+  if (!account) {return;}
   const oauthRedirectUri = resolveOAuthRedirectUri(api.config as Record<string, unknown>);
 
   api.registerTool(
@@ -232,7 +232,7 @@ export function registerFeishuSheetTools(api: OpenClawPluginApi) {
       async execute(_toolCallId: string, rawParams: unknown) {
         const params = rawParams as SheetParams;
         const tokenResolved = resolveSpreadsheetToken(params);
-        if ("error" in tokenResolved) return makeLocalErrorResult(tokenResolved.error);
+        if ("error" in tokenResolved) {return makeLocalErrorResult(tokenResolved.error);}
         const token = tokenResolved.token;
         const encodedToken = encodeURIComponent(token);
         const requireReadAccess = () =>
@@ -247,7 +247,7 @@ export function registerFeishuSheetTools(api: OpenClawPluginApi) {
         switch (params.action) {
           case "get_share_url": {
             const guard = await requireReadAccess();
-            if (!guard.ok) return guard.authResponse;
+            if (!guard.ok) {return guard.authResponse;}
             const share = await resolveDriveShareUrl(account, token, "sheet", {
               userToken: guard.token.access_token,
             });
@@ -275,7 +275,7 @@ export function registerFeishuSheetTools(api: OpenClawPluginApi) {
           }
           case "get_meta": {
             const guard = await requireReadAccess();
-            if (!guard.ok) return guard.authResponse;
+            if (!guard.ok) {return guard.authResponse;}
             const result = await callSheetUserApi({
               userToken: guard.token.access_token,
               method: "GET",
@@ -285,9 +285,9 @@ export function registerFeishuSheetTools(api: OpenClawPluginApi) {
           }
           case "read_range": {
             const rangeError = validateRange(params.range, "range");
-            if (rangeError) return makeLocalErrorResult(rangeError);
+            if (rangeError) {return makeLocalErrorResult(rangeError);}
             const guard = await requireReadAccess();
-            if (!guard.ok) return guard.authResponse;
+            if (!guard.ok) {return guard.authResponse;}
             const result = await callSheetUserApi({
               userToken: guard.token.access_token,
               method: "GET",
@@ -310,10 +310,10 @@ export function registerFeishuSheetTools(api: OpenClawPluginApi) {
             }
             for (const item of params.ranges) {
               const rangeError = validateRange(item, "ranges");
-              if (rangeError) return makeLocalErrorResult(rangeError);
+              if (rangeError) {return makeLocalErrorResult(rangeError);}
             }
             const guard = await requireReadAccess();
-            if (!guard.ok) return guard.authResponse;
+            if (!guard.ok) {return guard.authResponse;}
             const result = await callSheetUserApi({
               userToken: guard.token.access_token,
               method: "GET",
@@ -333,9 +333,9 @@ export function registerFeishuSheetTools(api: OpenClawPluginApi) {
           }
           case "write_range": {
             const rangeError = validateRange(params.range, "range");
-            if (rangeError) return makeLocalErrorResult(rangeError);
+            if (rangeError) {return makeLocalErrorResult(rangeError);}
             const valuesError = validateValues(params.values, "values");
-            if (valuesError) return makeLocalErrorResult(valuesError);
+            if (valuesError) {return makeLocalErrorResult(valuesError);}
             const result = await callChatApi({
               account,
               method: "PUT",
@@ -351,7 +351,7 @@ export function registerFeishuSheetTools(api: OpenClawPluginApi) {
           }
           case "write_ranges": {
             const valueRangesError = validateValueRanges(params.value_ranges);
-            if (valueRangesError) return makeLocalErrorResult(valueRangesError);
+            if (valueRangesError) {return makeLocalErrorResult(valueRangesError);}
             const result = await callChatApi({
               account,
               method: "POST",
@@ -364,18 +364,16 @@ export function registerFeishuSheetTools(api: OpenClawPluginApi) {
           }
           case "append": {
             const rangeError = validateAppendRange(params.range);
-            if (rangeError) return makeLocalErrorResult(rangeError);
+            if (rangeError) {return makeLocalErrorResult(rangeError);}
             const valuesError = validateValues(params.values, "values");
-            if (valuesError) return makeLocalErrorResult(valuesError);
+            if (valuesError) {return makeLocalErrorResult(valuesError);}
             const result = await callChatApi({
               account,
               method: "POST",
               endpoint: `/sheets/v2/spreadsheets/${encodedToken}/values_append`,
-              query: {
-                ...(params.insert_data_option
+              query: (params.insert_data_option
                   ? { insertDataOption: params.insert_data_option }
                   : {}),
-              },
               body: {
                 valueRange: {
                   range: params.range,
