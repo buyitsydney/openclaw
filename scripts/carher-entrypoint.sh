@@ -63,6 +63,35 @@ if [ -f "$LARK_MANIFEST" ]; then
 fi
 # ── end openclaw-lark channel-only ───────────────────────────────
 
+# ── openclaw-lark: fix DM native command dispatch ────────────────
+# Bug: openclaw-lark's dispatchSystemCommand sends /new through
+# dispatchReplyWithBufferedBlockDispatcher but doesn't set
+# CommandSource:"native" in the context. Core ignores it as a regular
+# message. Fix: patch dispatch-commands.js to inject CommandSource.
+DISPATCH_CMD="$LARK_PKG/src/messaging/inbound/dispatch-commands.js"
+if [ -f "$DISPATCH_CMD" ]; then
+  echo "  ▶ Patching openclaw-lark → fix DM /new command (CommandSource)..."
+  node -e "
+    const fs = require('fs');
+    let code = fs.readFileSync('$DISPATCH_CMD', 'utf8');
+    // Inject CommandSource:'native' into the ctxPayload before dispatch
+    const target = 'await dc.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({';
+    if (code.includes(target) && !code.includes('CommandSource')) {
+      code = code.replace(
+        target,
+        'ctxPayload.CommandSource = \"native\";\n    ' + target
+      );
+      fs.writeFileSync('$DISPATCH_CMD', code);
+      console.log('    ✓ CommandSource:native injected into DM command dispatch');
+    } else if (code.includes('CommandSource')) {
+      console.log('    ✓ CommandSource already present (skip)');
+    } else {
+      console.log('    ⚠ target string not found in dispatch-commands.js');
+    }
+  "
+fi
+# ── end openclaw-lark DM native command fix ──────────────────────
+
 # ── feishu-her 0503 compat: declare contracts.tools ───────────────
 # feishu-her (baked in image) also needs contracts.tools for 0503.
 FEISHU_HER_MANIFEST="/app/docker/plugins/feishu-her/openclaw.plugin.json"
