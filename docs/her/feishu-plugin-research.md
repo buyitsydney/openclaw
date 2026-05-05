@@ -550,30 +550,63 @@ api.registerHook("message_sending", async (event, ctx) => {
 2. 删除 group-archive, memory-bridge, sent-message-log
 3. feishu-her `channels: []`，不再注册 channel
 
-### Phase 1: Dockerfile v3 — 零插件镜像
+### Phase 1: 三组件运行时安装（已完成 ✅）
 
-1. 从 `Dockerfile.carher.v2` 删除所有 `COPY docker/plugins/...` 和对应 `npm install`
-2. 只保留: openclaw base + python3 + ffmpeg + chromium + fonts + live-frontend
-3. `plugins.load.paths` 改为指向 `/data/.openclaw/extensions/` 下的 npm 包
+1. entrypoint runtime npm install: openclaw-lark (channel + tools) + lark-cli (24 skills)
+2. openclaw-lark → channel-only 模式（tools=[], skills=[] 仅保留 channel 注册）
+3. feishu-her + a2a-gateway + shadow-daemon baked in image at `/app/docker/plugins/`
+4. `plugins.load.paths` 指向 image 内路径 + persistent volume npm 路径
 
-### Phase 2: feishu-her npm 发布
+### Phase 2: feishu-her npm 发布（未来）
 
 1. 将 `docker/plugins/feishu-her/` 重构为标准 npm 包结构
 2. 添加 `peerDependencies: { "openclaw": ">=2026.4.24" }`
 3. 发布到 npm registry（`@carher/feishu-her`）
 4. 验证 `npm install @carher/feishu-her` 后 OpenClaw 能正确发现并加载
 
-### Phase 3: 运行时安装集成
+### Phase 3: 消除 entrypoint runtime patch（未来）
 
-1. entrypoint 或 start-user.sh 中添加运行时 npm install 逻辑
-2. 安装三个插件到 `/data/.openclaw/extensions/`
-3. 配置 `plugins.load.paths` 或使用 OpenClaw global extensions 发现
+1. 将 openclaw-lark channel-only patch bake 进 image（修改 npm 包 post-install 或 custom fork）
+2. 将 feishu-her contracts.tools bake 进 image manifest
+3. entrypoint 只做 npm install 版本检查 + symlink，零 runtime patch
 
-### Phase 4: 灰度验证
+### Phase 4: 灰度验证（已完成 ✅ 2026-05-05）
 
-1. docker199（tester）先部署新镜像 + 运行时安装
-2. 验证: channel 收发、Discussion Mode、tools、lark-cli skills
-3. 逐步推广到其他 Her 实例
+在 carher-199 (S1) 上完成灰度压力测试，结论：**通过，可全量升级**。
+
+#### 测试环境
+
+- 镜像: `carher:2026.5.5-three-component-poc`（docker commit 方式构建）
+- 基础: openclaw 0503 + three-component entrypoint
+- 插件: openclaw-lark (channel-only) + lark-cli (24 skills) + feishu-her + a2a-gateway + shadow-daemon
+
+#### 验证项
+
+| 功能 | 结果 | 备注 |
+|------|:----:|------|
+| Feishu DM 收发 | ✅ | 包括 /new 等系统命令 |
+| Feishu 群聊 | ✅ | mention + non-mention 正确路由 |
+| openclaw-lark channel | ✅ | CardKit v2 流式渲染、消息收发 |
+| lark-cli 24 skills | ✅ | OAuth Device Flow 授权 + 工具调用 |
+| feishu-her knowledge_qa | ✅ | 知识问答正常 |
+| A2A Gateway | ✅ | outbound=true，7 peers 发现，a2a_send 工具注册 |
+| ACP (Claude Code) | ✅ | ACP_ALIVE + seq-done 确认 |
+| 多轮工具调用 | ✅ | 单次 dispatch 最高 replies=14 |
+| 稳定性 | ✅ | 无崩溃、无 OOM、无自动 restart |
+| Event Loop | ⚠️ | P99=20ms 正常，Max 峰值 1.4~4.7s（与 docker13 一致，非回归） |
+
+#### 已知问题（非回归）
+
+1. **Event Loop Max spike**: 偶发 1~5s 尖峰，GC pause 或大 JSON 解析导致，docker13 同样存在
+2. **Entrypoint runtime patch**: openclaw-lark channel-only 剥离 + feishu-her contracts.tools 注入仍在 entrypoint 中，下次正式 image rebuild 时应 bake 进去
+
+#### 全量升级建议
+
+可以将 `carher:2026.5.5-three-component-poc` 作为新基线 image 全量替换 docker13 旧版本。升级步骤：
+1. 推送 image 到各服务器
+2. 更新 compose.yaml 引用新 image tag
+3. 首次启动每个容器会 runtime install openclaw-lark + lark-cli（约 30s）
+4. 验证各容器 `replies>0` + ACP 存活
 
 ---
 
