@@ -647,7 +647,7 @@ Max 订阅节省: $2,100 - $800 = $1,300/月 (62% 节省)
 ### 9.1 Token 存储
 
 - OAuth token 通过环境变量注入（`${ANTHROPIC_TOKEN_xxx}`），不写入配置文件
-- Docker 容器通过 `start-user.sh` 传入环境变量
+- Docker 容器通过 `compose` 传入环境变量
 - Token 文件权限 `600`，仅 owner 可读
 
 ### 9.2 Token 刷新

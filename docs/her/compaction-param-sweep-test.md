@@ -712,7 +712,7 @@ Gateway 日志确认所有参数变更被检测到：
 /tmp/carher-config-4.json    ← Host 端，Docker4 通过 volume 挂载到容器内
 ```
 
-Docker Compose 挂载方式（`start-user.sh` 生成）：
+Docker Compose 挂载方式（`compose` 生成）：
 
 ```yaml
 volumes:

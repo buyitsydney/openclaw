@@ -1,7 +1,7 @@
 #!/bin/bash
 # Admin container post-start bootstrap
 #
-# Use case: EVERY TIME admin container is rebuilt (docker rm + start-user.sh),
+# Use case: EVERY TIME admin container is rebuilt,
 #           run this script to reinstall the non-image-baked admin layers.
 #
 # What it installs:
@@ -14,7 +14,7 @@
 #   ./bootstrap-admin.sh carher-XXX   # override container name
 #
 # Prerequisite:
-#   - start-user.sh has already brought the admin container up
+#   - docker compose has already brought the admin container up
 #   - docker/servers.txt exists at repo root docker/ dir (gitignored, host-local)
 
 set -e
@@ -31,7 +31,7 @@ echo -e "${YELLOW}▶ bootstrap admin: $CONTAINER${NC}"
 
 # Sanity: container must be running
 if ! docker ps --format '{{.Names}}' | grep -q "^$CONTAINER$"; then
-  echo -e "${RED}✗ container $CONTAINER not running — start-user.sh first${NC}"
+  echo -e "${RED}✗ container $CONTAINER not running — docker compose up -d first${NC}"
   exit 1
 fi
 

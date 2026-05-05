@@ -25,7 +25,7 @@ description: DEPRECATED — 旧流程，通过 git merge upstream tag 合入官�
 
 本地仓库是 upstream openclaw 的 fork，包含本地定制（feishu-her 插件、realtime 插件、Docker 部署脚本等）。升级时的原则：
 
-1. **绝对不能动的**：`extensions/feishu-her/`、`extensions/realtime/`、`docker/`、`start-user.sh`、`start.sh`、`start-tunnel.sh` 的业务逻辑
+1. **绝对不能动的**：`extensions/feishu-her/`、`extensions/realtime/`、`docker/`、`compose`、`start.sh`、`start-tunnel.sh` 的业务逻辑
 2. **可以动的**：这些文件的**类型适配**（upstream 改了接口签名，本地插件需要跟着改类型声明）
 3. **唯一信源**：`docker/carher-config.json` 是所有环境（本地 Her + Docker 容器）的基础配置，通过 `$include` 机制继承
 
@@ -143,7 +143,7 @@ upstream 可能改变 `dist/` 输出结构。`realtime` 插件通过 `dist/exten
 
 ### Docker 容器
 
-1. `./start-user.sh --id=N`（会自动检测镜像变化并重建）
+1. `./compose --id=N`（会自动检测镜像变化并重建）
 2. 飞书发消息 → 确认收发
 3. `/voice` → 确认语音
 4. `localhost:290X1` → 确认 Web UI

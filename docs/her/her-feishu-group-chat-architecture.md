@@ -40,7 +40,7 @@ Config 开关：`channels.feishu.cardStreamVersion`（`"v1"` 默认，`"v2"` 可
 - **唯一 current bot 身份信源**：`channels.feishu.name`
 - **唯一 peer bot 身份信源**：`channels.feishu.knownBots[app_id]`
 - **本地多 bot registry 根信源**：`docker/users.csv`
-- **容器运行时生成器**：`start-user.sh` 把 `docker/users.csv` 显式编译进容器 `openclaw.json`
+- **容器运行时生成器**：`compose` 把 `docker/users.csv` 显式编译进容器 `openclaw.json`
 - **本机 Her 运行时同步器**：`start.sh` 把 host `name` 与 `knownBots` 显式同步进 `~/.openclaw/openclaw.json`
 - **唯一用户可见文本出站**：`extensions/feishu-her/src/outbound.ts` 的 `sendFeishuUserFacingCard()`
 - **禁止事项**：
@@ -81,7 +81,7 @@ Config 开关：`channels.feishu.cardStreamVersion`（`"v1"` 默认，`"v2"` 可
 - 飞书 `interactive` 卡片在 `PATCH /im/v1/messages/{message_id}` 链路里，对 **human mention** 和 **bot mention** 的要求不一样
 - human mention 用 `open_id` 可以稳定成功
 - peer bot mention 如果把 `app_id` 直接写进 `<at id=...></at>`，飞书会返回 `230099 invalid user resource`
-- peer bot mention 必须先从本地 registry（`docker/users.csv` -> `start.sh` / `start-user.sh` -> `knownBotOpenIds`）恢复出 **bot_open_id**，再写入卡片
+- peer bot mention 必须先从本地 registry（`docker/users.csv` -> `start.sh` / `compose` -> `knownBotOpenIds`）恢复出 **bot_open_id**，再写入卡片
 
 **因此当前发送层 contract 已更新为**：
 

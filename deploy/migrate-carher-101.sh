@@ -1,5 +1,5 @@
 #!/bin/bash
-# Migrate carher-101 from start-user.sh to docker compose.
+# Migrate carher-101 to docker compose.
 # Idempotent: safe to rerun. Volumes preserved.
 #
 # Usage:  ./migrate-carher-101.sh
@@ -20,7 +20,7 @@ err()  { echo -e "${RED}✗${NC} $1"; exit 1; }
 command -v docker >/dev/null || err "docker not found"
 docker info >/dev/null 2>&1 || err "docker daemon not running"
 
-# 2. Ensure shared network + volumes exist (start-user.sh creates them; we reuse)
+# 2. Ensure shared network + volumes exist (reuse existing)
 step "Ensuring carher-net network exists"
 docker network inspect carher-net >/dev/null 2>&1 || docker network create carher-net
 ok "carher-net OK"
@@ -31,7 +31,7 @@ for vol in carher-101-home carher-101-data carher-redis-data; do
 done
 ok "volumes OK"
 
-# 3. Shared redis — reuse existing (created by start-user.sh) or start via compose
+# 3. Shared redis — reuse existing or start via compose
 step "Checking shared redis"
 if docker inspect carher-redis >/dev/null 2>&1; then
   if [ "$(docker inspect --format '{{.State.Status}}' carher-redis)" = "running" ]; then

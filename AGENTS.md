@@ -307,7 +307,7 @@
   ln -s /path/to/main-repo/docker/users.csv <worktree>/docker/users.csv
   ls <worktree>/docker/server.env 2>/dev/null || ln -s /path/to/main-repo/docker/server.env <worktree>/docker/server.env
   ```
-  For the canonical A+B container lifecycle (image construction + `start-user.sh` launch + verification), see `.cursor/skills/carher-ops/SKILL.md`.
+  For the canonical A+B container lifecycle (image construction + `compose` launch + verification), see `.cursor/skills/carher-ops/SKILL.md`.
 - **Multi-agent safety:** do **not** switch branches / check out a different branch unless explicitly requested.
 - **Multi-agent safety:** running multiple agents is OK as long as each agent has its own session.
 - **Multi-agent safety:** when you see unrecognized files, keep going; focus on your changes and commit only those.

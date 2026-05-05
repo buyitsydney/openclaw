@@ -1,7 +1,7 @@
 // config/u199.json5 — S1 carher-199 identity (Layer 3, 研究2)
 //
 // $include's docker.json5 → base.json5. Mounted into the container at
-// /data/.openclaw/openclaw.json (NOT u199.json5 — start-user.sh mounts
+// /data/.openclaw/openclaw.json (NOT u199.json5 — compose bind-mounts
 // it as the canonical openclaw.json regardless of source filename).
 //
 // Only per-user feishu identity. Primary model + all other behavior

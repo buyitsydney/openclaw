@@ -1,5 +1,5 @@
 #!/bin/bash
-# 测试 start-user.sh 的 CSV 解析 + config 生成逻辑
+# 测试 compose 的 CSV 解析 + config 生成逻辑
 # 用法: ./docker/test-users-csv.sh
 #
 # 测试覆盖:
@@ -67,7 +67,7 @@ assert_not_contains() {
   fi
 }
 
-# --- Helper: parse CSV (same logic as start-user.sh) ---
+# --- Helper: parse CSV (same logic as compose) ---
 parse_csv_user() {
   local csv_file="$1" target_id="$2"
   local CSV_NAME="" CSV_MODEL="" CSV_FEISHU_ID="" CSV_FEISHU_SECRET="" CSV_NOTE=""
@@ -89,7 +89,7 @@ parse_csv_user() {
   echo "${CSV_NAME}|${CSV_MODEL}|${CSV_FEISHU_ID}|${CSV_FEISHU_SECRET}|${CSV_NOTE}"
 }
 
-# --- Helper: generate config (same logic as start-user.sh) ---
+# --- Helper: generate config (same logic as compose) ---
 generate_config() {
   local base_config="$1" model="$2" feishu_id="$3" feishu_secret="$4"
   python3 -c "
@@ -157,7 +157,7 @@ cat > "$TEST_CSV" << 'CSV'
 CSV
 
 echo "=========================================="
-echo " start-user.sh CSV 解析 + Config 生成测试"
+echo " compose CSV 解析 + Config 生成测试"
 echo "=========================================="
 echo ""
 

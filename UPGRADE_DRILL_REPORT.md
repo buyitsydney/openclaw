@@ -18,7 +18,7 @@ DOCKER_BUILDKIT=1 docker build -f Dockerfile.carher.v2 \
 
 # 2) 切 canary(102)
 docker rm -f carher-102
-CARHER_ACP_ENABLED=1 ./start-user.sh --id=102 --image=carher-core:<MMDD>-ab-v2
+CARHER_ACP_ENABLED=1 ./compose --id=102 --image=carher-core:<MMDD>-ab-v2
 
 # 3) 自动自检(10 gate)
 scripts/carher-verify.sh --id=102 --wait=90
@@ -26,7 +26,7 @@ scripts/carher-verify.sh --id=102 --wait=90
 # 4) canary 稳定 24h 后全量推广(脚本在 §6)
 ```
 
-**canary 失败 = 立刻回滚**:`docker rm -f carher-102 && ./start-user.sh --id=102 --image=carher-core:<旧 tag>`。
+**canary 失败 = 立刻回滚**:`docker rm -f carher-102 && ./compose --id=102 --image=carher-core:<旧 tag>`。
 旧 tag 永远留着,本地冷盘占个 ~2GB 不心疼。
 
 ---
@@ -68,7 +68,7 @@ Skill 老版估 3–5min 是基于"npm 缓存命中"的假设。实际:
 
 | 阶段                             | 实测     | 备注                              |
 | -------------------------------- | -------- | --------------------------------- |
-| `docker rm -f` + `start-user.sh` | **90s**  | stop 1s + cloudflared 隧道等 ~60s |
+| `docker rm -f` + `compose` | **90s**  | stop 1s + cloudflared 隧道等 ~60s |
 | Gateway ready                    | ~25s     | 已在 90s 内                       |
 | `carher-verify.sh` 10 gate       | **0–2s** | 容器已 ready,全部检查同步跑过     |
 | **总停机**                       | **~90s** | 跟 skill 原估吻合                 |
@@ -139,7 +139,7 @@ DOCKER_BUILDKIT=1 docker build -f Dockerfile.carher.v2 \
 
 # Step 2: 切 canary(一般是 102 = tester2)
 docker rm -f carher-102
-CARHER_ACP_ENABLED=1 ./start-user.sh --id=102 --image=carher-core:<MMDD>-ab-v2
+CARHER_ACP_ENABLED=1 ./compose --id=102 --image=carher-core:<MMDD>-ab-v2
 # 停机: ~90s;gateway ready 需再等 ~25s
 
 # Step 3: 自动自检
@@ -171,7 +171,7 @@ scripts/carher-verify.sh --id=102 --wait=90
 
 ```bash
 docker rm -f carher-102
-CARHER_ACP_ENABLED=1 ./start-user.sh --id=102 --image=carher-core:<旧日期>-ab-v2
+CARHER_ACP_ENABLED=1 ./compose --id=102 --image=carher-core:<旧日期>-ab-v2
 # ~60-70s,因为镜像在本地,省掉 build+pull
 ```
 
@@ -191,7 +191,7 @@ docker rm -f carher-102
 docker run --rm -v carher-102-data:/data alpine rm -f /data/openclaw.json
 
 # 5.2.3 再起
-CARHER_ACP_ENABLED=1 ./start-user.sh --id=102 --image=carher-core:<老 tag>
+CARHER_ACP_ENABLED=1 ./compose --id=102 --image=carher-core:<老 tag>
 
 # 5.2.4 或者更直接:先让新版镜像跑一遍 doctor --fix,再启
 docker run --rm -v carher-102-data:/data carher-core:<老 tag> openclaw doctor --fix
@@ -235,7 +235,7 @@ for i in $(seq 1 200); do
   fi
 
   docker rm -f "carher-$i" >/dev/null 2>&1 || true
-  CARHER_ACP_ENABLED=1 ./start-user.sh --id="$i" --image="$NEW_TAG" >/dev/null
+  CARHER_ACP_ENABLED=1 ./compose --id="$i" --image="$NEW_TAG" >/dev/null
 
   # 等 gateway ready 最多 90s
   for _ in $(seq 1 30); do
@@ -251,7 +251,7 @@ for i in $(seq 1 200); do
   else
     echo "  [FAIL] 自检失败,自动回滚"
     docker rm -f "carher-$i" >/dev/null
-    CARHER_ACP_ENABLED=1 ./start-user.sh --id="$i" --image="$OLD_TAG" >/dev/null
+    CARHER_ACP_ENABLED=1 ./compose --id="$i" --image="$OLD_TAG" >/dev/null
     echo "carher-$i" >> /tmp/rollout-rolled-back.txt
   fi
 
@@ -288,7 +288,7 @@ done
 OLD_TAG="carher-core:0415-ab-v2"
 for i in $(seq 1 200); do
   docker rm -f "carher-$i" >/dev/null 2>&1 || true
-  CARHER_ACP_ENABLED=1 ./start-user.sh --id="$i" --image="$OLD_TAG" >/dev/null &
+  CARHER_ACP_ENABLED=1 ./compose --id="$i" --image="$OLD_TAG" >/dev/null &
   # 并发回滚(回滚不做自检,追求速度)
   if (( i % 10 == 0 )); then wait; fi
 done

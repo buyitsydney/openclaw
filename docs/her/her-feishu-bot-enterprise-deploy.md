@@ -145,13 +145,13 @@ echo 'export OPENROUTER_API_KEY=sk-or-v1-你的key' >> ~/.bashrc
 source ~/.bashrc
 
 # 3. 首次构建 Docker 镜像（约 5-10 分钟，后续自动检测变更）
-./start-user.sh --id=1
+./compose --id=1
 # 脚本会自动构建镜像，看到 "✓ 容器已启动" 即成功
 # 首次验证后停止容器，进入下一步创建飞书 Bot
-./start-user.sh --id=1 --down
+./compose --id=1 --down
 ```
 
-> **检查清单**：运行 `./start-user.sh --id=1`，如果看到 `✓ Docker 镜像已是最新` + `✓ OpenRouter API key` + `✓ Google Cloud 凭证` + `✓ 容器已启动`，说明环境 100% 就绪。如果任何一项显示 `✗`，根据错误提示排查对应的账号/密钥配置。
+> **检查清单**：运行 `./compose --id=1`，如果看到 `✓ Docker 镜像已是最新` + `✓ OpenRouter API key` + `✓ Google Cloud 凭证` + `✓ 容器已启动`，说明环境 100% 就绪。如果任何一项显示 `✗`，根据错误提示排查对应的账号/密钥配置。
 
 ### 首次验证（管理员个人 Her）
 
@@ -170,7 +170,7 @@ source ~/.bashrc
 # 4. 用手机访问远程 URL 验证隧道连通
 #    远程 URL 格式：https://carher.carher.net/mobile.html?proxy=...
 
-# 5. 确认一切正常后，再 ./start-user.sh --id=1 启动第一个企业用户容器
+# 5. 确认一切正常后，再 ./compose --id=1 启动第一个企业用户容器
 ```
 
 > 个人 Her 通过 `start.sh` 启动，在 tmux 会话 `her` 中运行，与用户容器（Docker）完全独立。macOS 和 Ubuntu 上操作完全一致。
@@ -232,7 +232,7 @@ source ~/.bashrc
 
 ### 每容器配置
 
-每个容器的配置使用 `$include` 引用共享基础配置，只需写环境特有的覆盖项。以下是 `start-user.sh` 自动生成的 per-user 配置结构：
+每个容器的配置使用 `$include` 引用共享基础配置，只需写环境特有的覆盖项。以下是 `compose` 自动生成的 per-user 配置结构：
 
 ```json
 {
@@ -284,7 +284,7 @@ source ~/.bashrc
 
 > **注意事项**：
 >
-> - 上述配置由 `start-user.sh` 从 `docker/users.csv` + `docker/carher-config.json` 自动生成，IT 无需手动编写
+> - 上述配置由 `compose` 从 `docker/users.csv` + `docker/carher-config.json` 自动生成，IT 无需手动编写
 > - `dm.allowFrom` 限制只有主人能与 bot 单聊（其他人发消息会被忽略）
 > - `groups.enabled` + `groups.archive` 默认启用群聊归档，主人可在私聊让 bot 总结群聊内容
 > - `nativeSkills: "auto"` 必须配置，否则 AI 只能看到少数无依赖的 skill
@@ -306,25 +306,25 @@ source ~/.bashrc
 
 ### Docker 部署
 
-#### 实际部署方式（start-user.sh + docker run）
+#### 实际部署方式（compose + docker run）
 
-不使用 docker-compose。每个容器由 `start-user.sh` 直接通过 `docker run` 管理：
+不使用 docker-compose。每个容器由 `compose` 直接通过 `docker run` 管理：
 
 ```bash
 # 启动用户 1 的容器（自动从 CSV 读取飞书凭证，自动构建/更新镜像）
-./start-user.sh --id=1 --local
+./compose --id=1 --local
 
 # 停止用户 1
-./start-user.sh --id=1 --down
+./compose --id=1 --down
 
 # 查看用户 1 日志
-./start-user.sh --id=1 --logs
+./compose --id=1 --logs
 
 # 列出所有用户和容器状态
-./start-user.sh --list
+./compose --list
 
 # 停止所有容器
-./start-user.sh --down
+./compose --down
 ```
 
 每个容器的端口自动分配：`base = 29000 + (id-1) * 10`，如用户 1 = 29001（Gateway）、29002（Realtime）、29003（Frontend）、29004（WS Proxy）、29005（OAuth）。OAuth 端口用于飞书 `user_access_token` 授权回调。
@@ -333,7 +333,7 @@ source ~/.bashrc
 
 ```
 仓库根目录/
-├── start-user.sh                ← 用户容器管理主脚本（启动/停止/日志/列表）
+├── compose                ← 用户容器管理主脚本（启动/停止/日志/列表）
 ├── Dockerfile.carher.v2         ← Docker 镜像构建文件（A+B 三轴解耦架构）
 ├── scripts/
 │   └── carher-entrypoint.sh     ← 容器入口脚本
@@ -346,7 +346,7 @@ source ~/.bashrc
     ├── server.env               ← 服务器本地环境变量（.gitignore 不入库，见下方说明）
     ├── shared-config.json5      ← 共享功能配置（所有环境通用：tools、messages、agent defaults）
     ├── carher-config.json       ← Docker 基础配置（$include shared + Docker 特有覆盖）
-    ├── user-configs/            ← start-user.sh 自动生成的 per-user 配置（.gitignore 不入库）
+    ├── user-configs/            ← compose 自动生成的 per-user 配置（.gitignore 不入库）
     └── workspace/               ← workspace 模板文件（SOUL.md 等，启动时自动同步到容器）
 ```
 
@@ -364,7 +364,7 @@ carher-config.json           ← Docker 基础配置（+ browser/gateway/models 
 per-user.json / openclaw.json ← 每个环境的最终配置（+ secrets/channels 覆盖）
 ```
 
-**容器内配置文件布局**：`start-user.sh` 将三个配置文件 bind mount 到 `/data/.openclaw/`：
+**容器内配置文件布局**：`compose` 将三个配置文件 bind mount 到 `/data/.openclaw/`：
 
 ```
 /data/.openclaw/
@@ -377,7 +377,7 @@ per-user.json / openclaw.json ← 每个环境的最终配置（+ secrets/channe
 
 #### 服务器本地环境变量（docker/server.env）
 
-每台服务器需要创建 `docker/server.env` 文件（gitignored，不入库），`start-user.sh` 启动时自动 source 该文件。用于存放服务器特有的环境变量，当前唯一变量是 Cloudflare Tunnel 域名前缀：
+每台服务器需要创建 `docker/server.env` 文件（gitignored，不入库），`compose` 启动时自动 source 该文件。用于存放服务器特有的环境变量，当前唯一变量是 Cloudflare Tunnel 域名前缀：
 
 | 机器     | `docker/server.env` 内容   | 效果                               |
 | -------- | -------------------------- | ---------------------------------- |
@@ -386,7 +386,7 @@ per-user.json / openclaw.json ← 每个环境的最终配置（+ secrets/channe
 | S2 (187) | `TUNNEL_HOST_PREFIX="s2-"` | 域名加前缀：`s2-u6-fe.carher.net`  |
 | S3 (188) | `TUNNEL_HOST_PREFIX="s3-"` | 域名加前缀：`s3-u10-fe.carher.net` |
 
-**设计原则**：代码统一（`start-user.sh` 入 git），配置分离（`server.env` 不入 git）。Mac 是**代码**的唯一源头（通过 git push/pull 同步）。`users.csv`、`servers.txt`、`server.env` 等含密钥的配置文件 **不入 git**，各服务器独立维护。
+**设计原则**：代码统一（`compose` 入 git），配置分离（`server.env` 不入 git）。Mac 是**代码**的唯一源头（通过 git push/pull 同步）。`users.csv`、`servers.txt`、`server.env` 等含密钥的配置文件 **不入 git**，各服务器独立维护。
 
 ### 重建/重启安全规则
 
@@ -413,15 +413,15 @@ docker build -f Dockerfile.carher.v2 \
 # 滚动升级（每次只动 1 个用户，停旧容器 + 用新镜像起）
 for i in $(seq 1 200); do
   docker rm -f carher-$i
-  ./start-user.sh --id=$i --image=carher-core:<日期>-ab-v2
+  ./compose --id=$i --image=carher-core:<日期>-ab-v2
   sleep 10
 done
 
 # 跳过镜像重建（仅重启容器，用于配置变更）
-./start-user.sh --id=1 --no-rebuild
+./compose --id=1 --no-rebuild
 
 # 回滚：用旧镜像 tag 重新起，不用回滚代码
-./start-user.sh --id=1 --image=carher-core:<旧日期>-ab-v2
+./compose --id=1 --image=carher-core:<旧日期>-ab-v2
 ```
 
 ---
@@ -829,7 +829,7 @@ https://sX-uN-auth.carher.net/feishu/oauth/callback
 > - S3 (10.68.13.188) 上的用户 14：`https://s3-u14-auth.carher.net/feishu/oauth/callback`
 > - Mac 本地测试：`https://uN-auth.carher.net/feishu/oauth/callback`（无服务器前缀）
 >
-> URL 由 `start-user.sh` 根据用户 ID + `TUNNEL_HOST_PREFIX`（来自 `server.env`）自动推导并写入 `channels.feishu.oauthRedirectUri`，无需手动计算端口。
+> URL 由 `compose` 根据用户 ID + `TUNNEL_HOST_PREFIX`（来自 `server.env`）自动推导并写入 `channels.feishu.oauthRedirectUri`，无需手动计算端口。
 >
 > **Cloudflare 隧道已预分配**：每台服务器的隧道已预配置 User 1-50 的 `auth` 域名路由和 DNS 记录。新增用户无需修改隧道配置。隧道架构详见 [企业部署实录 - Cloudflare 隧道架构](/her/enterprise-deploy-log#cloudflare-隧道架构)。
 
@@ -860,7 +860,7 @@ https://sX-uN-auth.carher.net/feishu/oauth/callback
 部署者收到 App ID + App Secret 后：
 
 1. 编辑 `docker/users.csv`，新增一行：`N,董事长,sonnet,cli_xxx,secret_xxx,,openrouter,董事长专属Bot,`
-2. 运行 `./start-user.sh --id=N --local`
+2. 运行 `./compose --id=N --local`
 3. 验证容器内 config 正确性（App ID/Secret、models providers、groups.enabled、gateway dangerously\* 配置）
 4. 确认日志出现 `Feishu WSClient connected` 后通知 IT 继续
 5. 更新本地 Mac `docker/servers.txt`（Bot 列表 + 容器分布总览 + 总计数）
@@ -907,11 +907,11 @@ https://sX-uN-auth.carher.net/feishu/oauth/callback
 
 员工第一次给 Bot 发消息后：
 
-1. 部署者查看日志：`./start-user.sh --id=N --logs`，搜索 `from=ou_`，记录完整的 `ou_xxx` 值
+1. 部署者查看日志：`./compose --id=N --logs`，搜索 `from=ou_`，记录完整的 `ou_xxx` 值
 2. 编辑 `docker/users.csv`：
    - **专属 Bot**（1人1bot）：将 `ou_xxx` 填入 `feishu_owner_open_id` 列
    - **共享 Bot**（多人共用）：将管理员 open_id 填入 `owner_allow_from` 列（多人用 `|` 分隔）
-3. 重启容器：`./start-user.sh --id=N`，Owner 身份即刻生效
+3. 重启容器：`./compose --id=N`，Owner 身份即刻生效
 4. 验证：让用户发 "列出你所有工具名称"，确认回复中包含 `cron`
 
 #### 飞书 Bot 常见问题
@@ -938,7 +938,7 @@ https://sX-uN-auth.carher.net/feishu/oauth/callback
 | 新员工入职 | 创建飞书 Bot + 导入权限 + 配 OAuth URL（15 分钟） | CSV 加行 + 启动容器 | **零影响**     |
 | 员工离职   | 注销飞书账号 + 删除 Bot                           | 停止并删除该容器    | **零影响**     |
 
-> **新增用户无需修改隧道配置**：Cloudflare 隧道已预分配 User 1-50 的全部路由和 DNS。IT 只需在飞书后台填入 OAuth URL（格式自动推导），部署者只需 `./start-user.sh --id=N`。
+> **新增用户无需修改隧道配置**：Cloudflare 隧道已预分配 User 1-50 的全部路由和 DNS。IT 只需在飞书后台填入 OAuth URL（格式自动推导），部署者只需 `./compose --id=N`。
 
 ### 用户管理
 
@@ -973,7 +973,7 @@ https://sX-uN-auth.carher.net/feishu/oauth/callback
 
 获取 open_id 的方法：用户给 Bot 发一条消息，从容器日志中找 `from=ou_xxx`。
 
-`start-user.sh` 从 CSV 自动生成完整配置，包括：
+`compose` 从 CSV 自动生成完整配置，包括：
 
 - 飞书通道 + 插件启用
 - `feishu_owner_open_id` → `dm.allowFrom`（单聊白名单 = Owner 身份 = 高权限工具访问）
@@ -999,18 +999,18 @@ CSV 含密钥，已加入 `.gitignore`，**不通过 git 同步**。
 **生产 CSV 编辑流程：**
 
 1. SSH 到服务器，编辑 `/Data/CarHer/docker/users.csv`
-2. 运行 `./start-user.sh --id=N` 重建容器（从本地 CSV 读取配置）
+2. 运行 `./compose --id=N` 重建容器（从本地 CSV 读取配置）
 3. 如果多台服务器需要相同变更（如 `carher-config.json` 更新），通过 `git pull` 同步代码后各服务器独立重建
 
 ```bash
-./start-user.sh --id=1               # 模型和飞书凭证从 CSV 自动读取
-./start-user.sh --id=1 --model=opus  # CLI --model 覆盖 CSV 设置
-./start-user.sh --id=1 --local       # 仅本地访问（不开隧道）
-./start-user.sh --id=1 --down        # 停止容器
-./start-user.sh --list               # 列出所有用户和容器状态
+./compose --id=1               # 模型和飞书凭证从 CSV 自动读取
+./compose --id=1 --model=opus  # CLI --model 覆盖 CSV 设置
+./compose --id=1 --local       # 仅本地访问（不开隧道）
+./compose --id=1 --down        # 停止容器
+./compose --list               # 列出所有用户和容器状态
 ```
 
-> `start-user.sh` 自动检测代码变更并重建镜像，无需手动操作。`--no-rebuild` 可跳过。
+> `compose` 自动检测代码变更并重建镜像，无需手动操作。`--no-rebuild` 可跳过。
 
 ---
 

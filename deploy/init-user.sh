@@ -1,7 +1,7 @@
 #!/bin/bash
 # Post-start initialization for a carher-N container (idempotent).
 #
-# Replaces the first-boot steps start-user.sh does after `docker run`:
+# First-boot steps after `docker compose up -d`:
 #   1. Apply device-pairing operator scopes (so /voice, /gateway work)
 #   2. Generate voice token (preserved in volume across restarts)
 #

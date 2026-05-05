@@ -21,8 +21,8 @@ alwaysApply: true
 - **服务器** `carher-1`（董事长/老杨）—— 任何 stop / down / restart / rm / kill
 
 包括但不限于：
-- Mac: `docker stop carher-3` / `./start-user.sh --id=3` / `--id=3 --down`
-- 服务器: `docker stop carher-1` / `./start-user.sh --id=1` / `--id=1 --down`
+- Mac: `docker stop carher-3` / `./compose --id=3` / `--id=3 --down`
+- 服务器: `docker stop carher-1` / `./compose --id=1` / `--id=1 --down`
 - 任何对上述容器的破坏性命令
 
 **Mac 本地 carher-101/102/103 是测试容器，不受此禁令限制。**
@@ -33,6 +33,6 @@ alwaysApply: true
 
 ## 根因记录
 
-2026-02-18：AI 擅自执行 `./start-user.sh --id=3 --down` 停掉了董事长的生产容器，导致服务中断。
+2026-02-18：AI 擅自执行 `./compose --id=3 --down` 停掉了董事长的生产容器，导致服务中断。
 2026-02-25：明确 Mac docker1=测试、服务器 docker1=董事长，避免混淆。
 2026-03-23：Mac 测试容器从 id=1 迁移到 id=101，id=101→102，新增 id=103，统一 101-103 号段。

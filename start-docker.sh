@@ -6,7 +6,7 @@
 #   ./start-docker.sh              # 构建镜像
 #   ./start-docker.sh --rebuild    # 强制重新构建（代码更新后使用）
 #
-# 后续启动用户容器: ./start-user.sh --id=1 --random
+# 后续启动用户容器: cd deploy/carher-N && docker compose up -d
 
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,11 +63,11 @@ echo -e "${GREEN}  镜像: carher:local${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
 echo -e "  启动用户容器:"
-echo -e "    ${YELLOW}./start-user.sh --id=1 --random${NC}    # user1 + 随机隧道"
-echo -e "    ${YELLOW}./start-user.sh --id=2 --random${NC}    # user2 + 随机隧道"
+echo -e "    ${YELLOW}cd deploy/carher-1 && docker compose up -d${NC}"
+echo -e "    ${YELLOW}cd deploy/carher-2 && docker compose up -d${NC}"
 echo ""
 echo -e "  管理:"
-echo -e "    ${YELLOW}./start-user.sh --id=1 --logs${NC}      # 查看 user1 日志"
-echo -e "    ${YELLOW}./start-user.sh --id=1 --down${NC}      # 停止 user1"
-echo -e "    ${YELLOW}./start-user.sh --down${NC}             # 停止所有用户"
+echo -e "    ${YELLOW}docker compose -f deploy/carher-1/compose.yaml logs -f${NC}"
+echo -e "    ${YELLOW}docker compose -f deploy/carher-1/compose.yaml down${NC}"
+echo -e "    ${YELLOW}# stop all: iterate deploy/carher-*/compose.yaml${NC}"
 echo ""

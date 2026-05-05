@@ -1,11 +1,11 @@
 // config/u198.json5 — S1 carher-198 identity (admin / 研究1的her)
 //
 // Admin host. $include's docker.json5 → base.json5. Mounted into the
-// container at /data/.openclaw/openclaw.json by start-user.sh --id=198.
+// container at /data/.openclaw/openclaw.json by compose bind-mount.
 //
 // History: 裸机 yitian-her 2026-04-23 退役,由 carher-198 (研究1) 接管 admin。
 // Special: must run with `CARHER_MEMORY_LIMIT=16g A2A_ENABLED=1 A2A_OUTBOUND=1
-// CARHER_ACP_ENABLED=1 ./start-user.sh --id=198 ...` then bootstrap-admin.sh.
+// compose up in deploy/carher-198/ then bootstrap-admin.sh.
 //
 // Real appSecret is injected via -e FEISHU_APP_SECRET on docker run.
 

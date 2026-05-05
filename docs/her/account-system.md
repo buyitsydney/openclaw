@@ -26,7 +26,7 @@ OpenClaw 根据 `model.primary` 的 provider 前缀自动选择认证来源：
 - `anthropic/...` 前缀 → 本地 Her 走 `auth-profiles.json` 中的 setup-token；Docker 容器走 `ANTHROPIC_OAUTH_TOKEN` 环境变量
 - `openrouter/...` 前缀 → 使用 `OPENROUTER_API_KEY` 环境变量
 
-`start-user.sh` 从 `docker/users.csv` 的 `provider` 列读取每用户的 provider（`anthropic` 或 `openrouter`，留空默认 `openrouter`），Docker 容器的模型短名（`opus`、`sonnet`）随之解析到正确的 provider 路径。
+`compose` 从 `docker/users.csv` 的 `provider` 列读取每用户的 provider（`anthropic` 或 `openrouter`，留空默认 `openrouter`），Docker 容器的模型短名（`opus`、`sonnet`）随之解析到正确的 provider 路径。
 
 ---
 
@@ -59,7 +59,7 @@ OpenClaw 根据 `model.primary` 的 provider 前缀自动选择认证来源：
 重启本地 gateway（OpenClaw 菜单栏 → Restart），然后重启需要切换的 Docker 容器：
 
 ```bash
-./start-user.sh --id=1 --down && ./start-user.sh --id=1
+./compose --id=1 --down && ./compose --id=1
 ```
 
 ---
@@ -80,13 +80,13 @@ OpenClaw 根据 `model.primary` 的 provider 前缀自动选择认证来源：
 ```
 
 - `OPENROUTER_API_KEY` 和 `ANTHROPIC_OAUTH_TOKEN` 同时存在没有冲突，OpenClaw 根据 `model.primary` 的前缀决定用哪个
-- `start-user.sh` 会把 `env.vars` 里的所有 key 自动注入 Docker 容器
+- `compose` 会把 `env.vars` 里的所有 key 自动注入 Docker 容器
 
 ---
 
 ## 模型短名解析规则
 
-`start-user.sh` 从 `docker/users.csv` 的 `provider` 列读取 provider，短名解析规则如下：
+`compose` 从 `docker/users.csv` 的 `provider` 列读取 provider，短名解析规则如下：
 
 | 短名                    | `anthropic` provider          | `openrouter` provider（默认）            |
 | ----------------------- | ----------------------------- | ---------------------------------------- |

@@ -114,7 +114,7 @@ RUN chmod +x /entrypoint.sh
 
 # 全局 npm 安装去到持久卷(Her 的 CLI 安装跨重启保留)
 ENV NPM_CONFIG_PREFIX="/data/.openclaw/local"
-# pip install --user 默认 $HOME/.local = /data/.local (HOME=/data via start-user.sh)。
+# pip install --user 默认 $HOME/.local = /data/.local (HOME=/data)。
 # /data 是 docker volume,所以 /data/.local 自动持久化。把 .local/bin 加进 PATH
 # 让 markitdown 等 CLI 可调用。
 ENV PATH="/data/.openclaw/local/bin:/data/.local/bin:${PATH}"

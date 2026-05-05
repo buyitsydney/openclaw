@@ -2,7 +2,7 @@
 # 基于现有 Dockerfile，增加 Python（Live Frontend Proxy 需要）
 #
 # 构建: ./start-docker.sh
-# 用法: ./start-user.sh --id=1 --random
+# 用法: cd deploy/carher-N && docker compose up -d
 #
 # 层缓存策略:
 #   layers 1-5  — 系统包/工具链（极少变动）
@@ -50,7 +50,7 @@ RUN chmod +x /entrypoint.sh
 
 ENV NODE_ENV=production
 
-# Embed build hash for auto-rebuild detection by start-user.sh
+# Embed build hash for image version identification
 # Format: "<git-sha>" or "<git-sha>-dirty-<diff-hash>"
 ARG BUILD_HASH=unknown
 LABEL carher.build.hash=$BUILD_HASH

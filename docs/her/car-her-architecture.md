@@ -813,9 +813,9 @@ Frontend                    RealtimePlugin                  OpenClawAgent
 │
 ├── start-docker.sh         → 构建 Docker 镜像（一次构建，所有用户共享）
 │
-├── start-user.sh --id=1    → Docker 容器 carher-1 (GW:29001, RT:29002, FE:29003, WS:29004)
-├── start-user.sh --id=2    → Docker 容器 carher-2 (GW:29011, RT:29012, FE:29013, WS:29014)
-└── start-user.sh --id=N    → Docker 容器 carher-N (端口按规则分配)
+├── compose --id=1    → Docker 容器 carher-1 (GW:29001, RT:29002, FE:29003, WS:29004)
+├── compose --id=2    → Docker 容器 carher-2 (GW:29011, RT:29012, FE:29013, WS:29014)
+└── compose --id=N    → Docker 容器 carher-N (端口按规则分配)
 ```
 
 ### 端口分配方案
@@ -846,15 +846,15 @@ Frontend                    RealtimePlugin                  OpenClawAgent
 
 镜像包含完整的后端编译（`pnpm build`）、前端编译（`pnpm ui:build`）、Python 依赖。构建一次后所有用户容器共享。
 
-#### `start-user.sh` — 用户容器管理（新建，核心）
+#### `compose` — 用户容器管理（新建，核心）
 
 ```bash
-./start-user.sh --id=1                  # 启动 user1 容器 + 远程隧道（默认）
-./start-user.sh --id=1 --model=opus     # 启动 user1 容器，指定 Opus 模型
-./start-user.sh --id=1 --local          # 启动 user1 容器（仅本地访问，不建隧道）
-./start-user.sh --id=1 --down           # 停止 user1 容器
-./start-user.sh --down                  # 停止所有用户容器
-./start-user.sh --id=1 --logs           # 查看 user1 日志
+./compose --id=1                  # 启动 user1 容器 + 远程隧道（默认）
+./compose --id=1 --model=opus     # 启动 user1 容器，指定 Opus 模型
+./compose --id=1 --local          # 启动 user1 容器（仅本地访问，不建隧道）
+./compose --id=1 --down           # 停止 user1 容器
+./compose --down                  # 停止所有用户容器
+./compose --id=1 --logs           # 查看 user1 日志
 ```
 
 执行流程：
@@ -892,23 +892,23 @@ Frontend                    RealtimePlugin                  OpenClawAgent
 ./start.sh
 
 # 3. 在另一个终端，启动厂商 user1（默认含远程隧道）
-./start-user.sh --id=1
+./compose --id=1
 # → 打印手机可访问的 URL，发给厂商工程师
 
 # 4. 启动 user2，指定使用 Opus 模型
-./start-user.sh --id=2 --model=opus
+./compose --id=2 --model=opus
 # → 打印另一组 URL，发给另一个工程师
 
 # 5. 停止 user1（Ctrl+C 只关隧道，以下命令关容器）
-./start-user.sh --id=1 --down
+./compose --id=1 --down
 
 # 6. 停止所有厂商容器
-./start-user.sh --down
+./compose --down
 ```
 
 ### 已验证的测试结果 — Docker 容器（2026-02-08）
 
-容器 user1 通过 `start-user.sh --id=1 --random` 启动，使用 Sonnet 模型，通过手机远程隧道访问。
+容器 user1 通过 `compose --id=1 --random` 启动，使用 Sonnet 模型，通过手机远程隧道访问。
 
 | 轮次    | 问题                         | 回答                                     | 隔离状态                    |
 | ------- | ---------------------------- | ---------------------------------------- | --------------------------- |

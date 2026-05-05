@@ -33,7 +33,7 @@ for ID in "${IDS[@]}"; do
   # CSV columns: id,name,model,appId,appSecret,ownerOpenId,provider,note,ownerAllowFrom,botOpenId
   IFS=',' read -r C_ID C_NAME C_MODEL C_APPID C_SECRET C_OWNER C_PROVIDER _ <<<"$ROW"
 
-  # Port base (matches start-user.sh)
+  # Port base
   BASE=$((29000 + (ID - 1) * 10))
   PORT_GW=$((BASE + 1)); PORT_FE=$((BASE + 3)); PORT_WS=$((BASE + 4))
   PORT_OAUTH=$((BASE + 5)); PORT_A2A=$((BASE + 6))

@@ -565,7 +565,7 @@ api.registerHook("message_sending", async (event, ctx) => {
 
 ### Phase 3: 运行时安装集成
 
-1. entrypoint 或 start-user.sh 中添加运行时 npm install 逻辑
+1. entrypoint 或 compose 中添加运行时 npm install 逻辑
 2. 安装三个插件到 `/data/.openclaw/extensions/`
 3. 配置 `plugins.load.paths` 或使用 OpenClaw global extensions 发现
 

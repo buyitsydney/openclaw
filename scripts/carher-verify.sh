@@ -270,7 +270,7 @@ if [[ $FAIL -gt 0 ]]; then
     echo ""
     echo "建议立即回滚:"
     echo "  docker rm -f $CONTAINER"
-    echo "  ./start-user.sh --id=<N> --image=carher-core:<旧 tag>"
+    echo "  ./compose --id=<N> --image=carher-core:<旧 tag>"
     exit 3
 fi
 

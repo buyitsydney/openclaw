@@ -113,7 +113,7 @@ docker build -f Dockerfile.carher.v2 \
 
 # 3. 灰度：先停一个测试用户，用新镜像起
 docker rm -f carher-102
-./start-user.sh --id=102 --image=carher-core:0415-ab-v2
+./compose --id=102 --image=carher-core:0415-ab-v2
 
 # 4. 验证：7 plugins ready + A2A peers 发现 + Feishu WSClient connected + 真人发消息
 docker logs carher-102 | grep "gateway] ready"
@@ -125,7 +125,7 @@ docker logs carher-102 | grep "gateway] ready"
 
 ```bash
 docker rm -f carher-102
-./start-user.sh --id=102 --image=carher-core:0414-ab-v2   # 旧 tag
+./compose --id=102 --image=carher-core:0414-ab-v2   # 旧 tag
 ```
 
 **关键原则**：每次构建都**起独立 tag**，永远不覆盖 `carher-core:latest` / `carher:local`。回滚就是换 tag，不是重新构建旧版本。
@@ -180,10 +180,10 @@ BuildKit 会命中前 6 层缓存（base + apt），只重跑 feishu-her 那一�
     ├── shared-config.json5            # L1 全局共享
     ├── carher-config.json             # L2 Docker 共享
     └── user-configs/
-        └── carher-config-<N>.json     # L3 per-user（start-user.sh 生成，勿手改）
+        └── carher-config-<N>.json     # L3 per-user（compose 生成，勿手改）
 ```
 
-容器内部 OpenClaw 发现这些插件的方式是 `plugins.load.paths`（由 `start-user.sh` 注入运行时配置），指向 `/app/docker/plugins/*`。
+容器内部 OpenClaw 发现这些插件的方式是 `plugins.load.paths`（由 `compose` 注入运行时配置），指向 `/app/docker/plugins/*`。
 
 ---
 

@@ -16,7 +16,7 @@
 
 以下工具只需要安装一次。打开 **终端**（Terminal.app），逐条执行。
 
-> **Ubuntu 用户**：本指南以 macOS 为例。Ubuntu 上把 `brew install` 替换为 `apt install`，Docker Desktop 替换为 Docker Engine（`curl -fsSL https://get.docker.com | sh`），额外安装 `apt install tmux`。其余脚本（`start.sh`、`start-user.sh`、`start-tunnel.sh`）macOS / Ubuntu 通用，无需修改。企业部署详见 [企业部署文档](/her/her-feishu-bot-enterprise-deploy)。
+> **Ubuntu 用户**：本指南以 macOS 为例。Ubuntu 上把 `brew install` 替换为 `apt install`，Docker Desktop 替换为 Docker Engine（`curl -fsSL https://get.docker.com | sh`），额外安装 `apt install tmux`。其余脚本（`start.sh`、`compose`、`start-tunnel.sh`）macOS / Ubuntu 通用，无需修改。企业部署详见 [企业部署文档](/her/her-feishu-bot-enterprise-deploy)。
 
 ### 0.1 Homebrew（macOS 包管理器）
 
@@ -494,13 +494,13 @@ pnpm openclaw config set channels.feishu.appSecret "你的AppSecret"
 
 ```bash
 # 启动用户 1（默认 Sonnet 模型 + 远程隧道）
-./start-user.sh --id=1
+./compose --id=1
 
 # 启动用户 2（指定用 Opus 模型，更聪明但更贵）
-./start-user.sh --id=2 --model=opus
+./compose --id=2 --model=opus
 
 # 启动用户 3（指定用 Haiku 模型，最便宜）
-./start-user.sh --id=3 --model=haiku
+./compose --id=3 --model=haiku
 ```
 
 每个用户启动后会打印远程 URL，类似：
@@ -538,13 +538,13 @@ pnpm openclaw config set channels.feishu.appSecret "你的AppSecret"
 
 ```bash
 # 查看用户 1 的后台日志
-./start-user.sh --id=1 --logs
+./compose --id=1 --logs
 
 # 停止用户 1
-./start-user.sh --id=1 --down
+./compose --id=1 --down
 
 # 停止所有用户容器
-./start-user.sh --down
+./compose --down
 ```
 
 ### 5.6 注意事项
@@ -552,7 +552,7 @@ pnpm openclaw config set channels.feishu.appSecret "你的AppSecret"
 - **每个用户需要一个单独的终端窗口**来运行（因为隧道需要保持在前台）。按 `Ctrl+C` 只会关闭隧道，容器继续运行。
 - **同时运行的用户数有限制**：Cloudflare 免费隧道大约支持 ~10 条（每个用户需要 3 条隧道），所以同时约 3 个远程用户。
 - **代码更新后重建镜像**：`./start-docker.sh --rebuild`，然后重新启动用户容器。
-- **重启某个用户**：直接再次运行 `./start-user.sh --id=N`，脚本会自动清理旧容器并用最新配置启动。
+- **重启某个用户**：直接再次运行 `./compose --id=N`，脚本会自动清理旧容器并用最新配置启动。
 
 ---
 
@@ -591,7 +591,7 @@ kill -9 $(lsof -t -i :18789)
 ./start-docker.sh --rebuild
 
 # 然后重新启动用户容器
-./start-user.sh --id=1
+./compose --id=1
 ```
 
 ### 隧道建不起来
@@ -646,11 +646,11 @@ npm install -g pnpm@latest
 | 启动个人 Her                   | `./start.sh`                            |
 | 手机远程访问个人 Her           | `./start-mobile.sh --random`            |
 | 构建 Docker 镜像               | `./start-docker.sh`                     |
-| 启动厂商用户 1                 | `./start-user.sh --id=1`                |
-| 启动用户 2（Opus 模型）        | `./start-user.sh --id=2 --model=opus`   |
-| 查看用户 1 日志                | `./start-user.sh --id=1 --logs`         |
-| 停止用户 1                     | `./start-user.sh --id=1 --down`         |
-| 停止所有用户容器               | `./start-user.sh --down`                |
+| 启动厂商用户 1                 | `./compose --id=1`                |
+| 启动用户 2（Opus 模型）        | `./compose --id=2 --model=opus`   |
+| 查看用户 1 日志                | `./compose --id=1 --logs`         |
+| 停止用户 1                     | `./compose --id=1 --down`         |
+| 停止所有用户容器               | `./compose --down`                |
 | 重建 Docker 镜像（代码更新后） | `./start-docker.sh --rebuild`           |
 | 刷新 Google Cloud 凭证         | `gcloud auth application-default login` |
 | 停止个人 Her                   | 在 start.sh 终端按 `Ctrl+C`             |

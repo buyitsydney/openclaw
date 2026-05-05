@@ -38,7 +38,7 @@ docker/carher-config.json         ← Docker 基础配置（在 git 里，唯一
 
 - `docker/carher-config.json` 和 `docker/shared-config.json5` 是唯一信源，**不要改**
 - 本地 Her 的个性化配置通过 `pnpm openclaw config set ...` 命令写入 `~/.openclaw/openclaw.json`
-- Docker 用户的个性化配置通过 `docker/users.csv` + `start-user.sh` 自动生成
+- Docker 用户的个性化配置通过 `docker/users.csv` + `compose` 自动生成
 
 ### 3. 绝对不要改的文件
 
@@ -46,7 +46,7 @@ docker/carher-config.json         ← Docker 基础配置（在 git 里，唯一
 | ------------------------------------------------ | ---------------------------------------------- |
 | `docker/carher-config.json`                      | 所有环境的基础配置，改了会影响所有人           |
 | `docker/shared-config.json5`                     | 共享功能配置，改了会影响所有人                 |
-| `start.sh` / `start-user.sh` / `start-tunnel.sh` | 部署脚本，已验证通过                           |
+| `start.sh` / `compose` / `start-tunnel.sh` | 部署脚本，已验证通过                           |
 | `extensions/feishu-her/` 的代码                  | 飞书插件源码，只在升级 upstream 时由技术人员改 |
 | `extensions/realtime/` 的代码                    | 语音插件源码，同上                             |
 
@@ -119,7 +119,7 @@ pnpm openclaw config set env.vars.OPENROUTER_API_KEY "$OPENROUTER_API_KEY"
 
 > **不需要语音功能？跳过这一整节。** 本地 Her（`start.sh`）不依赖 Google 凭证，没有也能正常启动，只是语音功能不可用。
 >
-> **但如果要用 Docker 多用户**（`start-user.sh`），当前脚本会强制检查 ADC 文件，没有就 `exit 1` 退不过去。解决办法见下方"Docker 跳过 Google 检查"。
+> **但如果要用 Docker 多用户**（`compose`），当前脚本会强制检查 ADC 文件，没有就 `exit 1` 退不过去。解决办法见下方"Docker 跳过 Google 检查"。
 
 语音功能用 Google Gemini Live API，需要两样东西：
 
@@ -153,7 +153,7 @@ mkdir -p ~/.config/gcloud
 echo '{}' > ~/.config/gcloud/application_default_credentials.json
 ```
 
-> 这样 `start-user.sh` 不会 exit 1。容器启动后语音功能不可用（因为凭证无效），但飞书、文字聊天、Web UI 全部正常。
+> 这样 `compose` 不会 exit 1。容器启动后语音功能不可用（因为凭证无效），但飞书、文字聊天、Web UI 全部正常。
 
 ---
 
@@ -320,10 +320,10 @@ id,name,model,feishu_app_id,feishu_app_secret,feishu_owner_open_id,provider,note
 
 ```bash
 # 启动用户 1
-./start-user.sh --id=1
+./compose --id=1
 
 # 启动用户 2（指定模型）
-./start-user.sh --id=2 --model=opus
+./compose --id=2 --model=opus
 ```
 
 ### 6.4 端口分配（自动，无需手动配置）
@@ -341,9 +341,9 @@ id,name,model,feishu_app_id,feishu_app_secret,feishu_owner_open_id,provider,note
 ### 6.5 管理命令
 
 ```bash
-./start-user.sh --id=1 --logs   # 查看日志
-./start-user.sh --id=1 --down   # 停止用户
-./start-user.sh --down           # 停止所有用户
+./compose --id=1 --logs   # 查看日志
+./compose --id=1 --down   # 停止用户
+./compose --down           # 停止所有用户
 ```
 
 ---
@@ -354,7 +354,7 @@ id,name,model,feishu_app_id,feishu_app_secret,feishu_owner_open_id,provider,note
 
 ### 方案 A：随机隧道（最简单，URL 每次变）
 
-`start-user.sh` 启动 Docker 用户时会自动创建随机隧道，终端输出里有 URL。
+`compose` 启动 Docker 用户时会自动创建随机隧道，终端输出里有 URL。
 
 ### 方案 B：固定隧道（需要自己的域名）
 
@@ -404,7 +404,7 @@ ingress:
 
 Docker 多用户:
 - [ ] ./start-docker.sh 镜像构建成功
-- [ ] ./start-user.sh --id=101 启动成功
+- [ ] ./compose --id=101 启动成功
 - [ ] docker logs carher-101 无 error/fatal
 - [ ] docker logs carher-101 显示 "Feishu WSClient connected"（如有飞书配置）
 - [ ] 用户之间数据完全隔离
@@ -457,7 +457,7 @@ pnpm install          # 重新安装依赖
 pnpm build            # 重新编译
 ./start.sh            # 重启本地 Her
 ./start-docker.sh     # 重建 Docker 镜像（如果需要）
-./start-user.sh --id=N  # 重启 Docker 用户（自动检测镜像变化）
+./compose --id=N  # 重启 Docker 用户（自动检测镜像变化）
 ```
 
 ### Q: 不同电脑的 Docker 用户 ID 会冲突吗
@@ -477,6 +477,6 @@ pnpm build            # 重新编译
 | `~/.openclaw/openclaw.json`  | ❌        | 本地配置（`pnpm openclaw config set` 自动生成） |
 | `~/.config/gcloud/`          | ❌        | Google Cloud 凭证                               |
 | `~/.cloudflared/`            | ❌        | Cloudflare 隧道凭证                             |
-| `start.sh` / `start-user.sh` | ✅        | 启动脚本，不要改                                |
+| `start.sh` / `compose` | ✅        | 启动脚本，不要改                                |
 | `extensions/feishu-her/`     | ✅        | 飞书插件代码，不要改                            |
 | `extensions/realtime/`       | ✅        | 语音插件代码，不要改                            |

@@ -148,7 +148,7 @@ docker run --rm \
 
 1. 确认服务器一切就绪（数据导入、Docker 镜像构建完成）
 2. **停止 Mac carher-3**（需明确许可）
-3. 立即在服务器启动：`./start-user.sh --id=3`
+3. 立即在服务器启动：`./compose --id=3`
 4. 确认 `Feishu WSClient connected`
 5. 董事长飞书发消息 → AI 回复 → 迁移完成
 
@@ -176,7 +176,7 @@ docker run --rm \
   - [x] Docker data-root 迁移到 /Data/docker
   - [x] cltx 加入 docker 组
   - [x] 代码打包 scp 到 /Data/CarHer（68MB tarball，非 git clone）
-  - [x] git init + commit（start-user.sh 需要 git hash）
+  - [x] git init + commit（compose 需要 git hash）
   - [x] OpenRouter 企业 Key 配置到 ~/.openclaw/openclaw.json
   - [x] Google Cloud 凭证 scp 到 ~/.config/gcloud/
   - [x] Docker 镜像 carher:local 首次构建成功（约 6 分钟）
@@ -190,7 +190,7 @@ docker run --rm \
 - 容器启动验证:
   - [x] carher-12 (test): opus 模型，Gateway 30s 就绪，飞书 ws 已连接，端口 GW=29111
   - [x] carher-13 (卜弋天): opus 模型，Gateway 29s 就绪，飞书 ws 已连接，端口 GW=29121
-  - [x] 内存限制 2GB/容器（start-user.sh 加 --memory=2g）
+  - [x] 内存限制 2GB/容器（compose 加 --memory=2g）
   - [x] **飞书消息收发验证通过！**（IT 配置长连接 + 发布 Bot 后两个 Bot 都能正常对话）
   - Webchat 访问需带 token: http://10.68.13.186:<PORT>?token=<见 servers.txt:WEBCHAT_TOKEN>
   - WARNING: GEMINI_PROJECT_ID 未配置（语音功能暂不可用，需补 gemini 配置）
@@ -352,7 +352,7 @@ S3: `http://10.68.13.188:<PORT>?token=<见 servers.txt:WEBCHAT_TOKEN>`
 
 **server.env 机制**（代码统一，配置分离）：
 
-`start-user.sh` 启动时自动 `source docker/server.env`（gitignored），取代之前的 `.bashrc export` hack。各服务器独立配置，Mac 无需该文件。
+`compose` 启动时自动 `source docker/server.env`（gitignored），取代之前的 `.bashrc export` hack。各服务器独立配置，Mac 无需该文件。
 
 | 服务器 | `docker/server.env`        |
 | ------ | -------------------------- |
@@ -380,7 +380,7 @@ S3: `http://10.68.13.188:<PORT>?token=<见 servers.txt:WEBCHAT_TOKEN>`
 - [ ] 68 个权限审批通过
 - [ ] 用户首次发消息后获取 ou_xxx open_id，回填 users.csv
 - [x] ~~补充 GEMINI_PROJECT_ID 到 ~/.openclaw/openclaw.json（语音功能）~~ → 已完成
-- [ ] start-user.sh webchat URL 不显示 token 的 bug 修复
+- [ ] compose webchat URL 不显示 token 的 bug 修复
 - [ ] Admin Her 配置开机自启（systemd service 或 crontab @reboot）
 - [ ] per-container 独立随机 token（当前所有容器共享同一 webchat token）
 - [x] ~~其他容器（carher-2~5, 13）重启以启用 voice 和新域名前缀~~ → 已完成（2026-02-24 18:30）
@@ -404,7 +404,7 @@ S3: `http://10.68.13.188:<PORT>?token=<见 servers.txt:WEBCHAT_TOKEN>`
 | 凭证       | `/etc/cloudflared/d18effca-*.json`（从 Mac cert.pem 派生）      |
 
 > 开机自启：`systemctl enable cloudflared`（已配置）。
-> 新增用户时需两步：(1) 在 S1 运行 `cloudflared tunnel route dns carher-s1 s1-uN-fe.carher.net` + proxy，(2) `start-user.sh --id=N`。
+> 新增用户时需两步：(1) 在 S1 运行 `cloudflared tunnel route dns carher-s1 s1-uN-fe.carher.net` + proxy，(2) `compose --id=N`。
 
 验证通过（carher-12 test 容器）：
 
@@ -412,7 +412,7 @@ S3: `http://10.68.13.188:<PORT>?token=<见 servers.txt:WEBCHAT_TOKEN>`
 - `https://s1-u12-fe.carher.net/api/realtime/bootstrap?token=<correct>` → Gemini config 完整返回
 - `https://s1-u12-fe.carher.net/api/realtime/bootstrap?token=wrong` → 401 Unauthorized
 - `/voice` 命令生成的 URL 自动使用 `s1-u12-fe.carher.net` 域名
-- `/voice reset` 和 `start-user.sh --id=12 --reset` 均可重置 token
+- `/voice reset` 和 `compose --id=12 --reset` 均可重置 token
 
 全量容器 Voice 验证通过（2026-02-24 18:30）：
 
@@ -441,7 +441,7 @@ carher-13 实际语音会话测试（2026-02-24 18:25）：
 | 配置位置   | `~/.openclaw/openclaw.json` + `docker/carher-config.json`         |
 | 凭证       | `~/.config/gcloud/application_default_credentials.json`（已传输） |
 
-> `start-user.sh` 自动从宿主机 `~/.openclaw/openclaw.json` 读取 Gemini 配置并 bake 到每个容器的 per-user config 中。容器重启后生效。
+> `compose` 自动从宿主机 `~/.openclaw/openclaw.json` 读取 Gemini 配置并 bake 到每个容器的 per-user config 中。容器重启后生效。
 
 #### Admin Her 语音状态（2026-02-24 18:40 已开通）
 
@@ -480,7 +480,7 @@ carher-12（测试共享 bot）用户反馈 cron 不可用。AI 回复"没有 cr
 
 | 层                      | 问题                                   | 影响                                            | 修复                                                   |
 | ----------------------- | -------------------------------------- | ----------------------------------------------- | ------------------------------------------------------ |
-| Layer 1：Device Pairing | `paired.json` 缺少完整 operator scopes | 所有 gateway 工具失败（"pairing required"）     | `docker/fix-device-pairing.js`（已集成 start-user.sh） |
+| Layer 1：Device Pairing | `paired.json` 缺少完整 operator scopes | 所有 gateway 工具失败（"pairing required"）     | `docker/fix-device-pairing.js`（已集成 compose） |
 | Layer 2：Owner 身份     | 发送者未被识别为 Owner                 | cron/gateway 等 ownerOnly 工具被过滤，AI 看不到 | `dm.allowFrom` 或 `commands.ownerAllowFrom`            |
 
 Layer 1 在上一轮修复完成。Layer 2 是本次发现的新问题。
@@ -527,14 +527,14 @@ Layer 1 在上一轮修复完成。Layer 2 是本次发现的新问题。
 
 ### CSV 工具化改造（2026-02-24 实施）
 
-**问题**：之前共享 bot 需要手动编辑 `openclaw.json` 添加 `commands.ownerAllowFrom`，`start-user.sh` 重建会覆盖手动修改。
+**问题**：之前共享 bot 需要手动编辑 `openclaw.json` 添加 `commands.ownerAllowFrom`，`compose` 重建会覆盖手动修改。
 
-**方案**：CSV 新增第 9 列 `owner_allow_from`，`start-user.sh` 自动生成 `commands.ownerAllowFrom`。
+**方案**：CSV 新增第 9 列 `owner_allow_from`，`compose` 自动生成 `commands.ownerAllowFrom`。
 
 **改动文件**：
 
 - `docker/users.csv` — 新增第 9 列 `owner_allow_from`（`|` 分隔多个 open_id）
-- `start-user.sh` — 读取第 9 列，非空时生成 `commands.ownerAllowFrom`
+- `compose` — 读取第 9 列，非空时生成 `commands.ownerAllowFrom`
 
 **本地 Mac 实验验证（carher-1）**：
 
@@ -544,7 +544,7 @@ Layer 1 在上一轮修复完成。Layer 2 是本次发现的新问题。
 | Case B | 空                   | `ou_e5e4e...`    | 不生成          | `[ou_e5e4e...]` | ✅ `cron.add` 被调用      | ownerAllowFrom 独立生效 |
 | Case C | 空                   | 空               | 不生成          | 不生成          | ❌ "没有 cron tool"       | 无 Owner → cron 被过滤  |
 
-**向后兼容性**：旧 CSV（8列）+ 新 `start-user.sh` → 第 9 列为空 → 不生成 ownerAllowFrom → 行为不变。
+**向后兼容性**：旧 CSV（8列）+ 新 `compose` → 第 9 列为空 → 不生成 ownerAllowFrom → 行为不变。
 
 ### 待办
 
@@ -554,11 +554,11 @@ Layer 1 在上一轮修复完成。Layer 2 是本次发现的新问题。
 
 ### 部署步骤
 
-1. Mac push 代码到 dev（`start-user.sh` + 文档）
-2. S1/S2/S3 `git pull` 获取新的 `start-user.sh`
+1. Mac push 代码到 dev（`compose` + 文档）
+2. S1/S2/S3 `git pull` 获取新的 `compose`
 3. 各服务器手动编辑 CSV，添加第 9 列 `owner_allow_from`（专属 bot 留空，共享 bot 填管理员 open_id）
 4. 收集缺失的用户 open_id → 填入 CSV `feishu_owner_open_id` 列
-5. `./start-user.sh --id=N` 重建受影响的容器
+5. `./compose --id=N` 重建受影响的容器
 
 ---
 
@@ -771,10 +771,10 @@ ssh cltx@10.68.13.188 "sudo systemctl is-active cloudflared"
 
 ```bash
 cd /Data/CarHer
-./start-user.sh --id=N
+./compose --id=N
 ```
 
-`start-user.sh` 会根据 `TP` 环境变量自动计算域名前缀（`s1-`/`s2-`/`s3-`），并将 `NAMED_AUTH_HOST` 注入容器配置。
+`compose` 会根据 `TP` 环境变量自动计算域名前缀（`s1-`/`s2-`/`s3-`），并将 `NAMED_AUTH_HOST` 注入容器配置。
 
 #### 4. 验证
 
@@ -802,7 +802,7 @@ https://sX-uN-auth.carher.net/feishu/oauth/callback
 ssh cltx@10.68.13.187 "sudo systemctl is-active cloudflared"
 
 # 启动容器
-ssh cltx@10.68.13.187 "cd /Data/CarHer && TP=s2- ./start-user.sh --id=44"
+ssh cltx@10.68.13.187 "cd /Data/CarHer && TP=s2- ./compose --id=44"
 
 # 验证
 curl -sw "%{http_code}" https://s2-u44-auth.carher.net/feishu/oauth/callback

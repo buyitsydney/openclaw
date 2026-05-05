@@ -521,7 +521,7 @@ https://auth.carher.net/feishu/oauth/callback
 | WS Proxy     | base+4     | 8080      | 29004                   |
 | **OAuth**    | **base+5** | **18891** | **29005**               |
 
-`start-user.sh` 自动注入 `channels.feishu.minutes.oauthRedirectUri`。
+`compose` 自动注入 `channels.feishu.minutes.oauthRedirectUri`。
 `generate-tunnel-config.sh` 自动生成 `uN-auth.carher.net` tunnel 入口规则。
 
 ---
@@ -879,8 +879,8 @@ Docker1 工具层全量回归：4 action × 全场景 + search 11 场景 = **100
   - [x] 注册到 `tools/index.ts`
   - [x] 更新 `skills/feishu/SKILL.md`
 - [x] Phase 2.5：Docker 容器部署
-  - [x] `start-user.sh` 新增 PORT_OAUTH 计算 + docker run -p 映射
-  - [x] `start-user.sh` Python 配置注入 `oauthRedirectUri`
+  - [x] `compose` 新增 PORT_OAUTH 计算 + docker run -p 映射
+  - [x] `compose` Python 配置注入 `oauthRedirectUri`
   - [x] `generate-tunnel-config.sh` 新增 `uN-auth.carher.net` 隧道入口
   - [x] carher-1 (Mac 测试) 端到端验证通过
 - [x] Phase 3：search 全文搜索升级

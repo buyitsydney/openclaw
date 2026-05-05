@@ -393,7 +393,7 @@ Her 收到 A2A 请求时的决策流程:
 
 #### 端口映射
 
-在 `start-user.sh` 中新增 a2a 端口映射：
+在 `compose` 中新增 a2a 端口映射：
 
 ```
 PORT_A2A = BASE + 6
@@ -490,8 +490,8 @@ a2a 插件在收到请求时校验调用方 ID。
 
 | 步骤 | 内容                                                         | 改动                         |
 | ---- | ------------------------------------------------------------ | ---------------------------- |
-| 1    | `start-user.sh` 增加 a2a 端口映射                            | `start-user.sh`              |
-| 2    | `start-user.sh` 注入 `A2A_TOKEN` 和 `CARHER_SERVER` 环境变量 | `start-user.sh`              |
+| 1    | `compose` 增加 a2a 端口映射                            | `compose`              |
+| 2    | `compose` 注入 `A2A_TOKEN` 和 `CARHER_SERVER` 环境变量 | `compose`              |
 | 3    | a2a 插件烧入 Docker 镜像                                     | `Dockerfile`                 |
 | 4    | `shared-config.json5` 加 a2a 默认配置                        | `docker/shared-config.json5` |
 
@@ -725,7 +725,7 @@ docker exec carher-101 node /data/.openclaw/plugins/a2a-gateway/skill/scripts/a2
 
 1. Agent Card `url` 用 `localhost` 导致 A2A 打回自己 → 改为用容器 hostname
 2. `a2a_send(peer='?')` 返回空 → registry cache 未刷新，改为每次调用前 await 刷新
-3. 插件 node_modules 缺失 → start-user.sh 自动 `npm install --omit=dev`
+3. 插件 node_modules 缺失 → compose 自动 `npm install --omit=dev`
 4. device identity mismatch → 重新生成 device.json（公钥和 deviceId 不匹配）
 
 **结论**: 本地验证通过，可以灰度上线。
@@ -770,7 +770,7 @@ docker exec carher-101 node /data/.openclaw/plugins/a2a-gateway/skill/scripts/a2
 cd /Data/CarHer
 git checkout release/v2026.3.12-plus  # 或 git pull
 sudo chown -R root:root docker/plugins/a2a-gateway/  # npm install 后
-./start-user.sh --id=N --image=carher:release-312
+./compose --id=N --image=carher:release-312
 ```
 
 ---
@@ -1220,7 +1220,7 @@ A2A Skill (ask-other-her) → 仅 A2A_ENABLED=1 的容器通过 temp 目录隔�
 
 ### 12.3 Skill 隔离机制（修复后）
 
-`start-user.sh` 使用 temp 目录隔离，不污染全局 `~/.openclaw/skills/`：
+`compose` 使用 temp 目录隔离，不污染全局 `~/.openclaw/skills/`：
 
 ```bash
 # A2A_ENABLED=1 时：
@@ -1254,7 +1254,7 @@ RUN cd docker/plugins/a2a-gateway && npm install --omit=dev --ignore-scripts 2>/
 
 - Hub→Spoke A2A 通信 7-8s 响应
 - Spoke 无 ask-other-her skill，AI 自行报告 "没有找到"
-- Host `~/.openclaw/skills/` 未被 start-user.sh 污染
+- Host `~/.openclaw/skills/` 未被 compose 污染
 - 插件从镜像 /app/docker/plugins/a2a-gateway/ 加载，不依赖 bind mount
 
 ### 12.6 已知问题

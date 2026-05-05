@@ -188,7 +188,7 @@ Admin 的身份 + 私人凭证：
 3. secret 真值来自 env file：
    - admin Mac Her：`~/.openclaw/.env`（chmod 600，gitignored）
    - docker 服务器：`docker/server.env`（per-server，gitignored）
-   - docker per-user：`docker/users.csv` 第 5 列（feishu appSecret），start-user.sh 注入为 `-e FEISHU_APP_SECRET`
+   - docker per-user：`docker/users.csv` 第 5 列（feishu appSecret），compose 注入为 `-e FEISHU_APP_SECRET`
 
 env 文件模板（作为公共 scaffolding 进 git）：
 
@@ -234,11 +234,11 @@ CARHER_AUTH_HOST=...              # per-server OAuth hostname
 CARHER_SERVER=S1|S3|local
 ```
 
-`start-user.sh` 自动 source 这个文件，所有 docker 容器都收到这些 env。
+`compose` 自动 source 这个文件，所有 docker 容器都收到这些 env。
 
 ### 4.3 Per-user docker secrets
 
-`docker/users.csv` 第 5 列是 feishu appSecret。`start-user.sh` 读 CSV 后通过 `-e FEISHU_APP_SECRET=<value>` 注入进单个容器。
+`docker/users.csv` 第 5 列是 feishu appSecret。`compose` 读 CSV 后通过 `-e FEISHU_APP_SECRET=<value>` 注入进单个容器。
 
 未来也可以切到 `docker/users/{N}.env` 独立 env file（模板见 `docker/users/template.env.example`），但目前沿用 CSV。
 
@@ -278,9 +278,9 @@ $include 链：
   host-mac    → ~/.openclaw/base.json5        ✓
 ```
 
-### 5.2 Docker 容器（`./start-user.sh --id=N`）
+### 5.2 Docker 容器（`./compose --id=N`）
 
-`start-user.sh` 对每个容器：
+`compose` 对每个容器：
 
 1. 检查 `config/u{N}.json5` 存在，不存在报错退出
 2. 读 `docker/users.csv` 第 N 行拿 feishu appSecret + 其他派生信息
@@ -296,7 +296,7 @@ $include 链：
 
 4. 容器内 openclaw 读默认路径 `/data/.openclaw/openclaw.json`（= u{N}.json5 bind mount）
 5. include 链 `./docker.json5` → `./base.json5` 都在 `/data/.openclaw/` 内，realpath 校验通过
-6. `CONFIG_DIR = /data/.openclaw/`，`managedSkillsDir = /data/.openclaw/skills/`（start-user.sh 也 bind mount 了 `~/.openclaw/skills`）
+6. `CONFIG_DIR = /data/.openclaw/`，`managedSkillsDir = /data/.openclaw/skills/`（compose 也 bind mount 了 `~/.openclaw/skills`）
 
 为什么是**单个文件挂载**而不是整个 `config/` 目录挂载：
 
@@ -324,7 +324,7 @@ git add config/u${ID}.json5 docker/users.csv
 git commit -m "feat: add docker user ${ID}"
 
 # 5. 启动（bind mount 自动生效，不用 build image）
-./start-user.sh --id=${ID} --image=carher-core:<current-tag>
+./compose --id=${ID} --image=carher-core:<current-tag>
 ```
 
 ---
@@ -341,13 +341,13 @@ docker/shared-config.json5 (rebrand 源)
 └── bind mount 到 /data/.openclaw/shared-config.json5 (docker)
     └── docker/carher-config.json $include ./shared-config.json5
         └── docker/user-configs/carher-config-{N}.json $include ./carher-config.json
-            └── 每次 start-user.sh 由 110 行 python3 现生成
+            └── 每次 compose 由 110 行 python3 现生成
 ```
 
 病灶：
 
 - 3 层嵌套，数组 concat 陷阱，同字段在多层重复导致不确定行为
-- start.sh + start-user.sh 都在运行时 mutate 配置文件
+- start.sh + compose 都在运行时 mutate 配置文件
 - admin openclaw.json 完全不在 git，明文 secret 硬编码
 - shared-config.json5 在 git 与 `~/.openclaw/` 各有一份，手工同步易 drift
 

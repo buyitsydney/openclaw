@@ -102,7 +102,7 @@ Dockerfile.carher.v2:
 │   └── server.env                   # 共享 API key（gitignored）
 └── deploy/                          # Run 层：declarative manifest
     ├── build-and-push.sh            # CI: build image + push to registry
-    ├── migrate-carher-101.sh        # 一次性迁移: start-user.sh → compose
+    ├── migrate-carher-101.sh        # 一次性迁移: compose → compose
     ├── init-user.sh                 # first-boot: voice token + device pairing
     ├── scaffold.sh                  # 从 users.csv 生成 deploy/carher-N/
     ├── common/
@@ -120,9 +120,9 @@ Dockerfile.carher.v2:
 
 ### Build ↔ Run 解耦
 
-| 维度 | 旧 `start-user.sh` | 新 compose |
+| 维度 | 旧 `compose` | 新 compose |
 |---|---|---|
-| 启动命令 | `CARHER_ACP_ENABLED=1 A2A_ENABLED=1 CARHER_MEMORY_LIMIT=16g ./start-user.sh --id=13 --image=carher-core:0424-ab-v2` | `docker compose up -d` |
+| 启动命令 | `CARHER_ACP_ENABLED=1 A2A_ENABLED=1 CARHER_MEMORY_LIMIT=16g ./compose --id=13 --image=carher-core:0424-ab-v2` | `docker compose up -d` |
 | 必须记住的参数 | ≥ 4 (flags + image tag + memory) | **0** |
 | 升级唯一动作 | 重跑全 20 字参数的命令 | 编 `.env` 的 `IMAGE_TAG`，`docker compose up -d` |
 | 回滚 | 重跑命令，tag 用旧值 | revert `.env` 一行 |
@@ -221,8 +221,8 @@ cd deploy/carher-N && docker compose up -d
 | Step | 动作 | 影响 | 可回滚性 |
 |---|---|---|---|
 | 1 | 本地 registry（`registry:2` 容器） + `build-and-push.sh` PoC | 无生产影响 | 直接删 |
-| 2 | carher-101 (Mac tester) 用 compose 启动 | 单容器 | 改回 start-user.sh |
-| 3 | S1 carher-12（卜弋天 test bot）迁移 | 一个非关键 user | 改回 start-user.sh |
+| 2 | carher-101 (Mac tester) 用 compose 启动 | 单容器 | 改回 compose |
+| 3 | S1 carher-12（卜弋天 test bot）迁移 | 一个非关键 user | 改回 compose |
 | 4 | 搭 ghcr.io（或自建 S1 registry） | 分发路径切换 | registry 挂不影响已拉过的 image |
 | 5 | Phase 2：删 Dockerfile 的 config COPY，build 新 image | image 进一步解耦 | revert commit |
 | 6 | 其他所有 her 渐进迁移（一天一个） | 全 fleet | 每台单独回滚 |
@@ -232,7 +232,7 @@ cd deploy/carher-N && docker compose up -d
 
 ## 7. PoC 验证记录（carher-101, 2026-04-29）
 
-- ✅ `migrate-carher-101.sh` 一键接管（stop start-user.sh 版 + compose up + wait healthy 31s）
+- ✅ `migrate-carher-101.sh` 一键接管（stop compose 版 + compose up + wait healthy 31s）
 - ✅ 升级实验：`.env` IMAGE_TAG 切到 `test-build-hash-101` → recreate 8s → healthy 26s
 - ✅ 回滚实验：revert tag → recreate 1s → healthy 28s（volume 保留 185 个 session jsonl）
 - ✅ Registry PoC：删本地 image → `docker compose up -d` 从 `localhost:5001` 自动 pull → 31s healthy
@@ -243,7 +243,7 @@ cd deploy/carher-N && docker compose up -d
 ## 8. 已知限制与后续工作
 
 ### 已解决
-- **Anthropic auth mirror** — compose.yaml 里显式 mirror `ANTHROPIC_AUTH_TOKEN → ANTHROPIC_API_KEY`（start-user.sh 在 bash 里做这件事；compose 需要显式声明，否则 bot 回 `Missing API key for provider "anthropic"`）
+- **Anthropic auth mirror** — compose.yaml 里显式 mirror `ANTHROPIC_AUTH_TOKEN → ANTHROPIC_API_KEY`（compose 在 bash 里做这件事；compose 需要显式声明，否则 bot 回 `Missing API key for provider "anthropic"`）
 - **Compose `${VAR}` substitution on server** — compose 的 `${VAR}` 展开发生在 parse 时，从 shell env / `--env-file` / project `.env` 读取，**不从 `env_file` 指令读取**。`scaffold.sh` 现在在生成 `.env` 时自动从 `docker/server.env` 提取 `ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_BASE_URL`、`CARHER_LAN_IP` 写入 `.env`，确保 server 部署时变量不为空。`compose.template.yaml` 的 `CARHER_LAN_IP` 改为 `${CARHER_LAN_IP:-127.0.0.1}` fallback。
 
 ### 首次启动慢（3-5 分钟，非 bug）
@@ -265,8 +265,8 @@ openclaw 2026.4.24+ 引入 **"lazy runtime deps"** 机制：plugin 依赖（`@an
 - **GitHub Actions**：`.github/workflows/build-image.yml` 自动化 build+push（需要 gh token 加 `write:packages` scope）
 - **Image 签名**：`cosign sign` + `cosign verify` 供应链安全
 - **SBOM**：`syft` 生成 image 内容清单
-- **carher-102/103/104 volume state**：Mac 本地 tester 的 feishu 插件在某些 volume state 下启动后不触发 `starting Feishu bot`；需要 A/B 对照 start-user.sh 定位根因（独立任务）
-- **生产 fleet 迁移**：S1 carher-199 已完成灰度；S1（carher-12/13/198/200）+ S3（carher-14/75）尚未从 start-user.sh 切到 compose
+- **carher-102/103/104 volume state**：Mac 本地 tester 的 feishu 插件在某些 volume state 下启动后不触发 `starting Feishu bot`；需要 A/B 对照 compose 定位根因（独立任务）
+- **生产 fleet 迁移**：S1 carher-199 已完成灰度；S1（carher-12/13/198/200）+ S3（carher-14/75）尚未从 compose 切到 compose
 
 ### 设计未覆盖
 - **K8s / Nomad**：容器数 <20 时 docker compose 足够；扩到 50+ 时换 orchestrator

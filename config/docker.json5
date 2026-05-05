@@ -133,7 +133,7 @@
 
   // models.providers intentionally omitted — openclaw auto-discovers
   // anthropic (via ANTHROPIC_API_KEY + ANTHROPIC_BASE_URL) and openrouter
-  // (via OPENROUTER_API_KEY) from env vars injected by start-user.sh.
+  // (via OPENROUTER_API_KEY) from env vars injected by compose .env.
   // Explicit provider declarations caused "invalid streaming response"
   // errors with Wangsu LiteLLM proxy (carher-199 incident 2026-04-25).
 }

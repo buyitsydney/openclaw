@@ -56,7 +56,7 @@ if [ -z "$TUNNEL_NAME" ] || [ -z "$CRED_FILE" ]; then
   exit 1
 fi
 
-# 端口规则（和 start-user.sh 一致）：
+# 端口规则（和 compose 一致）：
 #   base = 29000 + (N-1) * 10
 #   FE = base+3, RT = base+2, WS = base+4, OAUTH = base+5
 generate_config() {

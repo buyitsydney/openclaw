@@ -860,7 +860,7 @@ const MAX_RECENT = 500;
 /**
  * Resolve the Webchat URL for welcome messages.
  * Priority: WEBCHAT_URL env var > auto-compute from gateway config.
- * Docker containers get the env var via start-user.sh (external port mapping).
+ * Docker containers get the env var via compose .env (external port mapping).
  * Local instances auto-compute from config (localhost + gateway port + token).
  */
 function resolveWebchatUrl(config: OpenClawConfig): string | undefined {

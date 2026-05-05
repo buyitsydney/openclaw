@@ -494,7 +494,7 @@ bundled < managed/shared < ~/.agents/skills < <workspace>/.agents/skills
 
 为支持正式 rollout，本地已经完成两项工程实现：
 
-- `start-user.sh`
+- `compose`
   - 自动确保宿主机 `~/.openclaw/skills` 存在
   - 启动 Docker 容器时挂载到 `/data/.openclaw/skills`
 - `scripts/publish-shared-skills.sh`
@@ -509,7 +509,7 @@ bundled < managed/shared < ~/.agents/skills < <workspace>/.agents/skills
 ### 6.1 必做 TODO
 
 - 确定 Mac 与三台服务器统一使用的 shared skills 宿主机目录规则
-- 把 `start-user.sh` 的 shared 挂载能力同步到三台服务器代码
+- 把 `compose` 的 shared 挂载能力同步到三台服务器代码
 - 在三台服务器创建并约定统一的 `~/.openclaw/skills` 宿主机目录
 - 把 `scripts/publish-shared-skills.sh` 同步到三台服务器代码
 - 配置 session reset，让新 skill 可以在一段时间后自动进入新 session
@@ -609,12 +609,12 @@ bundled < managed/shared < ~/.agents/skills < <workspace>/.agents/skills
 建议按下面顺序执行：
 
 1. 把本地已完成的实现通过 Git 同步到服务器代码：
-   - `start-user.sh`
+   - `compose`
    - `scripts/publish-shared-skills.sh`
    - `docs/her/her-shared-skills-architecture.md`
 2. 在 **S1** 先做最小正式接入：
    - 确认服务器宿主机存在 `~/.openclaw/skills`
-   - 用新版本 `start-user.sh` 重建 **仅测试容器**
+   - 用新版本 `compose` 重建 **仅测试容器**
    - 用 `scripts/publish-shared-skills.sh sync <skill>` 推送 shared skill
 3. 用 **S1 Admin Her + S1 `carher-13`** 各做一次新 session 验证：
    - 新增 shared skill 是否生效

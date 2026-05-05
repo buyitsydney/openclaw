@@ -12,7 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # 加载服务器本地配置（ANTHROPIC_AUTH_TOKEN / OPENROUTER_API_KEY / TUNNEL_HOST_PREFIX / CARHER_AUTH_HOST 等）
-# gitignored，各服务器独立。与 start-user.sh 用法对齐。
+# gitignored，各服务器独立。与 compose .env 用法对齐。
 # set -a 保证变量导出到子进程（node gateway / tmux 内的 shell）。
 if [ -f "$SCRIPT_DIR/docker/server.env" ]; then
   set -a

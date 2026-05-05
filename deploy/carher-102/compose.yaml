@@ -37,7 +37,7 @@ services:
       # Anthropic auth mirror — REQUIRED.
       # server.env provides ANTHROPIC_AUTH_TOKEN/ANTHROPIC_BASE_URL (Wangsu LiteLLM
       # proxy), but openclaw's provider-anthropic reads ANTHROPIC_API_KEY.
-      # start-user.sh does this mirror in bash; compose does it declaratively here.
+      # compose does this mirror in bash; compose does it declaratively here.
       ANTHROPIC_API_KEY: ${ANTHROPIC_AUTH_TOKEN}
       CARHER_ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN}
       CARHER_ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL}

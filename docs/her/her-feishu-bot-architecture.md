@@ -469,7 +469,7 @@ outbound: {
 | ------------------- | --------------------------- | ------------------------------------------------------------------------------------------- |
 | **Layer 1：找不到** | 可用范围 = 一人，搜不到 Bot | 端口不暴露（Docker 不 -p 18790、cloudflared 不隧道），外部完全看不到入口                    |
 | **Layer 2：被拒绝** | `dm.allowFrom` 白名单       | per-container 唯一 token 认证（双层校验：server.py + server.ts），无效返回 401              |
-| **授权途径**        | 飞书平台自动配对            | 飞书 Bot `/voice` 私聊发送带 token 的语音 URL；管理员通过 `start-user.sh --reset` 生成/重置 |
+| **授权途径**        | 飞书平台自动配对            | 飞书 Bot `/voice` 私聊发送带 token 的语音 URL；管理员通过 `compose --reset` 生成/重置 |
 
 ```
 普通员工 → 端口扫描董事长容器 → 18790 未暴露，找不到（Layer 1）
@@ -480,14 +480,14 @@ outbound: {
 
 ### 实现详情
 
-1. **不暴露 realtime 端口**：`start-user.sh` 不映射 `-p 18790`，`generate-tunnel-config.sh` 不隧道该端口
+1. **不暴露 realtime 端口**：`compose` 不映射 `-p 18790`，`generate-tunnel-config.sh` 不隧道该端口
 2. **Frontend proxy 内部转发**：`server.py`（端口 8000）代理 `/api/realtime/bootstrap` 和 `/ws` 到容器内部 `localhost:18790`
-3. **Per-container 唯一 token**：`start-user.sh` 启动时自动生成（如不存在），存储在 Docker volume `/data/.openclaw/.voice-token`
+3. **Per-container 唯一 token**：`compose` 启动时自动生成（如不存在），存储在 Docker volume `/data/.openclaw/.voice-token`
 4. **双层 token 校验**：server.py（Layer 2a）和 server.ts（Layer 2b）各自独立校验同一个 token，纵深防御
 5. **飞书 Bot `/voice`**：通过私聊发送带 token 的完整语音 URL；`/voice reset` 重置 token 并发送新 URL
-6. **管理员 `--reset`**：`./start-user.sh --id=N --reset` 重置 token，不重启容器，立即生效，打印厂商可用的完整 URL
+6. **管理员 `--reset`**：`./compose --id=N --reset` 重置 token，不重启容器，立即生效，打印厂商可用的完整 URL
 
-> **修改范围**：全部在可修改代码内（`extensions/realtime/`、`extensions/feishu-her/`、`start-user.sh`、`scripts/`），不触碰上游 `src/` 代码。
+> **修改范围**：全部在可修改代码内（`extensions/realtime/`、`extensions/feishu-her/`、`compose`、`scripts/`），不触碰上游 `src/` 代码。
 
 ---
 
@@ -656,20 +656,20 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 
 **问题**：将飞书插件从 `extensions/feishu/` 重命名为 `extensions/feishu-her/`（物理隔离 upstream）后，Docker 容器 (carher-1) 进入启动失败循环。
 
-**根因**：`start-user.sh` 第 439 行硬编码了 `plugins.entries['feishu'] = {'enabled': True}`，而插件 ID 已变为 `feishu-her`。Config 校验器找不到 ID 为 `feishu` 的插件，校验失败，容器挂掉。
+**根因**：`compose` 第 439 行硬编码了 `plugins.entries['feishu'] = {'enabled': True}`，而插件 ID 已变为 `feishu-her`。Config 校验器找不到 ID 为 `feishu` 的插件，校验失败，容器挂掉。
 
 **背景**：OpenClaw bundled 插件（`extensions/` 目录下）默认全部关闭（`BUNDLED_ENABLED_BY_DEFAULT` 是空集合），必须在 config 中 `plugins.entries.插件ID.enabled = true` 才能加载。
 
 **修复**（三处改动）：
 
 1. **`docker/carher-config.json`**：在基础配置的 `plugins.entries` 中添加 `feishu-her: {enabled: true}`（与 `realtime` 并列）。插件启用跟着代码走，不跟着部署脚本走。
-2. **`start-user.sh`**：删除硬编码的 `plugins.entries.feishu`。per-user config 只保留 `channels.feishu`（频道凭证，使用稳定的频道名而非插件 ID）。
-3. **`start-user.sh` SOURCE_DIRS**：补全 Docker 自动重建监控列表，新增 `docker/`、`pnpm-workspace.yaml`、`.npmrc`、`patches/`、`tsconfig.json`，并将 `scripts/carher-entrypoint.sh` 扩展为 `scripts/`。确保 Dockerfile COPY 进镜像的每个文件/目录都在监控范围内。
+2. **`compose`**：删除硬编码的 `plugins.entries.feishu`。per-user config 只保留 `channels.feishu`（频道凭证，使用稳定的频道名而非插件 ID）。
+3. **`compose` SOURCE_DIRS**：补全 Docker 自动重建监控列表，新增 `docker/`、`pnpm-workspace.yaml`、`.npmrc`、`patches/`、`tsconfig.json`，并将 `scripts/carher-entrypoint.sh` 扩展为 `scripts/`。确保 Dockerfile COPY 进镜像的每个文件/目录都在监控范围内。
 
 **架构原则**：
 
 - 插件启用配置放在 `docker/carher-config.json`（与代码同仓库、同版本控制）
-- `start-user.sh` 只管 per-user 数据（飞书凭证、模型选择），不涉及插件 ID
+- `compose` 只管 per-user 数据（飞书凭证、模型选择），不涉及插件 ID
 - 以后改插件名只需改 `docker/carher-config.json` 一处，不影响部署脚本和 200 企业用户
 
 **验证**：本地 Her + Docker 1 双路语音并发测试通过，飞书消息收发正常，语音对话正常，所有隧道端点 200。
@@ -895,7 +895,7 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 | requireMention 可配  | ✅ per-group | ⚠️ 硬编码 true      | 🟡                      |
 | per-group allowFrom  | ✅           | ❌                  | 🟡                      |
 
-**feishu-her 的 `dm.allowFrom` 由 `start-user.sh` 从 CSV 正确写入了每个容器的 config，但 gateway.ts 从来不读这个字段做私聊检查。** 全员开放后任何人发私聊都会被处理。
+**feishu-her 的 `dm.allowFrom` 由 `compose` 从 CSV 正确写入了每个容器的 config，但 gateway.ts 从来不读这个字段做私聊检查。** 全员开放后任何人发私聊都会被处理。
 
 #### 推荐方案（分阶段）
 
@@ -903,7 +903,7 @@ Webchat（Control UI）扮演**全局监控面板**角色，通过 `broadcast("a
 
 - gateway.ts 加 DM sender 检查，读 `dm.allowFrom`
 - 不在列表 → 回复"我只为主人服务"+ 不处理消息
-- 零改 config（`start-user.sh` 已经生成了正确的 `dm.allowFrom`）
+- 零改 config（`compose` 已经生成了正确的 `dm.allowFrom`）
 
 **Phase 2（P1，对齐龙虾体验）**：
 

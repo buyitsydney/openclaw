@@ -40,7 +40,7 @@ cd /Data/CarHer
 git fetch origin feat/carher-a-b-decouple
 git reset --hard origin/feat/carher-a-b-decouple   # HEAD 应该到 b98a7e1223
 git log --oneline -1
-# 期望: feat/config-rebuild HEAD (包含 config/ 新 tree + 扁平挂载 start-user.sh)
+# 期望: feat/config-rebuild HEAD (包含 config/ 新 tree + 扁平挂载 compose)
 ```
 
 ### 2.2 Host-local 非 git 文件（手动部署）
@@ -104,26 +104,26 @@ cd /Data/CarHer
 
 # carher-12 (test)
 CARHER_ACP_ENABLED=1 CARHER_MEMORY_LIMIT=16g A2A_ENABLED=1 A2A_OUTBOUND=1 \
-  ./start-user.sh --id=12 --image=carher-core:0421-ab-v2
+  ./compose --id=12 --image=carher-core:0421-ab-v2
 
 # carher-13 (卜弋天 主 her)
 CARHER_ACP_ENABLED=1 CARHER_MEMORY_LIMIT=16g A2A_ENABLED=1 A2A_OUTBOUND=1 \
-  ./start-user.sh --id=13 --image=carher-core:0421-ab-v2
+  ./compose --id=13 --image=carher-core:0421-ab-v2
 
 # carher-199, 200 (研究2/3)
 for id in 199 200; do
   CARHER_ACP_ENABLED=1 CARHER_MEMORY_LIMIT=16g A2A_ENABLED=1 A2A_OUTBOUND=1 \
-    ./start-user.sh --id=$id --image=carher-core:0421-ab-v2
+    ./compose --id=$id --image=carher-core:0421-ab-v2
 done
 
 # carher-198 (admin = 研究1) — 先普通启动
 CARHER_ACP_ENABLED=1 CARHER_MEMORY_LIMIT=16g A2A_ENABLED=1 A2A_OUTBOUND=1 \
-  ./start-user.sh --id=198 --image=carher-core:0421-ab-v2
+  ./compose --id=198 --image=carher-core:0421-ab-v2
 ```
 
 ### 2.6 Admin 容器特殊 bootstrap（carher-198）— 用 `bootstrap-admin.sh` 一键化
 
-**admin 需要额外装 sshpass + 拿 servers.txt。在 `start-user.sh` 起完后做**：
+**admin 需要额外装 sshpass + 拿 servers.txt。在 `compose` 起完后做**：
 
 ```bash
 # 装 sshpass + ssh client（apt 走容器内 root）
@@ -145,7 +145,7 @@ docker exec carher-198 head -3 /data/.openclaw/servers.txt
 `/etc/cloudflared/config.yml` 里 **每台服务器独立**。S1 目前 u13 / u198 路由到对应 docker 端口：
 
 ```yaml
-# S1 (端口号来自 start-user.sh 按 id 分配: {29000 + id*10 + offset})
+# S1 (端口号来自 compose 按 id 分配: {29000 + id*10 + offset})
 - hostname: s1-u13-fe.carher.net
   service: http://localhost:29123 # docker-13 fe (8000 map)
 - hostname: s1-u13-proxy.carher.net
@@ -178,13 +178,13 @@ docker update --cpus=16 carher-13 carher-198
 S1 回到 2026-04-23 04:00 的状态（今天所有改动消失，但 3 个月 session 数据恢复）。步骤：
 
 ```bash
-# 1. Git: fetch + reset 到 config-rebuild HEAD (把新 config/ 树 + start-user.sh 的扁平挂载改动拉回来)
+# 1. Git: fetch + reset 到 config-rebuild HEAD (把新 config/ 树 + compose 的扁平挂载改动拉回来)
 cd /Data/CarHer
 git fetch origin feat/carher-a-b-decouple
 git reset --hard origin/feat/carher-a-b-decouple
 
 # 2. 按 2.4 部署 skills 到全员层
-# 3. 按 2.5 用新 start-user.sh env 起 5 个 docker (会 docker rm + run 新定义覆盖老容器; volume 保留)
+# 3. 按 2.5 用新 compose env 起 5 个 docker (会 docker rm + run 新定义覆盖老容器; volume 保留)
 # 4. 按 2.6 admin 容器 bootstrap (sshpass + servers.txt)
 # 5. 按 2.7 restart cloudflared 如有端口变化
 ```
@@ -220,7 +220,7 @@ docker exec carher-198 sshpass -p 'cxS4p)apmQ7f' ssh -o StrictHostKeyChecking=no
 ## 5. Known gaps（仍要手工的）
 
 - **admin bootstrap 已写成 script** ✅ (2.6 `./bootstrap-admin.sh [carher-198]`，git tracked，rebuild admin 必跑)
-- **skills 部署没自动**：2.4 靠 cp。建议未来在 `start.sh` / `start-user.sh` 加 hook 自动同步 `.cursor/skills/` → host
+- **skills 部署没自动**：2.4 靠 cp。建议未来在 `start.sh` / `compose` 加 hook 自动同步 `.cursor/skills/` → host
 - **`docker-fleet/SKILL.md` 加进 `.cursor/skills/`** ✅
 
 ## 6. Tag 约定

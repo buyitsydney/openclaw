@@ -8,7 +8,7 @@
 
 | | 旧方案（knownBots 静态配置） | 新方案（Redis Bot Registry） |
 |---|---|---|
-| 数据来源 | CSV → start-user.sh → config JSON | 容器启动时自注册到 Redis |
+| 数据来源 | CSV → compose → config JSON | 容器启动时自注册到 Redis |
 | 新 bot 感知 | 重启所有容器 | 30 秒内自动发现 |
 | 维护成本 | CSV 双 map 手动同步 (knownBots + knownBotOpenIds) | 零维护，自动注册/过期 |
 | 数据一致性 | 77 vs 70 条不一致（7 个 bot 缺 openId） | 每个容器注册自己的完整信息 |
@@ -71,7 +71,7 @@ Node.js 单线程模型保证：迭代 `Object.entries(account.knownBots)` 的�
 |------|------|
 | `extensions/feishu-her/src/bot-registry.ts` | 新增 ~210 行 |
 | `extensions/feishu-her/src/gateway.ts` | +5 行 (init + destroy) |
-| `start-user.sh` | 删除 ~79 行 CSV→knownBots 生成 |
+| `compose` | 删除 ~79 行 CSV→knownBots 生成 |
 
 ## 与 a2a Registry 的关系
 
@@ -122,11 +122,11 @@ ln -sf /Data/CarHer/docker/users.csv docker/users.csv
 ./build-image.sh --tag=carher:bot-registry
 
 # 启动 spoke（被动接收 a2a）
-A2A_ENABLED=1 ./start-user.sh --id=N --image=carher:bot-registry
+A2A_ENABLED=1 ./compose --id=N --image=carher:bot-registry
 
 # 启动 hub（主动发送 a2a）
-A2A_ENABLED=1 A2A_OUTBOUND=1 ./start-user.sh --id=N --image=carher:bot-registry
+A2A_ENABLED=1 A2A_OUTBOUND=1 ./compose --id=N --image=carher:bot-registry
 
-# 回滚（用主仓库的 start-user.sh + carher:local）
-cd /Data/CarHer && ./start-user.sh --id=N
+# 回滚（用主仓库的 compose + carher:local）
+cd /Data/CarHer && ./compose --id=N
 ```

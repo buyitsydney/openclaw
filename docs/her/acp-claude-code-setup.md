@@ -24,7 +24,7 @@ ANTHROPIC_BASE_URL=https://litellm.carher.net
 ANTHROPIC_AUTH_TOKEN=sk-5VnGHyR9WLzbLpvCgdFZEw
 ```
 
-start-user.sh 会自动 `source server.env` 读取这些变量。
+compose 会自动 `source server.env` 读取这些变量。
 
 ### 2. 启动容器时传 CARHER_ACP_ENABLED=1
 
@@ -32,11 +32,11 @@ start-user.sh 会自动 `source server.env` 读取这些变量。
 # 从 worktree 启动（灰度）
 cd /tmp/skills-two-layer
 CARHER_ACP_ENABLED=1 CARHER_MEMORY_LIMIT=4g \
-./start-user.sh --id=N --image=carher:acp-test
+./compose --id=N --image=carher:acp-test
 
 # 如果同时需要 A2A outbound（通常只有 docker-13）
 CARHER_ACP_ENABLED=1 CARHER_MEMORY_LIMIT=8g A2A_OUTBOUND=1 \
-./start-user.sh --id=13 --image=carher:acp-test
+./compose --id=13 --image=carher:acp-test
 ```
 
 ### 3. 验证
@@ -61,7 +61,7 @@ docker exec carher-N cat /data/.claude/.credentials.json
 
 ```bash
 # 普通容器（无 ACP）
-./start-user.sh --id=N --image=carher:acp-test
+./compose --id=N --image=carher:acp-test
 ```
 
 ## entrypoint 自动完成的事
@@ -131,7 +131,7 @@ docker exec carher-N ps aux | grep -E "acpx|claude" | grep -v grep
 
 ```bash
 # 回到无 ACP 的 carher:local
-cd /Data/CarHer && ./start-user.sh --id=N
+cd /Data/CarHer && ./compose --id=N
 ```
 
 ## 当前灰度状态

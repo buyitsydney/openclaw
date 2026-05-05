@@ -1,6 +1,6 @@
 # Compose-based deployment (PoC)
 
-This directory replaces `start-user.sh` with declarative `docker compose` files.
+This directory contains declarative `docker compose` deployment files.
 
 ## Design principles
 
@@ -23,7 +23,7 @@ deploy/
 │   └── secrets.env            # gitignored: feishu secret, gateway token
 ├── carher-{102,103,104}/      # scaffolded from users.csv
 ├── build-and-push.sh          # build + push to registry
-├── migrate-carher-101.sh      # first-time migration (stop start-user.sh, compose up)
+├── migrate-carher-101.sh      # first-time migration helper
 ├── init-user.sh               # first-boot steps (voice token, device pairing)
 └── scaffold.sh                # generate deploy/carher-N/ from users.csv
 ```
@@ -92,7 +92,7 @@ Compose resolves `${VAR}` at **parse time** from shell env / `--env-file` / proj
 (`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `CARHER_LAN_IP`) from `docker/server.env`
 into each user's `.env` so they are available at parse time.
 
-### What start-user.sh still does that compose doesn't (yet)
+### What legacy script still does that compose doesn't (yet)
 - Voice token generation (first-boot)
 - Device pairing scope repair (first-boot)
 - Feishu WSClient health probe (can be done via `docker compose wait` + custom check)
