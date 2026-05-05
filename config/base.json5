@@ -69,6 +69,10 @@
 
   messages: {
     ackReactionScope: "group-mentions",
+    // 0503 defaults group chat to "message_tool_only" (agent must use message
+    // tool explicitly). Our feishu-her plugin uses the deliver callback
+    // (automatic delivery), so we need "automatic" to keep group replies working.
+    groupChat: { visibleReplies: "automatic" },
     tts: {
       auto: "inbound",
       provider: "edge",

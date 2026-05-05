@@ -86,6 +86,39 @@ if [ -f "$LARK_MANIFEST" ]; then
 fi
 # ── end openclaw-lark 0503 compat ─────────────────────────────────
 
+# ── feishu-her 0503 compat: declare contracts.tools ───────────────
+# feishu-her (baked in image) also needs contracts.tools for 0503.
+FEISHU_HER_MANIFEST="/app/docker/plugins/feishu-her/openclaw.plugin.json"
+if [ -f "$FEISHU_HER_MANIFEST" ]; then
+  echo "  ▶ Ensuring feishu-her manifest has contracts.tools (0503 compat)..."
+  node -e "
+    const fs = require('fs');
+    const TOOLS = [
+      'end_discussion', 'reset_discussion', 'set_discussion_leader', 'set_group_mode',
+      'feishu_bitable', 'feishu_board', 'feishu_bot_directory',
+      'feishu_calendar', 'feishu_chat', 'feishu_chat_capability',
+      'feishu_chat_controls', 'feishu_chat_manage', 'feishu_chat_members',
+      'feishu_chat_pins', 'feishu_chat_tabs', 'feishu_chat_top_notice',
+      'feishu_deep_search', 'feishu_directory', 'feishu_doc',
+      'feishu_doc_comments', 'feishu_drive', 'feishu_group_history',
+      'feishu_knowledge_qa', 'feishu_mail', 'feishu_message',
+      'feishu_message_search', 'feishu_minutes', 'feishu_search',
+      'feishu_sheet', 'feishu_wiki'
+    ];
+    const m = JSON.parse(fs.readFileSync('$FEISHU_HER_MANIFEST', 'utf8'));
+    const cur = JSON.stringify(m.contracts?.tools ?? []);
+    const want = JSON.stringify(TOOLS);
+    if (cur !== want) {
+      m.contracts = { ...m.contracts, tools: TOOLS };
+      fs.writeFileSync('$FEISHU_HER_MANIFEST', JSON.stringify(m, null, 2));
+      console.log('    ✓ contracts.tools updated (' + TOOLS.length + ' tools)');
+    } else {
+      console.log('    ✓ contracts.tools already correct (' + TOOLS.length + ' tools)');
+    }
+  "
+fi
+# ── end feishu-her 0503 compat ───────────────────────────────────
+
 # Re-symlink after plugin install (new binaries may have been added)
 ln -sf /data/.openclaw/local/bin/* /usr/local/bin/ 2>/dev/null || true
 # ── end three-component runtime plugin install ──────────────────────

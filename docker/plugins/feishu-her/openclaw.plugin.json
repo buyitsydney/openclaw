@@ -1,5 +1,6 @@
 {
   "id": "feishu-her",
+  "entry": "./index.ts",
   "channels": [],
   "skills": ["./skills"],
   "configSchema": {
@@ -10,5 +11,15 @@
       "botOpenId": { "type": "string" },
       "oauthRedirectUri": { "type": "string" }
     }
+  },
+  "contracts": {
+    "tools": [
+      "end_discussion",
+      "reset_discussion",
+      "set_discussion_leader",
+      "set_group_mode",
+      "feishu_bot_directory",
+      "feishu_knowledge_qa"
+    ]
   }
 }

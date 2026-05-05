@@ -7,6 +7,8 @@ import {
   type BuildReportOpts,
 } from "./src/compaction-report.js";
 import { registerDiscussionHooks } from "./src/discussion-hooks.js";
+import { initDiscussionState } from "./src/discussion-state.js";
+import { setGroupModeAppId } from "./src/group-mode.js";
 import { initOAuthCallback, startOAuthServer } from "./src/oauth.js";
 import { setFeishuRuntime } from "./src/runtime.js";
 import { registerAllFeishuTools } from "./src/tools/index.js";
@@ -38,9 +40,20 @@ const plugin = {
     // feishu-her only registers tools + hooks.
     registerAllFeishuTools(api);
 
+    // Redis init for group-mode + discussion state (was in gateway.ts channel code,
+    // but in three-component mode the channel is openclaw-lark, not feishu-her).
+    const log = {
+      info: (msg: string) => api.logger.info?.(msg),
+      warn: (msg: string) => api.logger.warn(msg),
+    };
+    initDiscussionState({ redisUrl: process.env.REDIS_URL, log });
+
     // Discussion Mode hooks (turn gating, outbound gate, broadcast, activity tracking).
     // Registered per-account so each bot instance gates its own turns.
     const accounts = listEnabledFeishuAccounts(api.config);
+    if (accounts.length > 0) {
+      setGroupModeAppId(accounts[0].appId);
+    }
     const hookCleanups: Array<() => void> = [];
     for (const account of accounts) {
       const { cleanup } = registerDiscussionHooks({ api, account });
