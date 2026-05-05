@@ -63,35 +63,6 @@ if [ -f "$LARK_MANIFEST" ]; then
 fi
 # ── end openclaw-lark channel-only ───────────────────────────────
 
-# ── openclaw-lark: fix DM native command dispatch ────────────────
-# Bug: openclaw-lark's dispatchSystemCommand sends /new through
-# dispatchReplyWithBufferedBlockDispatcher but doesn't set
-# CommandSource:"native" in the context. Core ignores it as a regular
-# message. Fix: patch dispatch-commands.js to inject CommandSource.
-DISPATCH_CMD="$LARK_PKG/src/messaging/inbound/dispatch-commands.js"
-if [ -f "$DISPATCH_CMD" ]; then
-  echo "  ▶ Patching openclaw-lark → fix DM /new command (CommandSource)..."
-  node -e "
-    const fs = require('fs');
-    let code = fs.readFileSync('$DISPATCH_CMD', 'utf8');
-    // Inject CommandSource:'native' into the ctxPayload before dispatch
-    const target = 'await dc.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({';
-    if (code.includes(target) && !code.includes('CommandSource')) {
-      code = code.replace(
-        target,
-        'ctxPayload.CommandSource = \"native\";\n    ' + target
-      );
-      fs.writeFileSync('$DISPATCH_CMD', code);
-      console.log('    ✓ CommandSource:native injected into DM command dispatch');
-    } else if (code.includes('CommandSource')) {
-      console.log('    ✓ CommandSource already present (skip)');
-    } else {
-      console.log('    ⚠ target string not found in dispatch-commands.js');
-    }
-  "
-fi
-# ── end openclaw-lark DM native command fix ──────────────────────
-
 # ── feishu-her 0503 compat: declare contracts.tools ───────────────
 # feishu-her (baked in image) also needs contracts.tools for 0503.
 FEISHU_HER_MANIFEST="/app/docker/plugins/feishu-her/openclaw.plugin.json"
@@ -124,6 +95,30 @@ if [ -f "$FEISHU_HER_MANIFEST" ]; then
   "
 fi
 # ── end feishu-her 0503 compat ───────────────────────────────────
+
+# ── a2a-gateway 0503 compat: declare activation + contracts.tools ─
+A2A_MANIFEST="/app/docker/plugins/a2a-gateway/openclaw.plugin.json"
+if [ -f "$A2A_MANIFEST" ]; then
+  echo "  ▶ Ensuring a2a-gateway manifest has contracts.tools..."
+  node -e "
+    const fs = require('fs');
+    const m = JSON.parse(fs.readFileSync('$A2A_MANIFEST', 'utf8'));
+    let changed = false;
+    if (!m.activation) { m.activation = { onStartup: true }; changed = true; }
+    const want = ['a2a_send', 'a2a_send_file'];
+    if (JSON.stringify(m.contracts?.tools) !== JSON.stringify(want)) {
+      m.contracts = { ...m.contracts, tools: want };
+      changed = true;
+    }
+    if (changed) {
+      fs.writeFileSync('$A2A_MANIFEST', JSON.stringify(m, null, 2));
+      console.log('    ✓ a2a-gateway manifest patched (activation + contracts.tools)');
+    } else {
+      console.log('    ✓ a2a-gateway manifest already correct');
+    }
+  "
+fi
+# ── end a2a-gateway 0503 compat ──────────────────────────────────
 
 # Re-symlink after plugin install (new binaries may have been added)
 ln -sf /data/.openclaw/local/bin/* /usr/local/bin/ 2>/dev/null || true
