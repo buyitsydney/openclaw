@@ -96,29 +96,6 @@ if [ -f "$FEISHU_HER_MANIFEST" ]; then
 fi
 # ── end feishu-her 0503 compat ───────────────────────────────────
 
-# ── a2a-gateway 0503 compat: declare activation + contracts.tools ─
-A2A_MANIFEST="/app/docker/plugins/a2a-gateway/openclaw.plugin.json"
-if [ -f "$A2A_MANIFEST" ]; then
-  echo "  ▶ Ensuring a2a-gateway manifest has contracts.tools..."
-  node -e "
-    const fs = require('fs');
-    const m = JSON.parse(fs.readFileSync('$A2A_MANIFEST', 'utf8'));
-    let changed = false;
-    if (!m.activation) { m.activation = { onStartup: true }; changed = true; }
-    const want = ['a2a_send', 'a2a_send_file'];
-    if (JSON.stringify(m.contracts?.tools) !== JSON.stringify(want)) {
-      m.contracts = { ...m.contracts, tools: want };
-      changed = true;
-    }
-    if (changed) {
-      fs.writeFileSync('$A2A_MANIFEST', JSON.stringify(m, null, 2));
-      console.log('    ✓ a2a-gateway manifest patched (activation + contracts.tools)');
-    } else {
-      console.log('    ✓ a2a-gateway manifest already correct');
-    }
-  "
-fi
-# ── end a2a-gateway 0503 compat ──────────────────────────────────
 
 # Re-symlink after plugin install (new binaries may have been added)
 ln -sf /data/.openclaw/local/bin/* /usr/local/bin/ 2>/dev/null || true
