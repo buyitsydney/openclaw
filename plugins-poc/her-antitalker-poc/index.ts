@@ -104,6 +104,8 @@ interface SharedState {
   // v7.5 · sessionKey 单维度 tool 累积 (丢 runId · 因 OpenClaw 给 before_message_write 不可靠提供 runId)
   // 语义: 当前 session 最近一轮 LLM assistant message 里所有 toolCall name · 见到最后一条 text message 时清空
   toolsBySessionKey: Map<string, string[]>;
+  // v7.10 · conversationId → sessionKey 映射 (BMW 写入 · MS fallback 读)
+  convToSession: Map<string, string>;
   // v7.6 · 每 session 活跃状态: 用于 silent_too_long / prose_only_ending / delivery_response_required
   sessionActivity: Map<string, SessionActivity>;
   rateLimitCounters: Map<string, { hits: number[] }>;
@@ -126,6 +128,7 @@ if (!globalAny[STATE_KEY]) {
   globalAny[STATE_KEY] = {
     turnCtx: new Map(),
     toolsBySessionKey: new Map(),
+    convToSession: new Map(),
     sessionActivity: new Map(),
     rateLimitCounters: new Map(),
     cooldownTracker: new Map(),
@@ -145,6 +148,7 @@ if (!globalAny[STATE_KEY]) {
 
 // v7.6 · 如果是老 state (热 reload 可能没 sessionActivity 字段) 强制初始化
 if (!globalAny[STATE_KEY].sessionActivity) globalAny[STATE_KEY].sessionActivity = new Map();
+if (!globalAny[STATE_KEY].convToSession) globalAny[STATE_KEY].convToSession = new Map();
 const state: SharedState = globalAny[STATE_KEY];
 
 const RATE_LIMIT_MAX_ENTRIES = 4096;
@@ -1032,6 +1036,18 @@ function handleBeforeMessageWrite(event: any, ctx: any): any {
       if (oldestKey) state.sessionActivity.delete(oldestKey);
     }
 
+    // v7.10 · 记录 conversationId/channelId → sessionKey 映射
+    // message_sending hook 的 ctx 不含 sessionKey 但含 conversationId/channelId
+    // 此处建立反查表供 MS fallback 使用
+    const convId = String(ctx?.conversationId ?? ctx?.channelId ?? "");
+    if (convId && sessionKey) {
+      state.convToSession.set(convId, sessionKey);
+      if (state.convToSession.size > 4096) {
+        const oldest = state.convToSession.keys().next().value;
+        if (oldest) state.convToSession.delete(oldest);
+      }
+    }
+
     return {};
   } catch (e: any) {
     log("error", `handleBeforeMessageWrite crashed (fail-open): ${e.message}`);
@@ -1057,6 +1073,16 @@ async function handleMessageSending(event: any, ctx: any): Promise<any> {
     // Fixes prose_only_ending wakeHer fail when ctx.sessionKey is empty string.
     // Without fallback, enqueueSystemEvent rejects (requires sessionKey) so wake is a no-op.
     if (!sessionKey) {
+      // v7.10 · 优先: 从 conversationId/channelId 反查 BMW 记录的 sessionKey
+      const convId = String(ctx?.conversationId ?? ctx?.channelId ?? "");
+      const mapped = convId ? state.convToSession.get(convId) : undefined;
+      if (mapped) {
+        sessionKey = mapped;
+        log("warn", `v7.10 sessionKey fallback via convToSession convId=${convId.slice(-20)} → sk=${sessionKey.slice(-20)}`);
+      }
+    }
+    // v7.7 原有 fallback: 仍保留作兜底 (万一 BMW 还没跑过该 conversation)
+    if (!sessionKey) {
       let bestSk = "";
       let bestTs = 0;
       for (const [sk, act] of state.sessionActivity) {
@@ -1064,7 +1090,7 @@ async function handleMessageSending(event: any, ctx: any): Promise<any> {
       }
       if (bestSk) {
         sessionKey = bestSk;
-        log("warn", `v7.9 sessionKey fallback → ${sessionKey.slice(-20)} (ctx.sessionKey was empty)`);
+        log("warn", `v7.10 sessionKey fallback via lastActivity → ${sessionKey.slice(-20)} (convToSession miss)`);
       }
     }
     if (!content) return {};
