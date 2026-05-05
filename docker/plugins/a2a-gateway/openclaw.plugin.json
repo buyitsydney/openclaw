@@ -351,5 +351,14 @@
       "token": { "sensitive": true },
       "tokens": { "items": { "sensitive": true } }
     }
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "a2a_send",
+      "a2a_send_file"
+    ]
   }
 }
