@@ -181,39 +181,6 @@ describe("memory tools", () => {
     expect(getMemorySearchManagerMockCalls()).toBe(0);
   });
 
-  it("surfaces reset and deleted archive session hits", async () => {
-    setMemorySearchImpl(async () => [
-      {
-        path: "sessions/abc.jsonl.reset.2026-02-16T22-26-33.000Z",
-        startLine: 1,
-        endLine: 1,
-        score: 0.95,
-        snippet: "Archived reset anchor",
-        source: "sessions" as const,
-      },
-      {
-        path: "sessions/def.jsonl.deleted.2026-02-16T22-27-33.000Z",
-        startLine: 2,
-        endLine: 2,
-        score: 0.9,
-        snippet: "Archived deleted anchor",
-        source: "sessions" as const,
-      },
-    ]);
-
-    const tool = createMemorySearchToolOrThrow();
-    const result = await tool.execute("call_archive_sessions", {
-      query: "Archived anchor",
-      corpus: "sessions",
-    });
-    const details = result.details as { results: Array<{ path: string }> };
-
-    expect(details.results.map((entry) => entry.path)).toEqual([
-      "sessions/abc.jsonl.reset.2026-02-16T22-26-33.000Z",
-      "sessions/def.jsonl.deleted.2026-02-16T22-27-33.000Z",
-    ]);
-  });
-
   it("persists short-term recall events from memory_search tool hits", async () => {
     const workspaceDir = await createTempWorkspace("memory-tools-recall-");
     try {

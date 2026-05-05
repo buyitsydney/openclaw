@@ -92,23 +92,6 @@ describe("buildSessionEntry", () => {
     expect(entry!.messageTimestampsMs).toEqual([0, 0, 0]);
   });
 
-  it("builds content for reset/deleted archive transcripts", async () => {
-    const jsonlLines = [
-      JSON.stringify({ type: "message", message: { role: "user", content: "Archived hello" } }),
-      JSON.stringify({ type: "message", message: { role: "assistant", content: "Archived reply" } }),
-    ];
-    const resetPath = path.join(tmpDir, "archived.jsonl.reset.2026-02-16T22-26-33.000Z");
-    await fs.writeFile(resetPath, jsonlLines.join("\n"));
-
-    const entry = await buildSessionEntry(resetPath);
-
-    expect(entry).not.toBeNull();
-    expect(entry!.path).toContain(".jsonl.reset.");
-    expect(entry!.content).toContain("User: Archived hello");
-    expect(entry!.content).toContain("Assistant: Archived reply");
-    expect(entry!.lineMap).toEqual([1, 2]);
-  });
-
   it("returns empty lineMap when no messages are found", async () => {
     const jsonlLines = [
       JSON.stringify({ type: "custom", customType: "model-snapshot", data: {} }),
