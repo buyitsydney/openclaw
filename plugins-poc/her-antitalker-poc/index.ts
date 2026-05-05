@@ -1,5 +1,5 @@
 /**
- * her-antitalker-poc v8.3 — self-report detection (no more regex whitelist hack)
+ * her-antitalker-poc v8.3.1 — fix self-report production failure + red card title template
  *
  * v8.3 changes over v8.1:
  *   Problem: bot self-reports after wake quotes the violation text ("被'20分钟后回来'拦了")
@@ -241,7 +241,7 @@ function log(level: "debug" | "info" | "warn" | "error", msg: string) {
   const levels = { debug: 0, info: 1, warn: 2, error: 3 };
   if ((levels[level] ?? 1) < (levels[configLevel as keyof typeof levels] ?? 1)) return;
   const fn = (state.logger[level] ?? state.logger.info ?? console.log).bind(state.logger);
-  fn(`[antitalker-v8.3] ${msg}`);
+  fn(`[antitalker-v8.3.1] ${msg}`);
 }
 
 // -------- RE2 lazy probe --------
@@ -792,6 +792,17 @@ async function wakeHer(sessionKey: string, message: string) {
     // v7.8 anti-heartbeat-swallow prefix: 防止 LLM 看到 heartbeat prompt 后直接 HEARTBEAT_OK 吞掉 wake
     const antiSwallow = "⚠️ antitalker 强制唤醒 · 禁止回 HEARTBEAT_OK/NO_REPLY · 必须针对下面的违规继续实际工作（调 tool / 发消息 / 修 bug）· 否则会再次拦截。\n\n";
     const wrapped = antiSwallow + message;
+
+    // v8.3.1 fix: pre-set lastUserPreview so isInSelfReportContext() works when bot responds.
+    // enqueueSystemEvent doesn't flow through before_message_write user-capture hook,
+    // so without this the self-report context is never detected in production.
+    let act = state.sessionActivity.get(sessionKey);
+    if (!act) {
+      act = { lastToolCallAtMs: 0, lastAssistantMsgAtMs: 0, lastAssistantHadToolCall: false, lastAssistantHadText: false, lastAssistantTextPreview: "", lastUserPreview: "", silenceAlertedAt: 0, chatId: "" };
+      state.sessionActivity.set(sessionKey, act);
+    }
+    act.lastUserPreview = wrapped.slice(0, 800);
+
     if (state.heartbeatApi.enqueueSystemEvent) {
       state.heartbeatApi.enqueueSystemEvent(wrapped, {
         sessionKey,
@@ -1164,9 +1175,11 @@ async function handleMessageSending(event: any, ctx: any): Promise<any> {
           tool_count: toolCount, tool_names_list: tc.tools.join(", ") || "(无)",
         };
         const body = renderTemplate(cfg.notification.feishu_card.body_template, vars);
+        // v8.3.1 fix: title 也过 renderTemplate，支持 {rule_label} 等占位符
+        const title = renderTemplate(cfg.notification.feishu_card.title, vars);
         for (const target of routeTargets(sessionKey, ctx, cfg.notification.target_chats)) {
           if (!severityGte(rule.severity, target.min_severity)) continue;
-          pushFeishuCard(target.chat_id, cfg.notification.feishu_card.title, body, cfg.notification.feishu_card.header_color);
+          pushFeishuCard(target.chat_id, title, body, cfg.notification.feishu_card.header_color);
         }
       }
 
@@ -1286,9 +1299,9 @@ function checkDeliveryResponseRequired(content: string, sessionKey: string): { f
 // -------- Plugin entry --------
 const plugin = {
   id: PLUGIN_ID,
-  name: "Antitalker v8.3 (self-report detection · no regex whitelist hack)",
-  version: "0.0.830",
-  description: "事前教 + 拦 + 通知 + main session 唤醒 · 全 yaml 配置 · 热加载 · v8.3 · self-report context-aware skip",
+  name: "Antitalker v8.3.1 (self-report fix + title template)",
+  version: "0.0.831",
+  description: "事前教 + 拦 + 通知 + main session 唤醒 · 全 yaml 配置 · 热加载 · v8.3.1 · self-report production fix + red card title renderTemplate",
 
   // v7.6 测试用 · 暴露内部 handler 给 harness
   _handlers: {
