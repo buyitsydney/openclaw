@@ -129,6 +129,7 @@ if (!globalAny[STATE_KEY]) {
     turnCtx: new Map(),
     toolsBySessionKey: new Map(),
     convToSession: new Map(),
+    agentToSession: new Map(),
     sessionActivity: new Map(),
     rateLimitCounters: new Map(),
     cooldownTracker: new Map(),
@@ -149,6 +150,7 @@ if (!globalAny[STATE_KEY]) {
 // v7.6 · 如果是老 state (热 reload 可能没 sessionActivity 字段) 强制初始化
 if (!globalAny[STATE_KEY].sessionActivity) globalAny[STATE_KEY].sessionActivity = new Map();
 if (!globalAny[STATE_KEY].convToSession) globalAny[STATE_KEY].convToSession = new Map();
+if (!globalAny[STATE_KEY].agentToSession) globalAny[STATE_KEY].agentToSession = new Map();
 const state: SharedState = globalAny[STATE_KEY];
 
 const RATE_LIMIT_MAX_ENTRIES = 4096;
@@ -607,6 +609,13 @@ function stripQuotedContent(text: string): string {
   // Standard double/single quotes with 2+ chars inside (avoid breaking contractions)
   result = result.replace(/"[^"]{2,}"/g, " ");
   result = result.replace(/'[^']{2,}'/g, " ");
+  // v8.5: markdown table rows (any line with 2+ pipes = table row, strip entire line)
+  result = result.replace(/^.*\|.*\|.*$/gm, " ");
+  // v8.4: blockquotes (> ... or ＞ ...)
+  result = result.replace(/^[>＞][^\n]*/gm, " ");
+  // v8.4: list item content after bullet (- ... or * ... or N. ...)
+  result = result.replace(/^\s*[-*]\s+.+$/gm, (line) => " ");
+  result = result.replace(/^\s*\d+\.\s+.+$/gm, (line) => " ");
   return result;
 }
 
@@ -1047,6 +1056,20 @@ function handleBeforeMessageWrite(event: any, ctx: any): any {
         if (oldest) state.convToSession.delete(oldest);
       }
     }
+    // v8.5 fix: BMW has sessionKey, MS has conversationId. Bridge them.
+    // BMW sessionKey format: "agent:main:feishu:group:oc_xxx" or just "oc_xxx" suffix
+    // MS conversationId format: "oc_xxx" or "feishu:oc_xxx"
+    // Extract oc_ pattern from sessionKey and map both forms.
+    const ocMatch = sessionKey.match(/(oc_[a-f0-9]+)/);
+    if (ocMatch) {
+      const ocId = ocMatch[1];
+      state.convToSession.set(ocId, sessionKey);
+      state.convToSession.set("feishu:" + ocId, sessionKey);
+      if (state.convToSession.size > 8192) {
+        const it = state.convToSession.keys();
+        for (let i = 0; i < 100; i++) { const k = it.next().value; if (k) state.convToSession.delete(k); }
+      }
+    }
 
     return {};
   } catch (e: any) {
@@ -1066,6 +1089,12 @@ async function handleMessageSending(event: any, ctx: any): Promise<any> {
   try {
     const cfg = state.currentConfig;
     if (!cfg) return {};
+    // v8.5 debug: dump MS ctx keys + sessionKey to diagnose wake routing
+    if (state._msDebugCount === undefined) state._msDebugCount = 0;
+    state._msDebugCount++;
+    if (state._msDebugCount <= 10) {
+      log("warn", `MS#${state._msDebugCount} ctxKeys=[${Object.keys(ctx ?? {}).join(",")}] sessionKey=${ctx?.sessionKey ?? "(empty)"} convId=${ctx?.conversationId ?? ctx?.channelId ?? "(none)"} agentId=${ctx?.agentId ?? "?"} eventKeys=[${Object.keys(event ?? {}).join(",")}] event.chatId=${event?.chatId ?? "(none)"} event.channelId=${event?.channelId ?? "(none)"} event.sessionKey=${event?.sessionKey ?? "(none)"} event.target=${event?.target ?? "(none)"}`);
+    }
     const content = String(event?.content ?? "");
     let sessionKey = String(ctx?.sessionKey ?? "");
     const runId = String(ctx?.runId ?? "");
@@ -1079,6 +1108,15 @@ async function handleMessageSending(event: any, ctx: any): Promise<any> {
       if (mapped) {
         sessionKey = mapped;
         log("warn", `v7.10 sessionKey fallback via convToSession convId=${convId.slice(-20)} → sk=${sessionKey.slice(-20)}`);
+      }
+    }
+    // v8.5 fix: use agentId→sessionKey mapping from BMW (most reliable)
+    if (!sessionKey) {
+      const msAgentId = String(ctx?.agentId ?? "");
+      const agentMapped = msAgentId ? state.agentToSession.get(msAgentId) : undefined;
+      if (agentMapped) {
+        sessionKey = agentMapped;
+        log("info", `v8.5 sessionKey via agentToSession agentId=${msAgentId.slice(-20)} → sk=${sessionKey.slice(-20)}`);
       }
     }
     // v7.7 原有 fallback: 仍保留作兜底 (万一 BMW 还没跑过该 conversation)
@@ -1112,8 +1150,12 @@ async function handleMessageSending(event: any, ctx: any): Promise<any> {
     //     (它们合法 · 但在 exec completion 下不合法)
 
     // v7.6 · 新规则: prose_only_ending (包括无 content match 也能 fire)
+    // v8.4 fix: self_report_skip — wake 后首条纯文字汇报不二次拦
     const proseCheck = checkProseOnlyEnding(content, sessionKey, tc.tools);
-    if (proseCheck.fire && !isOnCooldown(sessionKey, "prose_only_ending", 30)) {
+    if (proseCheck.fire && isInSelfReportContext(sessionKey)) {
+      log("info", `prose_only_ending self_report_skip: sessionKey=${sessionKey.slice(-12)}`);
+      auditLog({ type: "self_report_skip", rule: "prose_only_ending", sessionKey: sessionKey.slice(-20), preview: content.slice(0, 120) });
+    } else if (proseCheck.fire && !isOnCooldown(sessionKey, "prose_only_ending", 30)) {
       noteCooldownFire(sessionKey, "prose_only_ending");
       const preview = content.slice(0, 200).replace(/\n/g, " ");
       log("warn", `VIOLATION rule=prose_only_ending tc=${tc.tools.length} reason=${proseCheck.reason}`);
