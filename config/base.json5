@@ -54,6 +54,7 @@
     feishu: {
       enabled: true,
       groupPolicy: "open",
+      dmPolicy: "open",
     },
   },
 
