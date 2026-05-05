@@ -121,7 +121,7 @@
       paths: [
         "/data/.openclaw/extensions/node_modules/@larksuite/openclaw-lark",
         "/app/docker/plugins/feishu-her",
-        "/app/docker/plugins/a2a-gateway",
+        "/data/.openclaw/plugins/a2a-gateway",
         "/app/docker/plugins/shadow-daemon",
       ],
     },
