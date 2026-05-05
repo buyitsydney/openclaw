@@ -70,9 +70,10 @@
 
   messages: {
     ackReactionScope: "group-mentions",
-    // 0503 defaults group chat to "message_tool_only" (agent must use message
-    // tool explicitly). Our feishu-her plugin uses the deliver callback
-    // (automatic delivery), so we need "automatic" to keep group replies working.
+    // 0503 defaults all chats to "message_tool" (agent must use message tool
+    // explicitly). Our feishu-her plugin uses the deliver callback (automatic
+    // delivery), so we need "automatic" for both DM and group replies.
+    visibleReplies: "automatic",
     groupChat: { visibleReplies: "automatic" },
     tts: {
       auto: "inbound",
