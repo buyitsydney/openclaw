@@ -44,6 +44,12 @@ echo "  openclaw base: $OPENCLAW_TAG"
 echo "  git HEAD:      $BUILD_HASH"
 echo
 
+# ---- her-self-inspect v2: freeze git metadata on host (build context lives in $ROOT/build/)
+mkdir -p "$ROOT/build"
+echo -e "${YELLOW}\xe2\x96\xb6${NC} Freezing git metadata -> build/image-info.json"
+bash "$ROOT/scripts/freeze-git-info.sh" > "$ROOT/build/image-info.json"
+echo "  image-info.json: $(wc -c < "$ROOT/build/image-info.json") bytes"
+
 DOCKER_BUILDKIT=1 docker build \
   -f "$ROOT/Dockerfile.carher.v2" \
   --build-arg OPENCLAW_TAG="$OPENCLAW_TAG" \

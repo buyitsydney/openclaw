@@ -85,7 +85,30 @@ RUN --mount=type=cache,target=/root/.npm \
 # runtime 走 /app/dist/；查源码走 /app/openclaw-src/src/
 COPY --from=openclaw-src-fetcher /src/src /app/openclaw-src/src
 
+# ---- her-self-inspect v2: bake frozen git-log + skills into image (k8s-friendly)
+# image-info.json is generated on host by scripts/freeze-git-info.sh via
+# deploy/build-and-push.sh (kept out of .dockerignore by living at build/).
+COPY build/image-info.json /opt/carher/image-info.json
+RUN chmod 444 /opt/carher/image-info.json
+
+
+# NOTE: shared skills are NOT baked into the image.
+# They live on hosts at ~cltx/.openclaw/skills/ (bind-mount :ro → /data/.openclaw/skills/)
+# and are distributed via scripts/publish-shared-skills.sh (rsync). Single source of truth.
+# ---- end her-self-inspect v2
+
 # Entrypoint
+# ---- reset-archive-session-memory patch set (feat/reset-archive-session-memory-20260502 @ 0e692c385d)
+COPY scripts/apply-reset-archive-patches.sh /tmp/apply-reset-archive-patches.sh
+RUN chmod +x /tmp/apply-reset-archive-patches.sh && /tmp/apply-reset-archive-patches.sh
+
+# NOTE: dist-manifest MUST be frozen AFTER apply-reset-archive-patches,
+#       otherwise manifest captures pre-patch baseline and sha256_drift=4 forever.
+# Freeze /app/dist sha256 manifest for hot-patch drift detection at runtime.
+# Any later mutation of /app/dist/*.js will be caught by her-self-inspect
+# diff-ing against this baseline (bak scan + sha256 drift = full coverage).
+RUN cd / && find /app/dist -type f -name '*.js' -print0 | xargs -0 sha256sum > /opt/carher/dist-manifest.txt && chmod 444 /opt/carher/dist-manifest.txt
+# ---- end reset-archive-session-memory patch set
 COPY scripts/carher-entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
