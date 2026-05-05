@@ -61,6 +61,7 @@
   commands: {
     native: "auto",
     nativeSkills: "auto",
+    allowFrom: { "*": ["*"] },
   },
 
   gateway: {
