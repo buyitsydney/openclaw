@@ -123,6 +123,7 @@
         "/app/docker/plugins/feishu-her",
         "/app/docker/plugins/a2a-gateway",
         "/app/docker/plugins/shadow-daemon",
+        "/app/docker/plugins/her-antitalker-poc",
       ],
     },
     entries: {
@@ -132,6 +133,7 @@
       "openclaw-lark": { enabled: true },
       "feishu-her": { enabled: true },
       "shadow-daemon": { enabled: true },
+      "her-antitalker-poc": { enabled: true },
       acpx: { enabled: true },
     },
   },

@@ -1,0 +1,9 @@
+{
+  "id": "her-antitalker-poc",
+  "name": "Antitalker v8.3.1",
+  "description": "行为监控: ETA空话拦截 + prose收尾检测 + silence watchdog",
+  "version": "0.0.831",
+  "entry": "./index.ts",
+  "activation": { "onStartup": true },
+  "contracts": { "tools": [] }
+}
