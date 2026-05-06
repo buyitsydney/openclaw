@@ -17,6 +17,7 @@
       userTimezone: "Asia/Shanghai",
       maxConcurrent: 16,
       subagents: { maxConcurrent: 64 },
+      heartbeat: { target: "last" },
       compaction: { mode: "safeguard", reserveTokens: 200000 },
       memorySearch: {
         provider: "openai",
