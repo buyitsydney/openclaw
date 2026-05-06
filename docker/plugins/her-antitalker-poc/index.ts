@@ -1369,9 +1369,10 @@ function runViolationCheck(content: string, sessionKey: string, tools: string[],
   const cfg = state.currentConfig;
   if (!cfg) return;
 
-  // Snapshot + clear tools (same as MS did)
+  // Snapshot tools (do NOT clear the map here — stop-hook-pipeline drain needs
+  // to see the full turn's tool accumulator. Map is cleared on next user message
+  // arrival by the user-prompt-capture hook instead.)
   const sessionTools = [...tools];
-  state.toolsBySessionKey.delete(sessionKey);
   const tc = { tools: sessionTools } as any;
 
   // 标记时已知的 chatId · 群聊从 sessionKey 提取出 oc_xxx · 私聊空 (watchdog 用 audit 群兜底)
@@ -1717,6 +1718,11 @@ const plugin = {
               if (sourceChatId) act.chatId = sourceChatId;
               (act as any).lastInboundAtMs = Date.now();
               act.lastUserPreview = (txt || "").slice(0, 800);
+              // M1 · New user message = new turn boundary. Clear per-turn tool
+              // accumulator so stop-hook-pipeline starts the next turn clean.
+              state.toolsBySessionKey.delete(sk);
+              // Also reset the pipeline's continuation counter for this session.
+              try { StopHookPipeline.getInstance().resetContinuationCount(sk); } catch {}
 
               // v9.0 · 自动识别主人 open_id
               // 0503 conversationId 格式:
