@@ -674,7 +674,9 @@ async function getFeishuToken(): Promise<string | null> {
 function normalizeFeishuChatId(raw: any): string {
   const s = String(raw ?? "").trim();
   if (!s) return "";
-  if (s.startsWith("feishu:")) return s.slice("feishu:".length);
+  for (const prefix of ["feishu:", "chat:", "user:", "channel:"]) {
+    if (s.startsWith(prefix)) return s.slice(prefix.length);
+  }
   return s;
 }
 
@@ -685,7 +687,7 @@ function extractFeishuChatIdFromText(text: string): string {
 
 function resolveSourceChatId(sessionKey: string, ctx: any): string {
   const candidates = [
-    ctx?.chatId, ctx?.chat_id, ctx?.channelId, ctx?.channel_id,
+    ctx?.chatId, ctx?.chat_id, ctx?.conversationId, ctx?.channelId, ctx?.channel_id,
     ctx?.message?.chatId, ctx?.message?.chat_id,
     ctx?.metadata?.chatId, ctx?.metadata?.chat_id,
     ctx?.channel?.id, ctx?.channel?.chatId,
@@ -695,6 +697,9 @@ function resolveSourceChatId(sessionKey: string, ctx: any): string {
     const v = normalizeFeishuChatId(c);
     if (v.startsWith("oc_") || v.startsWith("ou_")) return v;
   }
+  // fallback: extract oc_/ou_ from sessionKey (0503 format: agent:main:feishu:group:oc_xxx)
+  const skMatch = String(sessionKey ?? "").match(/(oc_[a-f0-9]+|ou_[a-f0-9]+)/);
+  if (skMatch) return skMatch[1];
   const act = state.sessionActivity.get(sessionKey);
   if (act?.chatId) return act.chatId;
   return "";
@@ -1071,10 +1076,136 @@ function handleBeforeMessageWrite(event: any, ctx: any): any {
       }
     }
 
+    // v9.0 · BMW-based violation detection (replaces MS dependency)
+    // openclaw 0503 + openclaw-lark: message_sending hook is NOT called for normal replies
+    // (only called from legacy bundled feishu path). Detect violations here instead.
+    // Trigger: assistant message with text but NO toolCall in this message = "final reply".
+    if (hadText && pushed === 0 && textPreview.length > 0) {
+      try { runViolationCheck(textPreview, sessionKey, tools, ctx); } catch (e: any) {
+        log("error", `BMW violation check crashed (fail-open): ${String(e?.message ?? e).slice(0, 200)}`);
+      }
+    }
+
     return {};
   } catch (e: any) {
     log("error", `handleBeforeMessageWrite crashed (fail-open): ${e.message}`);
     return {};
+  }
+}
+
+/**
+ * v9.0 · Violation check extracted from handleMessageSending.
+ * Called from BMW when assistant message has text but no toolCall (= final reply).
+ */
+function runViolationCheck(content: string, sessionKey: string, tools: string[], ctx: any): void {
+  const cfg = state.currentConfig;
+  if (!cfg) return;
+
+  // Snapshot + clear tools (same as MS did)
+  const sessionTools = [...tools];
+  state.toolsBySessionKey.delete(sessionKey);
+  const tc = { tools: sessionTools } as any;
+
+  // prose_only_ending check
+  const proseCheck = checkProseOnlyEnding(content, sessionKey, tc.tools);
+  if (proseCheck.fire && isInSelfReportContext(sessionKey)) {
+    log("info", `prose_only_ending self_report_skip: sessionKey=${sessionKey.slice(-12)}`);
+    auditLog({ type: "self_report_skip", rule: "prose_only_ending", sessionKey: sessionKey.slice(-20), preview: content.slice(0, 120) });
+  } else if (proseCheck.fire && !isOnCooldown(sessionKey, "prose_only_ending", 30)) {
+    noteCooldownFire(sessionKey, "prose_only_ending");
+    const preview = content.slice(0, 200).replace(/\n/g, " ");
+    log("warn", `VIOLATION rule=prose_only_ending tc=${tc.tools.length} reason=${proseCheck.reason}`);
+    auditLog({ type: "text_violation", rule: "prose_only_ending", severity: "high", sessionKey: sessionKey.slice(-20), preview, tool_count: tc.tools.length, tools: tc.tools, wake: true });
+    const body = `**汇报尾 prose · 0 toolCall · ${proseCheck.reason}**\n\n${fenceViolationText(preview)}`;
+    for (const target of routeTargets(sessionKey, ctx, cfg.notification?.target_chats ?? [])) {
+      pushFeishuCard(target.chat_id, "⚠️ her 光说不练 (prose 收尾)", body, "red");
+    }
+    const wakeMsg = `[antitalker prose_only_ending] 你汇报完没调 tool · ${proseCheck.reason}\n原文:\n${fenceViolationText(preview)}\n\n任务未完 · 立刻继续。`;
+    wakeHer(sessionKey, wakeMsg);
+    return;
+  }
+
+  // delivery_response_required check
+  const delivCheck = checkDeliveryResponseRequired(content, sessionKey);
+  if (delivCheck.fire && !isOnCooldown(sessionKey, "delivery_response_required", 60)) {
+    noteCooldownFire(sessionKey, "delivery_response_required");
+    const preview = content.slice(0, 200);
+    log("warn", `VIOLATION rule=delivery_response_required reason=${delivCheck.reason}`);
+    auditLog({ type: "text_violation", rule: "delivery_response_required", severity: "high", sessionKey: sessionKey.slice(-20), preview, wake: true });
+    const body = `**exec 完后只回 HEARTBEAT_OK/NO_REPLY · 无汇报**\n\n${delivCheck.reason}`;
+    for (const target of routeTargets(sessionKey, ctx, cfg.notification?.target_chats ?? [])) {
+      pushFeishuCard(target.chat_id, "⚠️ her 逿成 (exec 后无汇报)", body, "red");
+    }
+    const wakeMsg = `[antitalker delivery_response_required] exec 完了 你只回了 "${preview.trim()}" · 没汇报结果 · ${delivCheck.reason}\n马上总结 + 下一步。`;
+    wakeHer(sessionKey, wakeMsg);
+    return;
+  }
+
+  // isExempt check
+  const exemptVerdict = isExempt(content, tc, sessionKey);
+  if (exemptVerdict) { log("info", `BMW-check isExempt=true for sessionKey=${sessionKey.slice(-12)} content=${content.slice(0,60)}`); return; }
+
+  // Rule matching
+  for (const rule of cfg.rules) {
+    if (!rule._regex) continue;
+    if (!safeTest(rule._regex, !!rule._isRe2, content)) continue;
+
+    if (isInSelfReportContext(sessionKey)) {
+      const stripped = stripQuotedContent(content);
+      if (!safeTest(rule._regex, !!rule._isRe2, stripped)) {
+        log("info", `v8.3 self-report skip: rule=${rule.id} sessionKey=${sessionKey.slice(-12)}`);
+        auditLog({ type: "self_report_skip", rule: rule.id, sessionKey: sessionKey.slice(-20), preview: content.slice(0, 120) });
+        continue;
+      }
+    }
+
+    if (!rule.ignore_turn_tool_exemption) {
+      if (isToolExempt(tc)) { log("info", `BMW-check tool-exempt rule=${rule.id} sessionKey=${sessionKey.slice(-12)}`); continue; }
+    }
+
+    if (isOnCooldown(sessionKey, rule.id, rule.cooldown_seconds)) continue;
+
+    const { passed, toolCount } = evalBehavior(rule, tc);
+    if (!passed) continue;
+
+    noteCooldownFire(sessionKey, rule.id);
+    const wasOver = isOverRateLimit(sessionKey);
+    noteViolation(sessionKey);
+
+    const preview = content.slice(0, 120).replace(/\n/g, " ");
+    const fencedPreview = fenceViolationText(preview);
+    const pushAdmin = (wasOver ? cfg.rate_limit.on_exceed.push_admin : rule.action.push_admin);
+    const wakeHerEnabled = (wasOver ? cfg.rate_limit.on_exceed.wake_her : rule.action.wake_her) && rule.mode === "enforce";
+
+    log("warn", `VIOLATION rule=${rule.id} severity=${rule.severity} tool_count=${toolCount} mode=${rule.mode} rate_limited=${wasOver}`);
+    auditLog({
+      type: "text_violation", rule: rule.id, severity: rule.severity,
+      sessionKey: sessionKey.slice(-20), preview, tool_count: toolCount,
+      tools: tc.tools, rate_limited: wasOver, wake: wakeHerEnabled, push: pushAdmin,
+    });
+
+    if (pushAdmin && cfg.notification.feishu_card.enabled) {
+      const vars = {
+        rule_label: rule.label, severity: rule.severity,
+        violation_preview: preview, violation_text: fencedPreview,
+        tool_count: toolCount, tool_names_list: tc.tools.join(", ") || "(无)",
+      };
+      const body = renderTemplate(cfg.notification.feishu_card.body_template, vars);
+      const title = renderTemplate(cfg.notification.feishu_card.title, vars);
+      for (const target of routeTargets(sessionKey, ctx, cfg.notification.target_chats)) {
+        if (!severityGte(rule.severity, target.min_severity)) continue;
+        pushFeishuCard(target.chat_id, title, body, cfg.notification.feishu_card.header_color);
+      }
+    }
+
+    if (wakeHerEnabled && sessionKey) {
+      const wakeMsg = renderTemplate(rule.action.wake_message_template, {
+        violation_text: fencedPreview, rule_label: rule.label, severity: rule.severity, tool_count: toolCount,
+      });
+      wakeHer(sessionKey, wakeMsg);
+    }
+
+    break;
   }
 }
 
