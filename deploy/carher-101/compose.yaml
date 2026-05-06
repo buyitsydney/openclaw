@@ -33,6 +33,7 @@ services:
 
       CARHER_ACP_ENABLED: "1"
       A2A_ENABLED: "1"
+      CARHER_FORCE_PLUGIN_INSTALL: "1"
 
       # Anthropic auth mirror — REQUIRED.
       # server.env provides ANTHROPIC_AUTH_TOKEN/ANTHROPIC_BASE_URL (Wangsu LiteLLM
@@ -55,7 +56,7 @@ services:
       - ${HOME}/.config/gcloud/application_default_credentials.json:/gcloud/application_default_credentials.json:ro
       - ${HOME}/.openclaw/skills:/data/.openclaw/skills:ro
       - ../../docker/plugins/a2a-gateway:/data/.openclaw/plugins/a2a-gateway:ro
-      - ../../config/u101.json5:/data/.openclaw/openclaw.json:ro
+      - ../../config/u101.json5:/data/.openclaw/openclaw.json
       - ../../config/base.json5:/data/.openclaw/base.json5:ro
       - ../../config/docker.json5:/data/.openclaw/docker.json5:ro
 

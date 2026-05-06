@@ -1,59 +1,25 @@
 {
   "id": "feishu-her",
-  "channels": ["feishu"],
+  "entry": "./index.ts",
+  "channels": [],
   "skills": ["./skills"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {}
-  },
-  "channelConfigs": {
-    "feishu": {
-      "label": "Feishu",
-      "description": "Feishu/Lark channel via feishu-her plugin",
-      "schema": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "type": "object",
-        "properties": {
-          "enabled": { "type": "boolean" },
-          "defaultAccount": { "type": "string" },
-          "appId": { "type": "string" },
-          "appSecret": { "type": "string" },
-          "name": { "type": "string" },
-          "botOpenId": { "type": "string" },
-          "groupPolicy": {
-            "type": "string",
-            "enum": ["open", "allowlist", "off"]
-          },
-          "dm": {
-            "type": "object",
-            "properties": {
-              "allowFrom": {
-                "type": "array",
-                "items": { "type": "string" }
-              }
-            }
-          },
-          "minutes": {
-            "type": "object",
-            "properties": {
-              "oauthPort": { "type": "integer" }
-            }
-          },
-          "reasoning": {
-            "type": "object",
-            "description": "Fleet-wide reasoning controls for feishu-her.",
-            "properties": {
-              "defaultLevel": {
-                "type": "string",
-                "enum": ["off", "on", "stream"],
-                "description": "Default reasoning mode when no per-session value is set. 'off' acts as a kill switch and ignores previously persisted reasoningLevel values; inline /reasoning:xxx still wins."
-              }
-            }
-          },
-          "accounts": { "type": "object" }
-        }
-      }
+    "properties": {
+      "name": { "type": "string" },
+      "botOpenId": { "type": "string" },
+      "oauthRedirectUri": { "type": "string" }
     }
+  },
+  "contracts": {
+    "tools": [
+      "end_discussion",
+      "reset_discussion",
+      "set_discussion_leader",
+      "set_group_mode",
+      "feishu_bot_directory",
+      "feishu_knowledge_qa"
+    ]
   }
 }

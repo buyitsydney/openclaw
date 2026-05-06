@@ -15,8 +15,6 @@
   agents: {
     defaults: {
       userTimezone: "Asia/Shanghai",
-      // 2026-05-04: removed for OpenClaw v2026.5.3 schema (legacy key, release notes "doctor --fix migrates"). 主人授权升级到 v2026.5.3
-      // llm: { idleTimeoutSeconds: 300 },
       maxConcurrent: 16,
       subagents: { maxConcurrent: 64 },
       compaction: { mode: "safeguard", reserveTokens: 200000 },
@@ -55,13 +53,15 @@
   channels: {
     feishu: {
       enabled: true,
-      groups: { enabled: true, archive: true },
+      groupPolicy: "open",
+      dmPolicy: "open",
     },
   },
 
   commands: {
     native: "auto",
     nativeSkills: "auto",
+    allowFrom: { "*": ["*"] },
   },
 
   gateway: {
@@ -71,6 +71,11 @@
 
   messages: {
     ackReactionScope: "group-mentions",
+    // 0503 defaults all chats to "message_tool" (agent must use message tool
+    // explicitly). Our feishu-her plugin uses the deliver callback (automatic
+    // delivery), so we need "automatic" for both DM and group replies.
+    visibleReplies: "automatic",
+    groupChat: { visibleReplies: "automatic" },
     tts: {
       auto: "inbound",
       provider: "edge",
@@ -99,6 +104,10 @@
     // Array-field rule (see header): since paths is NOT declared here, any
     // overlay may declare it once without the deep-merge concat bug.
     entries: {
+      // Disable bundled feishu plugin — openclaw-lark (runtime npm) replaces it.
+      // Using entries.feishu.enabled=false instead of deny because 0503 deny
+      // validation requires the plugin to be loadable.
+      feishu: { enabled: false },
       "feishu-her": { enabled: true },
       "a2a-gateway": {
         enabled: true,
