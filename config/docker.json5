@@ -30,6 +30,7 @@
       // Docker users default to open group policy; admin host defaults to
       // allowlist in users/admin.json5.
       groupPolicy: "open",
+      reasoning: { defaultLevel: "off" },
       // Deep-merged with per-user channels.feishu (appId/secret/etc) via $include.
     },
   },
