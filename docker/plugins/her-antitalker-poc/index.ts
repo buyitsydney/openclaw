@@ -1791,16 +1791,28 @@ const plugin = {
           return null;
         };
 
-        // globalThis registration — picked up by patched pi-agent-core agent-loop.js
+        // globalThis registration — picked up by patched pi-agent-core agent-loop.js.
+        // Bind to BOTH globalThis and Node's global to survive vm/jiti isolation.
         const drainFn = createGetFollowUpMessages(pipeline, getStopHookContext);
-        const globalSlot = globalThis as any;
-        globalSlot.__openclaw_stopHookPipeline = async () => {
-          try { return await drainFn(); } catch (e: any) {
+        let drainCallSeq = 0;
+        const wrappedDrain = async () => {
+          drainCallSeq++;
+          log("warn", `pipeline drain CALLED seq=${drainCallSeq}`);
+          try {
+            const msgs = await drainFn();
+            log("warn", `pipeline drain seq=${drainCallSeq} → ${msgs.length} msgs`);
+            return msgs;
+          } catch (e: any) {
             log("error", `pipeline drain crashed (fail-open): ${String(e?.message ?? e).slice(0, 200)}`);
             return [];
           }
         };
-        log("warn", `M1 stop-hook-pipeline: bound to globalThis.__openclaw_stopHookPipeline · hooks=[${pipeline.getRegisteredHooks().join(",")}] · yaml=${NO_TOOLCALL_GUARD_YAML}`);
+        (globalThis as any).__openclaw_stopHookPipeline = wrappedDrain;
+        try { (global as any).__openclaw_stopHookPipeline = wrappedDrain; } catch {}
+        // Also expose via a dedicated Symbol.for registry so any vm realm can resolve it.
+        const GLOBAL_KEY = Symbol.for("openclaw.stopHookPipeline.v1");
+        (globalThis as any)[GLOBAL_KEY] = wrappedDrain;
+        log("warn", `M1 stop-hook-pipeline: bound to globalThis/global/Symbol.for · globalThis===global? ${(globalThis as any) === (global as any)} · hooks=[${pipeline.getRegisteredHooks().join(",")}] · yaml=${NO_TOOLCALL_GUARD_YAML}`);
       } catch (pipelineErr: any) {
         log("error", `M1 stop-hook-pipeline registration failed: ${String(pipelineErr?.message ?? pipelineErr).slice(0, 200)}`);
       }
