@@ -144,6 +144,40 @@ console.log("\n=== E2E: patched agent-loop + globalThis pipeline ===");
       check("pipeline drain called 3 times", calls === 3, `calls=${calls}`);
       check("faux model called 3 times", faux.state.callCount === 3, `callCount=${faux.state.callCount}`);
       check("inject-1 reached final context", finalMsgs.some((m) => m.role === "user" && JSON.stringify(m.content).includes("inject-1")));
+
+      // ---- Stricter case: config HAS getFollowUpMessages that returns empty. Our
+      // patch wraps the original and falls through to globalThis when empty. This
+      // simulates OpenClaw's Agent class (ships a followUpQueue.drain that's
+      // always-empty for feishu sessions).
+      const faux2 = fauxMod.registerFauxProvider({ api: `wrap-${Math.random().toString(36).slice(2)}`, provider: "wrap", models: [{ id: "m1" }] });
+      faux2.setResponses([
+        fauxMod.fauxAssistantMessage([fauxMod.fauxText("w1")], { stopReason: "stop" }),
+        fauxMod.fauxAssistantMessage([fauxMod.fauxText("w2")], { stopReason: "stop" }),
+      ]);
+      let calls2 = 0;
+      let origDrainCalled = 0;
+      globalThis.__openclaw_stopHookPipeline = async () => {
+        calls2++;
+        if (calls2 === 1) return [{ role: "user", content: [{ type: "text", text: "[global-fallback] inject" }] }];
+        return [];
+      };
+      const cfgWithEmptyDrain = {
+        model: faux2.getModel("m1"),
+        tools: [],
+        convertToLlm: (m) => m,
+        // This mimics Agent.createLoopConfig() — always-empty getFollowUpMessages
+        getFollowUpMessages: async () => { origDrainCalled++; return []; },
+      };
+      const finalMsgs2 = await loopMod.runAgentLoop(
+        [{ role: "user", content: [{ type: "text", text: "go" }] }],
+        { model: faux2.getModel("m1"), tools: [], messages: [] },
+        cfgWithEmptyDrain,
+        async () => {},
+      );
+      check("wrap: original empty drain still invoked", origDrainCalled >= 1, `origDrainCalled=${origDrainCalled}`);
+      check("wrap: globalThis fallback called after empty drain", calls2 >= 1, `calls2=${calls2}`);
+      check("wrap: loop extended beyond first turn", faux2.state.callCount === 2, `callCount=${faux2.state.callCount}`);
+      check("wrap: inject message reached final context", finalMsgs2.some((m) => m.role === "user" && JSON.stringify(m.content).includes("global-fallback")));
     } finally {
       delete globalThis.__openclaw_stopHookPipeline;
       rmSync(d, { recursive: true, force: true });

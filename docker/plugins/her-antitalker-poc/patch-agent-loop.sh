@@ -37,7 +37,12 @@ const target = process.env.TARGET;
 const backup = process.env.BACKUP;
 const MARKER = "globalThis.__openclaw_stopHookPipeline";
 const OLD = "const followUpMessages = (await config.getFollowUpMessages?.()) || [];";
-const NEW = "const followUpMessages = (await (config.getFollowUpMessages ?? globalThis.__openclaw_stopHookPipeline)?.()) || [];";
+// The wrapper runs the original getFollowUpMessages first (if it exists) and only
+// falls through to globalThis.__openclaw_stopHookPipeline when the original returned
+// empty. This preserves SDK default behavior (followUpQueue.drain from Agent class)
+// while still letting our plugin-owned pipeline inject continuation messages when
+// the queue is empty.
+const NEW = "const followUpMessages = await (async () => { const __orig = config.getFollowUpMessages ? await config.getFollowUpMessages() : []; if (__orig && __orig.length > 0) return __orig; const __gp = globalThis.__openclaw_stopHookPipeline; return (__gp ? await __gp() : []) || []; })();";
 
 const src = fs.readFileSync(target, "utf-8");
 
