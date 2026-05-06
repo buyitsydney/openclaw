@@ -126,9 +126,12 @@
       ],
     },
     entries: {
-      // openclaw-lark must be explicitly enabled because $include config
-      // blocks auto-enable persistence.
+      // All runtime-loaded plugins must be explicitly enabled here because
+      // $include config blocks auto-enable persistence (gateway cannot write
+      // back to $include-owned config files).
       "openclaw-lark": { enabled: true },
+      "feishu-her": { enabled: true },
+      "shadow-daemon": { enabled: true },
       acpx: { enabled: true },
     },
   },
