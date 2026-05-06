@@ -1,8 +1,8 @@
 {
   "id": "her-antitalker-poc",
-  "name": "Antitalker v8.3.1",
-  "description": "行为监控: ETA空话拦截 + prose收尾检测 + silence watchdog",
-  "version": "0.0.831",
+  "name": "Antitalker v9.0",
+  "description": "行为监控: BMW 同步标记 + 5s 异步 watchdog · 私聊违规自维护 audit 群",
+  "version": "0.0.900",
   "entry": "./index.ts",
   "activation": { "onStartup": true },
   "contracts": { "tools": [] },

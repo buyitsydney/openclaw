@@ -78,6 +78,9 @@ const _require = createRequire("/app/docker/plugins/her-antitalker-poc/index.ts"
 // -------- Constants --------
 const PLUGIN_ID = "her-antitalker-poc";
 const CONFIG_PATH = "/data/.openclaw/workspace/.antitalker/rules.yaml";
+// v9.0 · audit-group.json 路径默认是 /data/.openclaw/workspace/.antitalker/audit-group.json
+// 用 let + getter,允许测试通过 _handlers.setAuditGroupPath() 重定向
+let AUDIT_GROUP_PATH = "/data/.openclaw/workspace/.antitalker/audit-group.json";
 const DIST_DIR = "/app/dist";
 const MATCH_MAX_CHARS = 4096;
 const STATE_KEY = Symbol.for("antitalker.state.v1");
@@ -99,6 +102,23 @@ interface SessionActivity {
   chatId: string;                     // v7.6 推送 feishu 卡用 (最近一次 wake 已经知道)
 }
 
+// v9.0 异步 watchdog: BMW 同步 hook 不能 await 网络调用 → 改成"标记 + 异步处理"
+// PendingViolation = 一个待处理的违规事件，由 BMW 同步入队，violationWatchdog 5s 异步取出处理
+interface PendingViolation {
+  sessionKey: string;
+  chatId: string;          // 标记时已知的 chatId（群聊有 oc_xxx，私聊空 → watchdog 时从 audit 群兜底）
+  ruleId: string;
+  severity: string;
+  preview: string;
+  cardTitle: string;
+  cardBody: string;
+  wakeMessage: string;
+  pushAdmin: boolean;      // 是否要发红卡（cooldown 决定）
+  wakeEnabled: boolean;    // 是否要 wake（rule.mode=enforce 时才 true）
+  markedAtMs: number;      // 入队时间，给自愈检测用
+  retries: number;
+}
+
 interface SharedState {
   turnCtx: Map<string, TurnContext>;
   // v7.5 · sessionKey 单维度 tool 累积 (丢 runId · 因 OpenClaw 给 before_message_write 不可靠提供 runId)
@@ -110,9 +130,22 @@ interface SharedState {
   sessionActivity: Map<string, SessionActivity>;
   rateLimitCounters: Map<string, { hits: number[] }>;
   cooldownTracker: Map<string, number>;
+  // v9.0 · pendingViolations: BMW 同步入队，violationWatchdog 5s 异步取出 push+wake
+  // key = sessionKey + ":" + ruleId · Map.set 幂等覆盖防同 turn flood
+  pendingViolations: Map<string, PendingViolation>;
+  // v9.0 · audit 群缓存: 5min 内不再 verify，避免每次 watchdog 都 GET /im/v1/chats
+  auditGroupCache: { chatId: string; verifiedAtMs: number } | null;
+  // v9.0 · 主人识别: BMW user-capture 抓到的最近一次 DM session 的 owner open_id (ou_xxx)
+  // 用于 requestAuditSetup 时告诉 her 拉哪个用户进群 · 多用户场景每 her 容器一份
+  lastDmOwnerOpenId: string;
+  // v9.0 · 主人 DM 的 sessionKey · 用作 audit 群 setup 时 wake 的目标 session
+  lastDmSessionKey: string;
+  // v9.0 · requestAuditSetup 节流: 30min 内不重复发 setup wake (防 her 还没建好群就被反复催)
+  lastSetupRequestAtMs: number;
   mtimePollTimer: NodeJS.Timeout | null;
   prunerTimer: NodeJS.Timeout | null;
   silenceWatchdogTimer: NodeJS.Timeout | null;  // v7.6 · 30s 扫 silent_too_long
+  violationWatchdogTimer: NodeJS.Timeout | null;  // v9.0 · 5s 扫 pendingViolations
   lastMtime: number;
   currentConfig: AntitalkerConfig | null;
   configLoadErrors: number;
@@ -133,9 +166,15 @@ if (!globalAny[STATE_KEY]) {
     sessionActivity: new Map(),
     rateLimitCounters: new Map(),
     cooldownTracker: new Map(),
+    pendingViolations: new Map(),  // v9.0
+    auditGroupCache: null,         // v9.0
+    lastDmOwnerOpenId: "",         // v9.0
+    lastDmSessionKey: "",          // v9.0
+    lastSetupRequestAtMs: 0,       // v9.0
     mtimePollTimer: null,
     prunerTimer: null,
     silenceWatchdogTimer: null,
+    violationWatchdogTimer: null,  // v9.0
     lastMtime: 0,
     currentConfig: null,
     configLoadErrors: 0,
@@ -151,6 +190,13 @@ if (!globalAny[STATE_KEY]) {
 if (!globalAny[STATE_KEY].sessionActivity) globalAny[STATE_KEY].sessionActivity = new Map();
 if (!globalAny[STATE_KEY].convToSession) globalAny[STATE_KEY].convToSession = new Map();
 if (!globalAny[STATE_KEY].agentToSession) globalAny[STATE_KEY].agentToSession = new Map();
+// v9.0 · 同样兼容老 state (热 reload 时旧 state 可能没这些字段)
+if (!globalAny[STATE_KEY].pendingViolations) globalAny[STATE_KEY].pendingViolations = new Map();
+if (globalAny[STATE_KEY].auditGroupCache === undefined) globalAny[STATE_KEY].auditGroupCache = null;
+if (globalAny[STATE_KEY].violationWatchdogTimer === undefined) globalAny[STATE_KEY].violationWatchdogTimer = null;
+if (globalAny[STATE_KEY].lastDmOwnerOpenId === undefined) globalAny[STATE_KEY].lastDmOwnerOpenId = "";
+if (globalAny[STATE_KEY].lastDmSessionKey === undefined) globalAny[STATE_KEY].lastDmSessionKey = "";
+if (globalAny[STATE_KEY].lastSetupRequestAtMs === undefined) globalAny[STATE_KEY].lastSetupRequestAtMs = 0;
 const state: SharedState = globalAny[STATE_KEY];
 
 const RATE_LIMIT_MAX_ENTRIES = 4096;
@@ -712,9 +758,9 @@ function routeTargets(sessionKey: string, ctx: any, _fallbackTargets: any[]): { 
   return [];
 }
 
-async function pushFeishuCard(chatId: string, title: string, bodyMarkdown: string, headerColor: string) {
+async function pushFeishuCard(chatId: string, title: string, bodyMarkdown: string, headerColor: string): Promise<boolean> {
   const token = await getFeishuToken();
-  if (!token) { log("warn", "no feishu token · skip push"); return; }
+  if (!token) { log("warn", "no feishu token · skip push"); return false; }
   const card = {
     schema: "2.0",
     header: { template: headerColor, title: { content: title, tag: "plain_text" } },
@@ -727,8 +773,9 @@ async function pushFeishuCard(chatId: string, title: string, bodyMarkdown: strin
       body: JSON.stringify({ receive_id: chatId, msg_type: "interactive", content: JSON.stringify(card) }),
     });
     const d: any = await r.json();
-    if (d?.code !== 0) log("warn", `push card failed: code=${d?.code} msg=${d?.msg}`);
-  } catch (e: any) { log("warn", `push card error: ${String(e?.message ?? e).slice(0, 120)}`); }
+    if (d?.code !== 0) { log("warn", `push card failed: code=${d?.code} msg=${d?.msg}`); return false; }
+    return true;
+  } catch (e: any) { log("warn", `push card error: ${String(e?.message ?? e).slice(0, 120)}`); return false; }
 }
 
 function severityGte(a: string, b: string): boolean {
@@ -842,6 +889,238 @@ async function wakeHer(sessionKey: string, message: string) {
     log("info", `wakeHer → sessionKey=${sessionKey.slice(-20)} reason=hook:antitalker`);
   } catch (e: any) {
     log("warn", `wakeHer error: ${String(e?.message ?? e).slice(0, 120)}`);
+  }
+}
+
+// -------- v9.0 · Async violation watchdog (replaces sync MS hook side-effects) --------
+//
+// Architecture (see plan: 异步 violation watchdog):
+//   BMW 是同步 hook → 不能在里面 await pushFeishuCard / wakeHer
+//   (runtime 会丢弃返回的 Promise · 网络调用没等完就被 GC)
+//
+//   Fix:
+//     BMW 同步: 检测违规 → markPendingViolation() = Map.set(纯同步, 0 失败)
+//     5s 后 watchdog (setInterval async callback): 取出 → push 红卡 → wakeHer (await 安全)
+//
+//   关键不变量:
+//     - BMW 路径 0 异步 / 0 网络 / 0 失败
+//     - watchdog 在 setInterval async callback 里 · async/await 100% 工作
+//     - state 在 globalThis · 热重载存活
+//     - Map.set 幂等覆盖 (key=sessionKey:ruleId) · 防同 turn flood
+
+/**
+ * markPendingViolation · 由 BMW / MS 调用
+ * 把违规事件入队，5s 内由 watchdog 处理。
+ * 此函数纯同步，不涉及 I/O 或 Promise，绝不会阻塞或失败。
+ */
+function markPendingViolation(v: Omit<PendingViolation, "markedAtMs" | "retries">): void {
+  const key = `${v.sessionKey}:${v.ruleId}`;
+  state.pendingViolations.set(key, {
+    ...v,
+    markedAtMs: Date.now(),
+    retries: 0,
+  });
+  // LRU 防泄漏: 极端情况 (watchdog 没起来) 也不让 Map 无限大
+  if (state.pendingViolations.size > 256) {
+    const oldest = state.pendingViolations.keys().next().value;
+    if (oldest) state.pendingViolations.delete(oldest);
+  }
+  log("info", `pendingViolations.set key=${key.slice(-40)} chatId=${v.chatId || "(audit)"}`);
+}
+
+/**
+ * v9.0 · readAuditGroupChatId · 纯读取 + 验证,不创建。
+ *
+ * 流程:
+ *   1. 内存缓存 5min 内复用
+ *   2. 读 audit-group.json (由 her 的 setup skill 写入) → 有 chat_id → 飞书 verify → return
+ *   3. 文件不存在 / chat 已删 / token 不可用 → return null (调用方走 requestAuditSetup)
+ *
+ * 注意: 此函数 *不* 创建群、*不* 调主人。所有"创造性"动作交给 her (skill 路径)。
+ */
+async function readAuditGroupChatId(): Promise<string | null> {
+  const cfg = state.currentConfig as any;
+  const ag = cfg?.audit_group;
+  if (!ag?.enabled) return null;
+
+  // 内存缓存 5min — watchdog 5s 跑一次,不要每次都 GET 飞书
+  if (state.auditGroupCache && Date.now() - state.auditGroupCache.verifiedAtMs < 5 * 60_000) {
+    return state.auditGroupCache.chatId;
+  }
+
+  let chatId = "";
+  try {
+    if (existsSync(AUDIT_GROUP_PATH)) {
+      const data = JSON.parse(readFileSync(AUDIT_GROUP_PATH, "utf8"));
+      chatId = String(data?.chat_id || "");
+    }
+  } catch (e: any) {
+    log("warn", `audit-group.json read failed: ${String(e?.message ?? e).slice(0, 120)}`);
+  }
+  if (!chatId) return null;
+
+  // 验证 chat 还活着 (主人可能手动退群 / 删群)
+  const token = await getFeishuToken();
+  if (!token) {
+    log("warn", "readAuditGroupChatId: no feishu token · skip verify");
+    return null;
+  }
+  try {
+    const r = await fetch(`https://open.feishu.cn/open-apis/im/v1/chats/${chatId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const d: any = await r.json();
+    if (d?.code === 0) {
+      state.auditGroupCache = { chatId, verifiedAtMs: Date.now() };
+      return chatId;
+    }
+    log("warn", `audit group ${chatId} verify failed · code=${d?.code} msg=${d?.msg} · invalidating`);
+    state.auditGroupCache = null;
+    // 文件 stale → 删,让 her 下次 setup 重写
+    try { unlinkSync(AUDIT_GROUP_PATH); } catch {}
+    return null;
+  } catch (e: any) {
+    log("warn", `audit group verify error: ${String(e?.message ?? e).slice(0, 120)}`);
+    return null;
+  }
+}
+
+/**
+ * v9.0 · requestAuditSetup · 给 her 发"建 audit 群"的 wake event
+ *
+ * 触发条件 (在 violationWatchdog 里):
+ *   - audit_group.enabled=true
+ *   - readAuditGroupChatId() 返回 null (没建过 / 群没了)
+ *   - state.lastDmOwnerOpenId 已识别 (BMW user-capture 抓到的 ou_xxx)
+ *   - state.lastDmSessionKey 已识别 (主人 DM 的 sessionKey)
+ *   - 30min 内没发过 setup 请求 (节流防 her 还没建好就被反复催)
+ *
+ * 实现: enqueueSystemEvent 给主人 DM session 发指令 · skill antitalker-audit-setup
+ *      会被 her 触发(描述里有"audit"/"setup"等关键词) · 由 her 用 feishu_chat tool 建群
+ *      + lark-cli 写文件,完全自动。
+ *
+ * 失败兜底: 静默 return false · 下次 watchdog 再试 (30min 节流后)。
+ */
+function requestAuditSetup(): boolean {
+  const ownerOpenId = state.lastDmOwnerOpenId;
+  const targetSk = state.lastDmSessionKey;
+  if (!ownerOpenId || !targetSk) {
+    return false;  // 还没识别主人 · 等下一条 DM 触发
+  }
+  const now = Date.now();
+  if (now - state.lastSetupRequestAtMs < 30 * 60_000) {
+    return false;  // 30min 节流
+  }
+  if (!state.heartbeatApi.enqueueSystemEvent || !state.heartbeatApi.requestHeartbeatNow) {
+    log("error", "requestAuditSetup: heartbeat api missing · cannot dispatch");
+    return false;
+  }
+
+  const message = [
+    "⚠️ antitalker · 自动建群请求",
+    "",
+    "你需要立刻执行 antitalker-audit-setup skill (描述含 'antitalker' / 'audit' / 'setup'):",
+    "  1. 用 feishu_chat tool 创建一个名为 'Antitalker 审计' 的私有群组",
+    `  2. 把主人 (open_id=${ownerOpenId}) 拉进群`,
+    "  3. 把群的 chat_id 写到 /data/.openclaw/workspace/.antitalker/audit-group.json",
+    `     格式: {"chat_id": "oc_xxx", "owner_open_id": "${ownerOpenId}", "created_at": ${now}}`,
+    "  4. 在群里发一条欢迎卡: '本群由 antitalker 自动建立, 用于私聊违规通知, 勿删'",
+    "",
+    "完成后回复 NO_REPLY 即可。建群是首要任务,不要在这步光说不练。",
+  ].join("\n");
+
+  try {
+    state.heartbeatApi.enqueueSystemEvent(message, {
+      sessionKey: targetSk,
+      trusted: false,
+      contextKey: "antitalker:audit-setup",
+    });
+    state.heartbeatApi.requestHeartbeatNow({
+      sessionKey: targetSk,
+      reason: "hook:antitalker-setup",
+      coalesceMs: 0,
+    });
+    state.lastSetupRequestAtMs = now;
+    log("warn", `requestAuditSetup → sk=${targetSk.slice(-20)} owner=${ownerOpenId.slice(-12)}`);
+    return true;
+  } catch (e: any) {
+    log("error", `requestAuditSetup error: ${String(e?.message ?? e).slice(0, 200)}`);
+    return false;
+  }
+}
+
+/**
+ * v9.0 · ensureAuditGroupReady · watchdog 调用此函数解析私聊违规的红卡目标
+ *
+ * 返回值:
+ *   - chatId (string): audit 群已存在且验证通过, 直接发卡
+ *   - null: 群还没建好 / 主人未识别 / 节流中, 这次违规跳过红卡 (wake 仍执行)
+ *           同时尝试 requestAuditSetup() 让 her 异步去建
+ */
+async function ensureAuditGroupReady(): Promise<string | null> {
+  const existing = await readAuditGroupChatId();
+  if (existing) return existing;
+  // 群还没建好 → 触发 her 去建 (异步,这次违规先 skip 红卡)
+  requestAuditSetup();
+  return null;
+}
+
+/**
+ * violationWatchdog · 5s 跑一次 · 处理所有 pendingViolations
+ *
+ * 边界穷举见 plan 文档表格 (1-13)。核心逻辑:
+ *   - 自愈跳过 (5s 内 bot 已经调 tool)
+ *   - chatId 解析: 标记时已知 → sessionActivity 兜底 → ensureAuditGroupReady 私聊兜底
+ *   - retries ≤ 3 · 超过放弃,防无限重试
+ */
+async function violationWatchdog(): Promise<void> {
+  if (state.pendingViolations.size === 0) return;
+  // 用 Array.from 快照,迭代时 Map 可能被 BMW 同步改写
+  for (const [key, v] of Array.from(state.pendingViolations.entries())) {
+    try {
+      // 自愈检测: bot 在标记后 5s 内自己调了 tool · 跳过 wake/push
+      const act = state.sessionActivity.get(v.sessionKey);
+      if (act && act.lastToolCallAtMs > v.markedAtMs && act.lastAssistantHadToolCall) {
+        log("info", `violation self-healed · key=${key.slice(-40)} (bot called tools after mark)`);
+        auditLog({ type: "violation_self_healed", rule: v.ruleId, sessionKey: v.sessionKey.slice(-20), preview: v.preview });
+        state.pendingViolations.delete(key);
+        continue;
+      }
+
+      // 解析 chatId: 标记时 → activity → audit 群
+      let chatId = v.chatId || act?.chatId || "";
+      if (!chatId) {
+        chatId = (await ensureAuditGroupReady()) || "";
+      }
+
+      // 发红卡 — pushFeishuCard 返回 false = 失败 (网络/API 错误),进入 retry 流程
+      if (v.pushAdmin && chatId) {
+        const ok = await pushFeishuCard(chatId, v.cardTitle, v.cardBody, "red");
+        if (!ok) {
+          throw new Error(`pushFeishuCard returned false for chat=${chatId}`);
+        }
+        log("info", `watchdog pushed card · chat=${chatId.slice(-12)} rule=${v.ruleId}`);
+      } else if (v.pushAdmin && !chatId) {
+        log("warn", `watchdog skip card · no chatId (audit group disabled or unavailable) · rule=${v.ruleId}`);
+      }
+
+      // 唤醒 (永远执行,只要 wakeEnabled · 不依赖 chatId)
+      if (v.wakeEnabled) {
+        await wakeHer(v.sessionKey, v.wakeMessage);
+      }
+
+      state.pendingViolations.delete(key);
+    } catch (e: any) {
+      const cur = state.pendingViolations.get(key);
+      if (!cur) continue;
+      cur.retries++;
+      log("warn", `violationWatchdog error · retry=${cur.retries}/3 · ${String(e?.message ?? e).slice(0, 200)}`);
+      if (cur.retries >= 3) {
+        log("error", `violation give up after 3 retries · key=${key.slice(-40)}`);
+        auditLog({ type: "violation_give_up", rule: cur.ruleId, sessionKey: cur.sessionKey.slice(-20), preview: cur.preview });
+        state.pendingViolations.delete(key);
+      }
+    }
   }
 }
 
@@ -1094,8 +1373,10 @@ function handleBeforeMessageWrite(event: any, ctx: any): any {
 }
 
 /**
- * v9.0 · Violation check extracted from handleMessageSending.
- * Called from BMW when assistant message has text but no toolCall (= final reply).
+ * v9.0 · Violation check — runs synchronously inside BMW (or MS).
+ * Detects violations and ENQUEUES them via markPendingViolation().
+ * No network/Promise side-effects → safe to call from sync hook.
+ * The async violationWatchdog (5s) handles pushFeishuCard + wakeHer.
  */
 function runViolationCheck(content: string, sessionKey: string, tools: string[], ctx: any): void {
   const cfg = state.currentConfig;
@@ -1105,6 +1386,10 @@ function runViolationCheck(content: string, sessionKey: string, tools: string[],
   const sessionTools = [...tools];
   state.toolsBySessionKey.delete(sessionKey);
   const tc = { tools: sessionTools } as any;
+
+  // 标记时已知的 chatId · 群聊从 sessionKey 提取出 oc_xxx · 私聊空 (watchdog 用 audit 群兜底)
+  const targets = routeTargets(sessionKey, ctx, cfg.notification?.target_chats ?? []);
+  const knownChatId = targets[0]?.chat_id ?? "";
 
   // prose_only_ending check
   const proseCheck = checkProseOnlyEnding(content, sessionKey, tc.tools);
@@ -1117,11 +1402,12 @@ function runViolationCheck(content: string, sessionKey: string, tools: string[],
     log("warn", `VIOLATION rule=prose_only_ending tc=${tc.tools.length} reason=${proseCheck.reason}`);
     auditLog({ type: "text_violation", rule: "prose_only_ending", severity: "high", sessionKey: sessionKey.slice(-20), preview, tool_count: tc.tools.length, tools: tc.tools, wake: true });
     const body = `**汇报尾 prose · 0 toolCall · ${proseCheck.reason}**\n\n${fenceViolationText(preview)}`;
-    for (const target of routeTargets(sessionKey, ctx, cfg.notification?.target_chats ?? [])) {
-      pushFeishuCard(target.chat_id, "⚠️ her 光说不练 (prose 收尾)", body, "red");
-    }
     const wakeMsg = `[antitalker prose_only_ending] 你汇报完没调 tool · ${proseCheck.reason}\n原文:\n${fenceViolationText(preview)}\n\n任务未完 · 立刻继续。`;
-    wakeHer(sessionKey, wakeMsg);
+    markPendingViolation({
+      sessionKey, chatId: knownChatId, ruleId: "prose_only_ending", severity: "high",
+      preview, cardTitle: "⚠️ her 光说不练 (prose 收尾)", cardBody: body,
+      wakeMessage: wakeMsg, pushAdmin: true, wakeEnabled: true,
+    });
     return;
   }
 
@@ -1133,11 +1419,12 @@ function runViolationCheck(content: string, sessionKey: string, tools: string[],
     log("warn", `VIOLATION rule=delivery_response_required reason=${delivCheck.reason}`);
     auditLog({ type: "text_violation", rule: "delivery_response_required", severity: "high", sessionKey: sessionKey.slice(-20), preview, wake: true });
     const body = `**exec 完后只回 HEARTBEAT_OK/NO_REPLY · 无汇报**\n\n${delivCheck.reason}`;
-    for (const target of routeTargets(sessionKey, ctx, cfg.notification?.target_chats ?? [])) {
-      pushFeishuCard(target.chat_id, "⚠️ her 逿成 (exec 后无汇报)", body, "red");
-    }
     const wakeMsg = `[antitalker delivery_response_required] exec 完了 你只回了 "${preview.trim()}" · 没汇报结果 · ${delivCheck.reason}\n马上总结 + 下一步。`;
-    wakeHer(sessionKey, wakeMsg);
+    markPendingViolation({
+      sessionKey, chatId: knownChatId, ruleId: "delivery_response_required", severity: "high",
+      preview, cardTitle: "⚠️ her 逿成 (exec 后无汇报)", cardBody: body,
+      wakeMessage: wakeMsg, pushAdmin: true, wakeEnabled: true,
+    });
     return;
   }
 
@@ -1174,7 +1461,7 @@ function runViolationCheck(content: string, sessionKey: string, tools: string[],
 
     const preview = content.slice(0, 120).replace(/\n/g, " ");
     const fencedPreview = fenceViolationText(preview);
-    const pushAdmin = (wasOver ? cfg.rate_limit.on_exceed.push_admin : rule.action.push_admin);
+    const pushAdmin = (wasOver ? cfg.rate_limit.on_exceed.push_admin : rule.action.push_admin) && cfg.notification.feishu_card.enabled;
     const wakeHerEnabled = (wasOver ? cfg.rate_limit.on_exceed.wake_her : rule.action.wake_her) && rule.mode === "enforce";
 
     log("warn", `VIOLATION rule=${rule.id} severity=${rule.severity} tool_count=${toolCount} mode=${rule.mode} rate_limited=${wasOver}`);
@@ -1184,28 +1471,31 @@ function runViolationCheck(content: string, sessionKey: string, tools: string[],
       tools: tc.tools, rate_limited: wasOver, wake: wakeHerEnabled, push: pushAdmin,
     });
 
-    if (pushAdmin && cfg.notification.feishu_card.enabled) {
-      const vars = {
-        rule_label: rule.label, severity: rule.severity,
-        violation_preview: preview, violation_text: fencedPreview,
-        tool_count: toolCount, tool_names_list: tc.tools.join(", ") || "(无)",
-      };
-      const body = renderTemplate(cfg.notification.feishu_card.body_template, vars);
-      const title = renderTemplate(cfg.notification.feishu_card.title, vars);
-      for (const target of routeTargets(sessionKey, ctx, cfg.notification.target_chats)) {
-        if (!severityGte(rule.severity, target.min_severity)) continue;
-        pushFeishuCard(target.chat_id, title, body, cfg.notification.feishu_card.header_color);
-      }
+    const vars = {
+      rule_label: rule.label, severity: rule.severity,
+      violation_preview: preview, violation_text: fencedPreview,
+      tool_count: toolCount, tool_names_list: tc.tools.join(", ") || "(无)",
+    };
+    const body = renderTemplate(cfg.notification.feishu_card.body_template, vars);
+    const title = renderTemplate(cfg.notification.feishu_card.title, vars);
+    const wakeMsg = renderTemplate(rule.action.wake_message_template, {
+      violation_text: fencedPreview, rule_label: rule.label, severity: rule.severity, tool_count: toolCount,
+    });
+
+    // 如果 routeTargets 给出的目标过滤掉了 (severity 不达标),仍然通过 audit 群发
+    // (rules 都是 high/medium · target_chats 默认 min_severity=low · 一般会通过)
+    let chatId = knownChatId;
+    if (chatId && targets[0] && !severityGte(rule.severity, targets[0].min_severity)) {
+      chatId = "";  // severity 不达标,目标群跳过,但 audit 群仍会兜底
     }
 
-    if (wakeHerEnabled && sessionKey) {
-      const wakeMsg = renderTemplate(rule.action.wake_message_template, {
-        violation_text: fencedPreview, rule_label: rule.label, severity: rule.severity, tool_count: toolCount,
-      });
-      wakeHer(sessionKey, wakeMsg);
-    }
+    markPendingViolation({
+      sessionKey, chatId, ruleId: rule.id, severity: rule.severity,
+      preview, cardTitle: title, cardBody: body,
+      wakeMessage: wakeMsg, pushAdmin, wakeEnabled: wakeHerEnabled && !!sessionKey,
+    });
 
-    break;
+    break;  // only fire highest-priority rule per message
   }
 }
 
@@ -1220,179 +1510,42 @@ async function handleMessageSending(event: any, ctx: any): Promise<any> {
   try {
     const cfg = state.currentConfig;
     if (!cfg) return {};
-    // v8.5 debug: dump MS ctx keys + sessionKey to diagnose wake routing
     if (state._msDebugCount === undefined) state._msDebugCount = 0;
     state._msDebugCount++;
     if (state._msDebugCount <= 10) {
-      log("warn", `MS#${state._msDebugCount} ctxKeys=[${Object.keys(ctx ?? {}).join(",")}] sessionKey=${ctx?.sessionKey ?? "(empty)"} convId=${ctx?.conversationId ?? ctx?.channelId ?? "(none)"} agentId=${ctx?.agentId ?? "?"} eventKeys=[${Object.keys(event ?? {}).join(",")}] event.chatId=${event?.chatId ?? "(none)"} event.channelId=${event?.channelId ?? "(none)"} event.sessionKey=${event?.sessionKey ?? "(none)"} event.target=${event?.target ?? "(none)"}`);
+      log("warn", `MS#${state._msDebugCount} ctxKeys=[${Object.keys(ctx ?? {}).join(",")}] sessionKey=${ctx?.sessionKey ?? "(empty)"} convId=${ctx?.conversationId ?? ctx?.channelId ?? "(none)"} agentId=${ctx?.agentId ?? "?"}`);
     }
     const content = String(event?.content ?? "");
+    if (!content) return {};
+
+    // sessionKey resolution + fallbacks (preserved from v8.x)
     let sessionKey = String(ctx?.sessionKey ?? "");
-    const runId = String(ctx?.runId ?? "");
-    // v7.7 · sessionKey empty fallback: pick most-recent-active session
-    // Fixes prose_only_ending wakeHer fail when ctx.sessionKey is empty string.
-    // Without fallback, enqueueSystemEvent rejects (requires sessionKey) so wake is a no-op.
     if (!sessionKey) {
-      // v7.10 · 优先: 从 conversationId/channelId 反查 BMW 记录的 sessionKey
       const convId = String(ctx?.conversationId ?? ctx?.channelId ?? "");
       const mapped = convId ? state.convToSession.get(convId) : undefined;
-      if (mapped) {
-        sessionKey = mapped;
-        log("warn", `v7.10 sessionKey fallback via convToSession convId=${convId.slice(-20)} → sk=${sessionKey.slice(-20)}`);
-      }
+      if (mapped) sessionKey = mapped;
     }
-    // v8.5 fix: use agentId→sessionKey mapping from BMW (most reliable)
     if (!sessionKey) {
       const msAgentId = String(ctx?.agentId ?? "");
       const agentMapped = msAgentId ? state.agentToSession.get(msAgentId) : undefined;
-      if (agentMapped) {
-        sessionKey = agentMapped;
-        log("info", `v8.5 sessionKey via agentToSession agentId=${msAgentId.slice(-20)} → sk=${sessionKey.slice(-20)}`);
-      }
+      if (agentMapped) sessionKey = agentMapped;
     }
-    // v7.7 原有 fallback: 仍保留作兜底 (万一 BMW 还没跑过该 conversation)
     if (!sessionKey) {
       let bestSk = "";
       let bestTs = 0;
       for (const [sk, act] of state.sessionActivity) {
         if (act.lastAssistantMsgAtMs > bestTs) { bestTs = act.lastAssistantMsgAtMs; bestSk = sk; }
       }
-      if (bestSk) {
-        sessionKey = bestSk;
-        log("warn", `v7.10 sessionKey fallback via lastActivity → ${sessionKey.slice(-20)} (convToSession miss)`);
-      }
+      if (bestSk) sessionKey = bestSk;
     }
-    if (!content) return {};
+    if (!sessionKey) return {};
 
-    // v7.6 Bug #C1 根治: MS 入口立即 snapshot + delete sessionKey state
-    //   Nova 压测铁证: v7.6 的 clearToolsOnExit() 放在 isExempt 路径后仍有漏点·
-    //   任何 MS 分支（cooldown skip / behavior passed / rule not match / error catch）都会漏清
-    //   解决: 入口一性 snapshot + delete · 后续所有分支读 local 变量 tc.tools
-    //   下一 turn 介 BMW push 的都是干净数据。
+    // v9.0 · MS hook delegates to runViolationCheck (same path as BMW).
+    // runViolationCheck enqueues PendingViolation; violationWatchdog (5s async) handles push/wake.
+    // In 0503 + openclaw-lark, MS rarely fires; this is belt-and-suspenders coverage if some
+    // delivery path still routes through MS. Cooldown inside runViolationCheck dedupes BMW+MS.
     const sessionTools = state.toolsBySessionKey.get(sessionKey) ?? [];
-    state.toolsBySessionKey.delete(sessionKey);  // v7.6 立即清·不是以前的 clearToolsOnExit
-    const tc = getTurnCtx(sessionKey, runId);
-    tc.tools = [...sessionTools];  // local copy · 和 state 解耦
-
-    // v7.6 · 新规则优先最高: prose_only_ending + delivery_response_required
-    // 这两条必须先于 isExempt 检查 · 因为:
-    //   - prose 收尾一般会包含工具/规则文本 (如 antitalker) · meta_discussion 会误途
-    //   - delivery 规则的 NO_REPLY / HEARTBEAT_OK 是 exempt content_prefix
-    //     (它们合法 · 但在 exec completion 下不合法)
-
-    // v7.6 · 新规则: prose_only_ending (包括无 content match 也能 fire)
-    // v8.4 fix: self_report_skip — wake 后首条纯文字汇报不二次拦
-    const proseCheck = checkProseOnlyEnding(content, sessionKey, tc.tools);
-    if (proseCheck.fire && isInSelfReportContext(sessionKey)) {
-      log("info", `prose_only_ending self_report_skip: sessionKey=${sessionKey.slice(-12)}`);
-      auditLog({ type: "self_report_skip", rule: "prose_only_ending", sessionKey: sessionKey.slice(-20), preview: content.slice(0, 120) });
-    } else if (proseCheck.fire && !isOnCooldown(sessionKey, "prose_only_ending", 30)) {
-      noteCooldownFire(sessionKey, "prose_only_ending");
-      const preview = content.slice(0, 200).replace(/\n/g, " ");
-      log("warn", `VIOLATION rule=prose_only_ending tc=${tc.tools.length} reason=${proseCheck.reason}`);
-      auditLog({ type: "text_violation", rule: "prose_only_ending", severity: "high", sessionKey: sessionKey.slice(-20), preview, tool_count: tc.tools.length, tools: tc.tools, wake: true });
-      const body = `**汇报尾 prose · 0 toolCall · ${proseCheck.reason}**\n\n${fenceViolationText(preview)}`;
-      for (const target of routeTargets(sessionKey, ctx, cfg.notification?.target_chats ?? [])) {
-        pushFeishuCard(target.chat_id, "\u26a0\ufe0f her 光说不练 (prose 收尾)", body, "red");
-      }
-      const wakeMsg = `[antitalker prose_only_ending] 你汇报完没调 tool · ${proseCheck.reason}\n原文:\n${fenceViolationText(preview)}\n\n任务未完 · 立刻继续。`;
-      wakeHer(sessionKey, wakeMsg);
-      return {};
-    }
-
-    // v7.6 · 新规则: delivery_response_required · 优先于 isExempt
-    const delivCheck = checkDeliveryResponseRequired(content, sessionKey);
-    log("info", `delivCheck fire=${delivCheck.fire} reason=${delivCheck.reason}`);
-    if (delivCheck.fire && !isOnCooldown(sessionKey, "delivery_response_required", 60)) {
-      noteCooldownFire(sessionKey, "delivery_response_required");
-      const preview = content.slice(0, 200);
-      log("warn", `VIOLATION rule=delivery_response_required reason=${delivCheck.reason}`);
-      auditLog({ type: "text_violation", rule: "delivery_response_required", severity: "high", sessionKey: sessionKey.slice(-20), preview, wake: true });
-      const body = `**exec 完后只回 HEARTBEAT_OK/NO_REPLY · 无汇报**\n\n${delivCheck.reason}`;
-      for (const target of routeTargets(sessionKey, ctx, cfg.notification?.target_chats ?? [])) {
-        pushFeishuCard(target.chat_id, "\u26a0\ufe0f her 逿成 (exec 后无汇报)", body, "red");
-      }
-      const wakeMsg = `[antitalker delivery_response_required] exec 完了 你只回了 "${preview.trim()}" · 没汇报结果 · ${delivCheck.reason}\n马上总结 + 下一步。`;
-      wakeHer(sessionKey, wakeMsg);
-      return {};
-    }
-
-    // v8.1 · 经典规则评估：默认 tool-exempt；带 ignore_turn_tool_exemption 的规则穿透
-    const exemptVerdict = isExempt(content, tc, sessionKey);
-    if (exemptVerdict) { log("info", `MS isExempt=true for sessionKey=${sessionKey.slice(-12)} content=${content.slice(0,60)}`); return {}; }
-
-    for (const rule of cfg.rules) {
-      if (!rule._regex) continue;
-      if (!safeTest(rule._regex, !!rule._isRe2, content)) continue;
-
-      // v8.3: self-report detection — if bot is responding to an antitalker wake,
-      // and the regex only matches within quoted/fenced text, it's a self-report.
-      if (isInSelfReportContext(sessionKey)) {
-        const stripped = stripQuotedContent(content);
-        if (!safeTest(rule._regex, !!rule._isRe2, stripped)) {
-          log("info", `v8.3 self-report skip: rule=${rule.id} sessionKey=${sessionKey.slice(-12)} (match only in quoted text)`);
-          auditLog({ type: "self_report_skip", rule: rule.id, sessionKey: sessionKey.slice(-20), preview: content.slice(0, 120) });
-          continue;
-        }
-      }
-
-      // v8.1: per-rule tool exemption. Default = skip on substantial tools.
-      // Rules with ignore_turn_tool_exemption:true bypass this (e.g. M2/M3).
-      if (!rule.ignore_turn_tool_exemption) {
-        if (isToolExempt(tc)) { log("info", `MS tool-exempt rule=${rule.id} sessionKey=${sessionKey.slice(-12)}`); continue; }
-      }
-
-      // v7.2 Bug 1 · cooldown 是纯读取 · 不落盘
-      if (isOnCooldown(sessionKey, rule.id, rule.cooldown_seconds)) continue;
-
-      const { passed, toolCount } = evalBehavior(rule, tc);
-      if (!passed) continue;  // 有实质 tool call · 不是光说不练
-
-      // 到这里才算真违规：既命中 regex，也过了 behavior。
-      // v7.2 Bug 1 · 现在才落 cooldown，避免下一轮真违规被冤枉跳过
-      noteCooldownFire(sessionKey, rule.id);
-
-      const wasOver = isOverRateLimit(sessionKey);
-      noteViolation(sessionKey);
-
-      const preview = content.slice(0, 120).replace(/\n/g, " ");
-      const fencedPreview = fenceViolationText(preview);
-      const pushAdmin = (wasOver ? cfg.rate_limit.on_exceed.push_admin : rule.action.push_admin);
-      const wakeHerEnabled = (wasOver ? cfg.rate_limit.on_exceed.wake_her : rule.action.wake_her) && rule.mode === "enforce";
-
-      log("warn", `VIOLATION rule=${rule.id} severity=${rule.severity} tool_count=${toolCount} mode=${rule.mode} rate_limited=${wasOver}`);
-      auditLog({
-        type: "text_violation", rule: rule.id, severity: rule.severity,
-        sessionKey: sessionKey.slice(-20), preview, tool_count: toolCount,
-        tools: tc.tools, rate_limited: wasOver, wake: wakeHerEnabled, push: pushAdmin,
-      });
-
-      if (pushAdmin && cfg.notification.feishu_card.enabled) {
-        const vars = {
-          rule_label: rule.label, severity: rule.severity,
-          violation_preview: preview, violation_text: fencedPreview,
-          tool_count: toolCount, tool_names_list: tc.tools.join(", ") || "(无)",
-        };
-        const body = renderTemplate(cfg.notification.feishu_card.body_template, vars);
-        // v8.3.1 fix: title 也过 renderTemplate，支持 {rule_label} 等占位符
-        const title = renderTemplate(cfg.notification.feishu_card.title, vars);
-        for (const target of routeTargets(sessionKey, ctx, cfg.notification.target_chats)) {
-          if (!severityGte(rule.severity, target.min_severity)) continue;
-          pushFeishuCard(target.chat_id, title, body, cfg.notification.feishu_card.header_color);
-        }
-      }
-
-      if (wakeHerEnabled && sessionKey) {
-        const wakeMsg = renderTemplate(rule.action.wake_message_template, {
-          violation_text: fencedPreview, rule_label: rule.label, severity: rule.severity, tool_count: toolCount,
-        });
-        wakeHer(sessionKey, wakeMsg);
-      }
-
-      break;  // only fire highest-priority rule per message
-    }
-
-    // v7.6 · state 已在入口处清空 · 这里无需重复 delete
+    runViolationCheck(content, sessionKey, sessionTools, ctx);
     return {};
   } catch (e: any) {
     log("error", `handleMessageSending crashed (fail-open): ${e.message}`);
@@ -1498,15 +1651,28 @@ function checkDeliveryResponseRequired(content: string, sessionKey: string): { f
 // -------- Plugin entry --------
 const plugin = {
   id: PLUGIN_ID,
-  name: "Antitalker v8.3.1 (self-report fix + title template)",
-  version: "0.0.831",
-  description: "事前教 + 拦 + 通知 + main session 唤醒 · 全 yaml 配置 · 热加载 · v8.3.1 · self-report production fix + red card title renderTemplate",
+  name: "Antitalker v9.0 (async violation watchdog + auto audit group)",
+  version: "0.0.900",
+  description: "BMW 同步标记 + 5s 异步 watchdog 处理 push/wake · 私聊违规自维护 audit 群 · 0503 + openclaw-lark 兼容",
 
   // v7.6 测试用 · 暴露内部 handler 给 harness
   _handlers: {
     get silenceWatchdog() { return handleSilenceWatchdog; },
     get proseCheck() { return checkProseOnlyEnding; },
     get deliveryCheck() { return checkDeliveryResponseRequired; },
+    // v9.0 test seams
+    get state() { return state; },
+    get bmw() { return handleBeforeMessageWrite; },
+    get ms() { return handleMessageSending; },
+    get violationWatchdog() { return violationWatchdog; },
+    get markPendingViolation() { return markPendingViolation; },
+    get readAuditGroupChatId() { return readAuditGroupChatId; },
+    get requestAuditSetup() { return requestAuditSetup; },
+    get ensureAuditGroupReady() { return ensureAuditGroupReady; },
+    get setPluginConfigRef() { return setPluginConfigRef; },
+    set currentConfig(cfg: any) { state.currentConfig = cfg; },
+    // v9.0 · 测试用: 重定向 audit-group.json 路径
+    setAuditGroupPath(p: string) { AUDIT_GROUP_PATH = p; },
   },
 
   register(api: any) {
@@ -1540,6 +1706,7 @@ const plugin = {
         api.on("before_message_write", handleBeforeMessageWrite, { name: "antitalker-v7_6-msgwrite" });
         api.on("message_sending", handleMessageSending, { name: "antitalker-v7_6-msg" });
         // v7.6 · capture user prompt 导出 将 lastUserPreview 写入 sessionActivity 给 delivery_response_required 用
+        // v9.0 · 同时从 ctx.conversationId 自动识别主人 open_id (DM = "user:ou_xxx")
         try {
           api.on("before_message_write", (event: any, ctx: any): any => {
             try {
@@ -1560,6 +1727,24 @@ const plugin = {
               if (sourceChatId) act.chatId = sourceChatId;
               (act as any).lastInboundAtMs = Date.now();
               act.lastUserPreview = (txt || "").slice(0, 800);
+
+              // v9.0 · 自动识别主人 open_id
+              // 0503 conversationId 格式:
+              //   群聊: "chat:oc_xxx"
+              //   私聊: "user:ou_xxx"  ← 这里 ou_xxx 就是主人 open_id
+              // (0424 用 "feishu:oc_xxx" / "feishu:ou_xxx" · 也兼容)
+              const conv = String(ctx?.conversationId ?? ctx?.channelId ?? "");
+              // 注意: feishu open_id 字符集 = [A-Za-z0-9_] (实际多为 32 hex,但官方文档不强制)
+              // 用宽松字符集避免漏识别
+              const m = conv.match(/^(?:user|feishu):(ou_[A-Za-z0-9_]+)$/);
+              if (m) {
+                const ownerOpenId = m[1];
+                if (ownerOpenId !== state.lastDmOwnerOpenId || sk !== state.lastDmSessionKey) {
+                  state.lastDmOwnerOpenId = ownerOpenId;
+                  state.lastDmSessionKey = sk;
+                  log("info", `v9.0 owner identified · open_id=${ownerOpenId.slice(-12)} sk=${sk.slice(-20)}`);
+                }
+              }
             } catch {}
             return {};
           }, { name: "antitalker-v7_6-userprompt" });
@@ -1571,6 +1756,12 @@ const plugin = {
       if (state.silenceWatchdogTimer) clearInterval(state.silenceWatchdogTimer);
       state.silenceWatchdogTimer = setInterval(handleSilenceWatchdog, 30_000);
       log("info", "silence_watchdog started (30s interval)");
+
+      // v9.0 violation_watchdog 每 5s 扫 pendingViolations · 异步处理 push/wake
+      // (BMW 同步标记，watchdog 在 setInterval async callback 里 await 安全)
+      if (state.violationWatchdogTimer) clearInterval(state.violationWatchdogTimer);
+      state.violationWatchdogTimer = setInterval(violationWatchdog, 5_000);
+      log("info", "violation_watchdog started (5s interval)");
 
       log("warn", `ready · config=${CONFIG_PATH}`);
     } catch (e: any) {
