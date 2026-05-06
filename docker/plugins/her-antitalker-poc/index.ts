@@ -818,25 +818,31 @@ async function loadHeartbeatApi() {
     const seFiles = newestByMtime(all.filter(f => f.startsWith("system-events-") && f.endsWith(".js")));
     if (seFiles.length > 0) {
       const mod: any = await import(path.join(DIST_DIR, seFiles[0]));
+      // 0503 minified exports: enqueueSystemEvent → "a", drainSystemEvents → "i"
+      // 老代码 fallback "i" 会绑到 drainSystemEvents → wake 永远清空队列而不是入队
       state.heartbeatApi.enqueueSystemEvent = pickFunction(
         mod,
-        ["enqueueSystemEvent", "i"],
-        /enqueueSystemEvent|systemEvent|sessionKey|trusted/,
+        ["enqueueSystemEvent", "a"],
+        /function enqueueSystemEvent/,
       );
     }
     const hwFiles = newestByMtime(all.filter(f => f.startsWith("heartbeat-wake-") && f.endsWith(".js")));
     if (hwFiles.length > 0) {
       const mod: any = await import(path.join(DIST_DIR, hwFiles[0]));
+      // 0503 改名: requestHeartbeatNow → requestHeartbeat (去 Now 后缀), 别名 "o"
+      // 老代码 fallback "n" 在新版是 HEARTBEAT_SKIP_LANES_BUSY 常量,不是函数
       state.heartbeatApi.requestHeartbeatNow = pickFunction(
         mod,
-        ["requestHeartbeatNow", "n"],
-        /requestHeartbeatNow|coalesceMs|heartbeat/,
+        ["requestHeartbeat", "requestHeartbeatNow", "o"],
+        /function requestHeartbeat/,
       );
     }
     if (!state.heartbeatApi.enqueueSystemEvent || !state.heartbeatApi.requestHeartbeatNow) {
       log("error", `CRITICAL: heartbeat api not found · wake will not work · se=${!!state.heartbeatApi.enqueueSystemEvent} hb=${!!state.heartbeatApi.requestHeartbeatNow}`);
     } else {
-      log("info", `heartbeat api loaded · se=true hb=true`);
+      const seName = state.heartbeatApi.enqueueSystemEvent?.name ?? "?";
+      const hbName = state.heartbeatApi.requestHeartbeatNow?.name ?? "?";
+      log("info", `heartbeat api loaded · se=${seName} hb=${hbName}`);
     }
   } catch (e: any) {
     log("error", `CRITICAL: heartbeat api load failed: ${String(e?.message ?? e).slice(0, 200)}`);
