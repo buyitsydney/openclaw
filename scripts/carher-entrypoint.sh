@@ -212,10 +212,19 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# ── Resolve openclaw peerDependency for load.paths plugins ─────────
+# Plugins loaded via plugins.load.paths sit outside gateway's node_modules
+# tree, so they can't resolve the openclaw peerDep. Symlink the SDK shim
+# (already provided by gateway at dist/extensions/node_modules/openclaw)
+# into each plugin's node_modules.
+OPENCLAW_SDK_SHIM="/app/dist/extensions/node_modules/openclaw"
+for plugdir in /app/docker/plugins/*/; do
+  [ -d "$plugdir" ] || continue
+  mkdir -p "${plugdir}node_modules"
+  ln -sf "$OPENCLAW_SDK_SHIM" "${plugdir}node_modules/openclaw" 2>/dev/null || true
+done
+
 # Start Gateway in foreground
-# NODE_PATH lets load.paths plugins resolve openclaw/plugin-sdk/* without
-# bundling the full openclaw package into each plugin's node_modules.
-export NODE_PATH=/app/dist/extensions/node_modules
 echo "▶ Starting Gateway..."
 cd /app
 exec node dist/index.js gateway run --port 18789 --bind lan
