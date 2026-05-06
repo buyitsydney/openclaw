@@ -5,5 +5,6 @@
   "version": "0.0.831",
   "entry": "./index.ts",
   "activation": { "onStartup": true },
-  "contracts": { "tools": [] }
+  "contracts": { "tools": [] },
+  "configSchema": { "type": "object", "additionalProperties": true }
 }
