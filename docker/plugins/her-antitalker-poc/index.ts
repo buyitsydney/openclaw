@@ -674,11 +674,7 @@ async function getFeishuToken(): Promise<string | null> {
 function normalizeFeishuChatId(raw: any): string {
   const s = String(raw ?? "").trim();
   if (!s) return "";
-  // openclaw 0424: conversationId = "feishu:oc_xxx"
-  // openclaw 0503: conversationId = "chat:oc_xxx" / "user:ou_xxx"
-  for (const prefix of ["feishu:", "chat:", "user:", "channel:"]) {
-    if (s.startsWith(prefix)) return s.slice(prefix.length);
-  }
+  if (s.startsWith("feishu:")) return s.slice("feishu:".length);
   return s;
 }
 
@@ -689,7 +685,7 @@ function extractFeishuChatIdFromText(text: string): string {
 
 function resolveSourceChatId(sessionKey: string, ctx: any): string {
   const candidates = [
-    ctx?.chatId, ctx?.chat_id, ctx?.conversationId, ctx?.channelId, ctx?.channel_id,
+    ctx?.chatId, ctx?.chat_id, ctx?.channelId, ctx?.channel_id,
     ctx?.message?.chatId, ctx?.message?.chat_id,
     ctx?.metadata?.chatId, ctx?.metadata?.chat_id,
     ctx?.channel?.id, ctx?.channel?.chatId,
@@ -699,9 +695,6 @@ function resolveSourceChatId(sessionKey: string, ctx: any): string {
     const v = normalizeFeishuChatId(c);
     if (v.startsWith("oc_") || v.startsWith("ou_")) return v;
   }
-  // fallback: extract oc_/ou_ from sessionKey itself (0503 format: agent:main:feishu:group:oc_xxx)
-  const skMatch = String(sessionKey ?? "").match(/(oc_[a-f0-9]+|ou_[a-f0-9]+)/);
-  if (skMatch) return skMatch[1];
   const act = state.sessionActivity.get(sessionKey);
   if (act?.chatId) return act.chatId;
   return "";
