@@ -75,9 +75,19 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 const _require = createRequire("/app/docker/plugins/her-antitalker-poc/index.ts");
 
+// -------- Stop-Hook Pipeline (M1: same-turn enforcement) --------
+import { StopHookPipeline, createProseOnlyHook, createGetFollowUpMessages } from "./stop-hook-pipeline.js";
+import type { StopHookContext } from "./stop-hook-pipeline.js";
+// M1 (2026-05-07): agent-followup-bridge removed. Same-turn enforcement is delivered by
+// patched agent-loop.js → globalThis.__openclaw_stopHookPipeline. No bridge, no watchdog
+// fallback, no wake tricks. See docs/her/stop-hook-pipeline-architecture.md.
+// -------- No-Toolcall Guard (M1.1: YAML-driven, no keyword matching) --------
+import { NoToolcallGuard } from "./no-toolcall-guard.js";
+
 // -------- Constants --------
 const PLUGIN_ID = "her-antitalker-poc";
 const CONFIG_PATH = "/data/.openclaw/workspace/.antitalker/rules.yaml";
+const NO_TOOLCALL_GUARD_YAML = "/data/.openclaw/workspace/.antitalker/no-toolcall-guard.yaml";
 // v9.0 · audit-group.json 路径默认是 /data/.openclaw/workspace/.antitalker/audit-group.json
 // 用 let + getter,允许测试通过 _handlers.setAuditGroupPath() 重定向
 let AUDIT_GROUP_PATH = "/data/.openclaw/workspace/.antitalker/audit-group.json";
@@ -815,28 +825,26 @@ function newestByMtime(files: string[]): string[] {
 async function loadHeartbeatApi() {
   try {
     const all = readdirSync(DIST_DIR);
-    // system-events-*.js → enqueueSystemEvent (别名 "a" in 0503)
     const seFiles = newestByMtime(all.filter(f => f.startsWith("system-events-") && f.endsWith(".js")));
     if (seFiles.length > 0) {
       const mod: any = await import(path.join(DIST_DIR, seFiles[0]));
+      // 0503 minified exports: enqueueSystemEvent → "a", drainSystemEvents → "i"
+      // 老代码 fallback "i" 会绑到 drainSystemEvents → wake 永远清空队列而不是入队
       state.heartbeatApi.enqueueSystemEvent = pickFunction(
         mod,
         ["enqueueSystemEvent", "a"],
         /function enqueueSystemEvent/,
       );
     }
-    // v9.1 fix · heartbeat-runner-*.js exports runHeartbeatOnce (别名 "n") — 这才是
-    // cron runner 用的真·驱动函数(阻塞执行一次 heartbeat,busy 时 retry)。老代码
-    // 用的是 heartbeat-wake-*.js 的 requestHeartbeat — 那个只是往队列扔请求,
-    // 实际 tick 很可能被其他 busy skip,不会真驱动 LLM turn。
-    // 证据: cron 成功路径代码 `state.deps.runHeartbeatOnce(...)`;我们走一样的。
-    const hrFiles = newestByMtime(all.filter(f => f.startsWith("heartbeat-runner-") && f.endsWith(".js")));
-    if (hrFiles.length > 0) {
-      const mod: any = await import(path.join(DIST_DIR, hrFiles[0]));
+    const hwFiles = newestByMtime(all.filter(f => f.startsWith("heartbeat-wake-") && f.endsWith(".js")));
+    if (hwFiles.length > 0) {
+      const mod: any = await import(path.join(DIST_DIR, hwFiles[0]));
+      // 0503 改名: requestHeartbeatNow → requestHeartbeat (去 Now 后缀), 别名 "o"
+      // 老代码 fallback "n" 在新版是 HEARTBEAT_SKIP_LANES_BUSY 常量,不是函数
       state.heartbeatApi.requestHeartbeatNow = pickFunction(
         mod,
-        ["runHeartbeatOnce", "n"],
-        /function runHeartbeatOnce/,
+        ["requestHeartbeat", "requestHeartbeatNow", "o"],
+        /function requestHeartbeat/,
       );
     }
     if (!state.heartbeatApi.enqueueSystemEvent || !state.heartbeatApi.requestHeartbeatNow) {
@@ -860,63 +868,11 @@ async function loadHeartbeatApi() {
  *   修复 Bug 4 的倾正路径 = user config agents.defaults.heartbeat.target="last"
  *   (不是在 plugin 端动 prompt)
  */
-async function wakeHer(sessionKey: string, message: string) {
-  try {
-    // v7.8 anti-heartbeat-swallow prefix: 防止 LLM 看到 heartbeat prompt 后直接 HEARTBEAT_OK 吞掉 wake
-    const antiSwallow = "⚠️ antitalker 强制唤醒 · 禁止回 HEARTBEAT_OK/NO_REPLY · 必须针对下面的违规继续实际工作（调 tool / 发消息 / 修 bug）· 否则会再次拦截。\n\n";
-    const wrapped = antiSwallow + message;
-
-    // v8.3.1 fix: pre-set lastUserPreview so isInSelfReportContext() works when bot responds.
-    // enqueueSystemEvent doesn't flow through before_message_write user-capture hook,
-    // so without this the self-report context is never detected in production.
-    let act = state.sessionActivity.get(sessionKey);
-    if (!act) {
-      act = { lastToolCallAtMs: 0, lastAssistantMsgAtMs: 0, lastAssistantHadToolCall: false, lastAssistantHadText: false, lastAssistantTextPreview: "", lastUserPreview: "", silenceAlertedAt: 0, chatId: "" };
-      state.sessionActivity.set(sessionKey, act);
-    }
-    act.lastUserPreview = wrapped.slice(0, 800);
-
-    // v9.1 fix · mimic cron runner path (证据: /app/dist/server-cron-*.js):
-    //   state.deps.enqueueSystemEvent(text, { agentId, sessionKey, contextKey: `cron:${job.id}` })
-    //   state.deps.runHeartbeatOnce({...})
-    //
-    // 关键点:
-    //   1. contextKey 必须每次唯一 — system-events.js 有 `if (entry.lastText === cleaned) return false;`
-    //      的 dedup,如果 contextKey 固定 + 文本被判重,整个入队被吞。用 nonce 防重。
-    //   2. runHeartbeatOnce 才是真·驱动 LLM turn 的函数(阻塞执行),
-    //      requestHeartbeat 只是往队列扔 — busy 时会被 skip,不会驱动 turn。
-    const nonce = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7);
-    if (state.heartbeatApi.enqueueSystemEvent) {
-      state.heartbeatApi.enqueueSystemEvent(wrapped, {
-        sessionKey,
-        trusted: false,
-        contextKey: `antitalker:violation:${nonce}`,
-      });
-    } else {
-      log("error", "wakeHer: enqueueSystemEvent missing · skipped");
-      return;
-    }
-    if (state.heartbeatApi.requestHeartbeatNow) {
-      // runHeartbeatOnce 签名 (from server-cron usage):
-      //   runHeartbeatOnce({ source, intent, reason, sessionKey?, agentId? })
-      try {
-        await state.heartbeatApi.requestHeartbeatNow({
-          source: "hook",           // "hook" is in isWakePayload allowlist (not "cron")
-          intent: "immediate",
-          reason: `hook:antitalker:${nonce}`,
-          sessionKey,
-        });
-      } catch (e: any) {
-        log("warn", `runHeartbeatOnce error: ${String(e?.message ?? e).slice(0, 200)}`);
-      }
-    } else {
-      log("error", "wakeHer: runHeartbeatOnce missing · skipped");
-    }
-    log("info", `wakeHer → sessionKey=${sessionKey.slice(-20)} reason=hook:antitalker`);
-  } catch (e: any) {
-    log("warn", `wakeHer error: ${String(e?.message ?? e).slice(0, 120)}`);
-  }
-}
+// M1 (2026-05-07): wakeHer REMOVED. Legacy heartbeat-based wake is not an acceptable
+// fallback for same-turn enforcement. All continuation flows through stop-hook-pipeline
+// (globalThis.__openclaw_stopHookPipeline) which is delivered inside the same loop turn
+// by the patched pi-agent-core agent-loop.js. If you feel tempted to add a wake path
+// back, read docs/her/stop-hook-pipeline-architecture.md first — the answer is no.
 
 // -------- v9.0 · Async violation watchdog (replaces sync MS hook side-effects) --------
 //
@@ -1130,10 +1086,10 @@ async function violationWatchdog(): Promise<void> {
         log("warn", `watchdog skip card · no chatId (audit group disabled or unavailable) · rule=${v.ruleId}`);
       }
 
-      // 唤醒 (永远执行,只要 wakeEnabled · 不依赖 chatId)
-      if (v.wakeEnabled) {
-        await wakeHer(v.sessionKey, v.wakeMessage);
-      }
+      // M1 (2026-05-07): wake path removed from violation watchdog.
+      // Same-turn continuation is now owned by stop-hook-pipeline (globalThis hook).
+      // This watchdog's only remaining job is admin audit card notification (above).
+      // v.wakeEnabled / v.wakeMessage kept for backwards-compat but not invoked here.
 
       state.pendingViolations.delete(key);
     } catch (e: any) {
@@ -1389,6 +1345,11 @@ function handleBeforeMessageWrite(event: any, ctx: any): any {
       try { runViolationCheck(textPreview, sessionKey, tools, ctx); } catch (e: any) {
         log("error", `BMW violation check crashed (fail-open): ${String(e?.message ?? e).slice(0, 200)}`);
       }
+
+      // M1 (2026-05-07): no-toolcall-guard evaluated inside stop-hook-pipeline.
+      // BMW only records tools via toolsBySessionKey (done above); guard reads that
+      // accumulator from the pipeline drain at loop's "want to stop" moment.
+      // No BMW-time evaluation, no bridge, no markPendingViolation fallback.
     }
 
     return {};
@@ -1629,8 +1590,9 @@ function handleSilenceWatchdog() {
       for (const target of routeTargets(sessionKey, null, cfg.notification?.target_chats ?? [])) {
         pushFeishuCard(target.chat_id, title, body, "red");
       }
-      const wakeMsg = `[antitalker silent_too_long] 你 ${gapMin}min 没调任何 tool · 上次说:\n${fenceViolationText(preview)}\n\n任务未完·继续执行。`;
-      wakeHer(sessionKey, wakeMsg);
+      // M1 (2026-05-07): wake removed from silence_watchdog. If Her went silent for
+      // 30min without any turn activity, the stop-hook-pipeline is not running for this
+      // session (loop already exited). Admin card notification above is the only action.
     }
   } catch (e: any) {
     log("error", `silence_watchdog crashed: ${e.message}`);
@@ -1699,6 +1661,8 @@ const plugin = {
     set currentConfig(cfg: any) { state.currentConfig = cfg; },
     // v9.0 · 测试用: 重定向 audit-group.json 路径
     setAuditGroupPath(p: string) { AUDIT_GROUP_PATH = p; },
+    // M1 · stop-hook-pipeline test seam
+    get stopHookPipeline() { return StopHookPipeline.getInstance(); },
   },
 
   register(api: any) {
@@ -1788,6 +1752,58 @@ const plugin = {
       if (state.violationWatchdogTimer) clearInterval(state.violationWatchdogTimer);
       state.violationWatchdogTimer = setInterval(violationWatchdog, 5_000);
       log("info", "violation_watchdog started (5s interval)");
+
+      // ─── M1: Stop-Hook Pipeline · globalThis registration (same-turn enforcement) ───
+      // Bind pipeline.drain() to globalThis.__openclaw_stopHookPipeline. The in-place
+      // patched pi-agent-core agent-loop.js (see patch-agent-loop.sh) reads this global
+      // when config.getFollowUpMessages is absent — any OpenClaw-constructed AgentLoop
+      // automatically gets same-turn enforcement. No bridge. No watchdog. No fallback.
+      try {
+        const pipeline = StopHookPipeline.getInstance();
+
+        // antitalker:prose-only (commitment text without tool call)
+        pipeline.register("antitalker:prose-only", createProseOnlyHook(), 10);
+
+        // no-toolcall-guard (YAML-driven substantial-tool whitelist)
+        const guard = NoToolcallGuard.fromYaml(NO_TOOLCALL_GUARD_YAML);
+        (state as any)._noToolcallGuard = guard;
+        pipeline.register("no-toolcall-guard", (ctx: StopHookContext) => {
+          const result = guard.evaluate(ctx.sessionKey, { toolNames: ctx.lastToolNames });
+          if (result && result.length > 0) {
+            return { shouldContinue: true, message: typeof result[0].content === "string" ? result[0].content : JSON.stringify(result[0].content), hookName: "no-toolcall-guard" };
+          }
+          return { shouldContinue: false };
+        }, 20);
+
+        // Session-context locator for the drain function
+        const getStopHookContext = (): StopHookContext | null => {
+          for (const [sk, act] of state.sessionActivity.entries()) {
+            if (act.lastAssistantMsgAtMs > 0) {
+              return {
+                sessionKey: sk,
+                lastAssistantText: act.lastAssistantTextPreview || "",
+                lastAssistantHadToolCall: act.lastAssistantHadToolCall,
+                lastToolNames: state.toolsBySessionKey.get(sk) ?? [],
+                turnIndex: 0,
+              };
+            }
+          }
+          return null;
+        };
+
+        // globalThis registration — picked up by patched pi-agent-core agent-loop.js
+        const drainFn = createGetFollowUpMessages(pipeline, getStopHookContext);
+        const globalSlot = globalThis as any;
+        globalSlot.__openclaw_stopHookPipeline = async () => {
+          try { return await drainFn(); } catch (e: any) {
+            log("error", `pipeline drain crashed (fail-open): ${String(e?.message ?? e).slice(0, 200)}`);
+            return [];
+          }
+        };
+        log("warn", `M1 stop-hook-pipeline: bound to globalThis.__openclaw_stopHookPipeline · hooks=[${pipeline.getRegisteredHooks().join(",")}] · yaml=${NO_TOOLCALL_GUARD_YAML}`);
+      } catch (pipelineErr: any) {
+        log("error", `M1 stop-hook-pipeline registration failed: ${String(pipelineErr?.message ?? pipelineErr).slice(0, 200)}`);
+      }
 
       log("warn", `ready · config=${CONFIG_PATH}`);
     } catch (e: any) {

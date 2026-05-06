@@ -239,6 +239,13 @@ for plugdir in /app/docker/plugins/*/; do
   ln -sf "$OPENCLAW_SDK_SHIM" "${plugdir}node_modules/openclaw" 2>/dev/null || true
 done
 
+# Apply stop-hook-pipeline patch to pi-agent-core agent-loop.js
+# (See docs/her/stop-hook-pipeline-architecture.md. Script is idempotent.)
+if [ -x /app/docker/plugins/her-antitalker-poc/patch-agent-loop.sh ]; then
+  /app/docker/plugins/her-antitalker-poc/patch-agent-loop.sh || \
+    echo "WARN: patch-agent-loop.sh failed — stop-hook-pipeline will silently no-op"
+fi
+
 # Start Gateway in foreground
 echo "▶ Starting Gateway..."
 cd /app

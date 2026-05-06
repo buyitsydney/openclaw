@@ -1,0 +1,22 @@
+# no-toolcall-guard.yaml — 无关键词匹配的纯 tool 存在性检查
+# 热加载：修改此文件后 2 秒内自动生效（mtime polling）
+
+# 最大唤醒次数（每 session 连续无 substantial tool 时强制续写几次后放行）
+max_retries: 1
+
+# 是否启用（kill switch）
+enabled: true
+
+# substantial_tools 白名单：只有调了这些 tool 才算"真干活"
+# message send / cron / sessions_yield / sessions_spawn / memory_search 等不算
+substantial_tools:
+  - exec
+  - read
+  - write
+  - edit
+  - feishu_doc
+  - feishu_sheet
+  - feishu_bitable
+
+# 自定义唤醒消息（可选，留空用默认）
+# message: "自定义提示文字"
