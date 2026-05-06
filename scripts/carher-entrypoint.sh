@@ -83,19 +83,27 @@ if [ -f "$FEISHU_HER_MANIFEST" ]; then
       'feishu_sheet', 'feishu_wiki'
     ];
     const m = JSON.parse(fs.readFileSync('$FEISHU_HER_MANIFEST', 'utf8'));
-    const cur = JSON.stringify(m.contracts?.tools ?? []);
-    const want = JSON.stringify(TOOLS);
-    if (cur !== want) {
-      m.contracts = { ...m.contracts, tools: TOOLS };
-      fs.writeFileSync('$FEISHU_HER_MANIFEST', JSON.stringify(m, null, 2));
-      console.log('    ✓ contracts.tools updated (' + TOOLS.length + ' tools)');
-    } else {
-      console.log('    ✓ contracts.tools already correct (' + TOOLS.length + ' tools)');
-    }
+    m.contracts = { ...m.contracts, tools: TOOLS };
+    m.activation = { onStartup: true };
+    fs.writeFileSync('$FEISHU_HER_MANIFEST', JSON.stringify(m, null, 2));
+    console.log('    ✓ contracts.tools (' + TOOLS.length + ') + activation.onStartup patched');
   "
 fi
 # ── end feishu-her 0503 compat ───────────────────────────────────
 
+# ── shadow-daemon: ensure activation.onStartup ────────────────────
+SHADOW_MANIFEST="/app/docker/plugins/shadow-daemon/openclaw.plugin.json"
+if [ -f "$SHADOW_MANIFEST" ]; then
+  node -e "
+    const fs = require('fs');
+    const m = JSON.parse(fs.readFileSync('$SHADOW_MANIFEST', 'utf8'));
+    if (!m.activation?.onStartup) {
+      m.activation = { onStartup: true };
+      fs.writeFileSync('$SHADOW_MANIFEST', JSON.stringify(m, null, 2));
+    }
+  "
+fi
+# ── end shadow-daemon ─────────────────────────────────────────────
 
 # Re-symlink after plugin install (new binaries may have been added)
 ln -sf /data/.openclaw/local/bin/* /usr/local/bin/ 2>/dev/null || true
