@@ -78,6 +78,8 @@ RUN --mount=type=cache,target=/root/.npm \
     cd /app/docker/plugins/shadow-daemon && \
     npm install --omit=dev --ignore-scripts
 
+COPY docker/plugins/her-antitalker-poc /app/docker/plugins/her-antitalker-poc
+
 # Config is NOT baked into the image. All config comes from runtime bind mounts
 # (config/base.json5, config/docker.json5, config/u{N}.json5) or env vars.
 # The legacy shared-config.json5 and docker/user-configs/ used to be copied here
