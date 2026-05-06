@@ -217,7 +217,14 @@ trap cleanup EXIT INT TERM
 # tree, so they can't resolve the openclaw peerDep. Symlink the SDK shim
 # (already provided by gateway at dist/extensions/node_modules/openclaw)
 # into each plugin's node_modules.
+# The shim only ships a subset of plugin-sdk files; backfill any missing
+# ones from the gateway's full dist/plugin-sdk/ build output.
 OPENCLAW_SDK_SHIM="/app/dist/extensions/node_modules/openclaw"
+for f in /app/dist/plugin-sdk/*.js; do
+  base=$(basename "$f")
+  [ -e "$OPENCLAW_SDK_SHIM/plugin-sdk/$base" ] || \
+    ln -sf "$f" "$OPENCLAW_SDK_SHIM/plugin-sdk/$base"
+done
 for plugdir in /app/docker/plugins/*/; do
   [ -d "$plugdir" ] || continue
   mkdir -p "${plugdir}node_modules"
