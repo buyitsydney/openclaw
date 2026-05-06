@@ -450,7 +450,8 @@ await group("5. violationWatchdog", async () => {
     assertEq(enqueueCalls.length, 2, "setup + wake = 2");
     const ck = enqueueCalls.map((c) => c.opts.contextKey);
     assert(ck.includes("antitalker:audit-setup"), "setup contextKey");
-    assert(ck.includes("antitalker:violation"), "wake contextKey");
+    // v9.1: wake contextKey now uniquified with nonce → antitalker:violation:<nonce>
+    assert(ck.some((k: string) => k && k.startsWith("antitalker:violation:")), "wake contextKey startsWith antitalker:violation:");
     assertEq(h.state.pendingViolations.size, 0, "cleared");
   });
 

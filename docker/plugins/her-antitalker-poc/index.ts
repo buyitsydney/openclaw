@@ -815,26 +815,28 @@ function newestByMtime(files: string[]): string[] {
 async function loadHeartbeatApi() {
   try {
     const all = readdirSync(DIST_DIR);
+    // system-events-*.js → enqueueSystemEvent (别名 "a" in 0503)
     const seFiles = newestByMtime(all.filter(f => f.startsWith("system-events-") && f.endsWith(".js")));
     if (seFiles.length > 0) {
       const mod: any = await import(path.join(DIST_DIR, seFiles[0]));
-      // 0503 minified exports: enqueueSystemEvent → "a", drainSystemEvents → "i"
-      // 老代码 fallback "i" 会绑到 drainSystemEvents → wake 永远清空队列而不是入队
       state.heartbeatApi.enqueueSystemEvent = pickFunction(
         mod,
         ["enqueueSystemEvent", "a"],
         /function enqueueSystemEvent/,
       );
     }
-    const hwFiles = newestByMtime(all.filter(f => f.startsWith("heartbeat-wake-") && f.endsWith(".js")));
-    if (hwFiles.length > 0) {
-      const mod: any = await import(path.join(DIST_DIR, hwFiles[0]));
-      // 0503 改名: requestHeartbeatNow → requestHeartbeat (去 Now 后缀), 别名 "o"
-      // 老代码 fallback "n" 在新版是 HEARTBEAT_SKIP_LANES_BUSY 常量,不是函数
+    // v9.1 fix · heartbeat-runner-*.js exports runHeartbeatOnce (别名 "n") — 这才是
+    // cron runner 用的真·驱动函数(阻塞执行一次 heartbeat,busy 时 retry)。老代码
+    // 用的是 heartbeat-wake-*.js 的 requestHeartbeat — 那个只是往队列扔请求,
+    // 实际 tick 很可能被其他 busy skip,不会真驱动 LLM turn。
+    // 证据: cron 成功路径代码 `state.deps.runHeartbeatOnce(...)`;我们走一样的。
+    const hrFiles = newestByMtime(all.filter(f => f.startsWith("heartbeat-runner-") && f.endsWith(".js")));
+    if (hrFiles.length > 0) {
+      const mod: any = await import(path.join(DIST_DIR, hrFiles[0]));
       state.heartbeatApi.requestHeartbeatNow = pickFunction(
         mod,
-        ["requestHeartbeat", "requestHeartbeatNow", "o"],
-        /function requestHeartbeat/,
+        ["runHeartbeatOnce", "n"],
+        /function runHeartbeatOnce/,
       );
     }
     if (!state.heartbeatApi.enqueueSystemEvent || !state.heartbeatApi.requestHeartbeatNow) {
@@ -874,23 +876,41 @@ async function wakeHer(sessionKey: string, message: string) {
     }
     act.lastUserPreview = wrapped.slice(0, 800);
 
+    // v9.1 fix · mimic cron runner path (证据: /app/dist/server-cron-*.js):
+    //   state.deps.enqueueSystemEvent(text, { agentId, sessionKey, contextKey: `cron:${job.id}` })
+    //   state.deps.runHeartbeatOnce({...})
+    //
+    // 关键点:
+    //   1. contextKey 必须每次唯一 — system-events.js 有 `if (entry.lastText === cleaned) return false;`
+    //      的 dedup,如果 contextKey 固定 + 文本被判重,整个入队被吞。用 nonce 防重。
+    //   2. runHeartbeatOnce 才是真·驱动 LLM turn 的函数(阻塞执行),
+    //      requestHeartbeat 只是往队列扔 — busy 时会被 skip,不会驱动 turn。
+    const nonce = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7);
     if (state.heartbeatApi.enqueueSystemEvent) {
       state.heartbeatApi.enqueueSystemEvent(wrapped, {
         sessionKey,
         trusted: false,
-        contextKey: "antitalker:violation",  // v7.3 纯 tag
+        contextKey: `antitalker:violation:${nonce}`,
       });
     } else {
       log("error", "wakeHer: enqueueSystemEvent missing · skipped");
+      return;
     }
     if (state.heartbeatApi.requestHeartbeatNow) {
-      state.heartbeatApi.requestHeartbeatNow({
-        sessionKey,
-        reason: "hook:antitalker",  // v7.3 回归朴素
-        coalesceMs: 0,
-      });
+      // runHeartbeatOnce 签名 (from server-cron usage):
+      //   runHeartbeatOnce({ source, intent, reason, sessionKey?, agentId? })
+      try {
+        await state.heartbeatApi.requestHeartbeatNow({
+          source: "hook",           // "hook" is in isWakePayload allowlist (not "cron")
+          intent: "immediate",
+          reason: `hook:antitalker:${nonce}`,
+          sessionKey,
+        });
+      } catch (e: any) {
+        log("warn", `runHeartbeatOnce error: ${String(e?.message ?? e).slice(0, 200)}`);
+      }
     } else {
-      log("error", "wakeHer: requestHeartbeatNow missing · skipped");
+      log("error", "wakeHer: runHeartbeatOnce missing · skipped");
     }
     log("info", `wakeHer → sessionKey=${sessionKey.slice(-20)} reason=hook:antitalker`);
   } catch (e: any) {
