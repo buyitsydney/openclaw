@@ -1,0 +1,96 @@
+# Stop-Hook Pipeline Rules — all rules are data, no source changes needed.
+#
+# 路径: 容器内 /data/.openclaw/workspace/.antitalker/stop-hook-rules.yaml
+#       host   /home/cltx/.openclaw/workspace/.antitalker/stop-hook-rules.yaml
+#
+# 热加载: 修改此文件后 ~2 秒内自动重注册所有规则 (mtime polling)。
+#
+# 规则执行: 按 priority 从高到低依次评估,第一条"命中"(返回 shouldContinue=true)
+# 就终止,续命消息进入 loop user role。
+#
+# 评估顺序:
+#   1. 所有 preconditions 必须通过 (AND) — 任一失败则跳过此 rule
+#   2. fire_when 任一匹配 (OR) — 命中则 fire
+#   3. fire 时返回 message 给 loop
+#
+# 死循环保护: pipeline 级别 max_continuation_turns (默认 3) — 单 session 连续
+# 强制续命 N 轮后放行一次,重置。
+
+enabled: true
+max_continuation_turns: 3
+
+rules:
+  # ─── Rule 1 · no-toolcall-guard ───────────────────────────────────────
+  # 用户给了任务(消息够长), Her 不调任何实质性 tool 就想停 → 续命
+  # 闲聊("hi"/"嗨"/"在吗")短消息走不到这条 rule (被 precondition 挡住)
+  - id: no-toolcall-guard
+    enabled: true
+    priority: 20
+    preconditions:
+      # 少于 10 字符视为闲聊/问候,不触发 guard
+      min_user_message_length: 10
+      # 排除 heartbeat / NO_REPLY 等系统回环消息
+      assistant_text_skip_if_matches_any:
+        - '^HEARTBEAT_OK'
+        - '^NO_REPLY'
+    fire_when:
+      # 只看本 turn 的 tool 累计器里有没有"真干活"的 tool
+      no_substantial_tool: true
+    # 白名单: 调了任意一个就算真干活,不触发续命
+    # 非白名单 tool (message_send / cron / sessions_yield / memory_search / wait) 不算
+    substantial_tools:
+      - exec
+      - read
+      - write
+      - edit
+      - feishu_doc
+      - feishu_sheet
+      - feishu_bitable
+    max_retries: 1
+    message: |
+      ⚠️ antitalker stop-hook-pipeline: no-toolcall-guard
+
+      用户让你干活,但你本 turn 没调任何实质性 tool (exec/read/write/edit/feishu_*)。
+      禁止只说不干。立刻选择:
+      - 有具体动作要执行 → 调 tool
+      - 信息不够 → 用 message send 精确反问一句就停
+      - 任务确实只需纯文字回答 → 忽略此提示,用 message send 发出即可 (message send 不算 substantial tool,但属于合法终态)
+
+  # ─── Rule 2 · prose-only-ending ───────────────────────────────────────
+  # 回复里出现"承诺词"(我来/让我/I'll/Let me)但没调任何 tool → 续命
+  # 这是比 no-toolcall-guard 更严格的 rule:除了"没 tool",还要求文本有承诺语
+  # 主要兜底 no-toolcall-guard 的 white list 漏网之鱼 (有 substantial tool 但
+  # 依然光说不练的极端情况)
+  - id: prose-only-ending
+    enabled: true
+    priority: 10
+    preconditions:
+      # 文本至少 20 字,排除"好的。"/"收到。"这类短确认
+      min_assistant_text_length: 20
+      # 闲聊短消息不评估此 rule
+      min_user_message_length: 10
+      assistant_text_skip_if_matches_any:
+        - '^HEARTBEAT_OK'
+        - '^NO_REPLY'
+    fire_when:
+      # 本 turn 连一个 tool 都没调,且文本里有承诺语 → fire
+      no_tool_call: true
+      text_matches_any:
+        # 中文承诺
+        - '我(?:来|去|先|现在|马上|立刻)'
+        - '让我'
+        - '我(?:会|将|要|得)'
+        - '接下来'
+        - '下一步'
+        # 英文承诺
+        - "\\bI'?ll\\b"
+        - '\\bLet me\\b'
+        - '\\bI (?:will|shall|should|can|need to)\\b'
+        - '\\bNext,?\\s*I\\b'
+        - '\\bNow (?:I|let)\\b'
+    max_retries: 1
+    message: |
+      ⚠️ antitalker stop-hook-pipeline: prose-only-ending
+
+      你的回复里有"我来/让我/I'll/Let me"这类承诺语,但一个 tool 都没调。
+      禁止光承诺不执行。立刻调 tool 把你承诺的事做了。

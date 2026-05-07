@@ -1,222 +1,227 @@
-# Stop-Hook Pipeline 架构（Her 核心防睡机制）
+# Stop-Hook Pipeline 架构（Her 核心防睡框架）
 
-**版本**: M1 · 2026-05-07 · `carher-core` 镜像 ≥ 2026.5.7-dev-0507-stop-hook-v1
-**定位**: Her 同 turn 防睡的根基，取代 v9.0 watchdog fallback 路径
+**版本**: M2 · 2026-05-07 · `carher-core` 镜像 ≥ 2026.5.7-dev-0507-stop-hook-v2
+**定位**: Her 同 turn 防睡 + 闲聊不误报 · 规则全数据化 · 取代 v9.0 watchdog
 
 ---
 
 ## 一句话总结
 
-- pi-agent-core `agent-loop.js` 天然提供 `config.getFollowUpMessages?.()` hook（L125）—— 模型"想停"时必被调用；返回非空 → loop 续命
+- pi-agent-core `agent-loop.js` 天然提供 `config.getFollowUpMessages?.()` hook（L125），模型"想停"时必被调用；返回非空 → loop 续命
 - OpenClaw 0503 没有往 `AgentLoopConfig` 传这个字段
-- 我们**一行 sed 改 `/app/node_modules/@mariozechner/pi-agent-core/dist/agent-loop.js` 文件**，让所有 config 自动走 `globalThis.__openclaw_stopHookPipeline` fallback
-- 插件只管往 pipeline 注册 hook，pipeline drain 即可续命
+- 一行 sed 改 `/app/node_modules/@mariozechner/pi-agent-core/dist/agent-loop.js`，让原 hook 先跑，空了再走 `globalThis.__openclaw_stopHookPipeline` fallback
+- 插件挂一个 pipeline 到 globalThis；**所有规则住在 `stop-hook-rules.yaml`**，以数据形式定义 preconditions / fire_when / message
 
 ---
 
 ## 绝对铁律（违反即回滚）
 
-1. **禁止 watchdog**。本模块内不得出现任何轮询、setInterval、markPendingViolation、延后 wake 的 fallback 路径。续命必须发生在 loop 同一轮内，延迟 < 1 秒。
-2. **禁止 fallback**。pipeline drain 返回空 = loop 允许退出。不许再弯弯绕绕补救（飞书卡片、兜底 wake、heartbeat 回灌）。用户行为由 pipeline 表达，不由残留路径表达。
-3. **禁止 bridge/probe**。不写"运行时扫 dist 找模块"之类的 hack。SDK 契约走 `globalThis.__openclaw_stopHookPipeline` 这一个约定，一进一出。
-4. **禁止 prototype mutation**。不 patch Agent.prototype、AgentSession.prototype 或 SDK class 上任何成员。
+1. **禁止 watchdog / wake / 事后唤醒**：所有续命发生在 loop 同一轮内，延迟 < 1 秒
+2. **禁止 fallback**：pipeline drain 返回空 = loop 允许退出，不再弯弯绕绕补救
+3. **禁止 bridge / probe / prototype mutation**：SDK 契约走 `globalThis.__openclaw_stopHookPipeline` 这一个约定
+4. **禁止把规则写死在代码里**：规则 = 数据（YAML）。只有**执行器**在代码里（`createRuleHook` 工厂）
+5. **禁止闲聊误报**：每条规则必须有 `preconditions` 筛掉闲聊/短消息/系统回环（HEARTBEAT_OK/NO_REPLY）
 
 ---
 
 ## 核心契约
 
-### pi-agent-core 这一头（SDK 端 · 不动）
+### SDK 侧（不动）
 
-`/app/node_modules/@mariozechner/pi-agent-core/dist/agent-loop.js` 的主 loop：
+`/app/node_modules/@mariozechner/pi-agent-core/dist/agent-loop.js` 主 loop 的 `getFollowUpMessages` 是**天然契约**。我们用 faux provider + `runAgentLoop` 验过 6/6 全绿，`docker/plugins/her-antitalker-poc/smoke-test.mjs` 每次部署前跑。
 
-```js
-while (true) {
-  // ...inner loop: 处理 tool calls, 每个 turn 结束收 steering messages...
+### OpenClaw 侧 patch（单点）
 
-  // Agent would stop here. Check for follow-up messages.
-  const followUpMessages = (await config.getFollowUpMessages?.()) || [];
-  if (followUpMessages.length > 0) {
-    pendingMessages = followUpMessages;
-    continue;  // 续命: 把消息塞进 context, 回 inner loop
-  }
-  break;  // queue 空 -> 允许退出
-}
-```
-
-这个 hook **天然在 SDK 里，不需要我们添加**。我们用 faux provider + `runAgentLoop` 跑过 6/6 全绿的契约测试：
-
-```text
-✅ H1: getFollowUpMessages 被 loop 主动调用: 实际 3 次
-✅ H2: 非空返回会续 loop, 模型被多次调用: faux callCount=3
-✅ H3: getFollowUpMessages 调用总数 = 轮次数: 3
-✅ H4: 返回空后 loop 正常退出
-✅ 最终消息里出现 followup 文本: followup-1 inject 成功
-✅ turn_end 发出 3 次: 3
-```
-
-契约测试脚本路径：`docker/plugins/her-antitalker-poc/verify-followup-hook.mjs`
-
-### OpenClaw 这一头（今天的 0503 状态）
-
-`/app/dist/selection-*.js` 构造 `queueHandle` 时：
-
-```js
-queueHandle = {
-  queueMessage: async (text, options) => {
-    if (options?.steeringMode) activeSession.agent.steeringMode = options.steeringMode;
-    await activeSession.steer(text);     // 只接 steer, 不接 followUp
-  },
-  isStreaming, isCompacting, cancel, abort,
-};
-```
-
-`AgentLoopConfig` 构造时**没传 `getFollowUpMessages`**（pi-agent-core Agent 默认会传 `() => this.followUpQueue.drain()`，但 `followUpQueue` 永远空，因为没人调 `agent.followUp(text)`）。
-
-### 我们的 Patch（运行时端）
-
-改 `/app/node_modules/@mariozechner/pi-agent-core/dist/agent-loop.js` **一行**：
+`agent-loop.js` L127 的一行：
 
 ```diff
--const followUpMessages = (await config.getFollowUpMessages?.()) || [];
-+const followUpMessages = (await (config.getFollowUpMessages ?? globalThis.__openclaw_stopHookPipeline)?.()) || [];
+- const followUpMessages = (await config.getFollowUpMessages?.()) || [];
++ const followUpMessages = await (async () => {
++   const __orig = config.getFollowUpMessages ? await config.getFollowUpMessages() : [];
++   if (__orig && __orig.length > 0) return __orig;
++   const __gp = globalThis.__openclaw_stopHookPipeline
++             || global.__openclaw_stopHookPipeline
++             || globalThis[Symbol.for('openclaw.stopHookPipeline.v1')];
++   return (__gp ? (await __gp()) || [] : []);
++ })();
 ```
 
-**效果**：
-- 原来有 `getFollowUpMessages` 的 config（Agent 默认的 `followUpQueue.drain`）不受影响
-- 原来没有 `getFollowUpMessages` 的 config（OpenClaw 构造的）会自动走 `globalThis.__openclaw_stopHookPipeline`
-- 两者不冲突
+**重要**：不是 `??` 短路 — 原 hook **先跑**，只有它返回**空**，才走我们的 pipeline。这保留了 SDK 默认行为（`Agent.followUpQueue.drain()`），同时让 OpenClaw 构造的 loop 自动接入我们的规则。
 
----
+由 `docker/plugins/her-antitalker-poc/patch-agent-loop.sh` 在 entrypoint 自动 apply（幂等、安全、可回滚）。
 
-## 运行时对象契约
+### 插件侧（框架 + 数据）
 
-### `globalThis.__openclaw_stopHookPipeline`
-
-类型：`() => Promise<Array<{ role: "user"; content: string | ContentBlock[] }>>`
-
-**非常严格**：
-
-- 返回**空数组** = 允许 loop 正常退出
-- 返回**非空数组** = loop 续命，消息被 inject 到 user role
-- 绝对不允许抛错（抛错会让 patched agent-loop 报错，影响 SDK 稳定性）；内部捕获
-- 不能阻塞超过 2 秒（SDK 没 timeout 保护，会卡死 loop）
-- 不能依赖任何"在 loop 外触发的异步投递" — 所有决策在 drain 函数同步计算完毕
-
-### 注册时机
-
-插件 `onStart` 时挂上 `globalThis.__openclaw_stopHookPipeline = () => pipeline.drain()`。挂一次，存活整个 node 进程。
-
----
-
-## Pipeline 内部结构
-
-```
-docker/plugins/her-antitalker-poc/stop-hook-pipeline.ts
-  └─ class StopHookPipeline
-        ├─ register(name, fn, priority)   // 插件挂钩
-        ├─ evaluate(ctx) / drain()        // 按优先级跑所有 hook, 聚合非空返回
-        └─ continuationCount              // 防死循环: 同一 session 连续 N 轮强制续命后放行
-```
-
-### 现已注册的 hook
-
-| name | priority | 检测 | 返回 |
+| 层 | 位置 | 职责 | 改动代价 |
 |---|---|---|---|
-| `no-toolcall-guard` | 20 | 本轮 `toolsBySessionKey[sk]` 无 substantial tool（非 message/cron/sessions_yield） | YAML 配置的续命消息 |
-| `antitalker:prose-only` | 10 | 文本含承诺词（"我来"/"let me"）且无 tool call | 固定续命模板 |
+| **执行器** | `stop-hook-pipeline.ts` | pipeline + rule engine (`createRuleHook`) + YAML loader + mtime watcher | 改动需 PR + image rebuild |
+| **规则** | `stop-hook-rules.yaml` | 所有规则数据 | 改 YAML → 2 秒热加载，无需重启 |
 
-### Dead-loop 保护
+---
 
-`continuationCount` 达到 `maxContinuationTurns`（默认 3） → 本 session 放行一次，重置。保证恶性情况下 loop 最多被硬续命 3 轮。
+## 规则 YAML Schema（source of truth）
+
+路径：
+- 容器内：`/data/.openclaw/workspace/.antitalker/stop-hook-rules.yaml`
+- host：`/home/cltx/.openclaw/workspace/.antitalker/stop-hook-rules.yaml`
+
+热加载：mtime polling（2 秒）。改文件保存后自动 `pipeline.unregisterAll() + installRules()`。
+
+```yaml
+enabled: true                 # 全局 kill switch
+max_continuation_turns: 3     # pipeline 级死循环上限（单 session）
+
+rules:
+  - id: <unique-id>
+    enabled: true
+    priority: 20              # 高优先级先跑；任一 hook fire 即终止
+
+    # ── Preconditions: ALL 必须通过,否则此 rule 直接跳过（不进 fire_when）──
+    preconditions:
+      min_user_message_length: 10               # 用户消息 < 10 字 → 跳过（闲聊过滤）
+      min_assistant_text_length: 20             # Her 回复 < 20 字 → 跳过
+      user_text_matches_any:                    # 用户消息必须 match 至少一条 regex
+        - '帮我|检查|修|写|查'
+      assistant_text_skip_if_matches_any:       # Her 回复 match 任一就跳过
+        - '^HEARTBEAT_OK'
+        - '^NO_REPLY'
+
+    # ── Fire conditions: ANY 命中即 fire ──
+    fire_when:
+      no_tool_call: true                        # 本 turn 零 tool call
+      no_substantial_tool: true                 # 本 turn 没调白名单 tool（优先级高于 no_tool_call）
+      text_matches_any:                         # 回复 match 任一 regex
+        - '我(?:来|去|先|现在|马上|立刻)'
+        - "\\bI'?ll\\b"
+
+    substantial_tools:                          # 白名单（仅 no_substantial_tool=true 时用）
+      - exec
+      - read
+      - write
+      - edit
+
+    max_retries: 1                              # 本 rule 单 session 连续续命上限
+    message: "⚠️ 规则说明 / 给 LLM 的提示..."
+```
+
+### 扩展规则的工作流
+
+添加新规则 / 修关键词 / 调 threshold / 扩白名单：
+
+1. 改 `/data/.openclaw/workspace/.antitalker/stop-hook-rules.yaml`
+2. 等 2 秒
+3. 看 `docker logs carher-200 --tail 20` 里 `stop-hook rules loaded · installed=[...]` 已更新
+4. 发消息验证
+
+**不改代码、不重启、不 rebuild**。
+
+---
+
+## 当前部署的规则
+
+### 1. `no-toolcall-guard`（priority 20，主力）
+
+用户布置任务，Her 不调任何实质性 tool 就想停 → 续命。
+
+- 闲聊过滤：`min_user_message_length: 10`（"hi"/"嗨"/"?" 等短消息直接跳过）
+- 系统回环过滤：`assistant_text_skip_if_matches_any: [^HEARTBEAT_OK, ^NO_REPLY]`
+- 白名单：`exec / read / write / edit / feishu_doc / feishu_sheet / feishu_bitable`
+- `message_send / cron / sessions_yield / memory_search / wait` 不算实质 tool
+
+### 2. `prose-only-ending`（priority 10，兜底）
+
+Her 回复里有承诺词（"我来/让我/I'll/Let me"）但一个 tool 都没调 → 续命。
+
+比 no-toolcall-guard 更严格：除了"没 tool"，还要求文本出现承诺语。
+
+---
+
+## Dead-loop 保护
+
+两层：
+
+1. **rule 级** `max_retries`：单 rule 对单 session 连续 fire 上限
+2. **pipeline 级** `max_continuation_turns`（默认 3）：所有 rule 加总的硬上限
+
+`resetContinuationCount(sessionKey)` 在新 user 消息到达时自动触发（由 `before_message_write` user-capture hook 调）。
 
 ---
 
 ## 为什么不能用 watchdog fallback（血的教训）
 
-v9.0 曾经走 BMW 同步 mark + 5s watchdog + heartbeat wake 的路径。问题：
+v9.0 曾经走 BMW 同步 mark + 5s watchdog + heartbeat wake。对比：
 
-| 维度 | watchdog 路径 | pipeline 路径 |
+| 维度 | watchdog | stop-hook-pipeline |
 |---|---|---|
-| 触发点 | assistant 消息已经写完（turn 已结束） | turn 即将结束那一刻 |
-| 延迟 | ~30 min（heartbeat 间隔） | < 1 秒（同 loop 内 continue） |
-| 中断当前消息 | 不能，只能起新 turn | 原 loop 直接续 |
-| 飞书卡片 | 必须配（作为通知） | 不需要 |
-| 死循环风险 | 极高（wake → 新 turn → 再 BMW → 再 watchdog） | 有 counter 保护 |
-| 架构冗余 | 违规检测 + audit 群 + 红卡 + heartbeat 的一整套 | 单向 pipeline.drain |
+| 触发点 | assistant 消息已写完（turn 结束） | turn 即将结束那一刻 |
+| 延迟 | ~30min（heartbeat 间隔） | < 1 秒（同 loop 内 continue） |
+| 中断当前 turn | 不能，只能起新 turn | 原 loop 直接续 |
+| 语义 | 事后罚款 | 同轮拦下 |
+| 死循环风险 | 极高 | 有 counter |
 
-watchdog 是"事后罚款"，pipeline 是"同轮拦下"。**同一任务同时用两套 = 回到 watchdog 的语义**，因此 M1 之后**不再有 watchdog fallback**。
+**M1 之后不再有 watchdog fallback**。
 
 ---
 
-## Deployment（生产落地）
+## Deployment
 
-### Patch 脚本
+### 镜像构建时 vs 启动时
 
-`docker/plugins/her-antitalker-poc/patch-agent-loop.sh`：
+- **推荐**：`Dockerfile.carher.v2` 最后一条 `RUN` 跑 patch（持久到 image layer）
+- **必需**：`scripts/carher-entrypoint.sh` 启动前再跑一次（幂等，防止 npm install / SDK 升级覆盖后 patch 丢失）
 
-```bash
-#!/bin/bash
-# In-place patch pi-agent-core agent-loop.js: add globalThis fallback for getFollowUpMessages
-set -euo pipefail
-TARGET="/app/node_modules/@mariozechner/pi-agent-core/dist/agent-loop.js"
-MARKER="globalThis.__openclaw_stopHookPipeline"
-[[ ! -f "$TARGET" ]] && { echo "SKIP: $TARGET not found"; exit 0; }
-grep -q "$MARKER" "$TARGET" && { echo "SKIP: already patched"; exit 0; }
-cp "$TARGET" "${TARGET}.orig.$(date +%s)"
-sed -i 's|const followUpMessages = (await config\.getFollowUpMessages?\.()) || \[\];|const followUpMessages = (await (config.getFollowUpMessages ?? globalThis.__openclaw_stopHookPipeline)?.()) || [];|' "$TARGET"
-grep -q "$MARKER" "$TARGET" && echo "PATCHED $TARGET" || { echo "FAILED"; exit 1; }
-```
+### SDK 升级风险
 
-特性：
-- **幂等**：已 patched 的文件 skip
-- **可回滚**：原文件保留 `.orig.<timestamp>` 备份
-- **版本无关**：pattern 匹配失败就失败，不会损坏文件
-
-### 触发时机
-
-1. 镜像构建时（Dockerfile 最后一条 RUN）— 推荐
-2. 容器启动时（entrypoint 脚本开头）— 次选，允许 npm install 后也能恢复
-
-### 版本升级时的风险
-
-- npm install / pi-agent-core 升级会覆盖 `agent-loop.js` → patch 丢失
-- **对策**：在启动 entrypoint 无条件跑 patch-agent-loop.sh，幂等保障每次启动后 patch 都存在
-- **警戒**：SDK 升级若改了 L125 附近的 `const followUpMessages = ...` 表达式，sed pattern 会失配 → patch 不生效 → sent 回旧行为（Her 会重新装死）。这是可接受退化（不造成崩溃），但需要 CI check 兜底
+- `npm install @mariozechner/pi-agent-core@new` 会覆盖 `agent-loop.js` → patch 丢
+- 对策：entrypoint 无条件跑 patch-agent-loop.sh，幂等保障
+- 警戒：SDK 改了 L125 附近的表达式 → sed pattern 失配 → patch 跳过（不破坏文件）→ Her 回退到"装死"行为（可接受退化，不造成崩溃）
 
 ### CI 检查
 
-- 单元测试：`stop-hook-pipeline.integration.test.ts` — 拷贝生产 agent-loop.js 到 /tmp，应用 patch，验证 `globalThis.__openclaw_stopHookPipeline` 被调用
-- 镜像测试：构建后跑 `node -e "..."` 验证 `globalThis` 注册路径生效
+- `smoke-test.mjs`：38 case 全绿 = 部署可过
+  - patch-agent-loop.sh（幂等/skip/backup）
+  - StopHookPipeline 框架（register/evaluate/counter/priority）
+  - createRuleHook 规则引擎（preconditions/fire_when/regex/disabled）
+  - loadStopHookRules + installRules（YAML → hooks）
+  - watchRulesFile（mtime 热加载）
+  - E2E（真实 pi-agent-core + faux + globalThis drain）
 
 ---
 
-## 验证实录（2026-05-07）
+## 生产实证
 
-### 契约验证（SDK 端）
+### M1 契约验证（2026-05-07）
 
-脚本：`/tmp/verify-test.mjs` · 在 carher-200 0503 生产容器内跑：
+在 carher-200 0503 生产容器内 `runAgentLoop` + faux provider：
 ```
-✅ H1-H6 全绿 · exit 0
-faux.callCount=3 · turnEnds=3
-```
-
-### In-place patch 验证（PoC）
-
-脚本：`/tmp/tg-poc-clean.mjs` · 在 carher-200 0503 生产容器内跑：
-
-```
-A. 原版 runAgentLoop, 不传 hook:   faux.callCount=1  pipelineCalls=0 ✅ 一轮停
-B. Patched agent-loop.js:          faux.callCount=3  pipelineCalls=3 ✅ 续命 2 轮
+✅ getFollowUpMessages 被 loop 主动调 3 次
+✅ 非空返回续 loop, faux callCount=3
+✅ 返回空后 loop 正常退出
 ```
 
-增量 = 2 轮续命，**global fallback 100% 生效**。
+### M1 in-place patch 生产生效（2026-05-07）
+
+```
+07:41:43  pipeline drain CALLED seq=1
+07:41:43  pipeline drain seq=1 → 1 msgs      (续命)
+07:41:47  Her 被迫再调 exec
+07:41:49  pipeline drain seq=2 → 0 msgs      (放行)
+```
+
+### M2 闲聊误报修复（2026-05-07）
+
+```
+"hi" → preconditions 阻止 no-toolcall-guard（min_user_message_length=10）→ drain 0 msgs
+真任务 "帮我修 bug" + 无 tool → drain 1 msg → 续命
+真任务 + exec → no_substantial_tool=false → drain 0 msgs
+```
 
 ---
 
-## 不得做的事（任务约束）
+## 不得做的事
 
-- ❌ 不用 `agent-followup-bridge.ts` 那种 probe dist 的 hack（已删）
-- ❌ 不用 `markPendingViolation` 作为 guard 的 fallback（已删）
-- ❌ 不用 prototype mutation 去 patch Agent / AgentSession
-- ❌ 不写任何 "bridge 不 active 就走 watchdog" 的分支
-- ❌ 不在 loop 内访问生产 node_modules 外的任何异步队列（所有决策在 drain 内同步计算）
+- ❌ 把新规则加到 `stop-hook-pipeline.ts` 代码里（应该加到 YAML）
+- ❌ 把正则 `/我来/` 之类硬编码到 .ts 里（规则 = 数据）
+- ❌ 给 no-toolcall-guard 加 fallback wake / markPendingViolation 分支
+- ❌ 用 `agent-followup-bridge.ts` 之类 dist probe（早已删）
+- ❌ 不加 `preconditions` 就直接 fire → 闲聊必误报

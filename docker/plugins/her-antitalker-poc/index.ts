@@ -76,18 +76,21 @@ import { createRequire } from "node:module";
 const _require = createRequire("/app/docker/plugins/her-antitalker-poc/index.ts");
 
 // -------- Stop-Hook Pipeline (M1: same-turn enforcement) --------
-import { StopHookPipeline, createProseOnlyHook, createGetFollowUpMessages } from "./stop-hook-pipeline.js";
-import type { StopHookContext } from "./stop-hook-pipeline.js";
+import { StopHookPipeline, createGetFollowUpMessages, loadStopHookRules, installRules, watchRulesFile } from "./stop-hook-pipeline.js";
+import type { StopHookContext, StopHookRulesFile } from "./stop-hook-pipeline.js";
 // M1 (2026-05-07): agent-followup-bridge removed. Same-turn enforcement is delivered by
 // patched agent-loop.js → globalThis.__openclaw_stopHookPipeline. No bridge, no watchdog
 // fallback, no wake tricks. See docs/her/stop-hook-pipeline-architecture.md.
 // -------- No-Toolcall Guard (M1.1: YAML-driven, no keyword matching) --------
-import { NoToolcallGuard } from "./no-toolcall-guard.js";
+// M1 (2026-05-07): no-toolcall-guard is no longer a bespoke class; it's a plain
+// rule in stop-hook-rules.yaml evaluated by createRuleHook.
 
 // -------- Constants --------
 const PLUGIN_ID = "her-antitalker-poc";
 const CONFIG_PATH = "/data/.openclaw/workspace/.antitalker/rules.yaml";
-const NO_TOOLCALL_GUARD_YAML = "/data/.openclaw/workspace/.antitalker/no-toolcall-guard.yaml";
+// Unified rules file — all stop-hook rules (no-toolcall-guard, prose-only-ending,
+// any future rule) live here as pure data. Hot-reloaded via mtime polling.
+const STOP_HOOK_RULES_YAML = "/data/.openclaw/workspace/.antitalker/stop-hook-rules.yaml";
 // v9.0 · audit-group.json 路径默认是 /data/.openclaw/workspace/.antitalker/audit-group.json
 // 用 let + getter,允许测试通过 _handlers.setAuditGroupPath() 重定向
 let AUDIT_GROUP_PATH = "/data/.openclaw/workspace/.antitalker/audit-group.json";
@@ -1759,27 +1762,35 @@ const plugin = {
       state.violationWatchdogTimer = setInterval(violationWatchdog, 5_000);
       log("info", "violation_watchdog started (5s interval)");
 
-      // ─── M1: Stop-Hook Pipeline · globalThis registration (same-turn enforcement) ───
-      // Bind pipeline.drain() to globalThis.__openclaw_stopHookPipeline. The in-place
-      // patched pi-agent-core agent-loop.js (see patch-agent-loop.sh) reads this global
-      // when config.getFollowUpMessages is absent — any OpenClaw-constructed AgentLoop
-      // automatically gets same-turn enforcement. No bridge. No watchdog. No fallback.
+      // ─── M1: Stop-Hook Pipeline · YAML-driven rule engine + globalThis binding ───
+      // Rules live in stop-hook-rules.yaml (hot-reloaded via mtime polling).
+      // Pipeline.drain() is bound to globalThis.__openclaw_stopHookPipeline so the
+      // patched pi-agent-core agent-loop.js (see patch-agent-loop.sh) can find it.
+      // No bridge. No watchdog. No fallback. All rule logic is pure data.
       try {
         const pipeline = StopHookPipeline.getInstance();
 
-        // antitalker:prose-only (commitment text without tool call)
-        pipeline.register("antitalker:prose-only", createProseOnlyHook(), 10);
-
-        // no-toolcall-guard (YAML-driven substantial-tool whitelist)
-        const guard = NoToolcallGuard.fromYaml(NO_TOOLCALL_GUARD_YAML);
-        (state as any)._noToolcallGuard = guard;
-        pipeline.register("no-toolcall-guard", (ctx: StopHookContext) => {
-          const result = guard.evaluate(ctx.sessionKey, { toolNames: ctx.lastToolNames });
-          if (result && result.length > 0) {
-            return { shouldContinue: true, message: typeof result[0].content === "string" ? result[0].content : JSON.stringify(result[0].content), hookName: "no-toolcall-guard" };
+        // Initial rule load
+        const applyRules = (file: StopHookRulesFile, err?: Error): void => {
+          if (err) {
+            log("error", `stop-hook rules reload failed — keeping previous rules: ${String(err?.message ?? err).slice(0, 200)}`);
+            return;
           }
-          return { shouldContinue: false };
-        }, 20);
+          try {
+            const result = installRules(pipeline, file);
+            log("warn", `stop-hook rules loaded · enabled=${file.enabled} · installed=[${result.installed.join(",")}] · skipped=[${result.skipped.join(",")}] · max_continuation_turns=${file.max_continuation_turns ?? "default"}`);
+          } catch (e: any) {
+            log("error", `installRules crashed: ${String(e?.message ?? e).slice(0, 200)}`);
+          }
+        };
+        try {
+          applyRules(loadStopHookRules(STOP_HOOK_RULES_YAML));
+        } catch (e: any) {
+          log("error", `initial stop-hook rules load failed (will keep empty pipeline): ${String(e?.message ?? e).slice(0, 200)} · path=${STOP_HOOK_RULES_YAML}`);
+        }
+
+        // mtime watcher for hot-reload (2s)
+        try { watchRulesFile(STOP_HOOK_RULES_YAML, applyRules, 2000); } catch {}
 
         // Session-context locator for the drain function
         const getStopHookContext = (): StopHookContext | null => {
@@ -1791,22 +1802,24 @@ const plugin = {
                 lastAssistantHadToolCall: act.lastAssistantHadToolCall,
                 lastToolNames: state.toolsBySessionKey.get(sk) ?? [],
                 turnIndex: 0,
+                lastUserText: act.lastUserPreview || "",
               };
             }
           }
           return null;
         };
 
-        // globalThis registration — picked up by patched pi-agent-core agent-loop.js.
-        // Bind to BOTH globalThis and Node's global to survive vm/jiti isolation.
+        // globalThis binding — picked up by patched pi-agent-core agent-loop.js.
         const drainFn = createGetFollowUpMessages(pipeline, getStopHookContext);
         let drainCallSeq = 0;
         const wrappedDrain = async () => {
           drainCallSeq++;
-          log("warn", `pipeline drain CALLED seq=${drainCallSeq}`);
+          const ctx = getStopHookContext();
+          const ctxSummary = ctx ? `sk=...${ctx.sessionKey.slice(-20)} tools=[${ctx.lastToolNames.join(",")}] userLen=${(ctx.lastUserText ?? "").length} asstLen=${(ctx.lastAssistantText ?? "").length}` : "no-ctx";
+          log("warn", `pipeline drain CALLED seq=${drainCallSeq} · ${ctxSummary}`);
           try {
             const msgs = await drainFn();
-            log("warn", `pipeline drain seq=${drainCallSeq} → ${msgs.length} msgs`);
+            log("warn", `pipeline drain seq=${drainCallSeq} → ${msgs.length} msgs · hooks=[${pipeline.getRegisteredHooks().join(",")}]`);
             return msgs;
           } catch (e: any) {
             log("error", `pipeline drain crashed (fail-open): ${String(e?.message ?? e).slice(0, 200)}`);
@@ -1815,10 +1828,9 @@ const plugin = {
         };
         (globalThis as any).__openclaw_stopHookPipeline = wrappedDrain;
         try { (global as any).__openclaw_stopHookPipeline = wrappedDrain; } catch {}
-        // Also expose via a dedicated Symbol.for registry so any vm realm can resolve it.
         const GLOBAL_KEY = Symbol.for("openclaw.stopHookPipeline.v1");
         (globalThis as any)[GLOBAL_KEY] = wrappedDrain;
-        log("warn", `M1 stop-hook-pipeline: bound to globalThis/global/Symbol.for · globalThis===global? ${(globalThis as any) === (global as any)} · hooks=[${pipeline.getRegisteredHooks().join(",")}] · yaml=${NO_TOOLCALL_GUARD_YAML}`);
+        log("warn", `M1 stop-hook-pipeline: bound to globalThis/global/Symbol.for · hooks=[${pipeline.getRegisteredHooks().join(",")}] · yaml=${STOP_HOOK_RULES_YAML}`);
       } catch (pipelineErr: any) {
         log("error", `M1 stop-hook-pipeline registration failed: ${String(pipelineErr?.message ?? pipelineErr).slice(0, 200)}`);
       }
