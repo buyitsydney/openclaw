@@ -19,7 +19,9 @@
 # 死循环保护: pipeline 级别 max_continuation_turns (默认 3) — 单 session 连续
 # 强制续命 N 轮后放行一次,重置。
 
-enabled: true
+# 默认 disabled — 新容器 seed 后需主人一句话(见 antitalker skill)才开启。
+# 打开方式:改 enabled: true,2 秒热加载生效,不重启。
+enabled: false
 max_continuation_turns: 3
 
 # Observable sources: 声明"assistant 发给用户的话"到底从哪里读。
