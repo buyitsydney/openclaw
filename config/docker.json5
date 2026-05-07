@@ -144,25 +144,24 @@
     },
   },
 
-  // 2026-05-07 M2.1 · Fleet-wide idle timeout fix (elevated from u200 after
-  // carher-200 grayscale validation).
+  // 2026-05-07 M2.1 · Fleet-wide idle timeout fix.
   //
   // 问题:OpenClaw 2026.5.3 引入 LLM idle timeout,default=120s。
   // resolveLlmIdleTimeoutMs (selection-BgogoK8g.js:6075) 里唯一能绕过 120s 硬顶的
   // 分支是 modelRequestTimeoutMs,它由 models.providers.<id>.timeoutSeconds 产出。
   // agents.defaults.timeoutSeconds 被 DEFAULT_LLM_IDLE_TIMEOUT_MS=120s clamp。
   //
-  // Schema 要求 required:["baseUrl","models"]。baseUrl 必须等于 env
-  // ANTHROPIC_BASE_URL, 否则 Wangsu 会返回 "invalid streaming response"
-  // (199 事故 2026-04-25)。用 ${VAR} 确保两者同值。
+  // Schema 要求 required:["baseUrl","models"]。baseUrl 必须和 env 值一致,
+  // 否则 Wangsu 会返回 "invalid streaming response" (199 事故 2026-04-25)。
+  // 用 ${VAR} 显式对齐 env。
   //
-  // A/B 实证 (dist 临时强制 default=500ms 加速复现):
-  //   无此 block → 100% 出 "The model did not produce a response before the
-  //                         model idle timeout..."
-  //   有此 block → modelRequestTimeoutMs=600s 覆盖, 无 timeout。
+  // A/B 实证 (carher-200 anthropic + carher-199 anthropic & openrouter 双重验证,
+  // dist 临时强制 default=500ms 加速复现 prompt 阶段 idle timeout):
+  //   无此 block → 100% 触发 "The model did not produce a response before the
+  //                           model idle timeout..."
+  //   有此 block → modelRequestTimeoutMs=600s 覆盖, 0 条 timeout。
   //
-  // 199 的 openrouter 由 env discover, 这里不显式声明(models 数组不同 id)。
-  // 用户 config (u${N}.json5) 如覆盖 primary 到 openrouter 需自己按需声明。
+  // 覆盖 anthropic + openrouter 两个 provider(fleet 主要两个来源)。
   models: {
     providers: {
       anthropic: {
@@ -210,6 +209,24 @@
             maxTokens: 8192,
             cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
           },
+        ],
+      },
+      openrouter: {
+        apiKey: "${OPENROUTER_API_KEY}",
+        baseUrl: "https://openrouter.ai/api/v1",
+        timeoutSeconds: 600,
+        models: [
+          { id: "anthropic/claude-opus-4.7", name: "Claude Opus 4.7", api: "openai-completions", reasoning: true, input: ["text", "image"], contextWindow: 1000000, maxTokens: 128000, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } },
+          { id: "anthropic/claude-opus-4.6", name: "Claude Opus 4.6", api: "openai-completions", reasoning: true, input: ["text", "image"], contextWindow: 100000, maxTokens: 128000, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } },
+          { id: "anthropic/claude-sonnet-4.6", name: "Claude Sonnet 4.6", api: "openai-completions", reasoning: true, input: ["text", "image"], contextWindow: 100000, maxTokens: 64000, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } },
+          { id: "openai/gpt-5.5", name: "GPT-5.5", api: "openai-completions", reasoning: true, input: ["text", "image"], contextWindow: 200000, maxTokens: 128000, cost: { input: 2.5, output: 15, cacheRead: 0.25 } },
+          { id: "openai/gpt-5.4", name: "GPT-5.4", api: "openai-completions", reasoning: true, input: ["text", "image"], contextWindow: 200000, maxTokens: 128000, cost: { input: 2.5, output: 15, cacheRead: 0.25 } },
+          { id: "openai/gpt-5.3-codex", name: "GPT-5.3 Codex", api: "openai-completions", reasoning: true, input: ["text", "image"], contextWindow: 200000, maxTokens: 128000, cost: { input: 1.75, output: 14, cacheRead: 0.175 } },
+          { id: "google/gemini-3.1-pro-preview", name: "Gemini 3.1 Pro", api: "openai-completions", reasoning: true, input: ["text", "image"], contextWindow: 200000, maxTokens: 65536, cost: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 0.375 } },
+          { id: "minimax/minimax-m2.7", name: "MiniMax M2.7", api: "openai-completions", reasoning: false, input: ["text"], contextWindow: 200000, maxTokens: 16384, cost: { input: 0.8, output: 4 } },
+          { id: "z-ai/glm-5", name: "GLM-5", api: "openai-completions", reasoning: true, input: ["text"], contextWindow: 200000, maxTokens: 131072, cost: { input: 0.95, output: 2.55 } },
+          { id: "deepseek/deepseek-v4-pro", name: "DeepSeek V4 Pro", api: "openai-completions", reasoning: true, input: ["text"], contextWindow: 200000, maxTokens: 65536, cost: { input: 0.27, output: 1.1 } },
+          { id: "deepseek/deepseek-v4-flash", name: "DeepSeek V4 Flash", api: "openai-completions", reasoning: false, input: ["text"], contextWindow: 200000, maxTokens: 65536, cost: { input: 0.14, output: 0.28 } },
         ],
       },
     },
