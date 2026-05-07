@@ -30,10 +30,11 @@
   // instead of 'none' → canRelayToUser flips true → exec completion prompt
   // becomes 'The command completion details are:' instead of 'reply HEARTBEAT_OK only'.
   // Boundary: A2A/cron isolated sessions still silence (no feishu lastChannel).
-  // 2026-05-07 · M2.1 stop-hook-pipeline grayscale (carher-200 only):
-  // agents.defaults.timeoutSeconds = 600 caps the outer per-turn budget.
   agents: {
     defaults: {
+      // 2026-05-07 M2.1 · outer per-turn cap (10 min). Does NOT bypass the
+      // 120s hard idle cap on its own — that lever is below in
+      // models.providers.anthropic.timeoutSeconds.
       timeoutSeconds: 600,
       heartbeat: {
         target: "last",
@@ -41,27 +42,22 @@
     },
   },
 
-  // 2026-05-07 · M2.1 · models.providers.anthropic.timeoutSeconds = 600
-  // This is the ONLY lever that extends the LLM idle timeout past the hard
-  // 120s default (resolveLlmIdleTimeoutMs clamps agents.defaults.timeoutSeconds
-  // by min(value, 120s) but respects modelRequestTimeoutMs unclamped).
+  // 2026-05-07 M2.1 · The REAL fix for "model idle timeout":
+  // Only models.providers.<id>.timeoutSeconds bypasses the hard 120s cap in
+  // resolveLlmIdleTimeoutMs (selection-BgogoK8g.js L6075). OpenClaw 2026.5.3
+  // schema has required: ["baseUrl", "models"], so we declare the full shape.
   //
-  // When stop-hook-pipeline fires a same-turn continuation, the 2nd LLM call
-  // on top of a slow Wangsu 1st call can exceed 120s → user sees
-  // "The model did not produce a response before the model idle timeout".
+  // baseUrl MUST equal env ANTHROPIC_BASE_URL — any divergence is what killed
+  // carher-199 on 2026-04-25 ("invalid streaming response"). Using the
+  // ${VAR} substitution makes them identical by construction.
   //
-  // Shape copied from config/admin.json5 (the existing working template).
-  // baseUrl intentionally omitted — auto-discovered from ANTHROPIC_BASE_URL env.
-  // 199 previously died from an explicit baseUrl + env conflict, so we keep
-  // the env-driven discovery and only add timeoutSeconds.
-  //
-  // models list is the minimum that covers the primary alias resolution
-  // (anthropic/anthropic.claude-opus-4-7) used by docker.json5.
+  // Grayscale on carher-200 only. Promote to docker.json5 when verified.
   models: {
     providers: {
       anthropic: {
-        timeoutSeconds: 600,
         apiKey: "${ANTHROPIC_AUTH_TOKEN}",
+        baseUrl: "${ANTHROPIC_BASE_URL}",
+        timeoutSeconds: 600,
         models: [
           {
             id: "anthropic.claude-opus-4-7",
