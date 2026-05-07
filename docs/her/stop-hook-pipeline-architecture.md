@@ -1,94 +1,43 @@
-# Stop-Hook Pipeline 架构（Her 核心防睡框架）
+# Stop-Hook Pipeline 架构
 
-**版本**: M2.1 · 2026-05-07
-**状态**: 🚧 CEP 重构后待重新部署（旧 M2 已 hot-patch 在 200）
-**定位**: Her 同 turn 防睡 + 闲聊不误报 · 规则+事件模型全数据化 · 取代 v9.0 watchdog
+**版本**: 2026-05-07
+**定位**: Her 同 turn 防睡框架 — Complex Event Processing 规则引擎,规则全数据化。
 
-## 架构：Complex Event Processing (CEP)
+## 一句话
 
-这是**业界标准做法**，对标：
-- Drools / Esper（规则引擎 + Working Memory）
-- OPA / Rego（policy as data + host pushes context）
-- OpenTelemetry SDK（应用 emit events + SDK 内部聚合）
-- LangChain CallbackManager（runtime emit + handlers subscribe）
-- Kafka Streams / Flink CEP（事件流 + pattern declaration）
+pi-agent-core `agent-loop.js` 在每个 turn 快要结束时调 `config.getFollowUpMessages?.()`;如果返回非空 user messages 就 inject 进 context 让 loop continue。Stop-Hook Pipeline 把这条 hook 接到一个 CEP 引擎,引擎按 `stop-hook-rules.yaml` 的规则数据评估要不要续命。整条路径在同一个 agent loop turn 内,延迟 < 1 秒。
 
-三个原则贯穿到位：
-1. **应用 emit raw events**，不做判断（`pipeline.observeAssistantEvent()`）
-2. **引擎持有状态**，外部不碰累计器（pipeline 内部 `turnState` Map）
-3. **规则是数据**（YAML 声明 `observable_sources` + `preconditions` + `fire_when`）
+## 架构:Complex Event Processing
 
-Extension = 加 YAML 条目，不改 `.ts`。
+业界标准 CEP 模式,对标 Drools / Esper / OPA / Flink CEP / OpenTelemetry SDK / LangChain CallbackManager。
 
-## CEP 事件 API（pipeline 对外）
+三个原则:
+1. **应用 emit raw events**(`pipeline.observeAssistantEvent`),不做判断
+2. **引擎持有状态**(pipeline 内部 `turnState` Map),外部不碰累积器
+3. **规则是数据**(YAML 声明 `observable_sources` + `preconditions` + `fire_when`)
+
+扩展规则 = 加 YAML 条目,不改 `.ts`。
+
+## Pipeline 事件 API
 
 | 方法 | 时机 | 作用 |
 |---|---|---|
-| `observeAssistantEvent({sessionKey, content})` | BMW hook 每次被调 | 把 raw content blocks 扔进来,pipeline 内部抽 text + tool names,按 `observable_sources` 规则从 message tool args 抽文本 |
-| `markTurnBoundary(sessionKey)` | user message 到达 | 清本 turn 累计器,bump turnIndex,reset continuation counter |
-| `setLastUserText(sessionKey, text)` | user message 到达 | 给 rule preconditions 用 |
-| `pickActiveSessionKey()` | drain 时 | pipeline 自己选最近活动的 session |
-| `buildContext(sessionKey)` | drain 时 | pipeline 组装 StopHookContext 传给 rules |
-
-`index.ts` 里 antitalker 插件**只做事件映射**，不再维护 `assistantTextByTurnBySessionKey` 之类自建累计器。
-
-## 状态表
-
-| 项 | 状态 |
-|---|---|
-| 架构设计 | ✅ M2.1 CEP 定稿 |
-| `stop-hook-pipeline.ts` 框架 | ✅ 54/54 smoke 绿 |
-| `stop-hook-rules.yaml` 含 observable_sources | ✅ |
-| `index.ts` 退化为事件映射 | ✅ |
-| `patch-agent-loop.sh` | ✅ 幂等 + backup |
-| Dockerfile.carher.v2 | ✅ 已 COPY plugin 目录 |
-| carher-core image M2.1 build | ⏳ 待 build |
-| carher-200 冷启动部署 | ⏳ 待 |
-| 生产实测 "30min 后回来" 拦截 | ⏳ 待 |
-
-## 状态表
-
-| 项 | 状态 |
-|---|---|
-| 架构设计 | ✅ 定稿（本文档） |
-| `stop-hook-pipeline.ts` 执行器 | ✅ 生产运行 |
-| `stop-hook-rules.yaml` 规则文件 | ✅ 生产运行 · 2 条规则 |
-| `patch-agent-loop.sh` | ✅ 生产容器已应用 · 幂等 · 有 backup |
-| `smoke-test.mjs` | ✅ 38/38 绿 (host + 容器内) |
-| carher-200 部署 | ✅ 2026-05-07 08:07 上线 |
-| carher-13/198/199 部署 | ⏳ 待推 |
-| 生产实测 | ✅ 6 轮 drain 行为全部符合设计 (见§生产实证) |
-
----
-
-## 一句话总结
-
-- pi-agent-core `agent-loop.js` 天然提供 `config.getFollowUpMessages?.()` hook（L125），模型"想停"时必被调用；返回非空 → loop 续命
-- OpenClaw 0503 没有往 `AgentLoopConfig` 传这个字段
-- 一行 sed 改 `/app/node_modules/@mariozechner/pi-agent-core/dist/agent-loop.js`，让原 hook 先跑，空了再走 `globalThis.__openclaw_stopHookPipeline` fallback
-- 插件挂一个 pipeline 到 globalThis；**所有规则住在 `stop-hook-rules.yaml`**，以数据形式定义 preconditions / fire_when / message
-
----
-
-## 绝对铁律（违反即回滚）
-
-1. **禁止 watchdog / wake / 事后唤醒**：所有续命发生在 loop 同一轮内，延迟 < 1 秒
-2. **禁止 fallback**：pipeline drain 返回空 = loop 允许退出，不再弯弯绕绕补救
-3. **禁止 bridge / probe / prototype mutation**：SDK 契约走 `globalThis.__openclaw_stopHookPipeline` 这一个约定
-4. **禁止把规则写死在代码里**：规则 = 数据（YAML）。只有**执行器**在代码里（`createRuleHook` 工厂）
-5. **禁止闲聊误报**：每条规则必须有 `preconditions` 筛掉闲聊/短消息/系统回环（HEARTBEAT_OK/NO_REPLY）
-
----
+| `observeAssistantEvent({sessionKey, content})` | BMW hook | 消化 raw content blocks,抽 text + tool names,按 `observable_sources` 从 tool args 抽文本 |
+| `markTurnBoundary(sessionKey)` | user message 到达 | 清 per-turn 累积器,bump turnIndex,reset continuation counter |
+| `setLastUserText(sessionKey, text)` | user message 到达 | 供 rule preconditions 使用 |
+| `pickActiveSessionKey()` | drain 时 | pipeline 自选最近活动 session |
+| `buildContext(sessionKey)` | drain 时 | 组装 `StopHookContext` 传给 rules |
+| `drain()` | agent-loop `getFollowUpMessages` 被调时 | 跑所有 rules,返回 follow-up messages |
 
 ## 核心契约
 
-### SDK 侧（不动）
+### pi-agent-core 端 (SDK 不改)
 
-`/app/node_modules/@mariozechner/pi-agent-core/dist/agent-loop.js` 主 loop 的 `getFollowUpMessages` 是**天然契约**。我们用 faux provider + `runAgentLoop` 验过 6/6 全绿，`docker/plugins/her-antitalker-poc/smoke-test.mjs` 每次部署前跑。
+`/app/node_modules/@mariozechner/pi-agent-core/dist/agent-loop.js` 主 loop 的 `getFollowUpMessages?.()` 就是契约本身。用 faux provider + `runAgentLoop` 在 `smoke-test.mjs` 里验证。
 
-### OpenClaw 侧 patch（单点）
+### agent-loop.js 单点 patch
 
-`agent-loop.js` L127 的一行：
+在 agent-loop.js 原有 `const followUpMessages = (await config.getFollowUpMessages?.()) || []` 这一行改成 wrap 版本:先跑原 hook,空的时候才 fallback 到 `globalThis.__openclaw_stopHookPipeline`。
 
 ```diff
 - const followUpMessages = (await config.getFollowUpMessages?.()) || [];
@@ -102,55 +51,57 @@ Extension = 加 YAML 条目，不改 `.ts`。
 + })();
 ```
 
-**重要**：不是 `??` 短路 — 原 hook **先跑**，只有它返回**空**，才走我们的 pipeline。这保留了 SDK 默认行为（`Agent.followUpQueue.drain()`），同时让 OpenClaw 构造的 loop 自动接入我们的规则。
+由 `docker/plugins/her-antitalker-poc/patch-agent-loop.sh` 在 entrypoint 幂等 apply(有 backup,安全可回滚)。
 
-由 `docker/plugins/her-antitalker-poc/patch-agent-loop.sh` 在 entrypoint 自动 apply（幂等、安全、可回滚）。
-
-### 插件侧（框架 + 数据）
+### 插件端分层
 
 | 层 | 位置 | 职责 | 改动代价 |
 |---|---|---|---|
-| **执行器** | `stop-hook-pipeline.ts` | pipeline + rule engine (`createRuleHook`) + YAML loader + mtime watcher | 改动需 PR + image rebuild |
-| **规则** | `stop-hook-rules.yaml` | 所有规则数据 | 改 YAML → 2 秒热加载，无需重启 |
+| 执行器 | `stop-hook-pipeline.ts` | pipeline + `createRuleHook` + YAML loader + mtime watcher | PR + image rebuild |
+| 规则 | `stop-hook-rules.yaml` | 所有规则数据 | 改 YAML → 2 秒热加载,无需重启 |
 
----
+## 规则 YAML Schema
 
-## 规则 YAML Schema（source of truth）
+路径:
+- 容器内: `/data/.openclaw/workspace/.antitalker/stop-hook-rules.yaml`
+- host: `/home/cltx/.openclaw/workspace/.antitalker/stop-hook-rules.yaml`
 
-路径：
-- 容器内：`/data/.openclaw/workspace/.antitalker/stop-hook-rules.yaml`
-- host：`/home/cltx/.openclaw/workspace/.antitalker/stop-hook-rules.yaml`
-
-热加载：mtime polling（2 秒）。改文件保存后自动 `pipeline.unregisterAll() + installRules()`。
+热加载: mtime polling 2 秒。修改保存后自动 `pipeline.unregisterAll() + installRules()`。
 
 ```yaml
 enabled: true                 # 全局 kill switch
-max_continuation_turns: 3     # pipeline 级死循环上限（单 session）
+max_continuation_turns: 3     # pipeline 级死循环上限(单 session)
+
+# observable_sources:声明哪些 tool args 算 "user-visible text"
+# pipeline 自动从这些 tool 的 args 抽文本累积到 lastAssistantText
+observable_sources:
+  outbound_message_tools: [message_send, feishu_send, feishu_send_markdown]
+  outbound_message_text_fields: [text, content, body]
 
 rules:
   - id: <unique-id>
     enabled: true
-    priority: 20              # 高优先级先跑；任一 hook fire 即终止
+    priority: 20              # 高优先级先跑;任一 hook fire 即终止
 
-    # ── Preconditions: ALL 必须通过,否则此 rule 直接跳过（不进 fire_when）──
+    # Preconditions: ALL 必须通过,否则此 rule 直接跳过(不进 fire_when)
     preconditions:
-      min_user_message_length: 10               # 用户消息 < 10 字 → 跳过（闲聊过滤）
-      min_assistant_text_length: 20             # Her 回复 < 20 字 → 跳过
+      min_user_message_length: 10               # 用户消息 < 10 字 → 跳过
+      min_assistant_text_length: 20             # 回复 < 20 字 → 跳过
       user_text_matches_any:                    # 用户消息必须 match 至少一条 regex
         - '帮我|检查|修|写|查'
-      assistant_text_skip_if_matches_any:       # Her 回复 match 任一就跳过
+      assistant_text_skip_if_matches_any:       # 回复 match 任一就跳过
         - '^HEARTBEAT_OK'
         - '^NO_REPLY'
 
-    # ── Fire conditions: ANY 命中即 fire ──
+    # Fire conditions: ANY 命中即 fire
     fire_when:
       no_tool_call: true                        # 本 turn 零 tool call
-      no_substantial_tool: true                 # 本 turn 没调白名单 tool（优先级高于 no_tool_call）
-      text_matches_any:                         # 回复 match 任一 regex
+      no_substantial_tool: true                 # 本 turn 没调白名单 tool
+      text_matches_any:
         - '我(?:来|去|先|现在|马上|立刻)'
         - "\\bI'?ll\\b"
 
-    substantial_tools:                          # 白名单（仅 no_substantial_tool=true 时用）
+    substantial_tools:                          # 仅 no_substantial_tool=true 时用
       - exec
       - read
       - write
@@ -162,141 +113,67 @@ rules:
 
 ### 扩展规则的工作流
 
-添加新规则 / 修关键词 / 调 threshold / 扩白名单：
-
+添加新规则 / 修关键词 / 调 threshold / 扩白名单:
 1. 改 `/data/.openclaw/workspace/.antitalker/stop-hook-rules.yaml`
 2. 等 2 秒
-3. 看 `docker logs carher-200 --tail 20` 里 `stop-hook rules loaded · installed=[...]` 已更新
+3. `docker logs <container> --tail 20` 看到 `stop-hook rules loaded · installed=[...]` 已更新
 4. 发消息验证
 
-**不改代码、不重启、不 rebuild**。
+不改代码、不重启、不 rebuild。
 
----
+## 当前规则
 
-## 当前部署的规则
+### prose-only-ending (priority 30)
 
-### 1. `no-toolcall-guard`（priority 20，主力）
+Her 回复包含承诺词("我来/让我/I'll/Let me")但没调 substantial tool 就想停 → 续命。
 
-用户布置任务，Her 不调任何实质性 tool 就想停 → 续命。
+关键配置:
+- `text_matches_any`: 承诺词 regex 列表
+- `preconditions.min_user_message_length: 10` — 闲聊过滤
+- `preconditions.assistant_text_skip_if_matches_any`: `[^HEARTBEAT_OK, ^NO_REPLY]` — 系统回环过滤
 
-- 闲聊过滤：`min_user_message_length: 10`（"hi"/"嗨"/"?" 等短消息直接跳过）
-- 系统回环过滤：`assistant_text_skip_if_matches_any: [^HEARTBEAT_OK, ^NO_REPLY]`
-- 白名单：`exec / read / write / edit / feishu_doc / feishu_sheet / feishu_bitable`
-- `message_send / cron / sessions_yield / memory_search / wait` 不算实质 tool
+### no-toolcall-guard (priority 20)
 
-### 2. `prose-only-ending`（priority 10，兜底）
+用户布置任务,Her 不调任何实质性 tool 就想停 → 续命。
 
-Her 回复里有承诺词（"我来/让我/I'll/Let me"）但一个 tool 都没调 → 续命。
-
-比 no-toolcall-guard 更严格：除了"没 tool"，还要求文本出现承诺语。
-
----
+关键配置:
+- `fire_when.no_substantial_tool: true`
+- `substantial_tools`: `[exec, read, write, edit, feishu_doc, feishu_sheet, feishu_bitable]`
+- `preconditions.min_user_message_length: 10` — 闲聊过滤
 
 ## Dead-loop 保护
 
-两层：
+两层:
+1. **Rule 级** `max_retries`:单 rule 对单 session 连续 fire 上限
+2. **Pipeline 级** `max_continuation_turns`(默认 3):所有 rule 加总的硬上限
 
-1. **rule 级** `max_retries`：单 rule 对单 session 连续 fire 上限
-2. **pipeline 级** `max_continuation_turns`（默认 3）：所有 rule 加总的硬上限
+`resetContinuationCount(sessionKey)` 在新 user 消息到达时由 `markTurnBoundary` 自动触发。
 
-`resetContinuationCount(sessionKey)` 在新 user 消息到达时自动触发（由 `before_message_write` user-capture hook 调）。
+## 部署
 
----
+### 镜像
 
-## 为什么不能用 watchdog fallback（血的教训）
+- `Dockerfile.carher.v2` COPY plugin 目录进 image
+- `scripts/carher-entrypoint.sh` 启动时 seed `stop-hook-rules.yaml` 到 `/data/`(如果不存在),然后跑 `patch-agent-loop.sh`(幂等)
 
-v9.0 曾经走 BMW 同步 mark + 5s watchdog + heartbeat wake。对比：
+### SDK 升级兼容
 
-| 维度 | watchdog | stop-hook-pipeline |
-|---|---|---|
-| 触发点 | assistant 消息已写完（turn 结束） | turn 即将结束那一刻 |
-| 延迟 | ~30min（heartbeat 间隔） | < 1 秒（同 loop 内 continue） |
-| 中断当前 turn | 不能，只能起新 turn | 原 loop 直接续 |
-| 语义 | 事后罚款 | 同轮拦下 |
-| 死循环风险 | 极高 | 有 counter |
+- `npm install pi-agent-core@new` 会覆盖 agent-loop.js → patch 丢 → entrypoint 下次启动重新 apply(幂等保障)
+- SDK 改了 hook 位置表达式 → sed 失配 → patch 跳过(不破坏文件)→ pipeline 不生效但不崩
 
-**M1 之后不再有 watchdog fallback**。
+### 测试
 
----
+`docker/plugins/her-antitalker-poc/smoke-test.mjs` 是部署 gate。覆盖:
+- `patch-agent-loop.sh` 幂等 / skip / backup
+- `StopHookPipeline` 框架(register/evaluate/counter/priority)
+- `createRuleHook` 规则引擎(preconditions/fire_when/regex/disabled)
+- `loadStopHookRules` + `installRules`(YAML → hooks)
+- `watchRulesFile` 热加载
+- E2E: 真实 pi-agent-core + faux provider + globalThis drain
 
-## Deployment
+## 约束
 
-### 镜像构建时 vs 启动时
-
-- **推荐**：`Dockerfile.carher.v2` 最后一条 `RUN` 跑 patch（持久到 image layer）
-- **必需**：`scripts/carher-entrypoint.sh` 启动前再跑一次（幂等，防止 npm install / SDK 升级覆盖后 patch 丢失）
-
-### SDK 升级风险
-
-- `npm install @mariozechner/pi-agent-core@new` 会覆盖 `agent-loop.js` → patch 丢
-- 对策：entrypoint 无条件跑 patch-agent-loop.sh，幂等保障
-- 警戒：SDK 改了 L125 附近的表达式 → sed pattern 失配 → patch 跳过（不破坏文件）→ Her 回退到"装死"行为（可接受退化，不造成崩溃）
-
-### CI 检查
-
-- `smoke-test.mjs`：38 case 全绿 = 部署可过
-  - patch-agent-loop.sh（幂等/skip/backup）
-  - StopHookPipeline 框架（register/evaluate/counter/priority）
-  - createRuleHook 规则引擎（preconditions/fire_when/regex/disabled）
-  - loadStopHookRules + installRules（YAML → hooks）
-  - watchRulesFile（mtime 热加载）
-  - E2E（真实 pi-agent-core + faux + globalThis drain）
-
----
-
-## 生产实证
-
-### M1 契约验证（2026-05-07）
-
-在 carher-200 0503 生产容器内 `runAgentLoop` + faux provider：
-```
-✅ getFollowUpMessages 被 loop 主动调 3 次
-✅ 非空返回续 loop, faux callCount=3
-✅ 返回空后 loop 正常退出
-```
-
-### M1 in-place patch 生产生效（2026-05-07）
-
-```
-07:41:43  pipeline drain CALLED seq=1
-07:41:43  pipeline drain seq=1 → 1 msgs      (续命)
-07:41:47  Her 被迫再调 exec
-07:41:49  pipeline drain seq=2 → 0 msgs      (放行)
-```
-
-### M2 闲聊误报修复（2026-05-07 08:08）
-
-```
-"hi" → preconditions 阻止 no-toolcall-guard（min_user_message_length=10）→ drain 0 msgs
-真任务 "帮我修 bug" + 无 tool → drain 1 msg → 续命
-真任务 + exec → no_substantial_tool=false → drain 0 msgs
-```
-
-### M2 六轮生产 drain 行为表（2026-05-07 08:08–08:12，carher-200 真实飞书 p2p 会话）
-
-| seq | tools | userLen | asstLen | 结果 | 判定 |
-|---|---|---|---|---|---|
-| 1 | `[]` | 20 | 5 | 1 msg · 续命 | 真任务无 tool → no-toolcall-guard fire |
-| 2 | `[message]` | 266 | 8 | 0 msg · 放行 | Her 回 `NO_REPLY` → `^NO_REPLY` precondition skip |
-| 3 | `[exec]` | 4 | 28 | 0 msg · 放行 | 闲聊短消息 → `min_user_message_length: 10` 挡住 |
-| 4 | `[message]` | 2 | 8 | 0 msg · 放行 | 更短闲聊 + NO_REPLY 双挡 |
-| 5 | `[]` | 10 | 63 | 1 msg · 续命 | 飞书纯文字回复不会送达用户 → 正确拦截 |
-| 6 | `[message]` | 266 | 8 | 0 msg · 放行 | Her 改走 message send 后 NO_REPLY 收尾 |
-
-**结论**：6/6 次 drain 全部行为正确。零 hack。规则 = 数据。
-
-### 关于 seq=5 的 "拦截" 澄清
-
-Her 回了 63 字纯文字但没走 `message send` tool → 在飞书 channel 里消息不会真正送达用户 → pipeline 正确识别为"还没完成任务"强制续命 → Her 第二轮用 `message send` 发出 → 用户收到回复。
-
-这**不是误报**：飞书 session 的合法终态是"调过 message send tool"，不是"模型内部生成了文字"。规则设计吻合 channel 语义。
-
----
-
-## 不得做的事
-
-- ❌ 把新规则加到 `stop-hook-pipeline.ts` 代码里（应该加到 YAML）
-- ❌ 把正则 `/我来/` 之类硬编码到 .ts 里（规则 = 数据）
-- ❌ 给 no-toolcall-guard 加 fallback wake / markPendingViolation 分支
-- ❌ 用 `agent-followup-bridge.ts` 之类 dist probe（早已删）
-- ❌ 不加 `preconditions` 就直接 fire → 闲聊必误报
+- 新规则必须加到 YAML,不能硬编码到 `stop-hook-pipeline.ts`
+- Regex 必须数据化,不能在 `.ts` 里写 `new RegExp(...)`
+- 每条规则必须声明 `preconditions`(至少一条过滤闲聊/系统回环)
+- Pipeline drain 不能调网络 / 不能 await 超过几十 ms,所有判定基于已累积的 state

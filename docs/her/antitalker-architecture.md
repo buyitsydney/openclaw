@@ -1,96 +1,82 @@
-# Antitalker 行为监控插件架构
+# Antitalker 架构
 
-> **2026-05-07 M2 架构升级**：同 turn 防睡 + 闲聊不误报能力已迁移到独立的
-> **Stop-Hook Pipeline** rule engine。违规续命逻辑不再走 watchdog/wake，而是走
-> pi-agent-core `getFollowUpMessages` 同 turn 续命。详见
-> [stop-hook-pipeline-architecture.md](./stop-hook-pipeline-architecture.md)。
->
-> 本文档下面的 v8.5 watchdog 章节描述的是历史设计，**已被 M2 取代**。保留
-> 仅为追溯 v9.0 → M2 迁移动机。
+**更新**: 2026-05-07
+**定位**: Her 同 turn 防睡。Plugin 只做事件桥接,所有拦截逻辑在 stop-hook-pipeline。
+**完整机制**: [stop-hook-pipeline-architecture.md](./stop-hook-pipeline-architecture.md)
 
-## 当前版本
+## 一句话
 
-- **插件版本**: v8.5 + M2 stop-hook-pipeline · carher-200 已部署
-- **规则配置**:
-  - 违规检测规则（legacy，保留）: `/data/.openclaw/workspace/.antitalker/rules.yaml`
-  - **Stop-hook 规则（新,主力）**: `/data/.openclaw/workspace/.antitalker/stop-hook-rules.yaml`
-- **部署方式**: Dockerfile COPY 内置 (`/app/docker/plugins/her-antitalker-poc/`)
-- **SKILL 文件**: `/home/cltx/.openclaw/skills/guangshuobulian/SKILL.md` (per-container)
-- **状态**: carher-200 M2 已上线 (2026-05-07)，13/198/199 待推
+Plugin 订阅 `before_message_write` hook,把每条 assistant/user message 作为事件喂给 stop-hook-pipeline;pipeline 按 `stop-hook-rules.yaml` 的规则在同一个 agent loop turn 内决定是否续命(inject follow-up user message 让 LLM 继续干),延迟 < 1 秒。Plugin 自身是纯事件管道,无业务逻辑。
 
-## Hook 架构
+## Hook 清单
 
-antitalker 注册两个 OpenClaw plugin hooks：
+Plugin 注册一个 hook:
 
-| Hook | 触发时机 | ctx 字段 | 职责 |
-|------|----------|----------|------|
-| `before_message_write` (BMW) | assistant 消息写入前 | `agentId`, `sessionKey` | 写 convToSession 映射、记录 tools |
-| `message_sending` (MS) | 消息通过 channel deliver 外发时 | `channelId`, `accountId`, `conversationId`, `sessionKey`(首条), `messageId`, `senderId` | 检测违规、拦截、发卡、wake |
+| Hook | 行为 |
+|---|---|
+| `before_message_write` | assistant message → `pipeline.observeAssistantEvent({sessionKey, content})`;user message → `pipeline.markTurnBoundary(sk)` + `pipeline.setLastUserText(sk, txt)` |
 
-### 关键设计边界
+Plugin 同时把 `pipeline.drain()` 挂到 `globalThis.__openclaw_stopHookPipeline`,供 patched pi-agent-core `agent-loop.js` 在每个 turn 快要结束时调用。
 
-**`message_sending` 只在 channel deliver pipeline 触发。** 以下路径不经过 antitalker：
-
-| Path | 经过 hook? | 说明 |
-|------|-----------|------|
-| 主 session → 群/私聊消息 | ✅ | 正常外发，必须监控 |
-| isolated CLI (no deliver) | ❌ | 消息未发出，不需监控 |
-| subagent run mode | ❌ | 内部执行，不面向用户 |
-| A2A peer harness | ❌ | agent 间内部通信 |
-
-这是 by design：antitalker 职责是拦截「发给用户的外发消息」，未进 channel deliver 的消息不到用户眼前。
-
-## 核心数据流：多群 Wake 路由 (v8.5)
+## 决策流
 
 ```
-BMW fires (bot 处理群消息)
-  │ ctx.sessionKey = "agent:main:feishu:group:oc_24f93..."
-  │
-  ├─ extract oc_24f93... from sessionKey
-  ├─ state.convToSession.set("oc_24f93...", fullSessionKey)
-  └─ state.convToSession.set("feishu:oc_24f93...", fullSessionKey)
+LLM turn 进行中:
+  assistant message → BMW → pipeline.observeAssistantEvent
+                             (text / tool use 全累积到 per-turn state)
+  user message → BMW → pipeline.markTurnBoundary (重置累积)
+                    → pipeline.setLastUserText
 
-MS fires (消息外发到同一群)
-  │ ctx.conversationId = "oc_24f93..."
-  │ ctx.sessionKey = "" (非首条)
-  │
-  ├─ lookup: state.convToSession.get("oc_24f93...")
-  ├─ → 得到正确的 sessionKey
-  └─ wakeHer 路由到正确 session
+LLM 尝试退出 turn:
+  pi-agent-core agent-loop 调 getFollowUpMessages
+  → globalThis.__openclaw_stopHookPipeline()
+  → pipeline.drain() 按 priority 跑所有规则
+  → 命中 → 返回 [{role:"user", content: rule.message}]
+           → loop 继续, LLM 拿到这条 injected message 重新回复
+  → 不命中 → 返回 []
+           → loop 正常结束
 ```
 
-### sessionKey 格式
+## 规则来源 · stop-hook-rules.yaml
 
-```
-agent:main:feishu:group:oc_24f93dcf5e05d025b6cf12a204b1bd8f
-└─agent─┘└main┘└feishu┘└group┘└────── conversationId ──────┘
-```
+Plugin 把 `/data/.openclaw/workspace/.antitalker/stop-hook-rules.yaml` 的规则通过 `installRules(pipeline, file)` 注册到 pipeline。支持 mtime polling (2s) 热加载,改规则无需重启容器。
 
-## 规则清单
+完整 schema 见 [stop-hook-pipeline-architecture.md](./stop-hook-pipeline-architecture.md)。当前 2 条规则:
 
-| ID | 规则 | 级别 | 动作 |
-|----|------|------|------|
-| M1 | ETA 空头承诺 | enforce | 拦截 + 红卡 + wake |
-| M2 | 推拍板给主人 | shadow | 仅记录 (未来可能升 enforce) |
-| M3 | 承诺即睡 | shadow | 仅记录 |
-| prose_only_ending | 纯文字结尾无 tool | enforce | 拦截 + 红卡 + wake |
+| 规则 id | priority | 触发条件 | 动作 |
+|---|---|---|---|
+| `prose-only-ending` | 30 | 最后一条 assistant text 匹配承诺词 regex(`我来/让我/I'll/Let me/...`) | inject 续命 message |
+| `no-toolcall-guard` | 20 | 用户消息 ≥ 10 字(precondition) AND 本 turn 没调任何 substantial tool | inject 续命 message |
 
-### 豁免条件
+Substantial tools 白名单、regex 列表、max_retries、message 文本全部在 yaml 里,不在代码里。
 
-- 消息以 `NO_REPLY` 或 `HEARTBEAT_OK` 开头
-- 同 turn 有 substantial tool call (`exec`/`read`/`write`/`edit`/`feishu_doc`/`feishu_sheet`/`feishu_bitable`/`feishu_task_*`/`browser`/`web_fetch`/`feishu_group_history`/`memory_get`)
-- Self-report 豁免：wake 后首条纯文字汇报不触发 prose_only_ending 二次拦截
+## 版本/部署矩阵
 
-## v8.5 修复清单
+| 组件 | 文件 | 部署方式 |
+|---|---|---|
+| Plugin 本体 | `docker/plugins/her-antitalker-poc/` | `Dockerfile.carher.v2` COPY 进 image |
+| Stop-hook 引擎 | `stop-hook-pipeline.ts` | 同上 |
+| 规则数据 | `stop-hook-rules.yaml` | 同上 + 容器启动时 seed 到 `/data/` (entrypoint 逻辑),热加载 |
+| agent-loop.js patch | `patch-agent-loop.sh` | 容器启动时 entrypoint 调用 |
+| Plugin 运行时配置 | docker.json5 的 `plugins.entries.her-antitalker-poc.enabled=true` | bind mount |
 
-1. **BMW→MS convToSession bridge**: BMW 从 sessionKey 提取 `oc_xxx`，写入 convToSession map，MS 通过 conversationId 查到正确 session
-2. **stripQuotedContent 扩展**: 增加 markdown table rows、blockquotes、list items 的 strip
-3. **prose_only_ending self_report_skip**: wake 后首条纯文字汇报不二次拦截
-4. **MS debug logging**: 前 10 次 MS 调用记录完整 ctx 用于诊断
+## 测试
 
-## 相关文件
+`docker/plugins/her-antitalker-poc/smoke-test.mjs` 是本地 off-fleet 测试入口。覆盖:
+- pipeline 注册/注销/优先级/counter
+- createRuleHook 的 preconditions/fire_when 所有组合
+- YAML loader + 热加载
+- 实际启动 patched agent-loop.js + faux provider,验证续命链路
 
-- 插件代码: `plugins-poc/her-antitalker-poc/index.ts`
-- SKILL (Her 运行时): server `/home/cltx/.openclaw/skills/guangshuobulian/SKILL.md`
-- 规则 YAML: container `/data/.openclaw/workspace/.antitalker/rules.yaml`
-- 单元测试: `/tmp/test-antitalker-wake-routing.ts` (7/7 pass)
+部署前必须全绿。
+
+## Plugin 代码边界
+
+`docker/plugins/her-antitalker-poc/index.ts` ≤ 200 行,内容只有:
+- Plugin metadata (id/name/version/description)
+- BMW hook 注册,转发事件到 pipeline
+- stop-hook-rules.yaml 加载 + mtime watcher
+- `pipeline.drain()` 绑定到 `globalThis.__openclaw_stopHookPipeline`
+- Logger 适配
+
+业务逻辑零。新增/修改规则 → 改 yaml,不改代码。

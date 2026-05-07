@@ -1,18 +1,18 @@
 /**
  * stop-hook-pipeline.ts — Same-turn enforcement framework (CEP rule engine)
  *
- * Implements the getFollowUpMessages pattern from pi-agent-core: when the agent
- * loop has no more tool calls and is about to exit, this pipeline evaluates
- * registered hooks. If any hook fires, the returned message forces the loop to
- * continue (within the same turn — no watchdog, no wake, no bridge).
+ * Hook contract: pi-agent-core agent-loop calls `config.getFollowUpMessages?.()`
+ * when the model is about to stop a turn. Non-empty return injects follow-up
+ * user messages and the loop continues. We route that hook (via globalThis)
+ * into this CEP engine which evaluates rules loaded from stop-hook-rules.yaml.
  *
- * ARCHITECTURE — Complex Event Processing (CEP):
+ * ARCHITECTURE — Complex Event Processing:
  *   1. Plugin emits raw events via observeAssistantEvent / markTurnBoundary /
- *      setLastUserText. The plugin does NOT own any per-turn accumulator.
+ *      setLastUserText. Plugin owns no per-turn state.
  *   2. Pipeline owns ALL state: per-session text buffer, per-session tools,
  *      continuation counter. External code never touches it directly.
- *   3. Rules are declarative data in YAML. New rule = new YAML entry.
- *      No .ts change needed.
+ *   3. Rules are declarative data in YAML. New rule = new YAML entry;
+ *      .ts untouched.
  *
  * See docs/her/stop-hook-pipeline-architecture.md.
  */

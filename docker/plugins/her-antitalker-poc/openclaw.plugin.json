@@ -1,7 +1,7 @@
 {
   "id": "her-antitalker-poc",
-  "name": "Antitalker v9.0",
-  "description": "行为监控: BMW 同步标记 + 5s 异步 watchdog · 私聊违规自维护 audit 群",
+  "name": "Antitalker",
+  "description": "Her 同 turn 防睡:BMW 事件桥接 + Stop-Hook Pipeline (CEP rule engine,规则数据化在 stop-hook-rules.yaml)",
   "version": "0.0.900",
   "entry": "./index.ts",
   "activation": { "onStartup": true },
