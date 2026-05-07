@@ -246,6 +246,18 @@ if [ -x /app/docker/plugins/her-antitalker-poc/patch-agent-loop.sh ]; then
     echo "WARN: patch-agent-loop.sh failed — stop-hook-pipeline will silently no-op"
 fi
 
+# Seed stop-hook-rules.yaml from image defaults if the runtime-path copy is
+# missing (fresh container / volume). Once seeded, operator can edit the live
+# file freely; the watcher will pick up changes. Never overwrites an existing
+# file — all per-operator customization is preserved.
+STOP_HOOK_RULES_DST="/data/.openclaw/workspace/.antitalker/stop-hook-rules.yaml"
+STOP_HOOK_RULES_SRC="/app/docker/plugins/her-antitalker-poc/stop-hook-rules.yaml"
+if [ ! -f "$STOP_HOOK_RULES_DST" ] && [ -f "$STOP_HOOK_RULES_SRC" ]; then
+  mkdir -p "$(dirname "$STOP_HOOK_RULES_DST")"
+  cp "$STOP_HOOK_RULES_SRC" "$STOP_HOOK_RULES_DST"
+  echo "seeded $STOP_HOOK_RULES_DST from image defaults"
+fi
+
 # Start Gateway in foreground
 echo "▶ Starting Gateway..."
 cd /app
