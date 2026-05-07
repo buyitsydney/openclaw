@@ -14,7 +14,6 @@
  */
 
 import { readFileSync, statSync } from "node:fs";
-import { createRequire } from "node:module";
 
 // ─── Context passed from the plugin to each hook ─────────────────────────────
 
@@ -280,11 +279,9 @@ function parseYaml(text: string): any {
       candidates.push(() => req("js-yaml"));
     }
   } catch {}
-  try {
-    const req2 = createRequire(import.meta?.url ?? ("file:///app/" as any));
-    candidates.push(() => req2("yaml"));
-    candidates.push(() => req2("js-yaml"));
-  } catch {}
+  // Skip createRequire(import.meta) here — OpenClaw's jiti loads plugins as CJS,
+  // and import.meta is a SyntaxError in that path. The primary require() path
+  // above works in both CJS (native) and when jiti wraps the module.
   for (const load of candidates) {
     try {
       const y = load();
