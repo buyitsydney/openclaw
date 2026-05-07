@@ -8,10 +8,13 @@
 # 规则执行: 按 priority 从高到低依次评估,第一条"命中"(返回 shouldContinue=true)
 # 就终止,续命消息进入 loop user role。
 #
-# 评估顺序:
-#   1. 所有 preconditions 必须通过 (AND) — 任一失败则跳过此 rule
-#   2. fire_when 任一匹配 (OR) — 命中则 fire
+# 评估顺序 (单 rule):
+#   1. 所有 preconditions 必须通过 (AND)  — 任一失败则跳过此 rule
+#   2. fire_when 里多个 clause 必须同时满足 (AND)  — 要 OR 就拆两条 rule
 #   3. fire 时返回 message 给 loop
+#
+# 注: "最后一句给用户的话" 来源 = assistant.text block + outbound message tool args
+# (by BMW hook 统一 capture 到 lastAssistantText)。
 #
 # 死循环保护: pipeline 级别 max_continuation_turns (默认 3) — 单 session 连续
 # 强制续命 N 轮后放行一次,重置。
@@ -20,24 +23,76 @@ enabled: true
 max_continuation_turns: 3
 
 rules:
-  # ─── Rule 1 · no-toolcall-guard ───────────────────────────────────────
-  # 用户给了任务(消息够长), Her 不调任何实质性 tool 就想停 → 续命
-  # 闲聊("hi"/"嗨"/"在吗")短消息走不到这条 rule (被 precondition 挡住)
-  - id: no-toolcall-guard
+  # ─── Rule 1 · prose-only-ending (priority 30 · 最高) ───────────────────
+  # 核心设计: 只看最后一句给用户的话。光说不练 = 有承诺/延后词但没真干 → 拦截。
+  # 不管 Her 本 turn 调了几次 tool,只要最后发给用户的话里出现
+  # "我来/让我/接下来/30 分钟后/稍后回来/I'll" 等承诺语 → 强制续命。
+  #
+  # 为什么不看 tool: Her 可能 exec 了 18 次后,最后一句 message send 发
+  # "30min 后回来给你报告" → end_turn 睡死。这时候看 toolcount 是抓不到的,
+  # 必须只看"最后一句话"。
+  - id: prose-only-ending
     enabled: true
-    priority: 20
+    priority: 30
     preconditions:
-      # 少于 10 字符视为闲聊/问候,不触发 guard
-      min_user_message_length: 10
-      # 排除 heartbeat / NO_REPLY 等系统回环消息
+      min_assistant_text_length: 10   # 至少 10 字,排除"好的"、"收到"、"OK"、NO_REPLY
+      min_user_message_length: 10     # 闲聊短消息不评估
       assistant_text_skip_if_matches_any:
         - '^HEARTBEAT_OK'
         - '^NO_REPLY'
     fire_when:
-      # 只看本 turn 的 tool 累计器里有没有"真干活"的 tool
+      text_matches_any:
+        # 中文:承诺要做但未做
+        - '我(?:来|去|先|现在|马上|立刻)'
+        - '让我'
+        - '我(?:会|将|要|得)'
+        - '接下来'
+        - '下一步'
+        # 中文:延后/稍后回来 (最常见的装死前言)
+        - '稍后'
+        - '待会|等会|一会|回头'
+        - '\d+\s*(?:min|分钟|小时|hour|h)\s*(?:后|之后|later)'
+        - '(?:明天|下午|晚点|晚上).*(?:再|之后|回来|汇报|告诉)'
+        - '(?:汇报|报告|告诉|跟你).*(?:你|结果)'
+        - '回来(?:给你|向你|跟你).*(?:报告|汇报|说|讲)'
+        # 英文:承诺/延后
+        - "\\bI'?ll\\b"
+        - '\\bLet me\\b'
+        - '\\bI (?:will|shall|should|can|need to)\\b'
+        - '\\bNext,?\\s*I\\b'
+        - '\\bNow (?:I|let)\\b'
+        - '\\bI.?ll\\s+(?:come back|report back|update you|check back)'
+        - '\\b(?:in|after)\\s+\\d+\\s*(?:min|minute|hour|hr)s?\\b'
+    max_retries: 2
+    message: |
+      ⚠️ antitalker prose-only-ending: 光说不练!
+
+      你最后一句话里有承诺/延后词(比如"我来 X/接下来/30 分钟后回来")但就此 end_turn。
+      这是典型的光说不练,会导致睡死。
+
+      禁止:
+      - 说"我来 X"然后 end_turn — 现在就调 tool 做 X
+      - 说"X 分钟后回来/稍后汇报" — 现在就继续干,别躲
+      - 说"接下来/下一步" 后停止 — 直接把下一步做了
+
+      允许:
+      - 说"已完成 X" 并 end_turn — 这是正确收尾
+      - 说"需要你确认 Y 再继续" 用 message send 反问 — 合法终态
+      - 说 NO_REPLY / HEARTBEAT_OK — 系统终态,不受此规则限制
+
+  # ─── Rule 2 · no-toolcall-guard (priority 20) ─────────────────────────
+  # 用户布置任务(消息够长),Her 本 turn 没调任何实质性 tool → 续命。
+  # 这是 prose-only 的兜底:即使用户消息里没有承诺词,只要她没真干活就拦。
+  - id: no-toolcall-guard
+    enabled: true
+    priority: 20
+    preconditions:
+      min_user_message_length: 10
+      assistant_text_skip_if_matches_any:
+        - '^HEARTBEAT_OK'
+        - '^NO_REPLY'
+    fire_when:
       no_substantial_tool: true
-    # 白名单: 调了任意一个就算真干活,不触发续命
-    # 非白名单 tool (message_send / cron / sessions_yield / memory_search / wait) 不算
     substantial_tools:
       - exec
       - read
@@ -48,49 +103,10 @@ rules:
       - feishu_bitable
     max_retries: 1
     message: |
-      ⚠️ antitalker stop-hook-pipeline: no-toolcall-guard
+      ⚠️ antitalker no-toolcall-guard: 没调 substantial tool
 
       用户让你干活,但你本 turn 没调任何实质性 tool (exec/read/write/edit/feishu_*)。
       禁止只说不干。立刻选择:
-      - 有具体动作要执行 → 调 tool
+      - 有具体动作 → 调 exec/read/write/edit
       - 信息不够 → 用 message send 精确反问一句就停
-      - 任务确实只需纯文字回答 → 忽略此提示,用 message send 发出即可 (message send 不算 substantial tool,但属于合法终态)
-
-  # ─── Rule 2 · prose-only-ending ───────────────────────────────────────
-  # 回复里出现"承诺词"(我来/让我/I'll/Let me)但没调任何 tool → 续命
-  # 这是比 no-toolcall-guard 更严格的 rule:除了"没 tool",还要求文本有承诺语
-  # 主要兜底 no-toolcall-guard 的 white list 漏网之鱼 (有 substantial tool 但
-  # 依然光说不练的极端情况)
-  - id: prose-only-ending
-    enabled: true
-    priority: 10
-    preconditions:
-      # 文本至少 20 字,排除"好的。"/"收到。"这类短确认
-      min_assistant_text_length: 20
-      # 闲聊短消息不评估此 rule
-      min_user_message_length: 10
-      assistant_text_skip_if_matches_any:
-        - '^HEARTBEAT_OK'
-        - '^NO_REPLY'
-    fire_when:
-      # 本 turn 连一个 tool 都没调,且文本里有承诺语 → fire
-      no_tool_call: true
-      text_matches_any:
-        # 中文承诺
-        - '我(?:来|去|先|现在|马上|立刻)'
-        - '让我'
-        - '我(?:会|将|要|得)'
-        - '接下来'
-        - '下一步'
-        # 英文承诺
-        - "\\bI'?ll\\b"
-        - '\\bLet me\\b'
-        - '\\bI (?:will|shall|should|can|need to)\\b'
-        - '\\bNext,?\\s*I\\b'
-        - '\\bNow (?:I|let)\\b'
-    max_retries: 1
-    message: |
-      ⚠️ antitalker stop-hook-pipeline: prose-only-ending
-
-      你的回复里有"我来/让我/I'll/Let me"这类承诺语,但一个 tool 都没调。
-      禁止光承诺不执行。立刻调 tool 把你承诺的事做了。
+      - 只需文字答复 → 用 message send 发出 (message send 不算 substantial,但属合法终态)

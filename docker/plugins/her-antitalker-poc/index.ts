@@ -1281,9 +1281,31 @@ function handleBeforeMessageWrite(event: any, ctx: any): any {
       if ((t === "toolCall" || t === "tool_use") && typeof block.name === "string") {
         tools.push(block.name);
         pushed++;
+        // M2 · 把发给用户的话从 message/send 类 tool args 抽出来,挂到 textPreview。
+        // Pipeline prose-only 规则只认"最后一句给用户的话",这句话往往藏在
+        // message/feishu_send/... 的 args 里 (assistant.text 为空) — 不吸就看不到。
+        try {
+          const lname = String(block.name).toLowerCase();
+          const isOutboundMsgTool =
+            lname === "message" || lname === "message_send" ||
+            lname.startsWith("feishu_send") || lname.includes("_send_message") ||
+            lname === "send" || lname === "send_message";
+          if (isOutboundMsgTool) {
+            const input = (block as any).input ?? (block as any).arguments ?? (block as any).args;
+            const txt = typeof input?.text === "string" ? input.text
+                      : typeof input?.message === "string" ? input.message
+                      : typeof input?.content === "string" ? input.content
+                      : typeof input === "string" ? input : "";
+            if (txt && txt.length > 0) {
+              hadText = true;  // 发给用户的话也算 "assistant 发声"
+              const slice = txt.slice(0, 400);
+              textPreview = textPreview ? (textPreview + "\n" + slice) : slice;
+            }
+          }
+        } catch {}
       } else if (t === "text" && typeof block.text === "string" && block.text.length > 0) {
         hadText = true;
-        if (!textPreview) textPreview = block.text.slice(0, 200);
+        if (!textPreview) textPreview = block.text.slice(0, 400);
       }
     }
 

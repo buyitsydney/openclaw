@@ -239,23 +239,25 @@ export function createRuleHook(rule: StopHookRuleConfig): StopHookFn | null {
       return { shouldContinue: false };
     }
 
-    // ─── Fire conditions (ANY triggers) ───
-    let toolCondTriggered = false;
+    // ─── Fire conditions (AND semantics) ───
+    // Within one rule, all fire_when clauses must match. This lets you write
+    // "no_tool_call AND text_matches_any" as a single prose-only rule. To get
+    // OR semantics, declare two separate rules — the pipeline already runs
+    // rules in priority order.
+    const tests: Array<(ctx: StopHookContext) => boolean> = [];
 
     if (fireNoSubstantial) {
-      // Fire when no substantial tool was called this turn.
-      toolCondTriggered = !hasSubstantialTool(ctx.lastToolNames, substantialTools);
-    } else if (fireNoToolCall) {
-      // Fire when no tool at all was called (and the last turn was pure text).
-      toolCondTriggered = !ctx.lastAssistantHadToolCall && ctx.lastToolNames.length === 0;
+      tests.push((c) => !hasSubstantialTool(c.lastToolNames, substantialTools));
     }
-
-    let textCondTriggered = false;
+    if (fireNoToolCall) {
+      tests.push((c) => !c.lastAssistantHadToolCall && c.lastToolNames.length === 0);
+    }
     if (fireTextMatch.length > 0) {
-      textCondTriggered = fireTextMatch.some((r) => r.test(ctx.lastAssistantText ?? ""));
+      tests.push((c) => fireTextMatch.some((r) => r.test(c.lastAssistantText ?? "")));
     }
 
-    const shouldFire = toolCondTriggered || textCondTriggered;
+    if (tests.length === 0) return { shouldContinue: false };
+    const shouldFire = tests.every((t) => t(ctx));
     if (!shouldFire) return { shouldContinue: false };
 
     return { shouldContinue: true, message: msg, hookName: rule.id };

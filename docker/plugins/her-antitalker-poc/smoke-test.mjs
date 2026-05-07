@@ -114,24 +114,53 @@ console.log("\n=== createRuleHook rule engine semantics ===");
   check("long user + only message_send -> no substantial -> FIRE",
     noToolRule({ sessionKey: "s", lastAssistantText: "a", lastAssistantHadToolCall: true, lastToolNames: ["message_send"], turnIndex: 1, lastUserText: "帮我修登录页的 bug" }).shouldContinue === true);
 
-  // text_matches_any + no_tool_call (prose rule)
+  // prose-only rule: 只看最后一句给用户的话,不看 tool。
+  // 核心设计: text_matches_any 命中就 fire,不管她调了几次 tool。
+  // 这是抓"18 次 exec 后说'30min 后回来'就睡死"的关键。
   const proseRule = createRuleHook({
     id: "pr",
     enabled: true,
-    priority: 10,
-    preconditions: { min_assistant_text_length: 20 },
-    fire_when: { no_tool_call: true, text_matches_any: ["我来", "让我", "\\bI'?ll\\b"] },
+    priority: 30,
+    preconditions: { min_assistant_text_length: 10, min_user_message_length: 10 },
+    fire_when: {
+      text_matches_any: [
+        "我(?:来|去|先|现在|马上|立刻)",
+        "让我",
+        "接下来",
+        "下一步",
+        "稍后",
+        "\\d+\\s*(?:min|分钟|小时|hour|h)\\s*(?:后|之后|later)",
+        "回来(?:给你|向你|跟你).*(?:报告|汇报)",
+        "\\bI'?ll\\b",
+      ],
+    },
     message: "prose",
   });
 
-  check("prose with commitment + no tool -> FIRE",
-    proseRule({ sessionKey: "s", lastAssistantText: "我来帮你检查一下这个问题,让我先分析一下代码", lastAssistantHadToolCall: false, lastToolNames: [], turnIndex: 1, lastUserText: "xxx" }).shouldContinue === true);
+  const longUser = "帮我修一下登录页的 bug 登陆按钮有问题";
 
-  check("prose short text (<20) -> precondition blocks",
-    proseRule({ sessionKey: "s", lastAssistantText: "我来", lastAssistantHadToolCall: false, lastToolNames: [], turnIndex: 1, lastUserText: "xxx" }).shouldContinue === false);
+  check("prose · commitment + no tool -> FIRE",
+    proseRule({ sessionKey: "s", lastAssistantText: "我来帮你检查一下这个问题", lastAssistantHadToolCall: false, lastToolNames: [], turnIndex: 1, lastUserText: longUser }).shouldContinue === true);
 
-  check("prose without commitment word -> don't fire",
-    proseRule({ sessionKey: "s", lastAssistantText: "今天天气很好我们出去玩吧顺便买个菜", lastAssistantHadToolCall: false, lastToolNames: [], turnIndex: 1, lastUserText: "xxx" }).shouldContinue === false);
+  check("prose · short text (<10) -> precondition blocks",
+    proseRule({ sessionKey: "s", lastAssistantText: "我来", lastAssistantHadToolCall: false, lastToolNames: [], turnIndex: 1, lastUserText: longUser }).shouldContinue === false);
+
+  check("prose · no commitment word -> don't fire",
+    proseRule({ sessionKey: "s", lastAssistantText: "今天天气很好我们出去玩吧顺便买个菜", lastAssistantHadToolCall: false, lastToolNames: [], turnIndex: 1, lastUserText: longUser }).shouldContinue === false);
+
+  // ⭐ 核心 regression: 18 次 tool call 后最后一句说"30min 后回来"必须 FIRE
+  // (by design — prose-only 和 toolcount 无关,只看最后一句)
+  check("prose · 18x exec + '30 分钟后回来' last sentence -> FIRE (the big one)",
+    proseRule({ sessionKey: "s", lastAssistantText: "我现在给你去工作,30 分钟后回来给你报告", lastAssistantHadToolCall: true, lastToolNames: Array(18).fill("exec"), turnIndex: 1, lastUserText: longUser }).shouldContinue === true);
+
+  check("prose · commitment word + 很多 tool -> still FIRE (by design)",
+    proseRule({ sessionKey: "s", lastAssistantText: "好的,我来处理这个 bug,接下来先定位代码", lastAssistantHadToolCall: true, lastToolNames: ["exec","edit","read"], turnIndex: 1, lastUserText: longUser }).shouldContinue === true);
+
+  check("prose · 真结束语 '已完成修复' (无承诺词) -> 不 fire",
+    proseRule({ sessionKey: "s", lastAssistantText: "已完成修复,登录按钮现在能正常工作了", lastAssistantHadToolCall: true, lastToolNames: ["exec","edit"], turnIndex: 1, lastUserText: longUser }).shouldContinue === false);
+
+  check("prose · HEARTBEAT_OK -> precondition skip",
+    proseRule({ sessionKey: "s", lastAssistantText: "HEARTBEAT_OK", lastAssistantHadToolCall: false, lastToolNames: [], turnIndex: 1, lastUserText: longUser }).shouldContinue === false);
 
   // assistant_text_skip_if_matches_any precondition
   const heartbeatAwareRule = createRuleHook({
