@@ -1,8 +1,50 @@
 # Stop-Hook Pipeline 架构（Her 核心防睡框架）
 
-**版本**: M2 · 2026-05-07
-**状态**: ✅ **生产已部署** (carher-200) · 待推其他服务器
-**定位**: Her 同 turn 防睡 + 闲聊不误报 · 规则全数据化 · 取代 v9.0 watchdog
+**版本**: M2.1 · 2026-05-07
+**状态**: 🚧 CEP 重构后待重新部署（旧 M2 已 hot-patch 在 200）
+**定位**: Her 同 turn 防睡 + 闲聊不误报 · 规则+事件模型全数据化 · 取代 v9.0 watchdog
+
+## 架构：Complex Event Processing (CEP)
+
+这是**业界标准做法**，对标：
+- Drools / Esper（规则引擎 + Working Memory）
+- OPA / Rego（policy as data + host pushes context）
+- OpenTelemetry SDK（应用 emit events + SDK 内部聚合）
+- LangChain CallbackManager（runtime emit + handlers subscribe）
+- Kafka Streams / Flink CEP（事件流 + pattern declaration）
+
+三个原则贯穿到位：
+1. **应用 emit raw events**，不做判断（`pipeline.observeAssistantEvent()`）
+2. **引擎持有状态**，外部不碰累计器（pipeline 内部 `turnState` Map）
+3. **规则是数据**（YAML 声明 `observable_sources` + `preconditions` + `fire_when`）
+
+Extension = 加 YAML 条目，不改 `.ts`。
+
+## CEP 事件 API（pipeline 对外）
+
+| 方法 | 时机 | 作用 |
+|---|---|---|
+| `observeAssistantEvent({sessionKey, content})` | BMW hook 每次被调 | 把 raw content blocks 扔进来,pipeline 内部抽 text + tool names,按 `observable_sources` 规则从 message tool args 抽文本 |
+| `markTurnBoundary(sessionKey)` | user message 到达 | 清本 turn 累计器,bump turnIndex,reset continuation counter |
+| `setLastUserText(sessionKey, text)` | user message 到达 | 给 rule preconditions 用 |
+| `pickActiveSessionKey()` | drain 时 | pipeline 自己选最近活动的 session |
+| `buildContext(sessionKey)` | drain 时 | pipeline 组装 StopHookContext 传给 rules |
+
+`index.ts` 里 antitalker 插件**只做事件映射**，不再维护 `assistantTextByTurnBySessionKey` 之类自建累计器。
+
+## 状态表
+
+| 项 | 状态 |
+|---|---|
+| 架构设计 | ✅ M2.1 CEP 定稿 |
+| `stop-hook-pipeline.ts` 框架 | ✅ 54/54 smoke 绿 |
+| `stop-hook-rules.yaml` 含 observable_sources | ✅ |
+| `index.ts` 退化为事件映射 | ✅ |
+| `patch-agent-loop.sh` | ✅ 幂等 + backup |
+| Dockerfile.carher.v2 | ✅ 已 COPY plugin 目录 |
+| carher-core image M2.1 build | ⏳ 待 build |
+| carher-200 冷启动部署 | ⏳ 待 |
+| 生产实测 "30min 后回来" 拦截 | ⏳ 待 |
 
 ## 状态表
 

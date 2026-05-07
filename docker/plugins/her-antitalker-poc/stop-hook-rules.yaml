@@ -22,6 +22,25 @@
 enabled: true
 max_continuation_turns: 3
 
+# Observable sources: 声明"assistant 发给用户的话"到底从哪里读。
+# Pipeline 用这个把 message tool 的 args.text 累计到"本 turn assistant 输出"里。
+# 加新 channel tool 时,只改这里,不改代码。
+observable_sources:
+  outbound_message_tools:
+    - message
+    - message_send
+    - send
+    - send_message
+    - feishu_send
+    - feishu_send_message
+    - feishu_send_card
+    - feishu_send_text
+  outbound_message_text_fields:
+    - text
+    - message
+    - content
+    - body
+
 rules:
   # ─── Rule 1 · prose-only-ending (priority 30 · 最高) ───────────────────
   # 核心设计: 只看最后一句给用户的话。光说不练 = 有承诺/延后词但没真干 → 拦截。

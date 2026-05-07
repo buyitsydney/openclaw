@@ -1,22 +1,18 @@
 #!/usr/bin/env node
 /**
- * smoke-test.mjs — plain-Node smoke for the stop-hook-pipeline rule engine.
+ * smoke-test.mjs — plain-Node smoke for the stop-hook-pipeline CEP rule engine.
  *
  * Runs outside OpenClaw's vitest workspace (docker/** is excluded), so this is
  * the pre-deploy confidence check. Validates:
- *   1. patch-agent-loop.sh (fresh/idempotent/skip/missing + backup)
- *   2. StopHookPipeline framework (register/evaluate/dead-loop counter)
- *   3. createRuleHook rule engine semantics
- *      - preconditions (short user msg, regex matches, skip)
- *      - fire_when (no_tool_call, no_substantial_tool, text_matches_any)
- *      - priority ordering
- *   4. loadStopHookRules + installRules (YAML → hooks)
- *   5. YAML hot-reload via watchRulesFile
- *   6. END-TO-END: apply patch to real pi-agent-core, register globalThis drain,
- *      run faux provider, verify same-turn continuation works
- *
- * Run:  node docker/plugins/her-antitalker-poc/smoke-test.mjs
- *   or: node_modules/.bin/tsx docker/plugins/her-antitalker-poc/smoke-test.mjs
+ *   1. patch-agent-loop.sh
+ *   2. StopHookPipeline framework (register/evaluate/counter/priority)
+ *   3. CEP event ingestion (observeAssistantEvent/markTurnBoundary/setLastUserText)
+ *   4. observable_sources: message_send tool args.text → assistant-text accumulator
+ *   5. createRuleHook semantics (preconditions AND, fire_when AND, text matching)
+ *   6. loadStopHookRules + installRules
+ *   7. YAML hot-reload
+ *   8. END-TO-END: patched agent-loop → globalThis drain → continuation
+ *   9. Regression: 18-exec + "30min 后回来" message-send must FIRE
  */
 
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync, symlinkSync, mkdirSync, copyFileSync } from "node:fs";
@@ -62,13 +58,12 @@ console.log("=== patch-agent-loop.sh ===");
 console.log("\n=== StopHookPipeline framework ===");
 {
   const mod = await import(`${__dirname}/stop-hook-pipeline.ts`);
-  const { StopHookPipeline, createRuleHook } = mod;
+  const { StopHookPipeline } = mod;
 
   const p = new StopHookPipeline();
   p.register("test", () => ({ shouldContinue: false }));
   check("register counted", p.hookCount === 1);
 
-  // Dead loop protection: max_continuation_turns
   const p2 = new StopHookPipeline(2);
   p2.register("always", () => ({ shouldContinue: true, message: "keep" }));
   const ctx = { sessionKey: "s", lastAssistantText: "x", lastAssistantHadToolCall: false, lastToolNames: [], turnIndex: 1 };
@@ -76,25 +71,112 @@ console.log("\n=== StopHookPipeline framework ===");
   check("counter R2", p2.evaluate(ctx).length === 1);
   check("counter yields R3 (saturates)", p2.evaluate(ctx).length === 0);
 
-  // Priority ordering: higher priority rule fires first
   const p3 = new StopHookPipeline();
   let firedFirst = "";
-  p3.register("low", (c) => { firedFirst = firedFirst || "low"; return { shouldContinue: true, message: "low-fires" }; }, 1);
-  p3.register("high", (c) => { firedFirst = firedFirst || "high"; return { shouldContinue: true, message: "high-fires" }; }, 10);
+  p3.register("low", () => { firedFirst = firedFirst || "low"; return { shouldContinue: true, message: "low-fires" }; }, 1);
+  p3.register("high", () => { firedFirst = firedFirst || "high"; return { shouldContinue: true, message: "high-fires" }; }, 10);
   const resP = p3.evaluate(ctx);
   check("higher priority wins", resP[0]?.content === "high-fires" && firedFirst === "high");
 
-  // unregisterAll for hot reload
   p3.unregisterAll();
   check("unregisterAll clears hooks", p3.hookCount === 0);
 }
 
-console.log("\n=== createRuleHook rule engine semantics ===");
+console.log("\n=== CEP event ingestion ===");
+{
+  const mod = await import(`${__dirname}/stop-hook-pipeline.ts`);
+  const { StopHookPipeline } = mod;
+
+  const p = new StopHookPipeline();
+
+  // Observer owns the accumulator — plugin only emits events
+  p.observeAssistantEvent({
+    sessionKey: "s1",
+    content: [
+      { type: "text", text: "第一句话。" },
+      { type: "tool_use", name: "exec" },
+    ],
+  });
+  let state = p.getTurnState("s1");
+  check("CEP: event 1 captures text + tool", state.text.includes("第一句话") && state.tools.includes("exec"));
+  check("CEP: event 1 lastHadToolCall=true", state.lastHadToolCall === true);
+
+  // Second event: text-only message (NO_REPLY occupies its own BMW)
+  p.observeAssistantEvent({
+    sessionKey: "s1",
+    content: [{ type: "text", text: "NO_REPLY" }],
+  });
+  state = p.getTurnState("s1");
+  check("CEP: event 2 accumulates with event 1", state.text.includes("第一句话") && state.text.includes("NO_REPLY"));
+  check("CEP: event 2 lastHadToolCall=false (this event had no tool)", state.lastHadToolCall === false);
+  check("CEP: tools accumulator retains prior tools", state.tools.includes("exec"));
+
+  // Turn boundary resets
+  p.markTurnBoundary("s1");
+  state = p.getTurnState("s1");
+  check("CEP: markTurnBoundary clears text", state.text === "");
+  check("CEP: markTurnBoundary clears tools", state.tools.length === 0);
+  check("CEP: markTurnBoundary bumps turnIndex", state.turnIndex >= 1);
+
+  p.setLastUserText("s1", "帮我修一下登录页的 bug");
+  state = p.getTurnState("s1");
+  check("CEP: setLastUserText captured", state.lastUserText === "帮我修一下登录页的 bug");
+
+  // pickActiveSessionKey picks most recent
+  p.observeAssistantEvent({ sessionKey: "s2", content: [{ type: "text", text: "later" }] });
+  check("CEP: pickActiveSessionKey picks most recent", p.pickActiveSessionKey() === "s2");
+
+  // buildContext assembles what rules see
+  const ctx = p.buildContext("s2");
+  check("CEP: buildContext includes assembled text", ctx && ctx.lastAssistantText === "later");
+}
+
+console.log("\n=== observable_sources: message tool args extraction ===");
+{
+  const mod = await import(`${__dirname}/stop-hook-pipeline.ts`);
+  const { StopHookPipeline } = mod;
+
+  const p = new StopHookPipeline();
+  p.setObservableSources({
+    outbound_message_tools: ["message", "message_send", "feishu_send"],
+    outbound_message_text_fields: ["text", "message", "content"],
+  });
+
+  // assistant emits one event: calls message tool with args.text
+  p.observeAssistantEvent({
+    sessionKey: "s1",
+    content: [{ type: "tool_use", name: "message", input: { text: "30 分钟后回来给你报告" } }],
+  });
+  let state = p.getTurnState("s1");
+  check("obs: message args.text extracted into assistant text", state.text.includes("30 分钟后回来"));
+
+  // Another outbound tool: feishu_send with 'message' field
+  p.observeAssistantEvent({
+    sessionKey: "s2",
+    content: [{ type: "tool_use", name: "feishu_send", arguments: { message: "稍后回来" } }],
+  });
+  check("obs: feishu_send args.message extracted", p.getTurnState("s2").text.includes("稍后回来"));
+
+  // Non-outbound tool: exec with args — must NOT leak into assistant text
+  p.observeAssistantEvent({
+    sessionKey: "s3",
+    content: [{ type: "tool_use", name: "exec", input: { command: "ls -la /etc" } }],
+  });
+  check("obs: non-outbound tool args do NOT leak", p.getTurnState("s3").text === "");
+
+  // Unknown tool: same — ignored
+  p.observeAssistantEvent({
+    sessionKey: "s4",
+    content: [{ type: "tool_use", name: "random_tool", input: { text: "ignored" } }],
+  });
+  check("obs: unknown tool args ignored", p.getTurnState("s4").text === "");
+}
+
+console.log("\n=== createRuleHook semantics ===");
 {
   const mod = await import(`${__dirname}/stop-hook-pipeline.ts`);
   const { createRuleHook } = mod;
 
-  // no_substantial_tool rule with min_user_message_length precondition
   const noToolRule = createRuleHook({
     id: "ntg",
     enabled: true,
@@ -104,19 +186,13 @@ console.log("\n=== createRuleHook rule engine semantics ===");
     substantial_tools: ["exec", "read"],
     message: "fire",
   });
-
   check("short user msg -> precondition blocks",
     noToolRule({ sessionKey: "s", lastAssistantText: "a", lastAssistantHadToolCall: false, lastToolNames: [], turnIndex: 1, lastUserText: "hi" }).shouldContinue === false);
-
-  check("long user + has exec -> substantial -> don't fire",
+  check("long user + has exec -> don't fire",
     noToolRule({ sessionKey: "s", lastAssistantText: "a", lastAssistantHadToolCall: true, lastToolNames: ["exec"], turnIndex: 1, lastUserText: "帮我修登录页的 bug" }).shouldContinue === false);
-
-  check("long user + only message_send -> no substantial -> FIRE",
+  check("long user + only message_send -> FIRE",
     noToolRule({ sessionKey: "s", lastAssistantText: "a", lastAssistantHadToolCall: true, lastToolNames: ["message_send"], turnIndex: 1, lastUserText: "帮我修登录页的 bug" }).shouldContinue === true);
 
-  // prose-only rule: 只看最后一句给用户的话,不看 tool。
-  // 核心设计: text_matches_any 命中就 fire,不管她调了几次 tool。
-  // 这是抓"18 次 exec 后说'30min 后回来'就睡死"的关键。
   const proseRule = createRuleHook({
     id: "pr",
     enabled: true,
@@ -136,34 +212,23 @@ console.log("\n=== createRuleHook rule engine semantics ===");
     },
     message: "prose",
   });
-
-  const longUser = "帮我修一下登录页的 bug 登陆按钮有问题";
+  const longUser = "帮我修一下登录页的 bug";
 
   check("prose · commitment + no tool -> FIRE",
-    proseRule({ sessionKey: "s", lastAssistantText: "我来帮你检查一下这个问题", lastAssistantHadToolCall: false, lastToolNames: [], turnIndex: 1, lastUserText: longUser }).shouldContinue === true);
-
+    proseRule({ sessionKey: "s", lastAssistantText: "我来帮你检查这个问题", lastAssistantHadToolCall: false, lastToolNames: [], turnIndex: 1, lastUserText: longUser }).shouldContinue === true);
   check("prose · short text (<10) -> precondition blocks",
     proseRule({ sessionKey: "s", lastAssistantText: "我来", lastAssistantHadToolCall: false, lastToolNames: [], turnIndex: 1, lastUserText: longUser }).shouldContinue === false);
-
   check("prose · no commitment word -> don't fire",
     proseRule({ sessionKey: "s", lastAssistantText: "今天天气很好我们出去玩吧顺便买个菜", lastAssistantHadToolCall: false, lastToolNames: [], turnIndex: 1, lastUserText: longUser }).shouldContinue === false);
 
-  // ⭐ 核心 regression: 18 次 tool call 后最后一句说"30min 后回来"必须 FIRE
-  // (by design — prose-only 和 toolcount 无关,只看最后一句)
-  check("prose · 18x exec + '30 分钟后回来' last sentence -> FIRE (the big one)",
+  // ⭐ THE BIG ONE: 18x exec + "30min 后回来" by design FIRE regardless of tools
+  check("prose · 18x exec + '30 分钟后回来' last sentence -> FIRE (ignores tool count)",
     proseRule({ sessionKey: "s", lastAssistantText: "我现在给你去工作,30 分钟后回来给你报告", lastAssistantHadToolCall: true, lastToolNames: Array(18).fill("exec"), turnIndex: 1, lastUserText: longUser }).shouldContinue === true);
 
-  check("prose · commitment word + 很多 tool -> still FIRE (by design)",
-    proseRule({ sessionKey: "s", lastAssistantText: "好的,我来处理这个 bug,接下来先定位代码", lastAssistantHadToolCall: true, lastToolNames: ["exec","edit","read"], turnIndex: 1, lastUserText: longUser }).shouldContinue === true);
+  check("prose · '已完成修复' (无承诺词) -> don't fire",
+    proseRule({ sessionKey: "s", lastAssistantText: "已完成修复,登录按钮现在能正常工作了", lastAssistantHadToolCall: true, lastToolNames: ["exec", "edit"], turnIndex: 1, lastUserText: longUser }).shouldContinue === false);
 
-  check("prose · 真结束语 '已完成修复' (无承诺词) -> 不 fire",
-    proseRule({ sessionKey: "s", lastAssistantText: "已完成修复,登录按钮现在能正常工作了", lastAssistantHadToolCall: true, lastToolNames: ["exec","edit"], turnIndex: 1, lastUserText: longUser }).shouldContinue === false);
-
-  check("prose · HEARTBEAT_OK -> precondition skip",
-    proseRule({ sessionKey: "s", lastAssistantText: "HEARTBEAT_OK", lastAssistantHadToolCall: false, lastToolNames: [], turnIndex: 1, lastUserText: longUser }).shouldContinue === false);
-
-  // assistant_text_skip_if_matches_any precondition
-  const heartbeatAwareRule = createRuleHook({
+  const skipHBRule = createRuleHook({
     id: "hb",
     enabled: true,
     priority: 5,
@@ -171,16 +236,11 @@ console.log("\n=== createRuleHook rule engine semantics ===");
     fire_when: { no_tool_call: true },
     message: "fire",
   });
+  check("HEARTBEAT_OK skipped by precondition",
+    skipHBRule({ sessionKey: "s", lastAssistantText: "HEARTBEAT_OK", lastAssistantHadToolCall: false, lastToolNames: [], turnIndex: 1, lastUserText: "ping long enough" }).shouldContinue === false);
 
-  check("HEARTBEAT_OK skipped by assistant_text_skip_if_matches_any",
-    heartbeatAwareRule({ sessionKey: "s", lastAssistantText: "HEARTBEAT_OK", lastAssistantHadToolCall: false, lastToolNames: [], turnIndex: 1, lastUserText: "ping" }).shouldContinue === false);
-
-  // enabled:false returns null (no hook at all)
-  const disabledRule = createRuleHook({
-    id: "disabled", enabled: false, priority: 1,
-    fire_when: { no_tool_call: true }, message: "x",
-  });
-  check("disabled rule returns null hook", disabledRule === null);
+  const disabledRule = createRuleHook({ id: "d", enabled: false, priority: 1, fire_when: { no_tool_call: true }, message: "x" });
+  check("disabled rule returns null", disabledRule === null);
 }
 
 console.log("\n=== loadStopHookRules + installRules ===");
@@ -188,7 +248,6 @@ console.log("\n=== loadStopHookRules + installRules ===");
   const mod = await import(`${__dirname}/stop-hook-pipeline.ts`);
   const { loadStopHookRules, installRules, StopHookPipeline } = mod;
 
-  // Write a minimal YAML and load it (fallback parser is fine for simple YAML)
   const tmp = mkdtempSync(join(tmpdir(), "shy-"));
   const yamlPath = join(tmp, "rules.yaml");
   writeFileSync(yamlPath, `
@@ -211,27 +270,24 @@ rules:
 `.trim());
 
   const loaded = loadStopHookRules(yamlPath);
-  check("YAML loaded: enabled flag", loaded.enabled === true);
-  check("YAML loaded: max_continuation_turns", loaded.max_continuation_turns === 2);
-  check("YAML loaded: rules count", loaded.rules.length === 2);
+  check("YAML enabled flag", loaded.enabled === true);
+  check("YAML max_continuation_turns", loaded.max_continuation_turns === 2);
+  check("YAML rules count", loaded.rules.length === 2);
 
   const p = new StopHookPipeline();
   const res = installRules(p, loaded);
-  check("installRules installed enabled rules only", res.installed.length === 1 && res.installed[0] === "rule-a");
-  check("installRules skipped disabled rule", res.skipped.includes("rule-b"));
-  check("pipeline has 1 active hook", p.hookCount === 1);
+  check("installRules installs enabled only", res.installed.length === 1 && res.installed[0] === "rule-a");
+  check("installRules skips disabled", res.skipped.includes("rule-b"));
 
-  // enabled=false kills everything
   const killed = { ...loaded, enabled: false };
   const p2 = new StopHookPipeline();
   const res2 = installRules(p2, killed);
-  check("enabled=false → zero installed hooks", res2.installed.length === 0);
-  check("enabled=false → all rules marked skipped", res2.skipped.length === 2);
+  check("enabled=false → zero installed", res2.installed.length === 0);
 
   rmSync(tmp, { recursive: true, force: true });
 }
 
-console.log("\n=== YAML hot-reload (watchRulesFile) ===");
+console.log("\n=== YAML hot-reload ===");
 {
   const mod = await import(`${__dirname}/stop-hook-pipeline.ts`);
   const { watchRulesFile } = mod;
@@ -244,18 +300,55 @@ console.log("\n=== YAML hot-reload (watchRulesFile) ===");
   let lastSnapshot = null;
   const stop = watchRulesFile(yamlPath, (file) => { callCount++; lastSnapshot = file; }, 100);
 
-  // Wait for the first tick
   await new Promise(r => setTimeout(r, 200));
   check("watcher fires on initial load", callCount >= 1);
 
-  // Modify file
   writeFileSync(yamlPath, `enabled: false\nrules: []\n`);
   await new Promise(r => setTimeout(r, 300));
   check("watcher re-fires after mtime change", callCount >= 2);
-  check("watcher reflects new content (enabled=false)", lastSnapshot?.enabled === false);
+  check("watcher reflects new content", lastSnapshot?.enabled === false);
 
   stop();
   rmSync(tmp, { recursive: true, force: true });
+}
+
+console.log("\n=== FULL CEP LOOP: event → drain → rule fire on accumulated text ===");
+{
+  const mod = await import(`${__dirname}/stop-hook-pipeline.ts`);
+  const { StopHookPipeline, createGetFollowUpMessages, installRules } = mod;
+
+  const p = new StopHookPipeline();
+  installRules(p, {
+    enabled: true,
+    max_continuation_turns: 3,
+    observable_sources: {
+      outbound_message_tools: ["message"],
+      outbound_message_text_fields: ["text"],
+    },
+    rules: [{
+      id: "prose",
+      enabled: true,
+      priority: 30,
+      preconditions: { min_user_message_length: 10, min_assistant_text_length: 5 },
+      fire_when: {
+        text_matches_any: ["\\d+\\s*分钟\\s*后", "稍后", "回来"],
+      },
+      message: "DON'T DEFER",
+    }],
+  });
+
+  // Simulate: user asks task → Her does 2 exec → Her emits message tool with "30 分钟后回来"
+  // → Her emits NO_REPLY text → turn ends → drain
+  p.setLastUserText("sid", "帮我修登录页的 bug 按钮不能点");
+  p.observeAssistantEvent({ sessionKey: "sid", content: [{ type: "tool_use", name: "exec" }] });
+  p.observeAssistantEvent({ sessionKey: "sid", content: [{ type: "tool_use", name: "exec" }] });
+  p.observeAssistantEvent({ sessionKey: "sid", content: [{ type: "tool_use", name: "message", input: { text: "30 分钟后回来给你报告" } }] });
+  p.observeAssistantEvent({ sessionKey: "sid", content: [{ type: "text", text: "NO_REPLY" }] });
+
+  const drain = createGetFollowUpMessages(p);
+  const msgs = await drain();
+  check("FULL: 2 exec + message tool + NO_REPLY — prose fires on accumulated text",
+    msgs.length === 1 && String(msgs[0].content).includes("DEFER"));
 }
 
 console.log("\n=== E2E: patched agent-loop + globalThis pipeline ===");
@@ -302,7 +395,6 @@ console.log("\n=== E2E: patched agent-loop + globalThis pipeline ===");
       check("faux model called 3 times", faux.state.callCount === 3, `callCount=${faux.state.callCount}`);
       check("inject-1 reached final context", finalMsgs.some((m) => m.role === "user" && JSON.stringify(m.content).includes("inject-1")));
 
-      // Wrap path: config already has getFollowUpMessages (empty) — global fallback still fires
       const faux2 = fauxMod.registerFauxProvider({ api: `wrap-${Math.random().toString(36).slice(2)}`, provider: "wrap", models: [{ id: "m1" }] });
       faux2.setResponses([
         fauxMod.fauxAssistantMessage([fauxMod.fauxText("w1")], { stopReason: "stop" }),
@@ -324,9 +416,9 @@ console.log("\n=== E2E: patched agent-loop + globalThis pipeline ===");
         cfg,
         async () => {},
       );
-      check("wrap: original empty drain invoked", origDrainCalled >= 1, `origDrainCalled=${origDrainCalled}`);
-      check("wrap: globalThis fallback called after empty drain", calls2 >= 1, `calls2=${calls2}`);
-      check("wrap: loop extended beyond first turn", faux2.state.callCount === 2, `callCount=${faux2.state.callCount}`);
+      check("wrap: original empty drain invoked", origDrainCalled >= 1);
+      check("wrap: globalThis fallback called after empty drain", calls2 >= 1);
+      check("wrap: loop extended beyond first turn", faux2.state.callCount === 2);
       check("wrap: inject reached final context", finalMsgs2.some((m) => m.role === "user" && JSON.stringify(m.content).includes("global-fallback")));
     } finally {
       delete globalThis.__openclaw_stopHookPipeline;

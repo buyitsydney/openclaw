@@ -77,7 +77,7 @@ const _require = createRequire("/app/docker/plugins/her-antitalker-poc/index.ts"
 
 // -------- Stop-Hook Pipeline (M1: same-turn enforcement) --------
 import { StopHookPipeline, createGetFollowUpMessages, loadStopHookRules, installRules, watchRulesFile } from "./stop-hook-pipeline.js";
-import type { StopHookContext, StopHookRulesFile } from "./stop-hook-pipeline.js";
+import type { StopHookRulesFile } from "./stop-hook-pipeline.js";
 // M1 (2026-05-07): agent-followup-bridge removed. Same-turn enforcement is delivered by
 // patched agent-loop.js → globalThis.__openclaw_stopHookPipeline. No bridge, no watchdog
 // fallback, no wake tricks. See docs/her/stop-hook-pipeline-architecture.md.
@@ -1281,33 +1281,17 @@ function handleBeforeMessageWrite(event: any, ctx: any): any {
       if ((t === "toolCall" || t === "tool_use") && typeof block.name === "string") {
         tools.push(block.name);
         pushed++;
-        // M2 · 把发给用户的话从 message/send 类 tool args 抽出来,挂到 textPreview。
-        // Pipeline prose-only 规则只认"最后一句给用户的话",这句话往往藏在
-        // message/feishu_send/... 的 args 里 (assistant.text 为空) — 不吸就看不到。
-        try {
-          const lname = String(block.name).toLowerCase();
-          const isOutboundMsgTool =
-            lname === "message" || lname === "message_send" ||
-            lname.startsWith("feishu_send") || lname.includes("_send_message") ||
-            lname === "send" || lname === "send_message";
-          if (isOutboundMsgTool) {
-            const input = (block as any).input ?? (block as any).arguments ?? (block as any).args;
-            const txt = typeof input?.text === "string" ? input.text
-                      : typeof input?.message === "string" ? input.message
-                      : typeof input?.content === "string" ? input.content
-                      : typeof input === "string" ? input : "";
-            if (txt && txt.length > 0) {
-              hadText = true;  // 发给用户的话也算 "assistant 发声"
-              const slice = txt.slice(0, 400);
-              textPreview = textPreview ? (textPreview + "\n" + slice) : slice;
-            }
-          }
-        } catch {}
       } else if (t === "text" && typeof block.text === "string" && block.text.length > 0) {
         hadText = true;
-        if (!textPreview) textPreview = block.text.slice(0, 400);
+        if (!textPreview) textPreview = block.text.slice(0, 200);
       }
     }
+
+    // M2.1 · CEP event: feed the raw assistant message to the pipeline.
+    // The pipeline owns per-turn text/tool accumulators — we just emit events.
+    try {
+      StopHookPipeline.getInstance().observeAssistantEvent({ sessionKey, content });
+    } catch {}
 
     // LRU 限制：toolsBySessionKey 单条最多 128 个 (常规 session 多行 1-10 个 tool)
     if (tools.length > 128) tools.splice(0, tools.length - 128);
@@ -1746,8 +1730,14 @@ const plugin = {
               // M1 · New user message = new turn boundary. Clear per-turn tool
               // accumulator so stop-hook-pipeline starts the next turn clean.
               state.toolsBySessionKey.delete(sk);
-              // Also reset the pipeline's continuation counter for this session.
-              try { StopHookPipeline.getInstance().resetContinuationCount(sk); } catch {}
+              // M2.1 · CEP event: new user message = turn boundary.
+              // Pipeline clears its per-turn accumulators and captures the user text
+              // for rule preconditions. No plugin-side reset logic.
+              try {
+                const pipe = StopHookPipeline.getInstance();
+                pipe.markTurnBoundary(sk);
+                pipe.setLastUserText(sk, txt ?? "");
+              } catch {}
 
               // v9.0 · 自动识别主人 open_id
               // 0503 conversationId 格式:
@@ -1814,29 +1804,18 @@ const plugin = {
         // mtime watcher for hot-reload (2s)
         try { watchRulesFile(STOP_HOOK_RULES_YAML, applyRules, 2000); } catch {}
 
-        // Session-context locator for the drain function
-        const getStopHookContext = (): StopHookContext | null => {
-          for (const [sk, act] of state.sessionActivity.entries()) {
-            if (act.lastAssistantMsgAtMs > 0) {
-              return {
-                sessionKey: sk,
-                lastAssistantText: act.lastAssistantTextPreview || "",
-                lastAssistantHadToolCall: act.lastAssistantHadToolCall,
-                lastToolNames: state.toolsBySessionKey.get(sk) ?? [],
-                turnIndex: 0,
-                lastUserText: act.lastUserPreview || "",
-              };
-            }
-          }
-          return null;
-        };
-
         // globalThis binding — picked up by patched pi-agent-core agent-loop.js.
-        const drainFn = createGetFollowUpMessages(pipeline, getStopHookContext);
+        // Pipeline owns its own session state via observeAssistantEvent/markTurnBoundary,
+        // so the drain function needs no external context locator. index.ts is
+        // now pure event plumbing:
+        //   BMW   → pipeline.observeAssistantEvent(...)
+        //   user  → pipeline.markTurnBoundary(sk) + pipeline.setLastUserText(sk, ...)
+        const drainFn = createGetFollowUpMessages(pipeline);
         let drainCallSeq = 0;
         const wrappedDrain = async () => {
           drainCallSeq++;
-          const ctx = getStopHookContext();
+          const sk = pipeline.pickActiveSessionKey();
+          const ctx = sk ? pipeline.buildContext(sk) : null;
           const ctxSummary = ctx ? `sk=...${ctx.sessionKey.slice(-20)} tools=[${ctx.lastToolNames.join(",")}] userLen=${(ctx.lastUserText ?? "").length} asstLen=${(ctx.lastAssistantText ?? "").length}` : "no-ctx";
           log("warn", `pipeline drain CALLED seq=${drainCallSeq} · ${ctxSummary}`);
           try {
