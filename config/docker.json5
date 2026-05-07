@@ -54,6 +54,11 @@
 
   agents: {
     defaults: {
+      // 2026-05-07 M2.1 · OpenClaw 2026.5.3 引入严格 model idle timeout;
+      // default=120s 对 Wangsu LiteLLM 太紧, 特别是 stop-hook-pipeline 触发
+      // same-turn continuation 时(两次 LLM call 叠加)。600s 总 turn 上限。
+      // 经过 carher-200 灰度验证 (dev 分支 56359248d42): 无 timeout, stop-hook 正常。
+      timeoutSeconds: 600,
       // All docker users default to Wangsu opus-4-7 as primary. Override
       // per-user in config/u${N}.json5 if needed (e.g., users with CSV
       // provider=openrouter may want openrouter/anthropic/claude-opus-4.7).
@@ -139,9 +144,74 @@
     },
   },
 
-  // models.providers intentionally omitted — openclaw auto-discovers
-  // anthropic (via ANTHROPIC_API_KEY + ANTHROPIC_BASE_URL) and openrouter
-  // (via OPENROUTER_API_KEY) from env vars injected by compose .env.
-  // Explicit provider declarations caused "invalid streaming response"
-  // errors with Wangsu LiteLLM proxy (carher-199 incident 2026-04-25).
+  // 2026-05-07 M2.1 · Fleet-wide idle timeout fix (elevated from u200 after
+  // carher-200 grayscale validation).
+  //
+  // 问题:OpenClaw 2026.5.3 引入 LLM idle timeout,default=120s。
+  // resolveLlmIdleTimeoutMs (selection-BgogoK8g.js:6075) 里唯一能绕过 120s 硬顶的
+  // 分支是 modelRequestTimeoutMs,它由 models.providers.<id>.timeoutSeconds 产出。
+  // agents.defaults.timeoutSeconds 被 DEFAULT_LLM_IDLE_TIMEOUT_MS=120s clamp。
+  //
+  // Schema 要求 required:["baseUrl","models"]。baseUrl 必须等于 env
+  // ANTHROPIC_BASE_URL, 否则 Wangsu 会返回 "invalid streaming response"
+  // (199 事故 2026-04-25)。用 ${VAR} 确保两者同值。
+  //
+  // A/B 实证 (dist 临时强制 default=500ms 加速复现):
+  //   无此 block → 100% 出 "The model did not produce a response before the
+  //                         model idle timeout..."
+  //   有此 block → modelRequestTimeoutMs=600s 覆盖, 无 timeout。
+  //
+  // 199 的 openrouter 由 env discover, 这里不显式声明(models 数组不同 id)。
+  // 用户 config (u${N}.json5) 如覆盖 primary 到 openrouter 需自己按需声明。
+  models: {
+    providers: {
+      anthropic: {
+        apiKey: "${ANTHROPIC_AUTH_TOKEN}",
+        baseUrl: "${ANTHROPIC_BASE_URL}",
+        timeoutSeconds: 600,
+        models: [
+          {
+            id: "anthropic.claude-opus-4-7",
+            name: "Claude Opus 4.7 (Wangsu)",
+            api: "anthropic-messages",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 1000000,
+            maxTokens: 128000,
+            cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+          },
+          {
+            id: "anthropic.claude-opus-4-6",
+            name: "Claude Opus 4.6 (Wangsu)",
+            api: "anthropic-messages",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 1000000,
+            maxTokens: 128000,
+            cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+          },
+          {
+            id: "anthropic.claude-sonnet-4-6",
+            name: "Claude Sonnet 4.6 (Wangsu)",
+            api: "anthropic-messages",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 400000,
+            maxTokens: 64000,
+            cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+          },
+          {
+            id: "anthropic.claude-haiku-4-5",
+            name: "Claude Haiku 4.5 (Wangsu)",
+            api: "anthropic-messages",
+            reasoning: false,
+            input: ["text", "image"],
+            contextWindow: 200000,
+            maxTokens: 8192,
+            cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+          },
+        ],
+      },
+    },
+  },
 }
