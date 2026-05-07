@@ -1,9 +1,11 @@
-// config/u14.json5 — S3 carher-14 identity (刘国现)
+// config/u14.json5 — S3 carher-14 identity (刘国现 / 国现的her)
 //
 // $include's docker.json5 → base.json5. Mounted into the container at
-// /data/.openclaw/openclaw.json.
+// /data/.openclaw/openclaw.json by compose bind-mount.
 //
-// provider=openrouter: override primary model to use OpenRouter.
+// 结构跟 u200.json5 对齐 (A2A hub mode + heartbeat.target=last + plugin entries),
+// 只换 4 个身份字段 (name/appId/botOpenId/owner open_id) + URL host。
+// 国现 provider=openrouter,所以 agents.defaults.model.primary 覆盖到 OpenRouter。
 
 {
   "$include": "./docker.json5",
@@ -13,9 +15,34 @@
     mode: "local",
   },
 
+
+  // A2A hub mode: 13/198/199/200 are permanent hubs (god-mode peers).
+  // 14 加入 hub set (allow outbound) — 国现可以主动调度其他 peer。
+  plugins: {
+    entries: {
+      "her-antitalker-poc": { enabled: true, hooks: { allowConversationAccess: true } },
+      "hook-probe": { enabled: true, hooks: { allowConversationAccess: true } },
+      "a2a-gateway": {
+        config: {
+          outbound: { enabled: true },
+        },
+      },
+    },
+  },
+
+  // 2026-05-03 v7.3 · antitalker Bug 4/5 fix
+  // heartbeat.target='last' tells OpenClaw to use session.lastChannel (feishu)
+  // instead of 'none' → canRelayToUser flips true → exec completion prompt
+  // becomes 'The command completion details are:' instead of 'reply HEARTBEAT_OK only'.
+  //
+  // 国现 model override: 用 OpenRouter 路径,不走 Wangsu LiteLLM (跟 docker.json5
+  // 默认 anthropic/anthropic.claude-opus-4-7 不同)。
   agents: {
     defaults: {
       model: { primary: "openrouter/anthropic/claude-opus-4.7" },
+      heartbeat: {
+        target: "last",
+      },
     },
   },
 
