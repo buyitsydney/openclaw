@@ -30,25 +30,80 @@
   // instead of 'none' → canRelayToUser flips true → exec completion prompt
   // becomes 'The command completion details are:' instead of 'reply HEARTBEAT_OK only'.
   // Boundary: A2A/cron isolated sessions still silence (no feishu lastChannel).
-  // 2026-05-07 · M2.1 stop-hook-pipeline grayscale on carher-200:
-  // agents.defaults.timeoutSeconds sets the per-turn cap. Without it,
-  // OpenClaw 2026.5.3's stricter idle-timeout default can kill a turn
-  // mid-Wangsu call, especially when stop-hook-pipeline injects a
-  // same-turn continuation (effectively doubling LLM time for one logical turn).
-  //
-  // 600s = 10 min per turn. carher-13 baseline (2026.4.24 openclaw) didn't
-  // need this explicit — default was looser. Grayscale 200 first; once
-  // clean, promote to docker.json5 fleet-wide.
-  //
-  // NOTE: we tried `models.providers.<id>.timeoutSeconds` first but
-  // OpenClaw 2026.5.3 schema requires baseUrl+models under any declared
-  // provider, breaking auto-discovery. agents.defaults.timeoutSeconds
-  // is the safe top-level lever that doesn't force provider declaration.
+  // 2026-05-07 · M2.1 stop-hook-pipeline grayscale (carher-200 only):
+  // agents.defaults.timeoutSeconds = 600 caps the outer per-turn budget.
   agents: {
     defaults: {
       timeoutSeconds: 600,
       heartbeat: {
         target: "last",
+      },
+    },
+  },
+
+  // 2026-05-07 · M2.1 · models.providers.anthropic.timeoutSeconds = 600
+  // This is the ONLY lever that extends the LLM idle timeout past the hard
+  // 120s default (resolveLlmIdleTimeoutMs clamps agents.defaults.timeoutSeconds
+  // by min(value, 120s) but respects modelRequestTimeoutMs unclamped).
+  //
+  // When stop-hook-pipeline fires a same-turn continuation, the 2nd LLM call
+  // on top of a slow Wangsu 1st call can exceed 120s → user sees
+  // "The model did not produce a response before the model idle timeout".
+  //
+  // Shape copied from config/admin.json5 (the existing working template).
+  // baseUrl intentionally omitted — auto-discovered from ANTHROPIC_BASE_URL env.
+  // 199 previously died from an explicit baseUrl + env conflict, so we keep
+  // the env-driven discovery and only add timeoutSeconds.
+  //
+  // models list is the minimum that covers the primary alias resolution
+  // (anthropic/anthropic.claude-opus-4-7) used by docker.json5.
+  models: {
+    providers: {
+      anthropic: {
+        timeoutSeconds: 600,
+        apiKey: "${ANTHROPIC_AUTH_TOKEN}",
+        models: [
+          {
+            id: "anthropic.claude-opus-4-7",
+            name: "Claude Opus 4.7 (Wangsu)",
+            api: "anthropic-messages",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 1000000,
+            maxTokens: 128000,
+            cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+          },
+          {
+            id: "anthropic.claude-opus-4-6",
+            name: "Claude Opus 4.6 (Wangsu)",
+            api: "anthropic-messages",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 1000000,
+            maxTokens: 128000,
+            cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+          },
+          {
+            id: "anthropic.claude-sonnet-4-6",
+            name: "Claude Sonnet 4.6 (Wangsu)",
+            api: "anthropic-messages",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 400000,
+            maxTokens: 64000,
+            cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+          },
+          {
+            id: "anthropic.claude-haiku-4-5",
+            name: "Claude Haiku 4.5 (Wangsu)",
+            api: "anthropic-messages",
+            reasoning: false,
+            input: ["text", "image"],
+            contextWindow: 200000,
+            maxTokens: 8192,
+            cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+          },
+        ],
       },
     },
   },
