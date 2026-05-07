@@ -30,8 +30,23 @@
   // instead of 'none' → canRelayToUser flips true → exec completion prompt
   // becomes 'The command completion details are:' instead of 'reply HEARTBEAT_OK only'.
   // Boundary: A2A/cron isolated sessions still silence (no feishu lastChannel).
+  // 2026-05-07 · M2.1 stop-hook-pipeline grayscale on carher-200:
+  // agents.defaults.timeoutSeconds sets the per-turn cap. Without it,
+  // OpenClaw 2026.5.3's stricter idle-timeout default can kill a turn
+  // mid-Wangsu call, especially when stop-hook-pipeline injects a
+  // same-turn continuation (effectively doubling LLM time for one logical turn).
+  //
+  // 600s = 10 min per turn. carher-13 baseline (2026.4.24 openclaw) didn't
+  // need this explicit — default was looser. Grayscale 200 first; once
+  // clean, promote to docker.json5 fleet-wide.
+  //
+  // NOTE: we tried `models.providers.<id>.timeoutSeconds` first but
+  // OpenClaw 2026.5.3 schema requires baseUrl+models under any declared
+  // provider, breaking auto-discovery. agents.defaults.timeoutSeconds
+  // is the safe top-level lever that doesn't force provider declaration.
   agents: {
     defaults: {
+      timeoutSeconds: 600,
       heartbeat: {
         target: "last",
       },
