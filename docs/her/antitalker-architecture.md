@@ -1,12 +1,22 @@
 # Antitalker 行为监控插件架构
 
+> **2026-05-07 M2 架构升级**：同 turn 防睡 + 闲聊不误报能力已迁移到独立的
+> **Stop-Hook Pipeline** rule engine。违规续命逻辑不再走 watchdog/wake，而是走
+> pi-agent-core `getFollowUpMessages` 同 turn 续命。详见
+> [stop-hook-pipeline-architecture.md](./stop-hook-pipeline-architecture.md)。
+>
+> 本文档下面的 v8.5 watchdog 章节描述的是历史设计，**已被 M2 取代**。保留
+> 仅为追溯 v9.0 → M2 迁移动机。
+
 ## 当前版本
 
-- **插件版本**: v8.5 (镜像 tag: `carher-core:2026.5.5-dev-0505-v6`)
-- **部署方式**: Dockerfile COPY 内置 (`/app/plugins-poc/her-antitalker-poc/`)
-- **规则配置**: `/data/.openclaw/workspace/.antitalker/rules.yaml`
+- **插件版本**: v8.5 + M2 stop-hook-pipeline · carher-200 已部署
+- **规则配置**:
+  - 违规检测规则（legacy，保留）: `/data/.openclaw/workspace/.antitalker/rules.yaml`
+  - **Stop-hook 规则（新,主力）**: `/data/.openclaw/workspace/.antitalker/stop-hook-rules.yaml`
+- **部署方式**: Dockerfile COPY 内置 (`/app/docker/plugins/her-antitalker-poc/`)
 - **SKILL 文件**: `/home/cltx/.openclaw/skills/guangshuobulian/SKILL.md` (per-container)
-- **状态**: docker-13/198/200 已部署 v6，全量升级就绪
+- **状态**: carher-200 M2 已上线 (2026-05-07)，13/198/199 待推
 
 ## Hook 架构
 

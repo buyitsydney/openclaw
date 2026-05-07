@@ -1,7 +1,21 @@
 # Stop-Hook Pipeline 架构（Her 核心防睡框架）
 
-**版本**: M2 · 2026-05-07 · `carher-core` 镜像 ≥ 2026.5.7-dev-0507-stop-hook-v2
+**版本**: M2 · 2026-05-07
+**状态**: ✅ **生产已部署** (carher-200) · 待推其他服务器
 **定位**: Her 同 turn 防睡 + 闲聊不误报 · 规则全数据化 · 取代 v9.0 watchdog
+
+## 状态表
+
+| 项 | 状态 |
+|---|---|
+| 架构设计 | ✅ 定稿（本文档） |
+| `stop-hook-pipeline.ts` 执行器 | ✅ 生产运行 |
+| `stop-hook-rules.yaml` 规则文件 | ✅ 生产运行 · 2 条规则 |
+| `patch-agent-loop.sh` | ✅ 生产容器已应用 · 幂等 · 有 backup |
+| `smoke-test.mjs` | ✅ 38/38 绿 (host + 容器内) |
+| carher-200 部署 | ✅ 2026-05-07 08:07 上线 |
+| carher-13/198/199 部署 | ⏳ 待推 |
+| 生产实测 | ✅ 6 轮 drain 行为全部符合设计 (见§生产实证) |
 
 ---
 
@@ -208,13 +222,32 @@ v9.0 曾经走 BMW 同步 mark + 5s watchdog + heartbeat wake。对比：
 07:41:49  pipeline drain seq=2 → 0 msgs      (放行)
 ```
 
-### M2 闲聊误报修复（2026-05-07）
+### M2 闲聊误报修复（2026-05-07 08:08）
 
 ```
 "hi" → preconditions 阻止 no-toolcall-guard（min_user_message_length=10）→ drain 0 msgs
 真任务 "帮我修 bug" + 无 tool → drain 1 msg → 续命
 真任务 + exec → no_substantial_tool=false → drain 0 msgs
 ```
+
+### M2 六轮生产 drain 行为表（2026-05-07 08:08–08:12，carher-200 真实飞书 p2p 会话）
+
+| seq | tools | userLen | asstLen | 结果 | 判定 |
+|---|---|---|---|---|---|
+| 1 | `[]` | 20 | 5 | 1 msg · 续命 | 真任务无 tool → no-toolcall-guard fire |
+| 2 | `[message]` | 266 | 8 | 0 msg · 放行 | Her 回 `NO_REPLY` → `^NO_REPLY` precondition skip |
+| 3 | `[exec]` | 4 | 28 | 0 msg · 放行 | 闲聊短消息 → `min_user_message_length: 10` 挡住 |
+| 4 | `[message]` | 2 | 8 | 0 msg · 放行 | 更短闲聊 + NO_REPLY 双挡 |
+| 5 | `[]` | 10 | 63 | 1 msg · 续命 | 飞书纯文字回复不会送达用户 → 正确拦截 |
+| 6 | `[message]` | 266 | 8 | 0 msg · 放行 | Her 改走 message send 后 NO_REPLY 收尾 |
+
+**结论**：6/6 次 drain 全部行为正确。零 hack。规则 = 数据。
+
+### 关于 seq=5 的 "拦截" 澄清
+
+Her 回了 63 字纯文字但没走 `message send` tool → 在飞书 channel 里消息不会真正送达用户 → pipeline 正确识别为"还没完成任务"强制续命 → Her 第二轮用 `message send` 发出 → 用户收到回复。
+
+这**不是误报**：飞书 session 的合法终态是"调过 message send tool"，不是"模型内部生成了文字"。规则设计吻合 channel 语义。
 
 ---
 
