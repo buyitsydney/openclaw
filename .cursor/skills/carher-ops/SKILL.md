@@ -400,59 +400,116 @@ compose.yaml 里已声明 ACP、资源限制、A2A hub 配置。admin 特权通�
 
 ## 第 10 章 · Runtime / Build-time Patch 体系(2026-05-08+)
 
-carher 对 openclaw / 闭源包的 3 类本地 patch。**修改前必读本章,否则 rebuild 之后功能可能静默丢失。**
+carher 对 openclaw / 闭源上游 npm 包打的本地 patch。**修改前必读本章;任何一个 patch section 被误删 → 功能静默失效、用户先察觉、debug 路径很长。**
 
 ### 判定规则:runtime vs build-time patch
 
 | 目标文件会被 runtime 覆盖吗? | 路径 | 典型 |
 |---|---|---|
-| 会(npm install 重写) | **entrypoint runtime patch**(`scripts/carher-entrypoint.sh` sed) | `stripBotMentions` |
-| 不会(image COPY 的 read-only layer) | **Dockerfile build-time patch**(`scripts/apply-reset-archive-patches.sh`) | P7(PR #76666) |
+| 会(npm install 重写 / bind-mount 覆盖) | **entrypoint runtime patch**(`scripts/carher-entrypoint.sh` 每次 container 启动) | stripBotMentions / P8 history-fill |
+| 不会(image COPY read-only layer) | **Dockerfile build-time patch**(`scripts/apply-reset-archive-patches.sh`,`RUN` 走 build layer) | (当前无;P7 已撤) |
 
 选错方向 = 下次 npm install / image rebuild 时 patch 失效。
 
-### Patch 清单(2026-05-08)
+### ⚠️ 改 entrypoint.sh 的铁律
 
-#### 🔧 Patch-A:`stripBotMentions` (runtime, entrypoint)
+- **任何对 `scripts/carher-entrypoint.sh` 的 diff,commit message 必须显式列出所有被 add / remove 的 section header**(本章表格里的 name)。
+- Reviewer 必须逐个 section 核对,**只要有一个少了就打回**。
+- 教训:`f3d83cfd493`(2026-05-05) 加 a2a-gateway manifest patch 时顺手删了整个 CommandSource section,commit message 只提 a2a-gateway。后来 2026-05-08 尝试恢复才发现 CommandSource 方向在群里根本无效(见 R-7 条目),但这不降低"改 entrypoint 必须列 section diff"这条铁律的重要性。
 
+### 完整 Patch 清单(2026-05-08,共 8 个)
+
+#### 🔧 R-1:`stripBotMentions` (runtime, entrypoint)
+
+- **Target**:`$LARK_PKG/src/messaging/inbound/parse.js` L102
 - **Upstream**:`@larksuite/openclaw-lark`(闭源 npm,不能提 PR)
-- **Bug**:`parse.js:102` 硬编码 `stripBotMentions: true` → 多 bot 群 @ 多 bot 时,每个 bot 看到的 prompt 里自己的 @ 被剥掉 → LLM 判"没被 @" → NO_REPLY → 群装死
-- **Patch 位置**:`scripts/carher-entrypoint.sh`(npm install @larksuite/openclaw-lark 之后 sed)
-- **验证**:`docker exec carher-N grep -c stripBotMentions /entrypoint.sh` → 应 ≥ 7
+- **Bug**:硬编码 `stripBotMentions: true` → 多 bot 群 @ 多 bot 时,每个 bot prompt 里自己的 @ 被剥掉 → LLM 判"没被 @" → NO_REPLY → 群装死
+- **Fix**:sed `stripBotMentions: true` → `false`
 - **Kill switch**:`CARHER_DISABLE_STRIP_BOT_MENTIONS_PATCH=1`
-- **log 成功**:`✓ openclaw-lark stripBotMentions → false (backup: ...bak.<hash>)` 或 `✓ stripBotMentions already false`
+- **log 成功**:`✓ openclaw-lark stripBotMentions → false`
 
-#### 🔧 Patch-P7:Session Transcript Listener eager preload (build, Dockerfile)
+#### 🔧 R-2:`openclaw-lark manifest → channel-only` (runtime, entrypoint)
 
-- **Upstream**:`openclaw/openclaw` PR #76666(still **open**,未 merge)
-- **Bug**:`MemoryIndexManager` lazy-loaded,仅 builtin backend 下,`/reset` 或 `/new` 在**第一次 `memory_search` 之前**发生时,`sessionTranscriptUpdate` emit 落在空 listener set 被 silently dropped → `.jsonl.reset.<iso>` archive **不进 chunks**,必须 `memory index --force` 补救
-- **Patch 位置**:`scripts/apply-reset-archive-patches.sh`(Dockerfile `RUN /tmp/apply-reset-archive-patches.sh` 走 build layer)
-- **两个 sub-patch**(必须一起,否则 crash):
-  - **P7-outer**:`server.impl-*.js` 里 `resolveGatewayMemoryStartupPolicy` — 让 builtin + agent `memorySearch.sources=["sessions"]` 时返回 `{mode:"immediate"}`(触发 startGatewayMemoryBackend)
-  - **P7-inner**:`server-startup-memory-*.js` 里 `startGatewayMemoryBackend` loop — **必须同时吃 2 行** anchor(qmd gate + `shouldRunQmdStartupBootSync`),用 `_isBuiltinSessionsPreload` flag 跳过 qmd-specific checks,否则 builtin 的 `resolved.qmd=undefined` 进 `shouldRunQmdStartupBootSync` 会崩(`Cannot read properties of undefined (reading 'update')`)
-- **验证 image 已 patched**:
-  ```bash
-  docker run --rm --entrypoint sh <IMG> -c "
-    grep -c carher_P7_outer /app/dist/server.impl-*.js    # expect 1
-    grep -c carher_P7_inner /app/dist/server-startup-memory-*.js  # expect 1
-  "
-  ```
-- **效果**:cold start 后 3-4 分钟内所有 session `.jsonl` + `.jsonl.reset.<iso>` + `.jsonl.deleted.<iso>` 进 chunks 索引。200 实测 300+ files / 13,911 chunks
-- **降级**:upstream merge 后 anchor 会失效,script 自动 `SKIP`,build 仍成功(不破坏 image)
+- **Target**:`$LARK_PKG/openclaw.plugin.json`
+- **Reason**:三组件架构下 openclaw-lark 只保留 channel(feishu 消息收发);tools 由 lark-cli 接管,skills 吃 context
+- **Fix**:node 改 manifest,`contracts.tools = []` + `skills = []`
+- **Kill switch**:无(删 section 即回)
+- **log 成功**:`✓ openclaw-lark stripped to channel-only`
 
-#### 🔧 Patch-已经 upstream merged(不再需要 patch)
+#### 🔧 R-3:`feishu-her manifest 加 contracts.tools + activation.onStartup` (runtime, entrypoint)
 
-- **patch4 memory-core archiveMarker**:upstream 2026.5.3 通过新增 `session-transcript-hit-*.js` 原生 support 归档文件 stem 解析。老 patch 已从 `apply-reset-archive-patches.sh` 删除
+- **Target**:`/app/docker/plugins/feishu-her/openclaw.plugin.json`
+- **Reason**:openclaw 0503 要求 plugin 显式声明 contracts.tools;feishu-her 30 个 tool 名单要对上 index.ts 里的 registerTool 调用
+- **Fix**:node 改 manifest,塞 30 个 tool 名 + `activation: {onStartup: true}`
+- **Kill switch**:无
+- **log 成功**:`✓ contracts.tools (30) + activation.onStartup patched`
 
-### 升级到新 openclaw 版本时的 patch 维护流程
+#### 🔧 R-4:`shadow-daemon manifest 加 activation.onStartup` (runtime, entrypoint)
 
-1. 新 image build 时 **一定** grep build log 找 `OK` / `SKIP`
-   ```
-   p7_outer server.impl-*.js: OK        ← 打上了 ✅
-   p7_inner server-startup-memory-*.js: SKIP (anchor changed ...)  ← 上游 refactor 了,需人 review
-   ```
-2. 任一 SKIP 出现 → 不要 ship。先读上游新代码,更新 anchor,重新 build
-3. SKIP 本身不破坏 image(idempotent + safe degrade),但功能静默缺失,**用户察觉不到**
+- **Target**:`/app/docker/plugins/shadow-daemon/openclaw.plugin.json`
+- **Reason**:shadow-daemon 要在 container 启动时就 sync,必须显式 onStartup
+- **Fix**:node 改 manifest,`activation: {onStartup: true}`(幂等)
+- **Kill switch**:无
+
+#### 🔧 R-5:`patch-agent-loop.sh` — antitalker M1 stop-hook-pipeline (runtime, entrypoint)
+
+- **Target**:`/app/node_modules/@mariozechner/pi-agent-core/dist/agent-loop.js`
+- **Upstream**:`@mariozechner/pi-agent-core`(开源,但 agent-loop 没 extension point)
+- **Bug / Reason**:openclaw `AgentLoopConfig` 里 `getFollowUpMessages` hook 在 feishu path 默认 empty,antitalker 同 turn 续命无接入点
+- **Fix**:script `/app/docker/plugins/her-antitalker-poc/patch-agent-loop.sh` 插入 `globalThis.__openclaw_stopHookPipeline` fallback
+- **Kill switch**:无 env(可临时 `sed -i "2i exit 0" /app/docker/plugins/her-antitalker-poc/patch-agent-loop.sh` + restart + 手 cp `.orig.<ts>` 回 agent-loop.js)
+- **log 成功**:`[patch-agent-loop] PATCHED ...` 或 `[patch-agent-loop] SKIP: ... already patched`
+
+#### 🔧 R-6:`P8 proactive 20-msg history fill` (runtime, entrypoint)
+
+- **Target**:`$LARK_PKG/src/messaging/inbound/dispatch.js`(加 require helper 的一行注入)+ `$LARK_PKG/src/messaging/inbound/carher-history-fill.js`(helper,cp from bind-mount)
+- **Upstream**:`@larksuite/openclaw-lark`(闭源)
+- **Bug**:三组件迁移后 group 历史只走被动 WS event 累积;bot 重启 / 群冷场 > 20 秒 → 被 @ 时 0 条上下文,"失忆"
+- **Fix**:被 @ 时(非 `/` 系统命令)调 `/im/v1/messages` 拉最近 20 条填 Map
+- **Source**:`scripts/carher-patches/`(bind-mount 成容器 `/carher-patches:ro`)
+- **Kill switch**:
+  - `CARHER_DISABLE_HISTORY_FILL_PATCH=1` (boot 时完全 skip patch)
+  - `CARHER_DISABLE_HISTORY_FILL=1` (patch 在但 helper runtime no-op)
+- **log 成功**:`✓ history-fill patch applied (helper + dispatch.js)` + 运行时 `[carher-history-fill] done ... filled 19 in NNNms`
+
+#### 🔧 R-7:(尝试并撤回)— 群 /new delivered=false
+
+- **现状**:2026-05-08 尝试两个方向都失败,已撤回。entrypoint.sh 里无此 section。
+- **Target**(曾经):`$LARK_PKG/src/messaging/inbound/dispatch-commands.js`
+- **Upstream bug**:三组件迁移后(commit 32c2b19d2ca)群里 /new 看起来"失效"——log 里 `delivered=false`。
+- **尝试 1 (CommandSource):** 移植 `f8120543f74` 里 DM 专用的 `ctxPayload.CommandSource = "native"`。实测群里**无效**,且引入副作用 /status 双回复(core 的 native handler 和 agent path 同时跑)。
+- **尝试 2 (sourceReplyDeliveryMode):** 移植 `b1f1dee6f21` 里 feishu-her/gateway.ts 群命令 fix,把 `replyOptions: {}` 改成 `replyOptions: { sourceReplyDeliveryMode: "automatic" }`。实测仍 `delivered=false`。
+- **真相推断**:群里 /new 的 core native handler 是**静默 session-reset**(无 onBlockReply 输出),无论 replyOptions 怎么配回复都没文本。agent path 又把 /new 当普通消息 → NO_REPLY。DM 不受影响因为 DM 走不同的 core path 有 native 文本回复。
+- **结论**:**"/new 在群里从来没在三组件架构下工作过"**。用户记忆里的"曾经工作"是 DM 或三组件迁移前的耦合版 gateway.ts。
+- **TODO**:真要修必须改 `dispatchSystemCommand` 让 lifecycle 命令(/new /reset)在群里不进 agent,直接用 feishu IM API 发 "Session cleared" 确认。属于新的 fix stream,非本周目标。
+
+#### 🔧 B-1(历史,当前 no-op):`apply-reset-archive-patches.sh`
+
+- **原用途**:P7(PR #76666)— `MemoryIndexManager` lazy-load 下 /reset archive race 窗口
+- **当前状态**:`d6139a2e61c` **已 revert 成 no-op stub**。理由:P7-inner 让 builtin backend cold start 同步扫 files 表 × stat × hash compare → 22s event loop stall(13 实测),10× 慢于 upstream benchmark 数据
+- **替代方案**:cron 定期 `openclaw memory index --force` 补 race window
+- **文件位置**:`scripts/apply-reset-archive-patches.sh`(文件保留作为 stub + 记忆)
+- **何时可再启用**:upstream 有异步版的 fix 后
+
+#### 🔧 已被 upstream 覆盖(不再 patch)
+
+- **patch4 memory-core archiveMarker**:openclaw 2026.5.3 新增 `session-transcript-hit-*.js` 原生 support 归档 stem 解析 → 老 patch 已从 apply-reset-archive-patches.sh 删除
+
+### Patch 完整性自检(新 image / entrypoint diff 后必跑)
+
+```bash
+# 6 个 R-* runtime patches 都应出现在 entrypoint 启动 log 里 (R-7 已撤)
+docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|patch-agent-loop|PATCHED"
+# 应看到 6 行 ✓
+```
+
+### 升级 openclaw 新版本 / 改 entrypoint.sh 的 SOP
+
+1. **改 entrypoint.sh 前**:读本章。Diff 之后逐 section 核对。commit message 列出 add / remove 哪些 section header。
+2. **新 image build**:grep build log 找 `OK` / `SKIP`(只 B-* patches 有)
+3. **新 image 启动**:跑上面的自检 grep,8 个 patch 全中才算 ship
+4. SKIP 本身不破坏 image(idempotent + safe degrade),但功能静默缺失,**用户察觉不到**
+5. 任一 patch 的 anchor 失效 → 不要 ship。先读上游新代码,更新 anchor,重新 build
 
 ---
 

@@ -92,6 +92,14 @@ else
 fi
 # ── end P8 history-fill patch ────────────────────────────────────
 
+# NOTE: an R-7 "CommandSource" / "sourceReplyDeliveryMode" patch was attempted
+# 2026-05-08 to fix /new delivered=false in groups. Neither approach worked:
+# core's /new native handler does a silent session-reset (no onBlockReply
+# emission), so no replyOptions tweak helps. /new in group appears to have
+# NEVER worked after the three-component migration (commit 32c2b19). DM /new
+# still works because DMs take a different core path.
+# See `.cursor/skills/carher-ops/SKILL.md` 第 13 章 踩坑 #11.
+
 # lark-cli: 24 AI skills (Go binary)
 LARK_CLI_WANT="${CARHER_LARK_CLI_VERSION:-latest}"
 if ! command -v lark-cli &>/dev/null || [ "${CARHER_FORCE_PLUGIN_INSTALL:-}" = "1" ]; then
