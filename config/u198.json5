@@ -3,24 +3,19 @@
 // Admin host. $include's docker.json5 → base.json5. Mounted into the
 // container at /data/.openclaw/openclaw.json by compose bind-mount.
 //
-// History: 裸机 yitian-her 2026-04-23 退役,由 carher-198 (研究1) 接管 admin。
-// Special: must run with `CARHER_MEMORY_LIMIT=16g A2A_ENABLED=1 A2A_OUTBOUND=1
-// compose up in deploy/carher-198/ then bootstrap-admin.sh.
-//
-// Real appSecret is injected via -e FEISHU_APP_SECRET on docker run.
+// 结构跟 u200.json5 对齐 (A2A hub + antitalker + heartbeat),只换身份字段。
+// admin 行为 heavy,CARHER_MEMORY_LIMIT=16g 在 deploy/carher-198/.env。
 
 {
   "$include": "./docker.json5",
 
-  // 2026-04-27: openclaw 2026.4.24 boot check reads root parsed gateway.mode
-  // BEFORE $include expansion. Without this, every gateway start clobbers
-  // openclaw.json (see u199.json5 — docker-199 had 145 .clobbered.<ts> in
-  // a single deploy window before the fix).
+  // 2026-04-27: 0424 boot check needs gateway.mode at root (no $include expansion).
   gateway: {
     mode: "local",
   },
 
-  // A2A hub mode: 13 / 198 / 199 / 200 are permanent hubs (god-mode peers).
+
+  // A2A hub mode: 13/198/199/200 are permanent hubs (god-mode peers).
   plugins: {
     entries: {
       "her-antitalker-poc": { enabled: true, hooks: { allowConversationAccess: true } },
@@ -33,14 +28,12 @@
     },
   },
 
-  // Admin uses Wangsu LiteLLM opus-4-7 as primary (matches docker.json5 default).
-  // heartbeat.target='last' (2026-05-04 bug #11) → wake/heartbeat 回复 auto-route
-  // 到 session.lastChannel (feishu group) 而不是 silent。
+  // 2026-05-03 v7.3 · antitalker Bug 4/5 fix
+  // heartbeat.target='last' tells OpenClaw to use session.lastChannel (feishu)
+  // instead of 'none' → canRelayToUser flips true → exec completion prompt
+  // becomes 'The command completion details are:' instead of 'reply HEARTBEAT_OK only'.
   //
-  // 注意 ⚠️:agents 必须只声明 1 次。之前 u198 重复声明两次 agents (一次有
-  // heartbeat.target, 一次有 model.primary),JSON5 合法但 openclaw 2026.5.3
-  // parser 在 merge 时让 channels.feishu 出 "additional properties" 错 → gateway
-  // startup 失败。2026-05-08 合并为单一 agents block。
+  // Admin uses Wangsu LiteLLM opus-4-7 as primary (matches docker.json5 default).
   agents: {
     defaults: {
       model: { primary: "anthropic/anthropic.claude-opus-4-7" },
@@ -52,7 +45,6 @@
 
   channels: {
     feishu: {
-      enabled: true,
       name: "研究1的her",
       appId: "cli_a96f0bfba3789cd4",
       appSecret: "${FEISHU_APP_SECRET}",
