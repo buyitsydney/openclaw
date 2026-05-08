@@ -26,6 +26,8 @@ mkdir -p "$PLUGIN_DIR"
 # openclaw-lark: channel provider + tools
 LARK_WANT="${CARHER_OPENCLAW_LARK_VERSION:-latest}"
 LARK_PKG="$PLUGIN_DIR/node_modules/@larksuite/openclaw-lark"
+CARHER_PATCHES_DIR="/carher-patches"
+LARK_DISPATCH="$LARK_PKG/src/messaging/inbound/dispatch.js"
 if [ ! -d "$LARK_PKG" ] || [ "${CARHER_FORCE_PLUGIN_INSTALL:-}" = "1" ]; then
   echo "▶ Installing @larksuite/openclaw-lark@${LARK_WANT}..."
   npm install --prefix "$PLUGIN_DIR" "@larksuite/openclaw-lark@${LARK_WANT}" --omit=dev 2>&1 | tail -3
@@ -59,6 +61,28 @@ if [ -f "$LARK_PARSE" ] && [ -z "${CARHER_DISABLE_STRIP_BOT_MENTIONS_PATCH:-}" ]
 fi
 # ── end stripBotMentions patch ────────────────────────────────────
 
+# ── openclaw-lark: command body mention normalization ─────────────
+# Keep bot mentions visible to the LLM for normal group turns, but strip this
+# bot's addressing mention from slash-command CommandBody so `/new @bot` is
+# handled as bare `/new` instead of `/new` with a prompt tail.
+# Also ignores slash commands targeted at another mentioned account.
+# Kill switch: CARHER_DISABLE_COMMAND_BODY_NORMALIZE_PATCH=1
+if [ "${CARHER_DISABLE_COMMAND_BODY_NORMALIZE_PATCH:-0}" = "1" ]; then
+  echo "  ⏭  command-body normalize patch skipped (CARHER_DISABLE_COMMAND_BODY_NORMALIZE_PATCH=1)"
+elif [ ! -d "$CARHER_PATCHES_DIR" ]; then
+  echo "  ⚠️  $CARHER_PATCHES_DIR not mounted — command-body normalize patch skipped"
+elif [ ! -f "$LARK_DISPATCH" ]; then
+  echo "  ⚠️  $LARK_DISPATCH not found — command-body normalize patch skipped"
+else
+  echo "  ▶ Patching openclaw-lark dispatch.js → slash command mention normalization..."
+  if bash "$CARHER_PATCHES_DIR/apply-command-body-normalize.sh" "$LARK_DISPATCH"; then
+    echo "    ✓ command-body normalize patch applied"
+  else
+    echo "    ✗ command-body normalize patch failed — group /new @bot may enter agent" >&2
+  fi
+fi
+# ── end command body mention normalization ────────────────────────
+
 # ── P8: proactive 20-msg group history fill (restores feishu-her behavior) ──
 # Before the three-component migration (commit 32c2b19), feishu-her/gateway.ts
 # pulled the last 20 group messages from /im/v1/messages on every @mention.
@@ -72,8 +96,6 @@ fi
 # Kill switches:
 #   CARHER_DISABLE_HISTORY_FILL_PATCH=1  → skip patch at boot
 #   CARHER_DISABLE_HISTORY_FILL=1        → patch applied but helper no-ops at runtime
-CARHER_PATCHES_DIR="/carher-patches"
-LARK_DISPATCH="$LARK_PKG/src/messaging/inbound/dispatch.js"
 if [ "${CARHER_DISABLE_HISTORY_FILL_PATCH:-0}" = "1" ]; then
   echo "  ⏭  history-fill patch skipped (CARHER_DISABLE_HISTORY_FILL_PATCH=1)"
 elif [ ! -d "$CARHER_PATCHES_DIR" ]; then

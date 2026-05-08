@@ -472,16 +472,18 @@ carher 对 openclaw / 闭源上游 npm 包打的本地 patch。**修改前必读
   - `CARHER_DISABLE_HISTORY_FILL=1` (patch 在但 helper runtime no-op)
 - **log 成功**:`✓ history-fill patch applied (helper + dispatch.js)` + 运行时 `[carher-history-fill] done ... filled 19 in NNNms`
 
-#### 🔧 R-7:(尝试并撤回)— 群 /new delivered=false
+#### 🔧 R-7:`command-body mention normalization` — 群 /new @bot 修复 (runtime, entrypoint)
 
-- **现状**:2026-05-08 尝试两个方向都失败,已撤回。entrypoint.sh 里无此 section。
-- **Target**(曾经):`$LARK_PKG/src/messaging/inbound/dispatch-commands.js`
-- **Upstream bug**:三组件迁移后(commit 32c2b19d2ca)群里 /new 看起来"失效"——log 里 `delivered=false`。
-- **尝试 1 (CommandSource):** 移植 `f8120543f74` 里 DM 专用的 `ctxPayload.CommandSource = "native"`。实测群里**无效**,且引入副作用 /status 双回复(core 的 native handler 和 agent path 同时跑)。
-- **尝试 2 (sourceReplyDeliveryMode):** 移植 `b1f1dee6f21` 里 feishu-her/gateway.ts 群命令 fix,把 `replyOptions: {}` 改成 `replyOptions: { sourceReplyDeliveryMode: "automatic" }`。实测仍 `delivered=false`。
-- **真相推断**:群里 /new 的 core native handler 是**静默 session-reset**(无 onBlockReply 输出),无论 replyOptions 怎么配回复都没文本。agent path 又把 /new 当普通消息 → NO_REPLY。DM 不受影响因为 DM 走不同的 core path 有 native 文本回复。
-- **结论**:**"/new 在群里从来没在三组件架构下工作过"**。用户记忆里的"曾经工作"是 DM 或三组件迁移前的耦合版 gateway.ts。
-- **TODO**:真要修必须改 `dispatchSystemCommand` 让 lifecycle 命令(/new /reset)在群里不进 agent,直接用 feishu IM API 发 "Session cleared" 确认。属于新的 fix stream,非本周目标。
+- **Target**:`$LARK_PKG/src/messaging/inbound/dispatch.js`
+- **Source**:`scripts/carher-patches/apply-command-body-normalize.sh`
+- **Bug**:`stripBotMentions=false` 修好多 bot @ 后,群命令的 `ctx.content` 保留了 bot mention。`/new @弋天的her` 进入 core 时变成 `CommandBody="/new @弋天的her"`;core 把 mention 当作 `/new <tail>` 的 prompt tail,于是 reset 后继续进 LLM,最终 `NO_REPLY`,看不到 `✅ New session started.`。`/status @bot` 也会因为 mention 后缀造成命令识别不一致/双回复。
+- **Fix**:只在 slash-command command surface 归一化:
+  - 普通 LLM 输入仍保留 bot mention(不回退 R-1)
+  - `CommandBody` 去掉"当前 bot 的地址 mention":`/new @bot` → `/new`,`/status @bot` → `/status`
+  - 群里 slash command 如果 mention 了别人但没 mention 当前 bot,当前 bot 直接 ignore,避免多 bot 群误响应
+- **Kill switch**:`CARHER_DISABLE_COMMAND_BODY_NORMALIZE_PATCH=1`
+- **log 成功**:`✓ command-body normalize patch applied`
+- **反例**:不要再打 `CommandSource:native` 或直接 `sendMessageFeishu` ack。前者导致 `/status` 双回复,后者绕过 core reset 语义。
 
 #### 🔧 B-1(历史,当前 no-op):`apply-reset-archive-patches.sh`
 
@@ -498,16 +500,16 @@ carher 对 openclaw / 闭源上游 npm 包打的本地 patch。**修改前必读
 ### Patch 完整性自检(新 image / entrypoint diff 后必跑)
 
 ```bash
-# 6 个 R-* runtime patches 都应出现在 entrypoint 启动 log 里 (R-7 已撤)
-docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|patch-agent-loop|PATCHED"
-# 应看到 6 行 ✓
+# 7 个 R-* runtime patches 都应出现在 entrypoint 启动 log 里
+docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|patch-agent-loop|PATCHED"
+# 应看到 7 行 ✓
 ```
 
 ### 升级 openclaw 新版本 / 改 entrypoint.sh 的 SOP
 
 1. **改 entrypoint.sh 前**:读本章。Diff 之后逐 section 核对。commit message 列出 add / remove 哪些 section header。
 2. **新 image build**:grep build log 找 `OK` / `SKIP`(只 B-* patches 有)
-3. **新 image 启动**:跑上面的自检 grep,8 个 patch 全中才算 ship
+3. **新 image 启动**:跑上面的自检 grep,7 个 R-* patch 全中才算 ship
 4. SKIP 本身不破坏 image(idempotent + safe degrade),但功能静默缺失,**用户察觉不到**
 5. 任一 patch 的 anchor 失效 → 不要 ship。先读上游新代码,更新 anchor,重新 build
 
