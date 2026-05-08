@@ -59,6 +59,39 @@ if [ -f "$LARK_PARSE" ] && [ -z "${CARHER_DISABLE_STRIP_BOT_MENTIONS_PATCH:-}" ]
 fi
 # ── end stripBotMentions patch ────────────────────────────────────
 
+# ── P8: proactive 20-msg group history fill (restores feishu-her behavior) ──
+# Before the three-component migration (commit 32c2b19), feishu-her/gateway.ts
+# pulled the last 20 group messages from /im/v1/messages on every @mention.
+# After the migration the channel moved to @larksuite/openclaw-lark which only
+# accumulates history passively via im.message.receive_v1 events — so a bot
+# that just restarted (or a quiet group that wakes up hours later) has zero
+# context when @mentioned. This patch restores the pre-migration behavior
+# by injecting a proactive back-fill call before buildEnvelopeWithHistory.
+#
+# Source of truth: scripts/carher-patches/ (bind-mounted into /carher-patches)
+# Kill switches:
+#   CARHER_DISABLE_HISTORY_FILL_PATCH=1  → skip patch at boot
+#   CARHER_DISABLE_HISTORY_FILL=1        → patch applied but helper no-ops at runtime
+CARHER_PATCHES_DIR="/carher-patches"
+LARK_DISPATCH="$LARK_PKG/src/messaging/inbound/dispatch.js"
+if [ "${CARHER_DISABLE_HISTORY_FILL_PATCH:-0}" = "1" ]; then
+  echo "  ⏭  history-fill patch skipped (CARHER_DISABLE_HISTORY_FILL_PATCH=1)"
+elif [ ! -d "$CARHER_PATCHES_DIR" ]; then
+  echo "  ⚠️  $CARHER_PATCHES_DIR not mounted — history-fill patch skipped"
+elif [ ! -f "$LARK_DISPATCH" ]; then
+  echo "  ⚠️  $LARK_DISPATCH not found — history-fill patch skipped"
+else
+  echo "  ▶ Patching openclaw-lark dispatch.js → proactive 20-msg history fill..."
+  cp "$CARHER_PATCHES_DIR/history-fill-helper.js" \
+     "$LARK_PKG/src/messaging/inbound/carher-history-fill.js"
+  if bash "$CARHER_PATCHES_DIR/apply-history-fill.sh" "$LARK_DISPATCH"; then
+    echo "    ✓ history-fill patch applied (helper + dispatch.js)"
+  else
+    echo "    ✗ history-fill patch failed — bot will run with since-last-reply behavior" >&2
+  fi
+fi
+# ── end P8 history-fill patch ────────────────────────────────────
+
 # lark-cli: 24 AI skills (Go binary)
 LARK_CLI_WANT="${CARHER_LARK_CLI_VERSION:-latest}"
 if ! command -v lark-cli &>/dev/null || [ "${CARHER_FORCE_PLUGIN_INSTALL:-}" = "1" ]; then

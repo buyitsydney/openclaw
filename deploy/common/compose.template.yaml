@@ -56,6 +56,7 @@ services:
       - ${HOME}/.openclaw/skills:/data/.openclaw/skills:ro
       - ../../docker/plugins/a2a-gateway:/data/.openclaw/plugins/a2a-gateway:ro
       - ../../scripts/carher-entrypoint.sh:/entrypoint.sh:ro
+      - ../../scripts/carher-patches:/carher-patches:ro
       - ../../config/u{{USER_ID}}.json5:/data/.openclaw/openclaw.json:ro
       - ../../config/base.json5:/data/.openclaw/base.json5:ro
       - ../../config/docker.json5:/data/.openclaw/docker.json5:ro

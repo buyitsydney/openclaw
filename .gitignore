@@ -14,6 +14,8 @@ bun.lock
 bun.lockb
 coverage
 __openclaw_vitest__/
+# carher test assets (npm-pack'd upstream packages for patch tests)
+test-assets/
 __pycache__/
 *.pyc
 .tsbuildinfo

@@ -1,0 +1,6 @@
+{
+  "name": "carher-patches",
+  "private": true,
+  "type": "commonjs",
+  "description": "Runtime patches applied to @larksuite/openclaw-lark inside the carher container. CJS because the host dispatch.js is CJS and requires these helpers via relative path."
+}
