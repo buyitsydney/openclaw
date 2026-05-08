@@ -34,6 +34,31 @@ else
   echo "  ✓ openclaw-lark already installed"
 fi
 
+# ── openclaw-lark: stripBotMentions=false patch (multi-bot group bug) ──
+# Bug: 上游 parse.js:102 硬编码 `stripBotMentions: true`,多 bot 群 @ 多 bot 时,
+# 每个 bot 看到的 prompt 里自己的 @ 被剥掉 → LLM 认为没被 @ → 回 NO_REPLY。
+# 上游 @larksuite/openclaw-lark 闭源,不可提 PR;此 patch 必须在 npm install 后
+# 每次重跑(幂等)。已通过 preflight dry-run + unit test 验证(见 plan 文件)。
+# Kill switch: CARHER_DISABLE_STRIP_BOT_MENTIONS_PATCH=1
+LARK_PARSE="$LARK_PKG/src/messaging/inbound/parse.js"
+if [ -f "$LARK_PARSE" ] && [ -z "${CARHER_DISABLE_STRIP_BOT_MENTIONS_PATCH:-}" ]; then
+  LARK_PARSE_HASH=$(sha256sum "$LARK_PARSE" | cut -c1-12)
+  LARK_PARSE_BAK="$LARK_PARSE.bak.$LARK_PARSE_HASH"
+  [ -f "$LARK_PARSE_BAK" ] || cp -p "$LARK_PARSE" "$LARK_PARSE_BAK"
+  if grep -qE 'stripBotMentions:[[:space:]]*true' "$LARK_PARSE"; then
+    sed -i -E 's/^([[:space:]]*)stripBotMentions:[[:space:]]*true([[:space:]]*,?)/\1stripBotMentions: false\2/' "$LARK_PARSE"
+    if node --check "$LARK_PARSE" 2>/dev/null; then
+      echo "  ✓ openclaw-lark stripBotMentions → false (backup: $LARK_PARSE_BAK)"
+    else
+      echo "  ✗ stripBotMentions patch broke syntax, restoring backup" >&2
+      cp -p "$LARK_PARSE_BAK" "$LARK_PARSE"
+    fi
+  else
+    echo "  ✓ stripBotMentions already false (or renamed upstream)"
+  fi
+fi
+# ── end stripBotMentions patch ────────────────────────────────────
+
 # lark-cli: 24 AI skills (Go binary)
 LARK_CLI_WANT="${CARHER_LARK_CLI_VERSION:-latest}"
 if ! command -v lark-cli &>/dev/null || [ "${CARHER_FORCE_PLUGIN_INSTALL:-}" = "1" ]; then
