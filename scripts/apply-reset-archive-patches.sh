@@ -87,7 +87,7 @@ s = p.read_text()
 if "carher_P7_inner" in s:
     print(f"p7_inner {p.name}: already patched, skip")
     exit(0)
-anchor = 'if (!resolved) continue;\n\t\tif (resolved.backend !== "qmd" || !resolved.qmd) continue;'
+anchor = 'if (!resolved) continue;\n\t\tif (resolved.backend !== "qmd" || !resolved.qmd) continue;\n\t\tif (!shouldRunQmdStartupBootSync(resolved.qmd)) continue;'
 if anchor not in s:
     print(f"p7_inner {p.name}: SKIP (anchor changed — upstream refactor, needs review)")
     exit(0)
@@ -95,10 +95,13 @@ replacement = (
     'if (!resolved) continue;\n'
     '\t\t// carher_P7_inner (PR #76666): let builtin backend also preload session transcript listener\n'
     '\t\t// when agent has memorySearch.sources=["sessions"] — qmd still goes through its own\n'
-    '\t\t// boot-sync path below; builtin only needs manager init (sync() is no-op).\n'
+    '\t\t// boot-sync path below; builtin skips qmd-specific checks, goes straight to manager\n'
+    '\t\t// init so ensureSessionListener() attaches before any /reset or /new archive emit.\n'
     '\t\tconst _carherSettings = resolveMemorySearchConfig(params.cfg, agentId);\n'
     '\t\tconst _carherWantSessions = Array.isArray(_carherSettings?.sources) && _carherSettings.sources.includes("sessions");\n'
-    '\t\tif ((resolved.backend !== "qmd" || !resolved.qmd) && !_carherWantSessions) continue;'
+    '\t\tconst _isBuiltinSessionsPreload = resolved.backend !== "qmd" && _carherWantSessions;\n'
+    '\t\tif ((resolved.backend !== "qmd" || !resolved.qmd) && !_isBuiltinSessionsPreload) continue;\n'
+    '\t\tif (!_isBuiltinSessionsPreload && !shouldRunQmdStartupBootSync(resolved.qmd)) continue;'
 )
 s2 = s.replace(anchor, replacement, 1)
 if "carher_P7_inner" not in s2:
