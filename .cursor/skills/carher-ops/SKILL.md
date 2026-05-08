@@ -48,22 +48,25 @@ deploy/carher-{id}/
 
 ---
 
-## 第 2 章 · 当前部署真相（2026-04-30 compose 全面迁移）
+## 第 2 章 · 当前部署真相（2026-05-08)
 
-**S1 全部 4 个 bot 已迁移到 compose 架构。**
+**S1 + S3 全部 7 个 bot 已 compose 化 + 升级到 stop-hook-v3-clean 系 image。**
 
-| 位置              | 容器         | 用户         | Bot App ID             | 架构    |
-| ----------------- | ------------ | ------------ | ---------------------- | ------- |
-| S1 (10.68.13.186) | `carher-13`  | 卜弋天       | `cli_a917e5525178dbb3` | compose |
-| S1 (10.68.13.186) | `carher-198` | admin/研究1  | `cli_a96f0bfba3789cd4` | compose |
-| S1 (10.68.13.186) | `carher-199` | 研究2        | `cli_a9717259fcb89cd6` | compose |
-| S1 (10.68.13.186) | `carher-200` | 研究3        | `cli_a971724b62f89cd8` | compose |
-| S3 (10.68.13.188) | `carher-14`  | 刘国现       | `cli_a91569fab9b81bc6` | 待迁移  |
-| S3 (10.68.13.188) | `carher-75`  | 林森         | `cli_a94a0b73a878dbcb` | 待迁移  |
+| 位置              | 容器         | 用户         | Bot App ID             | 当前 image（2026-05-08 晨）     |
+| ----------------- | ------------ | ------------ | ---------------------- | --------------------------------- |
+| S1 (10.68.13.186) | `carher-12`  | test/tester  | `cli_a917fa892ff91bb5` | `stop-hook-v3-clean`              |
+| S1 (10.68.13.186) | `carher-13`  | 卜弋天       | `cli_a917e5525178dbb3` | `stop-hook-v3-clean`              |
+| S1 (10.68.13.186) | `carher-198` | admin/研究1  | `cli_a96f0bfba3789cd4` | `stop-hook-v3-clean`              |
+| S1 (10.68.13.186) | `carher-199` | 研究2        | `cli_a96f043660f99cef` | `stop-hook-v3-clean`              |
+| S1 (10.68.13.186) | `carher-200` | 研究3/Nova   | `cli_a96f044b4ef95cc0` | **`2026.5.8-p7b`**（灰度领先）   |
+| S3 (10.68.13.188) | `carher-14`  | 刘国现       | `cli_a91569fab9b81bc6` | `stop-hook-v3-clean` (A2A hub 配错,应 spoke) |
+| S3 (10.68.13.188) | `carher-75`  | 林森         | `cli_a94a0b73a878dbcb` | `stop-hook-v3-clean` (spoke)      |
 
-**Mac 本地测试容器**（id=101/102/103/104）：`carher-101`=tester, `carher-102`=tester2, `carher-103`=tester3, `carher-104`=tester4。
+**A2A hub 名单**(`a2a-gateway.outbound.enabled=true`):13 / 198 / 199 / 200。其他全 spoke。
 
-**行动原则**：`docker/servers.txt` 是手动维护的真相表。
+**Mac 本地测试容器**（id=101/102/103/104）:`carher-101`=tester, `carher-102`=tester2, `carher-103`=tester3, `carher-104`=tester4。
+
+**行动原则**:`docker/servers.txt` 是手动维护的真相表。
 
 ---
 
@@ -395,7 +398,200 @@ compose.yaml 里已声明 ACP、资源限制、A2A hub 配置。admin 特权通�
 
 ---
 
-## 第 10 章 · 踩坑库
+## 第 10 章 · Runtime / Build-time Patch 体系(2026-05-08+)
+
+carher 对 openclaw / 闭源包的 3 类本地 patch。**修改前必读本章,否则 rebuild 之后功能可能静默丢失。**
+
+### 判定规则:runtime vs build-time patch
+
+| 目标文件会被 runtime 覆盖吗? | 路径 | 典型 |
+|---|---|---|
+| 会(npm install 重写) | **entrypoint runtime patch**(`scripts/carher-entrypoint.sh` sed) | `stripBotMentions` |
+| 不会(image COPY 的 read-only layer) | **Dockerfile build-time patch**(`scripts/apply-reset-archive-patches.sh`) | P7(PR #76666) |
+
+选错方向 = 下次 npm install / image rebuild 时 patch 失效。
+
+### Patch 清单(2026-05-08)
+
+#### 🔧 Patch-A:`stripBotMentions` (runtime, entrypoint)
+
+- **Upstream**:`@larksuite/openclaw-lark`(闭源 npm,不能提 PR)
+- **Bug**:`parse.js:102` 硬编码 `stripBotMentions: true` → 多 bot 群 @ 多 bot 时,每个 bot 看到的 prompt 里自己的 @ 被剥掉 → LLM 判"没被 @" → NO_REPLY → 群装死
+- **Patch 位置**:`scripts/carher-entrypoint.sh`(npm install @larksuite/openclaw-lark 之后 sed)
+- **验证**:`docker exec carher-N grep -c stripBotMentions /entrypoint.sh` → 应 ≥ 7
+- **Kill switch**:`CARHER_DISABLE_STRIP_BOT_MENTIONS_PATCH=1`
+- **log 成功**:`✓ openclaw-lark stripBotMentions → false (backup: ...bak.<hash>)` 或 `✓ stripBotMentions already false`
+
+#### 🔧 Patch-P7:Session Transcript Listener eager preload (build, Dockerfile)
+
+- **Upstream**:`openclaw/openclaw` PR #76666(still **open**,未 merge)
+- **Bug**:`MemoryIndexManager` lazy-loaded,仅 builtin backend 下,`/reset` 或 `/new` 在**第一次 `memory_search` 之前**发生时,`sessionTranscriptUpdate` emit 落在空 listener set 被 silently dropped → `.jsonl.reset.<iso>` archive **不进 chunks**,必须 `memory index --force` 补救
+- **Patch 位置**:`scripts/apply-reset-archive-patches.sh`(Dockerfile `RUN /tmp/apply-reset-archive-patches.sh` 走 build layer)
+- **两个 sub-patch**(必须一起,否则 crash):
+  - **P7-outer**:`server.impl-*.js` 里 `resolveGatewayMemoryStartupPolicy` — 让 builtin + agent `memorySearch.sources=["sessions"]` 时返回 `{mode:"immediate"}`(触发 startGatewayMemoryBackend)
+  - **P7-inner**:`server-startup-memory-*.js` 里 `startGatewayMemoryBackend` loop — **必须同时吃 2 行** anchor(qmd gate + `shouldRunQmdStartupBootSync`),用 `_isBuiltinSessionsPreload` flag 跳过 qmd-specific checks,否则 builtin 的 `resolved.qmd=undefined` 进 `shouldRunQmdStartupBootSync` 会崩(`Cannot read properties of undefined (reading 'update')`)
+- **验证 image 已 patched**:
+  ```bash
+  docker run --rm --entrypoint sh <IMG> -c "
+    grep -c carher_P7_outer /app/dist/server.impl-*.js    # expect 1
+    grep -c carher_P7_inner /app/dist/server-startup-memory-*.js  # expect 1
+  "
+  ```
+- **效果**:cold start 后 3-4 分钟内所有 session `.jsonl` + `.jsonl.reset.<iso>` + `.jsonl.deleted.<iso>` 进 chunks 索引。200 实测 300+ files / 13,911 chunks
+- **降级**:upstream merge 后 anchor 会失效,script 自动 `SKIP`,build 仍成功(不破坏 image)
+
+#### 🔧 Patch-已经 upstream merged(不再需要 patch)
+
+- **patch4 memory-core archiveMarker**:upstream 2026.5.3 通过新增 `session-transcript-hit-*.js` 原生 support 归档文件 stem 解析。老 patch 已从 `apply-reset-archive-patches.sh` 删除
+
+### 升级到新 openclaw 版本时的 patch 维护流程
+
+1. 新 image build 时 **一定** grep build log 找 `OK` / `SKIP`
+   ```
+   p7_outer server.impl-*.js: OK        ← 打上了 ✅
+   p7_inner server-startup-memory-*.js: SKIP (anchor changed ...)  ← 上游 refactor 了,需人 review
+   ```
+2. 任一 SKIP 出现 → 不要 ship。先读上游新代码,更新 anchor,重新 build
+3. SKIP 本身不破坏 image(idempotent + safe degrade),但功能静默缺失,**用户察觉不到**
+
+---
+
+## 第 11 章 · Antitalker 管理(stop-hook-pipeline CEP)
+
+Antitalker 是 carher 的"同 turn 防睡 / 光说不练拦截"。数据驱动,规则全在 YAML。
+
+### 关键文件
+
+| 位置 | 作用 |
+|---|---|
+| `/data/.openclaw/workspace/.antitalker/stop-hook-rules.yaml` | **runtime 规则**(可热加载) |
+| `/app/docker/plugins/her-antitalker-poc/stop-hook-rules.yaml` | **image 里的 seed 源**(默认 `enabled: false`,2026-05-07 之后) |
+| `docker/plugins/her-antitalker-poc/` | plugin 代码(stop-hook-pipeline.ts + index.ts) |
+
+### Seed 行为(Entrypoint)
+
+`scripts/carher-entrypoint.sh` 首次启动时:
+```bash
+[ ! -f "/data/.../.antitalker/stop-hook-rules.yaml" ] && cp image:/app/... → volume
+```
+**不覆盖已存在的 yaml**,保护主人手改。
+
+### Default `enabled: false` 的含义(2026-05-07 起)
+
+- 新容器 cold start + 空 volume → seed 到的 yaml 是 `enabled: false` → antitalker 默认**不拦截**,`installed=[]`
+- 主人通过 `antitalker` skill 说"开启防睡" → Her 自己 edit yaml 改 true → 热加载 2 秒生效
+- **已有 volume 里旧 yaml `enabled: true` 仍然保留** → 要让旧容器用新默认:先 `mv stop-hook-rules.yaml stop-hook-rules.yaml.pre-<TS>` 再 restart,让 entrypoint re-seed
+
+### 验证 antitalker 状态
+
+```bash
+# yaml 当前设置
+docker exec carher-N grep -E "^enabled:" /data/.openclaw/workspace/.antitalker/stop-hook-rules.yaml
+
+# plugin runtime ready log
+docker logs carher-N | grep "\[antitalker\]" | tail -3
+# 正常 log:
+# [antitalker] stop-hook rules loaded · enabled=false · installed=[] · skipped=[prose-only-ending,no-toolcall-guard]
+# [antitalker] ready · stop-hook-pipeline bound · hooks=[]
+```
+
+### 主人触发词 → antitalker skill
+
+主人飞书说: "开启防睡" / "关闭防睡" / "antitalker 状态" / "加一条防睡规则" / "光说不练拦截" → `antitalker` skill 触发 → Her 读/改 yaml → 2 秒热加载生效。
+
+完整架构: `docs/her/antitalker-architecture.md` / `docs/her/stop-hook-pipeline-architecture.md`
+
+---
+
+## 第 12 章 · 标准升级流程(正规 CI/CD, 0 hack)
+
+### 场景 A:升级已有 bot 到**现成 image**(不 rebuild)
+
+```bash
+# 本地 Mac
+git push carher dev                                      # 确保最新 config 已推
+
+# 服务器 (S1 例)
+ssh cltx@10.68.13.186
+cd /Data/CarHer
+git fetch carher dev && git reset --hard carher/dev      # 拿最新 config / template / entrypoint
+
+cd deploy
+./scaffold.sh <id>                                        # 重生成 compose.yaml (保护 .env/secrets.env)
+
+cd carher-<id>
+# 编辑 .env:改 IMAGE_TAG 到目标 tag
+sed -i "s|^IMAGE_TAG=.*|IMAGE_TAG=<new-tag>|" .env
+
+# S3 跨服务器: .env 还要有 REDIS_URL=redis://10.68.13.186:6379 (scaffold 默认无,per-deploy 加)
+grep -q "^REDIS_URL=" .env || echo "REDIS_URL=redis://10.68.13.186:6379" >> .env
+
+docker compose down && docker compose up -d
+sleep 75
+docker ps --format "{{.Names}}\t{{.Image}}\t{{.Status}}" | grep carher-<id>
+```
+
+### 场景 B:rebuild 新 image 再升级
+
+```bash
+# 1. 本地 commit + push dev
+git add ... && git commit -m "..." && git push carher dev
+
+# 2. S1 (唯一 build 机) 拉代码 + build
+ssh cltx@10.68.13.186
+cd /Data/CarHer
+git fetch carher dev && git reset --hard carher/dev
+export CARHER_FREEZE_DEPTH=200   # 避免 freeze-git-info 在老 repo 耗时过长
+./deploy/build-and-push.sh --no-push --tag-suffix=<suffix>
+# 例:./deploy/build-and-push.sh --no-push --tag-suffix=p7b → localhost:5001/carher-core:<date>-p7b
+
+# 3. 验证 image 里 patch marker
+docker run --rm --entrypoint sh <img-tag> -c "
+  grep -c carher_P7_outer /app/dist/server.impl-*.js
+  grep -c carher_P7_inner /app/dist/server-startup-memory-*.js
+  grep -c stripBotMentions /entrypoint.sh
+  grep '^enabled:' /app/docker/plugins/her-antitalker-poc/stop-hook-rules.yaml
+"
+
+# 4. 灰度 1 台 (推荐 200 或 12 test bot)
+# (同场景 A 的 .env 改 IMAGE_TAG → compose up)
+
+# 5. 验证运行时 patch + 功能
+docker exec carher-<id> sh -c "
+  grep -c carher_P7_outer /app/dist/server.impl-*.js   # expect 1
+  grep -c carher_P7_inner /app/dist/server-startup-memory-*.js  # expect 1
+"
+docker logs carher-<id> | grep -E "memory startup|qmd memory startup initialization failed"
+# 期望: 无 "initialization failed" 错
+
+# 6. 功能验证:主人飞书 @ bot 做 /new + "回忆刚才" 测试 memory_search sources=sessions
+#    (用 python sqlite3 查 chunks 表验证索引增长 — 见第 10 章 P7 验证)
+
+# 7. OK 了再推 fleet
+# 逐台重复场景 A,把 IMAGE_TAG 改到新 tag
+```
+
+### S3 升级特别注意
+
+1. **REDIS_URL 必须显式加**(scaffold.sh 基于 template default `redis://carher-redis:6379` docker DNS,S3 解析不到 → EAI_AGAIN 无限 restart)
+2. **/data/.openclaw/plugin-runtime-deps/** 首次 cold start 会 lazy npm install 25+ 依赖,3-5 分钟才 healthy(`start_period: 300s` 保护)
+3. S3 从来不 build image,只 pull via `docker save | ssh docker load` 或 registry
+
+### 清 antitalker 旧 yaml 让新默认生效(可选)
+
+```bash
+# 在升级前做,让 cold start 时 entrypoint re-seed 新版 enabled=false
+docker exec carher-<id> sh -c "
+  cd /data/.openclaw/workspace/.antitalker 2>/dev/null && \
+  [ -f stop-hook-rules.yaml ] && \
+  mv stop-hook-rules.yaml stop-hook-rules.yaml.pre-upgrade-$(date +%Y%m%d-%H%M%S)
+"
+# 然后走 compose down/up 即可
+```
+
+---
+
+## 第 13 章 · 踩坑库
 
 ### 踩坑 1：bundled feishu 残留
 
@@ -423,6 +619,66 @@ compose 的 `${VAR}` 在 parse 时从 `.env` / shell env 读取，不从 `env_fi
 ### 踩坑 6：openclaw-src-fetcher clone 失败
 
 3 层 fallback 兜底后 `/app/openclaw-src/src` 可能是空目录，不影响 runtime。
+
+### 踩坑 7:`apply-reset-archive-patches.sh` 静默 SKIP 后 PR #76666 fix 丢失
+
+**症状**:image build 成功,`memory_search sources=["sessions"]` 返回空或仅有老数据,`/reset` / `/new` 产生的 `.jsonl.reset.<iso>` 不进 chunks。
+
+**根因**:openclaw upstream refactor 了 `/app/dist/*.js` 结构,本地 patch script 的 anchor 找不到,全部 **SKIP**(idempotent 设计,build 不 fail)。
+
+**检查**:
+```bash
+docker run --rm --entrypoint sh <new-image> -c "
+  grep -c carher_P7_outer /app/dist/server.impl-*.js
+  grep -c carher_P7_inner /app/dist/server-startup-memory-*.js
+"
+# 两个都 0 = SKIP 了,patch 没打上
+```
+
+**修复**:grep build log 里 `p7_outer ... OK` / `p7_inner ... OK`,任一是 `SKIP` 就去 `/app/dist/` 读当前源码,更新 `scripts/apply-reset-archive-patches.sh` 的 anchor。
+
+### 踩坑 8:P7-inner 只 patch 1 行 → `resolved.qmd.update` crash
+
+**症状**:
+```
+[gateway] qmd memory startup initialization failed:
+  TypeError: Cannot read properties of undefined (reading 'update')
+```
+
+**根因**:P7-inner 如果只 patch `if (resolved.backend !== "qmd" || !resolved.qmd) continue;` 这一行,builtin backend 过了这 gate 之后,**紧接着下一行** `if (!shouldRunQmdStartupBootSync(resolved.qmd)) continue;` 里会访问 `resolved.qmd.update` → builtin 的 `resolved.qmd=undefined` → crash。
+
+**修法**:P7-inner 的 anchor **必须吃下这 2 行**,用 `_isBuiltinSessionsPreload` flag 同时跳过 qmd gate + qmd boot-sync check,让 builtin 直接走到 `getActiveMemorySearchManager`。
+
+### 踩坑 9:S3 bot scaffold 后 EAI_AGAIN 无限 restart(缺 REDIS_URL)
+
+**症状**:S3 升级 bot 后持续 restart,log 狂刷:
+```
+[plugins] [discussion-state] Redis error: Error: getaddrinfo EAI_AGAIN carher-redis
+```
+
+**根因**:S3 没有 `carher-redis` 容器(redis 只在 S1 跑)。scaffold template 默认 `REDIS_URL=${REDIS_URL:-redis://carher-redis:6379}` 用的是 docker internal DNS,S3 解析不到。
+
+**修法**:S3 每个 bot 的 `deploy/carher-<id>/.env` 必须显式加:
+```
+REDIS_URL=redis://10.68.13.186:6379
+```
+scaffold `.env` 只在不存在时创建,已存在时保护。所以升级 S3 老 bot 时,第一次 scaffold 后手工加这行就锁死了。
+
+### 踩坑 10:antitalker `enable=false` 升级后不生效(volume 里老 yaml 残留)
+
+**症状**:升 p7+ image(里面 seed 源默认 `enabled: false`)的 bot,实际 runtime 仍然 `enabled=true` 跑着防睡。
+
+**根因**:entrypoint seed 逻辑是 `[ ! -f "$DST" ] && cp`,**不覆盖**。老 volume 里的 `stop-hook-rules.yaml` 是 `enabled: true` 时期 seed 的,保留着。
+
+**修法**:cold start 前主动 mv 老文件让 entrypoint re-seed:
+```bash
+docker exec carher-<id> sh -c "
+  cd /data/.openclaw/workspace/.antitalker 2>/dev/null &&
+  [ -f stop-hook-rules.yaml ] &&
+  mv stop-hook-rules.yaml stop-hook-rules.yaml.pre-upgrade-$(date +%Y%m%d-%H%M%S)
+"
+docker compose down && docker compose up -d
+```
 
 ---
 
