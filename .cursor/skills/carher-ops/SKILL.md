@@ -479,7 +479,7 @@ carher 对 openclaw / 闭源上游 npm 包打的本地 patch。**修改前必读
 - **Bug**:`stripBotMentions=false` 修好多 bot @ 后,群命令的 `ctx.content` 保留了 bot mention。`/new @弋天的her` 进入 core 时变成 `CommandBody="/new @弋天的her"`;core 把 mention 当作 `/new <tail>` 的 prompt tail,于是 reset 后继续进 LLM,最终 `NO_REPLY`,看不到 `✅ New session started.`。`/status @bot` 也会因为 mention 后缀造成命令识别不一致/双回复。
 - **Fix**:只在 slash-command command surface 归一化:
   - 普通 LLM 输入仍保留 bot mention(不回退 R-1)
-  - `CommandBody` 去掉"当前 bot 的地址 mention":`/new @bot` → `/new`,`/status @bot` → `/status`
+  - `CommandBody` 去掉命令面里的地址 mention:`/new @bot` → `/new`,`@bot /new` → `/new`,`/new @bot1 @bot2` → `/new`
   - 群里 slash command 如果 mention 了别人但没 mention 当前 bot,当前 bot 直接 ignore,避免多 bot 群误响应
 - **Kill switch**:`CARHER_DISABLE_COMMAND_BODY_NORMALIZE_PATCH=1`
 - **log 成功**:`✓ command-body normalize patch applied`

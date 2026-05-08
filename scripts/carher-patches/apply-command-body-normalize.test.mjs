@@ -51,14 +51,14 @@ async function dispatchToAgent(params) {
 
 function loadPatchedHelpers(code) {
   const start = code.indexOf("function carherEscapeRegExp");
-  const end = code.indexOf("// === end CARHER_COMMAND_BODY_NORMALIZE_PATCH_MARKER ===");
+  const end = code.indexOf("// === end CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER ===");
   assert.notEqual(start, -1, "helper start marker should exist");
   assert.notEqual(end, -1, "helper end marker should exist");
   const sandbox = {};
   vm.runInNewContext(
     `${code.slice(start, end)}
 result = {
-  strip: carherStripOwnBotMentionsForCommandBody,
+  strip: carherStripMentionsForCommandBody,
   targetsOther: carherSlashCommandTargetsAnotherMention,
 };`,
     sandbox,
@@ -72,10 +72,10 @@ test("patch rewrites dispatch.js to use mention-normalized CommandBody", () => {
   execFileSync("bash", [APPLY_PATCH_SH, file], { stdio: "pipe" });
   const patched = readFileSync(file, "utf8");
 
-  assert.match(patched, /CARHER_COMMAND_BODY_NORMALIZE_PATCH_MARKER/);
+  assert.match(patched, /CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER/);
   assert.match(
     patched,
-    /const commandBody = carherStripOwnBotMentionsForCommandBody\(params\.ctx\.content, params\.ctx\);/,
+    /const commandBody = carherStripMentionsForCommandBody\(params\.ctx\.content, params\.ctx\);/,
   );
   assert.match(patched, /commandBody,/);
   assert.match(patched, /isControlCommandMessage\(commandBody, params\.accountScopedCfg\)/);
@@ -96,7 +96,30 @@ test("patch is idempotent", () => {
   assert.equal(twice, once);
 });
 
-test("helpers strip only this bot's addressing mention from slash commands", () => {
+test("patch upgrades an already-applied V1 command-body patch from backup", () => {
+  const file = writeDispatchFixture();
+  const clean = readFileSync(file, "utf8");
+  writeFileSync(`${file}.bak.command-body-normalize`, clean);
+  writeFileSync(
+    file,
+    clean.replace(
+      "const log = (0, lark_logger_1.larkLogger)('inbound/dispatch');",
+      `const log = (0, lark_logger_1.larkLogger)('inbound/dispatch');
+// === CARHER_COMMAND_BODY_NORMALIZE_PATCH_MARKER ===
+function oldPatch() {}
+// === end CARHER_COMMAND_BODY_NORMALIZE_PATCH_MARKER ===`,
+    ),
+  );
+
+  execFileSync("bash", [APPLY_PATCH_SH, file], { stdio: "pipe" });
+  const patched = readFileSync(file, "utf8");
+
+  assert.match(patched, /CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER/);
+  assert.doesNotMatch(patched, /function oldPatch/);
+  execFileSync("node", ["--check", file], { stdio: "pipe" });
+});
+
+test("helpers normalize command bodies with leading and repeated mentions", () => {
   const file = writeDispatchFixture();
   execFileSync("bash", [APPLY_PATCH_SH, file], { stdio: "pipe" });
   const helpers = loadPatchedHelpers(readFileSync(file, "utf8"));
@@ -107,10 +130,19 @@ test("helpers strip only this bot's addressing mention from slash commands", () 
   const otherMentionCtx = {
     mentions: [{ key: "@_user_2", openId: "ou_other", name: "研究2的her", isBot: false }],
   };
+  const multiBotCtx = {
+    mentions: [
+      { key: "@_user_1", openId: "ou_bot", name: "弋天的her", isBot: true },
+      { key: "@_user_3", openId: "ou_other_bot", name: "研究3的her", isBot: false },
+    ],
+  };
 
   assert.equal(helpers.strip("/new @弋天的her", ownBotCtx), "/new");
+  assert.equal(helpers.strip("@弋天的her /new", ownBotCtx), "/new");
+  assert.equal(helpers.strip("/new @弋天的her @研究3的her", multiBotCtx), "/new");
   assert.equal(helpers.strip('/status <at user_id="ou_bot">弋天的her</at>', ownBotCtx), "/status");
-  assert.equal(helpers.strip("/new @研究2的her", otherMentionCtx), "/new @研究2的her");
+  assert.equal(helpers.strip("/new @研究2的her", otherMentionCtx), "/new");
+  assert.equal(helpers.strip("@弋天的her hello", ownBotCtx), "@弋天的her hello");
   assert.equal(helpers.strip("hello @弋天的her", ownBotCtx), "hello @弋天的her");
 });
 
@@ -126,8 +158,23 @@ test("helpers identify slash commands targeted at another mentioned account", ()
     true,
   );
   assert.equal(
+    helpers.targetsOther("@研究2的her /new", {
+      mentions: [{ key: "@_user_2", openId: "ou_other", name: "研究2的her", isBot: false }],
+    }),
+    true,
+  );
+  assert.equal(
     helpers.targetsOther("/new @弋天的her", {
       mentions: [{ key: "@_user_1", openId: "ou_bot", name: "弋天的her", isBot: true }],
+    }),
+    false,
+  );
+  assert.equal(
+    helpers.targetsOther("/new @弋天的her @研究2的her", {
+      mentions: [
+        { key: "@_user_1", openId: "ou_bot", name: "弋天的her", isBot: true },
+        { key: "@_user_2", openId: "ou_other", name: "研究2的her", isBot: false },
+      ],
     }),
     false,
   );

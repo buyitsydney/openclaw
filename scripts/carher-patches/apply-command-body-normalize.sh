@@ -3,9 +3,10 @@
 #
 # @larksuite/openclaw-lark keeps bot mentions in ctx.content when
 # stripBotMentions=false. That is correct for normal LLM turns, but command
-# dispatch must not treat the addressing mention as command args:
-#   /new @弋天的her     -> CommandBody=/new
-#   /status @弋天的her  -> CommandBody=/status
+# dispatch must not treat addressing mentions as command args:
+#   /new @弋天的her              -> CommandBody=/new
+#   @弋天的her /new              -> CommandBody=/new
+#   /new @弋天的her @研究3的her  -> CommandBody=/new
 #
 # Usage:
 #   bash apply-command-body-normalize.sh <path-to-dispatch.js>
@@ -27,8 +28,10 @@ node - "$TARGET" <<'NODE'
 const fs = require("fs");
 
 const target = process.argv[2];
-const marker = "CARHER_COMMAND_BODY_NORMALIZE_PATCH_MARKER";
+const marker = "CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER";
+const previousMarker = "CARHER_COMMAND_BODY_NORMALIZE_PATCH_MARKER";
 let code = fs.readFileSync(target, "utf8");
+const originalCode = code;
 
 if (code.includes(marker)) {
   console.log(`apply-command-body-normalize.sh: already patched (${target})`);
@@ -36,19 +39,36 @@ if (code.includes(marker)) {
 }
 
 const backup = `${target}.bak.command-body-normalize`;
-fs.copyFileSync(target, backup);
+const upgradeBackup = `${target}.bak.command-body-normalize-v2`;
+
+if (code.includes(previousMarker)) {
+  if (!fs.existsSync(backup)) {
+    throw new Error("previous command-body patch found, but original backup is missing");
+  }
+  const restored = fs.readFileSync(backup, "utf8");
+  if (restored.includes(previousMarker)) {
+    throw new Error("previous command-body backup is already patched");
+  }
+  code = restored;
+  console.log(`apply-command-body-normalize.sh: upgrading previous patch via ${backup}`);
+}
+
+fs.writeFileSync(upgradeBackup, originalCode);
+if (!fs.existsSync(backup)) {
+  fs.writeFileSync(backup, originalCode);
+}
 
 const helperAnchor = "const log = (0, lark_logger_1.larkLogger)('inbound/dispatch');";
 const helperBlock = `${helperAnchor}
 // === ${marker} ===
 function carherEscapeRegExp(value) {
-    return String(value).replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\$&');
+    return String(value).replace(/[|\\\\{}()[\\]^$+*?.]/g, '\\\\$&');
 }
-function carherOwnBotMentionCandidates(ctx) {
+function carherMentionCandidates(ctx) {
     const mentions = Array.isArray(ctx?.mentions) ? ctx.mentions : [];
     const candidates = [];
     for (const mention of mentions) {
-        if (!mention || mention.isBot !== true)
+        if (!mention)
             continue;
         for (const value of [mention.key, mention.name ? \`@\${mention.name}\` : '', mention.name]) {
             if (typeof value === 'string' && value.trim())
@@ -59,21 +79,24 @@ function carherOwnBotMentionCandidates(ctx) {
             candidates.push(\`<at id=\${mention.openId}></at>\`);
         }
     }
-    return [...new Set(candidates)];
+    return [...new Set(candidates)].sort((a, b) => b.length - a.length);
 }
-function carherStripOwnBotMentionsForCommandBody(raw, ctx) {
+function carherStripMentionTokens(raw, ctx) {
     let result = typeof raw === 'string' ? raw.trim() : '';
-    if (!result.startsWith('/'))
-        return result;
-    for (const candidate of carherOwnBotMentionCandidates(ctx)) {
+    for (const candidate of carherMentionCandidates(ctx)) {
         const escaped = carherEscapeRegExp(candidate);
         result = result.replace(new RegExp(\`(^|\\\\s)\${escaped}(?=\\\\s|$)\`, 'g'), '$1');
     }
     return result.replace(/\\\\s+/g, ' ').trim();
 }
+function carherStripMentionsForCommandBody(raw, ctx) {
+    const original = typeof raw === 'string' ? raw.trim() : '';
+    const stripped = carherStripMentionTokens(original, ctx);
+    return stripped.startsWith('/') ? stripped : original;
+}
 function carherSlashCommandTargetsAnotherMention(raw, ctx) {
     const text = typeof raw === 'string' ? raw.trim() : '';
-    if (!text.startsWith('/'))
+    if (!carherStripMentionTokens(text, ctx).startsWith('/'))
         return false;
     const mentions = Array.isArray(ctx?.mentions) ? ctx.mentions : [];
     return mentions.length > 0 && !mentions.some((mention) => mention?.isBot === true);
@@ -97,7 +120,7 @@ if (!code.includes(skipAnchor)) {
 code = code.replace(skipAnchor, skipBlock);
 
 const bareResetAnchor = `    const isBareNewOrReset = /^\\/(?:new|reset)\\s*$/i.test((params.ctx.content ?? '').trim());`;
-const bareResetBlock = `    const commandBody = carherStripOwnBotMentionsForCommandBody(params.ctx.content, params.ctx);
+const bareResetBlock = `    const commandBody = carherStripMentionsForCommandBody(params.ctx.content, params.ctx);
     const isBareNewOrReset = /^\\/(?:new|reset)\\s*$/i.test(commandBody);`;
 if (!code.includes(bareResetAnchor)) {
   throw new Error("bare reset anchor not found");
@@ -126,8 +149,8 @@ NODE
 
 if ! CHECK_OUTPUT=$(node --check "$TARGET" 2>&1); then
   echo "$CHECK_OUTPUT" >&2
-  echo "apply-command-body-normalize.sh: node --check failed after patch — restoring backup" >&2
-  cp "$TARGET.bak.command-body-normalize" "$TARGET"
+  echo "apply-command-body-normalize.sh: node --check failed after patch — restoring previous file" >&2
+  cp "$TARGET.bak.command-body-normalize-v2" "$TARGET"
   exit 4
 fi
 
