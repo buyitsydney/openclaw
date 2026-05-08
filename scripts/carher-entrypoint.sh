@@ -92,13 +92,47 @@ else
 fi
 # ── end P8 history-fill patch ────────────────────────────────────
 
-# NOTE: an R-7 "CommandSource" / "sourceReplyDeliveryMode" patch was attempted
-# 2026-05-08 to fix /new delivered=false in groups. Neither approach worked:
-# core's /new native handler does a silent session-reset (no onBlockReply
-# emission), so no replyOptions tweak helps. /new in group appears to have
-# NEVER worked after the three-component migration (commit 32c2b19). DM /new
-# still works because DMs take a different core path.
-# See `.cursor/skills/carher-ops/SKILL.md` 第 13 章 踩坑 #11.
+# ── R-7: command probe for group bot mentions ─────────────────────
+# Keep stripBotMentions=false for normal multi-bot prompts, but classify
+# commands through a mention-stripped probe body. Without this, `/status @bot`
+# is not recognized because /status does not accept args, then the agent may
+# answer the command as ordinary text.
+if [ "${CARHER_DISABLE_COMMAND_PROBE_PATCH:-0}" = "1" ]; then
+  echo "  ⏭  command-probe patch skipped (CARHER_DISABLE_COMMAND_PROBE_PATCH=1)"
+elif [ ! -d "$CARHER_PATCHES_DIR" ]; then
+  echo "  ⚠️  $CARHER_PATCHES_DIR not mounted — command-probe patch skipped"
+elif [ ! -f "$LARK_DISPATCH" ]; then
+  echo "  ⚠️  $LARK_DISPATCH not found — command-probe patch skipped"
+else
+  echo "  ▶ Patching openclaw-lark dispatch.js → command probe..."
+  if bash "$CARHER_PATCHES_DIR/apply-command-probe.sh" "$LARK_DISPATCH"; then
+    echo "    ✓ command-probe patch applied"
+  else
+    echo "    ✗ command-probe patch failed — /status @bot may fall through to agent" >&2
+  fi
+fi
+# ── end R-7 command probe ────────────────────────────────────────
+
+# ── R-8: visible ack for lifecycle system commands ────────────────
+# Core can rotate /new or /reset successfully while emitting no visible Feishu
+# payload. Send a tiny confirmation only when the command path delivered
+# nothing, so we preserve core behavior and avoid duplicate replies.
+LARK_DISPATCH_COMMANDS="$LARK_PKG/src/messaging/inbound/dispatch-commands.js"
+if [ "${CARHER_DISABLE_SYSTEM_COMMAND_ACK_PATCH:-0}" = "1" ]; then
+  echo "  ⏭  system-command ack patch skipped (CARHER_DISABLE_SYSTEM_COMMAND_ACK_PATCH=1)"
+elif [ ! -d "$CARHER_PATCHES_DIR" ]; then
+  echo "  ⚠️  $CARHER_PATCHES_DIR not mounted — system-command ack patch skipped"
+elif [ ! -f "$LARK_DISPATCH_COMMANDS" ]; then
+  echo "  ⚠️  $LARK_DISPATCH_COMMANDS not found — system-command ack patch skipped"
+else
+  echo "  ▶ Patching openclaw-lark dispatch-commands.js → lifecycle ack..."
+  if bash "$CARHER_PATCHES_DIR/apply-system-command-ack.sh" "$LARK_DISPATCH_COMMANDS"; then
+    echo "    ✓ system-command ack patch applied"
+  else
+    echo "    ✗ system-command ack patch failed — /new may remain visually silent" >&2
+  fi
+fi
+# ── end R-8 system-command ack ───────────────────────────────────
 
 # lark-cli: 24 AI skills (Go binary)
 LARK_CLI_WANT="${CARHER_LARK_CLI_VERSION:-latest}"
