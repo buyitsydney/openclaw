@@ -190,6 +190,7 @@ docker inspect <container> --format '{{.Image}}' \
 | `shadow-daemon activation` | container 启动即跑 shadow sync | 自家 plugin manifest 需要显式 onStartup |
 | `patch-agent-loop` | 给 antitalker stop-hook pipeline 接入 agent loop | 上游 agent loop 没有足够 extension point |
 | `history-fill` + `inbound-history metadata` | 群聊冷启动或重启后主动补最近 20 条消息，避免上下文失忆 | Feishu group history 不应只依赖被动 WS event 累积；补历史的 primary path 必须走 `lark-cli im +chat-messages-list --chat-id <oc_...> --page-size 20 --sort desc --format json` 的默认 user-token 视图，和 Her 自己做 1:1 审计时看到的“真实群消息”保持一致；entry 必须携带 `messageId` / `messageType` / `replyToId` 并在模型的 `InboundHistory` JSON 里渲染为 `message_id` / `message_type` / `reply_to_id`；app sender 必须通过 Redis Bot Registry / `knownBots` 渲染成 `林森的her (cli_...)`，不能退化成裸 `cli_...`；只有 lark-cli 不可用时才 fallback 到裸 `/im/v1/messages` + `card_msg_content_type=raw_card_content`，并继续保证 sender 可读、card 不退化、坏占位不进模型 |
+| `reply-card default` | 普通群回复默认发送 interactive card，和旧 `feishu-her` 的美观回复面一致 | `@larksuite/openclaw-lark` static group mode 只对表格/代码块走 card，短文本会退成 `msg_type=post`；每次 runtime npm install 都会恢复上游行为 |
 | `session-decay` | 从 `.reset.<ISO>.Z` session archive 文件名解析时间，恢复 memory temporal decay | OpenClaw 2026.5.3 的 session path fallback 会 stat 错路径，导致 session archive 噪音不降权 |
 
 曾经的 build-time `apply-reset-archive-patches.sh` 现在是 no-op stub。它保留为历史记忆，不代表当前有 active build-time patch。
@@ -205,14 +206,15 @@ docker inspect <container> --format '{{.Image}}' \
 7. 功能 smoke 至少覆盖：`/new @bot`、`@bot /new`、`/new @bot1 @bot2`、`/status @bot`。期望日志是 `detected system command` 和 `system command dispatched (delivered=true)`，不应出现命令消息 `dispatching to agent`。
 8. 不要用直接 Feishu ack 或 `CommandSource:native` 修 `/new`。前者绕过 core reset 语义，后者曾导致 `/status` 双回复。
 9. 启动日志里可能出现 `plugin must declare contracts.tools before registering agent tools (plugin=openclaw-lark)`。这是 channel-only manifest 把 tools/skills 剥掉后，上游 runtime 仍尝试注册 tools 产生的兼容警告；只要 `scripts/carher-verify.sh` Gate 7/8 通过，不要把它当成升级失败。
+10. 普通 Her 群回复也必须检查 `msg_type=interactive`。如果短文本回复重新变成 `post`，优先检查 `reply-card default` patch 是否落地，不要把丑文本当成正常退化。
 
 ### Runtime Patch Self-Check
 
-每台容器启动后必须看到 8 个 runtime patch 全中：
+每台容器启动后必须看到 9 个 runtime patch 全中：
 
 ```bash
 docker logs carher-<id> 2>&1 \
-  | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|patch-agent-loop|session-decay|PATCHED"
+  | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|reply-card default|patch-agent-loop|session-decay|PATCHED"
 ```
 
 `command-body` 还要查容器内 marker：

@@ -137,6 +137,32 @@ else
 fi
 # ── end P8b inbound-history metadata render -----------------------
 
+# ── R-9: static group replies default to interactive cards ─────────
+# Old feishu-her sent user-facing text through Feishu interactive cards.
+# @larksuite/openclaw-lark's static group mode only cardifies tables/code,
+# causing ordinary short replies to appear as msg_type=post. This restores
+# the old visual contract while preserving the card-size fallback for replies
+# with too many markdown tables.
+#
+# Source of truth: scripts/carher-patches/apply-reply-card-default.sh
+# Kill switch: CARHER_DISABLE_REPLY_CARD_DEFAULT_PATCH=1
+LARK_REPLY_MODE="$LARK_PKG/src/card/reply-mode.js"
+if [ "${CARHER_DISABLE_REPLY_CARD_DEFAULT_PATCH:-0}" = "1" ]; then
+  echo "  ⏭  reply-card default patch skipped (CARHER_DISABLE_REPLY_CARD_DEFAULT_PATCH=1)"
+elif [ ! -d "$CARHER_PATCHES_DIR" ]; then
+  echo "  ⚠️  $CARHER_PATCHES_DIR not mounted — reply-card default patch skipped"
+elif [ ! -f "$LARK_REPLY_MODE" ]; then
+  echo "  ⚠️  $LARK_REPLY_MODE not found — reply-card default patch skipped"
+else
+  echo "  ▶ Patching openclaw-lark reply-mode.js → static replies default to card..."
+  if bash "$CARHER_PATCHES_DIR/apply-reply-card-default.sh" "$LARK_REPLY_MODE"; then
+    echo "    ✓ reply-card default patch applied"
+  else
+    echo "    ✗ reply-card default patch failed — plain group replies may stay as post" >&2
+  fi
+fi
+# ── end R-9 reply-card default patch ──────────────────────────────
+
 # NOTE: an R-7 "CommandSource" / "sourceReplyDeliveryMode" patch was attempted
 # 2026-05-08 to fix /new delivered=false in groups. Neither approach worked:
 # core's /new native handler does a silent session-reset (no onBlockReply
