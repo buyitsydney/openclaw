@@ -187,7 +187,7 @@ docker inspect <container> --format '{{.Image}}' \
 | `feishu-her contracts.tools` | 显式声明 30 个 Feishu tools 和 startup activation | OpenClaw 插件契约升级后，manifest 和 runtime 注册必须对齐 |
 | `shadow-daemon activation` | container 启动即跑 shadow sync | 自家 plugin manifest 需要显式 onStartup |
 | `patch-agent-loop` | 给 antitalker stop-hook pipeline 接入 agent loop | 上游 agent loop 没有足够 extension point |
-| `history-fill` | 群聊冷启动或重启后主动补最近 20 条消息，避免上下文失忆 | Feishu group history 不应只依赖被动 WS event 累积；补历史必须解析消息内容并把 sender 渲染成人类可读 label，不能只注入 raw open_id / card JSON |
+| `history-fill` | 群聊冷启动或重启后主动补最近 20 条消息，避免上下文失忆 | Feishu group history 不应只依赖被动 WS event 累积；补历史必须解析消息内容并把 sender 渲染成人类可读 label；interactive/card 必须在注入前展开，遇到“请升级至最新版本客户端，以查看内容”这类 API 降级占位要按 message_id 拉 canonical message 再解析，仍失败时只能注入明确媒体占位，不能把坏文案交给模型 |
 
 曾经的 build-time `apply-reset-archive-patches.sh` 现在是 no-op stub。它保留为历史记忆，不代表当前有 active build-time patch。
 
@@ -197,7 +197,7 @@ docker inspect <container> --format '{{.Image}}' \
 2. 不要直接 SSH 改服务器代码。正确路径是本地 commit + push，服务器 `git pull --ff-only <remote> dev`，再 compose recreate。
 3. S1 和 S3 的 remote 名称可以不同。当前 S1 使用 `carher`，S3 使用 `origin`；升级脚本不能假设 remote 名固定。
 4. `command-body mention normalization` 必须保持 V2 marker：`CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER`。V1 只能算未升级。
-5. `history-fill` 不能退化成 raw API dump。回归测试必须覆盖 sender name label 和 interactive/card converter，否则模型会把 `ou_xxx` / `cli_xxx` / card JSON 当成上下文，出现错认发言者。
+5. `history-fill` 不能退化成 raw API dump。回归测试必须覆盖 sender name label、interactive/card converter、API 降级占位拦截、canonical message refetch。模型视角的 group history 应和 `lark-cli im +chat-messages-list` / `+messages-mget` 的可读正文保持内容等价，不允许出现 `请升级至最新版本客户端，以查看内容`、raw `ou_xxx` / `cli_xxx`、或 raw card JSON 穿透。
 6. 任一 patch anchor 失效都不要 ship。先读目标上游文件，更新 patch script，再跑本地和服务器上的 patch tests。
 7. 功能 smoke 至少覆盖：`/new @bot`、`@bot /new`、`/new @bot1 @bot2`、`/status @bot`。期望日志是 `detected system command` 和 `system command dispatched (delivered=true)`，不应出现命令消息 `dispatching to agent`。
 8. 不要用直接 Feishu ack 或 `CommandSource:native` 修 `/new`。前者绕过 core reset 语义，后者曾导致 `/status` 双回复。

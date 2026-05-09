@@ -229,6 +229,171 @@ test("FIX: fillChatHistoryIfSparse labels senders and uses the content converter
   assert.equal(entries[0].body, "interactive: {}");
 });
 
+test("FIX: fillChatHistoryIfSparse expands interactive cards instead of injecting client-upgrade placeholders", async () => {
+  const { fillChatHistoryIfSparse } = await import(HELPER_JS);
+
+  const chatHistories = new Map();
+  const dc = makeDc();
+  const interactiveContent = JSON.stringify({
+    body: {
+      elements: [
+        { tag: "markdown", content: "**实证完整！** 林森 5-1 已经把全队默认值改到 32k。" },
+      ],
+    },
+  });
+  const fakeFetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      code: 0,
+      data: {
+        items: [
+          {
+            message_id: "om_card_full",
+            chat_id: "oc_test_group",
+            msg_type: "interactive",
+            create_time: "1000",
+            sender: { id: "ou_owner", sender_type: "user" },
+            body: { content: interactiveContent },
+          },
+        ],
+        has_more: false,
+      },
+    }),
+  });
+
+  await fillChatHistoryIfSparse({
+    dc,
+    params: { chatHistories, historyLimit: 50 },
+    _testFetch: fakeFetch,
+    _testTokenProvider: async () => "t",
+    _testNameMap: new Map([["ou_owner", "卜弋天"]]),
+    _testConvertMessageContent: async () => ({
+      content: "请升级至最新版本客户端，以查看内容",
+      resources: [],
+    }),
+  });
+
+  const entries = chatHistories.get(threadScopedKey(dc.ctx.chatId)) ?? [];
+  assert.equal(entries.length, 1);
+  assert.match(entries[0].body, /实证完整/);
+  assert.doesNotMatch(entries[0].body, /请升级至最新版本客户端/);
+});
+
+test("FIX: fillChatHistoryIfSparse refetches canonical interactive content when history API is degraded", async () => {
+  const { fillChatHistoryIfSparse } = await import(HELPER_JS);
+
+  const chatHistories = new Map();
+  const dc = makeDc();
+  const degradedContent = JSON.stringify({
+    elements: [[{ tag: "text", text: "请升级至最新版本客户端，以查看内容" }]],
+  });
+  const canonicalContent = JSON.stringify({
+    elements: [
+      {
+        tag: "div",
+        text: { tag: "lark_md", content: "完整答案有了。OpenClaw config 里有限额。" },
+      },
+    ],
+  });
+  const fakeFetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      code: 0,
+      data: {
+        items: [
+          {
+            message_id: "om_card_degraded",
+            chat_id: "oc_test_group",
+            msg_type: "interactive",
+            create_time: "1000",
+            sender: { id: "ou_owner", sender_type: "user" },
+            body: { content: degradedContent },
+          },
+        ],
+        has_more: false,
+      },
+    }),
+  });
+  let canonicalFetches = 0;
+
+  await fillChatHistoryIfSparse({
+    dc,
+    params: { chatHistories, historyLimit: 50 },
+    _testFetch: fakeFetch,
+    _testTokenProvider: async () => "t",
+    _testNameMap: new Map([["ou_owner", "卜弋天"]]),
+    _testFetchCanonicalMessage: async (messageId) => {
+      canonicalFetches++;
+      assert.equal(messageId, "om_card_degraded");
+      return {
+        message_id: messageId,
+        chat_id: "oc_test_group",
+        msg_type: "interactive",
+        create_time: "1000",
+        sender: { id: "ou_owner", sender_type: "user" },
+        body: { content: canonicalContent },
+      };
+    },
+  });
+
+  const entries = chatHistories.get(threadScopedKey(dc.ctx.chatId)) ?? [];
+  assert.equal(canonicalFetches, 1);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].body, "完整答案有了。OpenClaw config 里有限额。");
+  assert.doesNotMatch(entries[0].body, /请升级至最新版本客户端/);
+});
+
+test("FIX: fillChatHistoryIfSparse never injects upgrade placeholders for image-only cards", async () => {
+  const { fillChatHistoryIfSparse } = await import(HELPER_JS);
+
+  const chatHistories = new Map();
+  const dc = makeDc();
+  const degradedImageCard = JSON.stringify({
+    elements: [
+      [
+        { tag: "img", image_key: "img_v3_abc" },
+        { tag: "text", text: "请升级至最新版本客户端，以查看内容" },
+      ],
+    ],
+  });
+  const fakeFetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      code: 0,
+      data: {
+        items: [
+          {
+            message_id: "om_card_image_only",
+            chat_id: "oc_test_group",
+            msg_type: "interactive",
+            create_time: "1000",
+            sender: { id: "ou_owner", sender_type: "user" },
+            body: { content: degradedImageCard },
+          },
+        ],
+        has_more: false,
+      },
+    }),
+  });
+
+  await fillChatHistoryIfSparse({
+    dc,
+    params: { chatHistories, historyLimit: 50 },
+    _testFetch: fakeFetch,
+    _testTokenProvider: async () => "t",
+    _testNameMap: new Map([["ou_owner", "卜弋天"]]),
+    _testFetchCanonicalMessage: async () => null,
+  });
+
+  const entries = chatHistories.get(threadScopedKey(dc.ctx.chatId)) ?? [];
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].body, "<media:image>");
+  assert.doesNotMatch(entries[0].body, /请升级至最新版本客户端/);
+});
+
 // -------- TEST 4a: URL omits start_time / end_time (no 2h window) --------
 //
 // Rationale: if a user leaves a group overnight and @mentions the bot the
