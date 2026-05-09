@@ -64,6 +64,8 @@ deploy/carher-{id}/
 
 **A2A hub 名单**(`a2a-gateway.outbound.enabled=true`):13 / 198 / 199 / 200。其他全 spoke。
 
+**Bot Registry / knownBots 真相**:三组件架构下 `openclaw-lark` 是 channel,`feishu-her/gateway.ts` 不一定启动;动态 knownBots 必须由 `docker/plugins/feishu-her/index.ts` 在 plugin register 阶段启动 `initBotRegistry()`。history-fill 注入 group context 时也必须消费 Redis Bot Registry / `account.knownBots`,把 app sender 渲染成 `弋天的her (cli_a917...)`,不能让模型只看到裸 `cli_xxx`。
+
 **Mac 本地测试容器**（id=101/102/103/104）:`carher-101`=tester, `carher-102`=tester2, `carher-103`=tester3, `carher-104`=tester4。
 
 **行动原则**:`docker/servers.txt` 是手动维护的真相表。S1 `/Data/CarHer` remote 名通常是 `carher`;S3 remote 名通常是 `origin`,不要在 runbook 里写死同一个 remote。
@@ -466,8 +468,8 @@ carher 对 openclaw / 闭源上游 npm 包打的本地 patch。**修改前必读
 - **Target**:`$LARK_PKG/src/messaging/inbound/dispatch.js`(加 require helper 的一行注入,并把 entry 的 `messageId/messageType/replyToId` 传给 InboundHistory)+ `$LARK_PKG/src/messaging/inbound/carher-history-fill.js`(helper,cp from bind-mount)+ `/app/dist/get-reply-*.js`(旧 dist 若还没从 dev 源码构建,由 `apply-inbound-history-meta.sh` 补渲染)
 - **Upstream**:`@larksuite/openclaw-lark`(闭源)
 - **Bug**:三组件迁移后 group 历史只走被动 WS event 累积;bot 重启 / 群冷场 > 20 秒 → 被 @ 时 0 条上下文,"失忆"
-- **Fix**:被 @ 时(非 `/` 系统命令)优先执行 `lark-cli im +chat-messages-list --chat-id <oc_...> --page-size 20 --sort desc --format json`(默认 user 身份)拉最近消息填 Map;这是 Her 自己做 1:1 审计用的真实群消息视图。lark-cli 不可用时才 fallback 到 `/im/v1/messages?card_msg_content_type=raw_card_content`;补出的 entry 必须把 sender 渲染成 `姓名 (open_id/cli_id)` label,并带上 `messageId`/`messageType`/`replyToId`,最终模型看到的 JSON 必须有 `message_id`/`message_type`/`reply_to_id`;interactive/card 不能信任降级 list item, fallback 路径仍需按 `message_id` 拉 canonical message 并解析;仍失败只能注入媒体占位,不能把 `请升级至最新版本客户端，以查看内容` 这类坏文案交给模型
-- **事故记忆(2026-05-09)**:旧 helper 只写 `sender=open_id` 且把 interactive/card 保留为 raw JSON,导致 `carher-75` 在群 context 中错认“超过限额非常惨”这句话是谁说的。随后又确认 Her 通过 `lark-cli im +chat-messages-list --format json` 默认 user-token 能看到完整 `<card>` 内容,但 runtime context 注入只拿到 `请升级至最新版本客户端，以查看内容`,且丢了 `reply_to` 链。以后改 P8 必须保留 lark-cli primary path + sender label + `message_id/message_type/reply_to_id` + converter + placeholder 拦截 + fallback canonical refetch 回归测试。
+- **Fix**:被 @ 时(非 `/` 系统命令)优先执行 `lark-cli im +chat-messages-list --chat-id <oc_...> --page-size 20 --sort desc --format json`(默认 user 身份)拉最近消息填 Map;这是 Her 自己做 1:1 审计用的真实群消息视图。lark-cli 不可用时才 fallback 到 `/im/v1/messages?card_msg_content_type=raw_card_content`;补出的 entry 必须把 sender 渲染成 `姓名 (open_id/cli_id)` label,其中 app sender 必须走 Redis Bot Registry / `knownBots` 映射(例如 `弋天的her (cli_a917...)`),不能把裸 `cli_xxx` 注入给模型;并带上 `messageId`/`messageType`/`replyToId`,最终模型看到的 JSON 必须有 `message_id`/`message_type`/`reply_to_id`;interactive/card 不能信任降级 list item, fallback 路径仍需按 `message_id` 拉 canonical message 并解析;仍失败只能注入媒体占位,不能把 `请升级至最新版本客户端，以查看内容` 这类坏文案交给模型
+- **事故记忆(2026-05-09)**:旧 helper 只写 `sender=open_id` 且把 interactive/card 保留为 raw JSON,导致 `carher-75` 在群 context 中错认“超过限额非常惨”这句话是谁说的。随后又确认 Her 通过 `lark-cli im +chat-messages-list --format json` 默认 user-token 能看到完整 `<card>` 内容,但 runtime context 注入只拿到 `请升级至最新版本客户端，以查看内容`,且丢了 `reply_to` 链。当天第二个归因事故是新三组件补丁没有消费旧 `feishu-her` 的 `knownBots`/动态 Bot Registry,多 Her 群里 app sender 退化成裸 `cli_a94...` / `cli_a917...`,模型只能靠记忆猜谁是谁。以后改 P8 必须保留 lark-cli primary path + sender label + app sender Registry 映射 + `message_id/message_type/reply_to_id` + converter + placeholder 拦截 + fallback canonical refetch 回归测试。
 - **Source**:`scripts/carher-patches/`(bind-mount 成容器 `/carher-patches:ro`)
 - **Kill switch**:
   - `CARHER_DISABLE_HISTORY_FILL_PATCH=1` (boot 时完全 skip patch)

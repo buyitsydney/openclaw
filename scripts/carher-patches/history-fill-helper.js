@@ -25,6 +25,12 @@ const HISTORY_FILL_TARGET = 20; // mirrors MAX_UNTRUSTED_HISTORY_ENTRIES in SDK
 const UPGRADE_CLIENT_HINT = "请升级至最新版本客户端";
 const UPGRADE_CLIENT_HINT_RE = /请升级至最新版本客户端[，,\s]*以查看内容[。.]?/g;
 const INTERACTIVE_UNAVAILABLE = "[interactive card: content not extractable via Feishu API]";
+const BOT_REGISTRY_INDEX_KEY = "her:bot:index";
+const BOT_REGISTRY_KEY_PREFIX = "her:bot:";
+const KNOWN_BOT_NAME_CACHE_TTL_MS = 30_000;
+let knownBotNameCache = { expiresAt: 0, names: new Map() };
+let knownBotRedisClient = null;
+let knownBotRedisUrl = "";
 // No time window: we want the last 20 messages regardless of how long ago
 // they were. A user who leaves a conversation overnight and @mentions the
 // bot the next morning should still get full context. Feishu's
@@ -91,9 +97,13 @@ function extractTextNodeContent(node) {
   const propertyText = property && property.text;
   return (
     usableText(node.content) ||
-    (typeof directText === "string" ? usableText(directText) : extractTextNodeContent(directText)) ||
+    (typeof directText === "string"
+      ? usableText(directText)
+      : extractTextNodeContent(directText)) ||
     (property ? usableText(property.content) : "") ||
-    (typeof propertyText === "string" ? usableText(propertyText) : extractTextNodeContent(propertyText))
+    (typeof propertyText === "string"
+      ? usableText(propertyText)
+      : extractTextNodeContent(propertyText))
   );
 }
 
@@ -111,7 +121,8 @@ function flattenCardElement(element, acc) {
   }
 
   const tag = trimString(element.tag);
-  const property = element.property && typeof element.property === "object" ? element.property : null;
+  const property =
+    element.property && typeof element.property === "object" ? element.property : null;
   switch (tag) {
     case "text":
     case "plain_text":
@@ -138,14 +149,17 @@ function flattenCardElement(element, acc) {
     }
     case "media": {
       const fileName =
-        trimString(element.file_name) || (property ? trimString(property.file_name) : "") || "video";
+        trimString(element.file_name) ||
+        (property ? trimString(property.file_name) : "") ||
+        "video";
       return `[video:${fileName}]`;
     }
     case "emotion":
       return element.emoji_type ? `[${trimString(element.emoji_type)}]` : "[emotion]";
     case "button": {
       const label =
-        extractTextNodeContent(element.text) || (property ? extractTextNodeContent(property.text) : "");
+        extractTextNodeContent(element.text) ||
+        (property ? extractTextNodeContent(property.text) : "");
       return label ? `[button: ${label}]` : "[button]";
     }
     case "hr":
@@ -219,13 +233,17 @@ function parseInteractiveText(parsed) {
   const acc = { imageKeys: [], imagePlaceholder: "<media:image>" };
   const lines = [];
   const header = parsed.header && typeof parsed.header === "object" ? parsed.header : null;
-  const headerProperty = header && header.property && typeof header.property === "object" ? header.property : null;
+  const headerProperty =
+    header && header.property && typeof header.property === "object" ? header.property : null;
   const headerTitle =
-    extractTextNodeContent(header && header.title) || extractTextNodeContent(headerProperty && headerProperty.title);
+    extractTextNodeContent(header && header.title) ||
+    extractTextNodeContent(headerProperty && headerProperty.title);
   const title =
     usableText(parsed.title) ||
     extractTextNodeContent(parsed.title) ||
-    (parsed.property && typeof parsed.property === "object" ? extractTextNodeContent(parsed.property.title) : "");
+    (parsed.property && typeof parsed.property === "object"
+      ? extractTextNodeContent(parsed.property.title)
+      : "");
   if (headerTitle) lines.push(headerTitle);
   else if (title) lines.push(title);
 
@@ -238,10 +256,12 @@ function parseInteractiveText(parsed) {
           typeof parsed.body.property === "object" &&
           Array.isArray(parsed.body.property.elements)
         ? parsed.body.property.elements
-      : null;
+        : null;
   const topElements = Array.isArray(parsed.elements)
     ? parsed.elements
-    : parsed.property && typeof parsed.property === "object" && Array.isArray(parsed.property.elements)
+    : parsed.property &&
+        typeof parsed.property === "object" &&
+        Array.isArray(parsed.property.elements)
       ? parsed.property.elements
       : null;
   const elementGroups = bodyElements || topElements;
@@ -365,6 +385,163 @@ function optionalRequire(path) {
   }
 }
 
+function mergeNameMap(target, source) {
+  if (!source) return target;
+  if (source instanceof Map) {
+    for (const [id, name] of source.entries()) addNameMapping(target, id, name);
+    return target;
+  }
+  if (Array.isArray(source)) {
+    for (const entry of source) {
+      if (Array.isArray(entry)) addNameMapping(target, entry[0], entry[1]);
+      else if (entry && typeof entry === "object") {
+        addNameMapping(target, entry.id || entry.appId || entry.botOpenId, entry.name);
+      }
+    }
+    return target;
+  }
+  if (typeof source === "object") {
+    for (const [id, name] of Object.entries(source)) addNameMapping(target, id, name);
+  }
+  return target;
+}
+
+function addNameMapping(target, id, name) {
+  const key = trimString(id);
+  const value = trimString(name);
+  if (!key || !value) return;
+  target.set(key, value);
+}
+
+function mergeKnownBotsFromAccount(target, account) {
+  if (!account || typeof account !== "object") return target;
+  mergeNameMap(target, account.knownBots);
+
+  const appId = firstTrimmedString(
+    account.appId,
+    account.app_id,
+    account.botAppId,
+    account.clientId,
+  );
+  const botOpenId = firstTrimmedString(
+    account.botOpenId,
+    account.bot_open_id,
+    account.openId,
+    account.open_id,
+  );
+  const ownName = firstTrimmedString(
+    account.name,
+    account.botName,
+    account.displayName,
+    account.accountId,
+  );
+  addNameMapping(target, appId, ownName);
+  addNameMapping(target, botOpenId, ownName);
+
+  const knownBotOpenIds =
+    account.knownBotOpenIds && typeof account.knownBotOpenIds === "object"
+      ? account.knownBotOpenIds
+      : null;
+  const knownBots =
+    account.knownBots && typeof account.knownBots === "object" ? account.knownBots : null;
+  if (knownBotOpenIds && knownBots) {
+    for (const [openId, mappedAppId] of Object.entries(knownBotOpenIds)) {
+      const name = knownBots[mappedAppId];
+      addNameMapping(target, openId, name);
+    }
+  }
+  return target;
+}
+
+function redisConstructor() {
+  const mod =
+    optionalRequire("ioredis") ||
+    optionalRequire("/app/docker/plugins/a2a-gateway/node_modules/ioredis") ||
+    optionalRequire("/app/docker/plugins/feishu-her/node_modules/ioredis");
+  if (!mod) return null;
+  return mod.Redis || mod.default || mod;
+}
+
+function getKnownBotRedisClient(redisUrl) {
+  if (!redisUrl) return null;
+  if (knownBotRedisClient && knownBotRedisUrl === redisUrl) return knownBotRedisClient;
+  if (knownBotRedisClient && typeof knownBotRedisClient.disconnect === "function") {
+    try {
+      knownBotRedisClient.disconnect();
+    } catch {
+      // Best-effort cleanup before switching URLs.
+    }
+  }
+  const Redis = redisConstructor();
+  if (typeof Redis !== "function") return null;
+  knownBotRedisUrl = redisUrl;
+  knownBotRedisClient = new Redis(redisUrl, {
+    connectTimeout: 800,
+    commandTimeout: 800,
+    lazyConnect: false,
+    maxRetriesPerRequest: 1,
+  });
+  if (knownBotRedisClient && typeof knownBotRedisClient.on === "function") {
+    knownBotRedisClient.on("error", () => {});
+  }
+  return knownBotRedisClient;
+}
+
+async function fetchKnownBotNamesFromRedis(redisUrl) {
+  const names = new Map();
+  const redis = getKnownBotRedisClient(redisUrl);
+  if (!redis) return names;
+  const appIds = await redis.smembers(BOT_REGISTRY_INDEX_KEY);
+  if (!Array.isArray(appIds) || appIds.length === 0) return names;
+  const keys = appIds.map((appId) => `${BOT_REGISTRY_KEY_PREFIX}${appId}`);
+  const records = await redis.mget(...keys);
+  for (const raw of records || []) {
+    const record = parseJson(raw);
+    if (!record) continue;
+    const appId = firstTrimmedString(record.appId, record.app_id);
+    const botOpenId = firstTrimmedString(record.botOpenId, record.bot_open_id);
+    const name = firstTrimmedString(record.name, record.botName, record.displayName);
+    addNameMapping(names, appId, name);
+    addNameMapping(names, botOpenId, name);
+  }
+  return names;
+}
+
+async function resolveKnownBotNames(params) {
+  const names = new Map();
+  mergeNameMap(names, params && params.nameMap);
+  mergeKnownBotsFromAccount(names, params && params.dc && params.dc.account);
+  mergeNameMap(names, params && params.testKnownBotNames);
+
+  if (params && typeof params.testFetchKnownBotNames === "function") {
+    try {
+      mergeNameMap(names, await params.testFetchKnownBotNames());
+    } catch (err) {
+      if (params.log)
+        params.log(`[carher-history-fill] test known bot resolve failed: ${String(err)}`);
+    }
+    return names;
+  }
+
+  const now = Date.now();
+  if (knownBotNameCache.expiresAt > now) {
+    mergeNameMap(names, knownBotNameCache.names);
+    return names;
+  }
+
+  const redisUrl = trimString(process.env.REDIS_URL) || trimString(process.env.CARHER_REDIS_URL);
+  if (!redisUrl) return names;
+  try {
+    const redisNames = await fetchKnownBotNamesFromRedis(redisUrl);
+    knownBotNameCache = { expiresAt: now + KNOWN_BOT_NAME_CACHE_TTL_MS, names: redisNames };
+    mergeNameMap(names, redisNames);
+  } catch (err) {
+    if (params && params.log)
+      params.log(`[carher-history-fill] known bot registry failed: ${String(err)}`);
+  }
+  return names;
+}
+
 function execFileJson(command, args, options) {
   const childProcess = optionalRequire("node:child_process") || optionalRequire("child_process");
   if (!childProcess || typeof childProcess.execFile !== "function") {
@@ -433,7 +610,11 @@ function firstTrimmedString(...values) {
 }
 
 function messageTypeFromMessage(message) {
-  return firstTrimmedString(message && message.msg_type, message && message.message_type, message && message.content_type);
+  return firstTrimmedString(
+    message && message.msg_type,
+    message && message.message_type,
+    message && message.content_type,
+  );
 }
 
 function replyToIdFromMessage(message) {
@@ -460,21 +641,24 @@ function parseHistoryTimestamp(value) {
   }
   const shanghaiMatch = raw.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::(\d{2}))?$/);
   if (shanghaiMatch) {
-    const parsed = Date.parse(`${shanghaiMatch[1]}T${shanghaiMatch[2]}:${shanghaiMatch[3] || "00"}+08:00`);
+    const parsed = Date.parse(
+      `${shanghaiMatch[1]}T${shanghaiMatch[2]}:${shanghaiMatch[3] || "00"}+08:00`,
+    );
     return Number.isFinite(parsed) ? parsed : Date.now();
   }
   const parsed = Date.parse(raw);
   return Number.isFinite(parsed) ? parsed : Date.now();
 }
 
-function buildHistoryEntryFromLarkCliMessage(message, currentMessageId) {
+function buildHistoryEntryFromLarkCliMessage(message, currentMessageId, nameMap) {
   if (!message || typeof message !== "object") return null;
   if (currentMessageId && message.message_id === currentMessageId) return null;
   const body = usableText(message.content);
   if (!body || hasUpgradeHint(body)) return null;
   const sender = message.sender && typeof message.sender === "object" ? message.sender : {};
   const senderId = trimString(sender.id) || "unknown";
-  const senderLabel = formatSenderLabel(senderId, trimString(sender.name));
+  const senderName = trimString(sender.name) || (nameMap && nameMap.get(senderId));
+  const senderLabel = formatSenderLabel(senderId, senderName);
   return {
     sender: senderLabel,
     body,
@@ -496,6 +680,7 @@ async function fetchHistoryEntriesViaLarkCli(params) {
       messages,
       currentMessageId: params.currentMessageId,
       want: params.want,
+      nameMap: params.nameMap,
     });
   }
 
@@ -543,6 +728,7 @@ async function fetchHistoryEntriesViaLarkCli(params) {
         messages,
         currentMessageId: params.currentMessageId,
         want: params.want,
+        nameMap: params.nameMap,
       });
     } catch (err) {
       lastError = err;
@@ -558,7 +744,11 @@ function buildHistoryEntriesFromLarkCliMessages(params) {
   const messages = Array.isArray(params.messages) ? params.messages : [];
   const entries = [];
   for (const message of messages.slice().reverse()) {
-    const entry = buildHistoryEntryFromLarkCliMessage(message, params.currentMessageId);
+    const entry = buildHistoryEntryFromLarkCliMessage(
+      message,
+      params.currentMessageId,
+      params.nameMap,
+    );
     if (!entry) continue;
     entries.push(entry);
     if (entries.length >= params.want) break;
@@ -716,7 +906,8 @@ async function fetchCanonicalMessageItems(params) {
       }
       return result;
     } catch (err) {
-      if (params.log) params.log(`[carher-history-fill] test canonical batch fetch failed: ${String(err)}`);
+      if (params.log)
+        params.log(`[carher-history-fill] test canonical batch fetch failed: ${String(err)}`);
       return result;
     }
   }
@@ -738,7 +929,9 @@ async function fetchCanonicalMessageItems(params) {
     });
     if (!resp || !resp.ok) {
       if (params.log) {
-        params.log(`[carher-history-fill] canonical mget !ok count=${ids.length} status=${resp && resp.status}`);
+        params.log(
+          `[carher-history-fill] canonical mget !ok count=${ids.length} status=${resp && resp.status}`,
+        );
       }
       return result;
     }
@@ -762,7 +955,8 @@ async function fetchCanonicalMessageItem(params) {
     try {
       return await params.testFetchCanonicalMessage(params.messageId);
     } catch (err) {
-      if (params.log) params.log(`[carher-history-fill] test canonical fetch failed: ${String(err)}`);
+      if (params.log)
+        params.log(`[carher-history-fill] test canonical fetch failed: ${String(err)}`);
       return null;
     }
   }
@@ -793,7 +987,9 @@ async function fetchCanonicalMessageItem(params) {
     return Array.isArray(items) ? items[0] || null : null;
   } catch (err) {
     if (params.log) {
-      params.log(`[carher-history-fill] canonical fetch error message=${params.messageId}: ${String(err)}`);
+      params.log(
+        `[carher-history-fill] canonical fetch error message=${params.messageId}: ${String(err)}`,
+      );
     }
     return null;
   }
@@ -834,10 +1030,7 @@ async function fillChatHistoryIfSparse(args) {
   const chatId = dc.ctx && dc.ctx.chatId;
   if (!chatId) return;
 
-  const historyKey = threadScopedKey(
-    chatId,
-    dc.isThread ? dc.ctx.threadId : undefined,
-  );
+  const historyKey = threadScopedKey(chatId, dc.isThread ? dc.ctx.threadId : undefined);
 
   const want = Math.min(HISTORY_FILL_TARGET, params.historyLimit);
   const existing = params.chatHistories.get(historyKey);
@@ -850,6 +1043,13 @@ async function fillChatHistoryIfSparse(args) {
   _log(`[carher-history-fill] start ${chatId}: have=${have} want=${want}`);
 
   const currentMessageId = dc.ctx && dc.ctx.messageId;
+  const knownBotNames = await resolveKnownBotNames({
+    dc,
+    nameMap: args._testNameMap,
+    log: _log,
+    testKnownBotNames: args._testKnownBotNames,
+    testFetchKnownBotNames: args._testFetchKnownBotNames,
+  });
   if (!args._testFetch || args._testFetchLarkCliHistory || args._testExecFileJson) {
     const cliStart = Date.now();
     const cliEntries = await fetchHistoryEntriesViaLarkCli({
@@ -858,12 +1058,15 @@ async function fillChatHistoryIfSparse(args) {
       currentMessageId,
       want,
       log: _log,
+      nameMap: knownBotNames,
       testFetchLarkCliHistory: args._testFetchLarkCliHistory,
       testExecFileJson: args._testExecFileJson,
     });
     if (cliEntries.length > 0) {
       params.chatHistories.set(historyKey, cliEntries);
-      _log(`[carher-history-fill] done ${chatId}: filled ${cliEntries.length} via lark-cli in ${Date.now() - cliStart}ms`);
+      _log(
+        `[carher-history-fill] done ${chatId}: filled ${cliEntries.length} via lark-cli in ${Date.now() - cliStart}ms`,
+      );
       return;
     }
   }
@@ -951,7 +1154,7 @@ async function fillChatHistoryIfSparse(args) {
   const senderNames = await resolveHistorySenderNames({
     dc,
     items: chronological,
-    nameMap: args._testNameMap,
+    nameMap: knownBotNames,
     log: _log,
   });
 
@@ -987,7 +1190,9 @@ async function fillChatHistoryIfSparse(args) {
     return;
   }
   params.chatHistories.set(historyKey, entries);
-  _log(`[carher-history-fill] done ${chatId}: filled ${entries.length} in ${fetchMs}ms (token=${tokenMs}ms)`);
+  _log(
+    `[carher-history-fill] done ${chatId}: filled ${entries.length} in ${fetchMs}ms (token=${tokenMs}ms)`,
+  );
 }
 
 module.exports = { fillChatHistoryIfSparse };

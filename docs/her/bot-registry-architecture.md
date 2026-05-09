@@ -27,10 +27,12 @@ her:bot:index       SET of all registered appIds
 
 ```
 容器启动
-  → Redis connected
-    → registerSelf(appId, name, botOpenId)     # SETEX + SADD
-    → discoverAllBots()                         # SMEMBERS + MGET
-    → syncToAccount(account)                    # 原地更新 account.knownBots
+  → feishu-her/index.ts register()              # 三组件架构下仍会执行
+    → initBotRegistry(primaryAccount)
+      → Redis connected
+        → registerSelf(appId, name, botOpenId)  # SETEX + SADD
+        → discoverAllBots()                     # SMEMBERS + MGET
+        → syncToAccount(account)                # 原地更新 account.knownBots
   → 每 60s: renewLease()                        # EXPIRE 续期
   → 每 30s: discoverAllBots() + syncToAccount() # 刷新 peer 列表
 
@@ -40,13 +42,13 @@ her:bot:index       SET of all registered appIds
     → 即使未执行，120s 后 TTL 自动过期
 ```
 
-## 核心设计：零消费者改动
+## 核心设计：旧消费者零改动，新三组件补丁必须显式接入
 
 `account.knownBots` 是一个 JS 对象引用，所有 8 个文件 45 处消费者通过同一个引用同步读取。`syncToAccount()` 通过 key-by-key 赋值原地修改这个对象的内容（不替换引用），所有消费者自动看到更新。
 
 Node.js 单线程模型保证：迭代 `Object.entries(account.knownBots)` 的消费者不会观察到半更新状态。
 
-**消费者文件（全部零改动）：**
+**feishu-her 内部消费者文件（全部零改动）：**
 - `gateway.ts` — bot 消息识别、讨论模式名字解析、prompt 构建
 - `outbound.ts` — @mention 渲染
 - `feishu-message.ts` — bot 名字解析
@@ -55,6 +57,14 @@ Node.js 单线程模型保证：迭代 `Object.entries(account.knownBots)` 的�
 - `discussion-dashboard.ts` — 参与者名字
 - `discussion-outbound.ts` — mention→appId 映射
 - `accounts.ts` — 类型定义和初始化
+
+**三组件运行时补丁消费者（必须显式接入）：**
+- `scripts/carher-patches/history-fill-helper.js` — 新架构下 group history 由 `openclaw-lark` 注入，不再经过 `feishu-her/gateway.ts` 的 prompt 构建路径；因此 helper 必须直接从 Redis Bot Registry / `account.knownBots` 解析 app sender，把 `cli_a917...` 渲染成 `弋天的her (cli_a917...)`。这不是展示细节，而是归因正确性：多 Her 群里裸 `cli_xxx` 会让模型把国现、林森、弋天的 Her 说过的话互相认错。
+
+**回归要求：**
+- lark-cli primary path：当 `sender.sender_type=app` 且 lark-cli 未给 `sender.name` 时，必须从 Bot Registry 补名。
+- raw API fallback：当 `sender.id` 是 appId 时，必须从 `account.knownBots` / Bot Registry 补名。
+- 模型视角不能出现需要心算的裸 app id，例如只看到 `cli_a94a0b73a878dbcb`。
 
 ## 容错
 
@@ -70,7 +80,8 @@ Node.js 单线程模型保证：迭代 `Object.entries(account.knownBots)` 的�
 | 文件 | 变更 |
 |------|------|
 | `extensions/feishu-her/src/bot-registry.ts` | 新增 ~210 行 |
-| `extensions/feishu-her/src/gateway.ts` | +5 行 (init + destroy) |
+| `docker/plugins/feishu-her/index.ts` | 三组件架构启动点；注册 tools/hooks 时启动 Bot Registry |
+| `extensions/feishu-her/src/gateway.ts` | 旧 channel 启动点；保留 init + destroy，避免回退旧架构时丢 registry |
 | `compose` | 删除 ~79 行 CSV→knownBots 生成 |
 
 ## 与 a2a Registry 的关系

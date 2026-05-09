@@ -7,12 +7,12 @@
 // openclaw-lark/src/messaging/inbound/dispatch.js inside the carher image.
 // For local testing we npm-pack'd the same version to test-assets/.
 
-import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -87,10 +87,7 @@ test("BUG: empty chatHistories → InboundHistory has 0 entries (regression)", (
   const dc = makeDc();
   const historyLimit = 50;
 
-  const historyKey = threadScopedKey(
-    dc.ctx.chatId,
-    dc.isThread ? dc.ctx.threadId : undefined,
-  );
+  const historyKey = threadScopedKey(dc.ctx.chatId, dc.isThread ? dc.ctx.threadId : undefined);
 
   // This mirrors dispatch.js L316-322 exactly:
   const inboundHistory =
@@ -133,10 +130,7 @@ test("FIX: fillChatHistoryIfSparse populates Map with 20 entries via fake fetch"
     _testTokenProvider: fakeTokenProvider,
   });
 
-  const historyKey = threadScopedKey(
-    dc.ctx.chatId,
-    dc.isThread ? dc.ctx.threadId : undefined,
-  );
+  const historyKey = threadScopedKey(dc.ctx.chatId, dc.isThread ? dc.ctx.threadId : undefined);
   const entries = chatHistories.get(historyKey) ?? [];
 
   assert.equal(entries.length, 20, "chatHistories should be filled to 20");
@@ -221,6 +215,49 @@ test("FIX: fillChatHistoryIfSparse prefers lark-cli user history view before raw
   assert.match(entries[0].body, /200k/);
 });
 
+test("FIX: fillChatHistoryIfSparse resolves lark-cli app senders through known bot registry", async () => {
+  const { fillChatHistoryIfSparse } = await import(HELPER_JS);
+
+  const chatHistories = new Map();
+  const dc = makeDc();
+
+  await fillChatHistoryIfSparse({
+    dc,
+    params: { chatHistories, historyLimit: 50 },
+    _testFetchKnownBotNames: async () =>
+      new Map([
+        ["cli_a917e5525178dbb3", "弋天的her"],
+        ["cli_a94a0b73a878dbcb", "林森的her"],
+      ]),
+    _testExecFileJson: async () => ({
+      ok: true,
+      data: {
+        messages: [
+          {
+            message_id: "om_current_msg",
+            msg_type: "text",
+            create_time: "2026-05-09 14:39",
+            sender: { id: "ou_sender", sender_type: "user", name: "卜弋天" },
+            content: "@bot 看看前文",
+          },
+          {
+            message_id: "om_peer_bot",
+            msg_type: "post",
+            create_time: "2026-05-09 14:38",
+            sender: { id: "cli_a917e5525178dbb3", sender_type: "app" },
+            content: "天哥，我自己的 config 不是 32k，是 200k",
+          },
+        ],
+      },
+    }),
+  });
+
+  const entries = chatHistories.get(threadScopedKey(dc.ctx.chatId)) ?? [];
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].sender, "弋天的her (cli_a917e5525178dbb3)");
+  assert.match(entries[0].body, /200k/);
+});
+
 // -------- TEST 3: Helper skips fetch when Map already has enough entries --------
 
 test("FIX: fillChatHistoryIfSparse skips fetch when Map already has ≥20 entries", async () => {
@@ -298,6 +335,46 @@ test("FIX: fillChatHistoryIfSparse labels senders and uses the content converter
   assert.equal(entries.length, 1);
   assert.equal(entries[0].sender, "卜弋天 (ou_owner)");
   assert.equal(entries[0].body, "interactive: {}");
+});
+
+test("FIX: fillChatHistoryIfSparse resolves raw API app senders through knownBots", async () => {
+  const { fillChatHistoryIfSparse } = await import(HELPER_JS);
+
+  const chatHistories = new Map();
+  const dc = makeDc();
+  dc.account.knownBots = { cli_a94a0b73a878dbcb: "林森的her" };
+  const fakeFetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      code: 0,
+      data: {
+        items: [
+          {
+            message_id: "om_history_app",
+            chat_id: "oc_test_group",
+            msg_type: "text",
+            create_time: "1000",
+            sender: { id: "cli_a94a0b73a878dbcb", sender_type: "app" },
+            body: { content: JSON.stringify({ text: "我刚才说过这句话" }) },
+          },
+        ],
+        has_more: false,
+      },
+    }),
+  });
+
+  await fillChatHistoryIfSparse({
+    dc,
+    params: { chatHistories, historyLimit: 50 },
+    _testFetch: fakeFetch,
+    _testTokenProvider: async () => "t",
+  });
+
+  const entries = chatHistories.get(threadScopedKey(dc.ctx.chatId)) ?? [];
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].sender, "林森的her (cli_a94a0b73a878dbcb)");
+  assert.equal(entries[0].body, "我刚才说过这句话");
 });
 
 test("FIX: fillChatHistoryIfSparse expands interactive cards instead of injecting client-upgrade placeholders", async () => {
@@ -800,8 +877,7 @@ function render(boundedHistory) {
     assert.equal(singleMetaCount, 2, "single apply: exactly one metadata block");
     execSync(`bash ${APPLY_INBOUND_HISTORY_META_SH} ${scratch}`, { stdio: "pipe" });
     const twice = readFileSync(scratch, "utf-8");
-    const doubleMetaCount = (twice.match(/CARHER_INBOUND_HISTORY_META_PATCH_MARKER/g) ?? [])
-      .length;
+    const doubleMetaCount = (twice.match(/CARHER_INBOUND_HISTORY_META_PATCH_MARKER/g) ?? []).length;
     assert.equal(doubleMetaCount, 2, "idempotent: double-apply must not duplicate metadata");
     execSync(`node --check ${scratch}`, { stdio: "pipe" });
   } finally {
