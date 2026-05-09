@@ -48,25 +48,25 @@ deploy/carher-{id}/
 
 ---
 
-## 第 2 章 · 当前部署真相（2026-05-08)
+## 第 2 章 · 当前部署真相（2026-05-09)
 
-**S1 + S3 全部 7 个 bot 已 compose 化 + 升级到 stop-hook-v3-clean 系 image。**
+**S1 + S3 全部 7 个 bot 已 compose 化,当前运行 dev `cf2d750b06` + image `localhost:5001/carher-core:2026.5.8-p10`。**
 
-| 位置              | 容器         | 用户         | Bot App ID             | 当前 image（2026-05-08 晨）     |
+| 位置              | 容器         | 用户         | Bot App ID             | 当前 image / runtime patch       |
 | ----------------- | ------------ | ------------ | ---------------------- | --------------------------------- |
-| S1 (10.68.13.186) | `carher-12`  | test/tester  | `cli_a917fa892ff91bb5` | `stop-hook-v3-clean`              |
-| S1 (10.68.13.186) | `carher-13`  | 卜弋天       | `cli_a917e5525178dbb3` | `stop-hook-v3-clean`              |
-| S1 (10.68.13.186) | `carher-198` | admin/研究1  | `cli_a96f0bfba3789cd4` | `stop-hook-v3-clean`              |
-| S1 (10.68.13.186) | `carher-199` | 研究2        | `cli_a96f043660f99cef` | `stop-hook-v3-clean`              |
-| S1 (10.68.13.186) | `carher-200` | 研究3/Nova   | `cli_a96f044b4ef95cc0` | **`2026.5.8-p7b`**（灰度领先）   |
-| S3 (10.68.13.188) | `carher-14`  | 刘国现       | `cli_a91569fab9b81bc6` | `stop-hook-v3-clean` (A2A hub 配错,应 spoke) |
-| S3 (10.68.13.188) | `carher-75`  | 林森         | `cli_a94a0b73a878dbcb` | `stop-hook-v3-clean` (spoke)      |
+| S1 (10.68.13.186) | `carher-12`  | test/tester  | `cli_a917fa892ff91bb5` | `2026.5.8-p10` + R-7 V2           |
+| S1 (10.68.13.186) | `carher-13`  | 卜弋天       | `cli_a917e5525178dbb3` | `2026.5.8-p10` + R-7 V2           |
+| S1 (10.68.13.186) | `carher-198` | admin/研究1  | `cli_a96f0bfba3789cd4` | `2026.5.8-p10` + R-7 V2           |
+| S1 (10.68.13.186) | `carher-199` | 研究2        | `cli_a96f043660f99cef` | `2026.5.8-p10` + R-7 V2           |
+| S1 (10.68.13.186) | `carher-200` | 研究3/Nova   | `cli_a96f044b4ef95cc0` | `2026.5.8-p10` + R-7 V2           |
+| S3 (10.68.13.188) | `carher-14`  | 刘国现       | `cli_a91569fab9b81bc6` | `2026.5.8-p10` + R-7 V2           |
+| S3 (10.68.13.188) | `carher-75`  | 林森         | `cli_a94a0b73a878dbcb` | `2026.5.8-p10` + R-7 V2           |
 
 **A2A hub 名单**(`a2a-gateway.outbound.enabled=true`):13 / 198 / 199 / 200。其他全 spoke。
 
 **Mac 本地测试容器**（id=101/102/103/104）:`carher-101`=tester, `carher-102`=tester2, `carher-103`=tester3, `carher-104`=tester4。
 
-**行动原则**:`docker/servers.txt` 是手动维护的真相表。
+**行动原则**:`docker/servers.txt` 是手动维护的真相表。S1 `/Data/CarHer` remote 名通常是 `carher`;S3 remote 名通常是 `origin`,不要在 runbook 里写死同一个 remote。
 
 ---
 
@@ -398,7 +398,7 @@ compose.yaml 里已声明 ACP、资源限制、A2A hub 配置。admin 特权通�
 
 ---
 
-## 第 10 章 · Runtime / Build-time Patch 体系(2026-05-08+)
+## 第 10 章 · Runtime / Build-time Patch 体系(2026-05-09+)
 
 carher 对 openclaw / 闭源上游 npm 包打的本地 patch。**修改前必读本章;任何一个 patch section 被误删 → 功能静默失效、用户先察觉、debug 路径很长。**
 
@@ -417,7 +417,7 @@ carher 对 openclaw / 闭源上游 npm 包打的本地 patch。**修改前必读
 - Reviewer 必须逐个 section 核对,**只要有一个少了就打回**。
 - 教训:`f3d83cfd493`(2026-05-05) 加 a2a-gateway manifest patch 时顺手删了整个 CommandSource section,commit message 只提 a2a-gateway。后来 2026-05-08 尝试恢复才发现 CommandSource 方向在群里根本无效(见 R-7 条目),但这不降低"改 entrypoint 必须列 section diff"这条铁律的重要性。
 
-### 完整 Patch 清单(2026-05-08,共 8 个)
+### 完整 Patch 清单(2026-05-09,7 个 runtime + 1 个 no-op build-time stub)
 
 #### 🔧 R-1:`stripBotMentions` (runtime, entrypoint)
 
@@ -476,11 +476,13 @@ carher 对 openclaw / 闭源上游 npm 包打的本地 patch。**修改前必读
 
 - **Target**:`$LARK_PKG/src/messaging/inbound/dispatch.js`
 - **Source**:`scripts/carher-patches/apply-command-body-normalize.sh`
-- **Bug**:`stripBotMentions=false` 修好多 bot @ 后,群命令的 `ctx.content` 保留了 bot mention。`/new @弋天的her` 进入 core 时变成 `CommandBody="/new @弋天的her"`;core 把 mention 当作 `/new <tail>` 的 prompt tail,于是 reset 后继续进 LLM,最终 `NO_REPLY`,看不到 `✅ New session started.`。`/status @bot` 也会因为 mention 后缀造成命令识别不一致/双回复。
+- **Marker**:`CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER`。看到旧 `CARHER_COMMAND_BODY_NORMALIZE_PATCH_MARKER` 或 `NONE` 都视为未升级。
+- **Bug**:`stripBotMentions=false` 修好多 bot @ 后,群命令的 `ctx.content` 保留了 bot mention。`/new @弋天的her` 进入 core 时变成 `CommandBody="/new @弋天的her"`;core 把 mention 当作 `/new <tail>` 的 prompt tail,于是 reset 后继续进 LLM,最终 `NO_REPLY`,看不到 `✅ New session started.`。`@bot /new` 还会因为 slash 不在首位而直接进 agent。`/new @bot1 @bot2` 如果只剥当前 bot mention,另一个 mention 仍会成为 tail。
 - **Fix**:只在 slash-command command surface 归一化:
   - 普通 LLM 输入仍保留 bot mention(不回退 R-1)
   - `CommandBody` 去掉命令面里的地址 mention:`/new @bot` → `/new`,`@bot /new` → `/new`,`/new @bot1 @bot2` → `/new`
   - 群里 slash command 如果 mention 了别人但没 mention 当前 bot,当前 bot 直接 ignore,避免多 bot 群误响应
+- **V1→V2 upgrade**:脚本如果发现 V1 marker,会从 `${dispatch}.bak.command-body-normalize` 恢复原始 dispatch.js 后重打 V2。不要手删 backup;否则已经打过 V1 的持久化 volume 无法自动升级。
 - **Kill switch**:`CARHER_DISABLE_COMMAND_BODY_NORMALIZE_PATCH=1`
 - **log 成功**:`✓ command-body normalize patch applied`
 - **反例**:不要再打 `CommandSource:native` 或直接 `sendMessageFeishu` ack。前者导致 `/status` 双回复,后者绕过 core reset 语义。
@@ -503,15 +505,24 @@ carher 对 openclaw / 闭源上游 npm 包打的本地 patch。**修改前必读
 # 7 个 R-* runtime patches 都应出现在 entrypoint 启动 log 里
 docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|patch-agent-loop|PATCHED"
 # 应看到 7 行 ✓
+
+# R-7 必须是 V2 marker
+docker exec carher-<id> sh -lc '
+  p=/data/.openclaw/extensions/node_modules/@larksuite/openclaw-lark/src/messaging/inbound/dispatch.js
+  grep -n "CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER" "$p"
+  grep -n "carherStripMentionsForCommandBody" "$p"
+'
 ```
 
 ### 升级 openclaw 新版本 / 改 entrypoint.sh 的 SOP
 
 1. **改 entrypoint.sh 前**:读本章。Diff 之后逐 section 核对。commit message 列出 add / remove 哪些 section header。
-2. **新 image build**:grep build log 找 `OK` / `SKIP`(只 B-* patches 有)
-3. **新 image 启动**:跑上面的自检 grep,7 个 R-* patch 全中才算 ship
-4. SKIP 本身不破坏 image(idempotent + safe degrade),但功能静默缺失,**用户察觉不到**
-5. 任一 patch 的 anchor 失效 → 不要 ship。先读上游新代码,更新 anchor,重新 build
+2. **新 image build**:grep build log 找 `OK` / `SKIP`(只 B-* patches 有)。当前 B-1 是 no-op stub,不要期待 P7 marker。
+3. **runtime patch 改动**:即使 image tag 不变,也必须服务器 `git pull --ff-only <remote> dev` + `docker compose up -d --force-recreate`,因为 entrypoint/patch dir 是 bind mount。
+4. **新容器启动**:跑上面的自检 grep,7 个 R-* patch 全中才算 ship;R-7 必须是 V2 marker。
+5. **命令 smoke**:飞书群里测 `/new @bot`,`@bot /new`,`/new @bot1 @bot2`,`/status @bot`;期望 log 是 `detected system command` + `system command dispatched (delivered=true)`,不能有命令消息 `dispatching to agent`。
+6. SKIP 本身不破坏 image(idempotent + safe degrade),但功能静默缺失,**用户察觉不到**。
+7. 任一 patch 的 anchor 失效 → 不要 ship。先读上游新代码,更新 anchor,重新 build。
 
 ---
 
@@ -564,51 +575,65 @@ docker logs carher-N | grep "\[antitalker\]" | tail -3
 
 ## 第 12 章 · 标准升级流程(正规 CI/CD, 0 hack)
 
-### 场景 A:升级已有 bot 到**现成 image**(不 rebuild)
+### 场景 A:升级已有 bot 到**现成 image 或最新 runtime patch**(不 rebuild)
 
 ```bash
 # 本地 Mac
-git push carher dev                                      # 确保最新 config 已推
+node --test scripts/carher-patches/*.test.mjs            # 改 patch 时必跑
+bash -n scripts/carher-entrypoint.sh
+git push carher dev                                      # 确保最新 config / entrypoint / patch 已推
 
-# 服务器 (S1 例)
+# 服务器:先确认 remote 名,不要假设 S1/S3 一样
 ssh cltx@10.68.13.186
 cd /Data/CarHer
-git fetch carher dev && git reset --hard carher/dev      # 拿最新 config / template / entrypoint
+git remote -v                                            # S1 通常 carher;S3 通常 origin
+git status --short -- scripts/carher-entrypoint.sh scripts/carher-patches .cursor/skills/carher-ops/SKILL.md
+git pull --ff-only <remote> dev                          # 拿最新 config / template / entrypoint / patches
 
-cd deploy
-./scaffold.sh <id>                                        # 重生成 compose.yaml (保护 .env/secrets.env)
-
-cd carher-<id>
-# 编辑 .env:改 IMAGE_TAG 到目标 tag
+# 如果升级 image,编辑 .env;如果只是 runtime patch,跳过 sed,IMAGE_TAG 保持不变
+cd deploy/carher-<id>
 sed -i "s|^IMAGE_TAG=.*|IMAGE_TAG=<new-tag>|" .env
 
 # S3 跨服务器: .env 还要有 REDIS_URL=redis://10.68.13.186:6379 (scaffold 默认无,per-deploy 加)
 grep -q "^REDIS_URL=" .env || echo "REDIS_URL=redis://10.68.13.186:6379" >> .env
 
-docker compose down && docker compose up -d
+# 15min 活跃度 >0 就停手,除非天哥明确说实验环境可重启
+docker logs carher-<id> --since 15m 2>&1 | grep -c 'deliver:'
+
+# runtime patch / entrypoint / compose / config 变更都 force-recreate
+../../deploy/dc.sh up -d --force-recreate
 sleep 75
 docker ps --format "{{.Names}}\t{{.Image}}\t{{.Status}}" | grep carher-<id>
+
+# 运行时 patch 自检
+docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|patch-agent-loop|PATCHED"
+docker exec carher-<id> sh -lc '
+  p=/data/.openclaw/extensions/node_modules/@larksuite/openclaw-lark/src/messaging/inbound/dispatch.js
+  grep -n "CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER" "$p"
+'
 ```
+
+**禁止**:`git reset --hard`、直接 SSH 改服务器代码、直接改容器内 npm package。正规路径永远是本地 commit → push → server `git pull --ff-only` → compose recreate。
 
 ### 场景 B:rebuild 新 image 再升级
 
 ```bash
 # 1. 本地 commit + push dev
-git add ... && git commit -m "..." && git push carher dev
+scripts/committer "..." <files...>
+git push carher dev
 
 # 2. S1 (唯一 build 机) 拉代码 + build
 ssh cltx@10.68.13.186
 cd /Data/CarHer
-git fetch carher dev && git reset --hard carher/dev
+git pull --ff-only carher dev
 export CARHER_FREEZE_DEPTH=200   # 避免 freeze-git-info 在老 repo 耗时过长
 ./deploy/build-and-push.sh --no-push --tag-suffix=<suffix>
 # 例:./deploy/build-and-push.sh --no-push --tag-suffix=p7b → localhost:5001/carher-core:<date>-p7b
 
 # 3. 验证 image 里 patch marker
 docker run --rm --entrypoint sh <img-tag> -c "
-  grep -c carher_P7_outer /app/dist/server.impl-*.js
-  grep -c carher_P7_inner /app/dist/server-startup-memory-*.js
   grep -c stripBotMentions /entrypoint.sh
+  grep -c command-body /entrypoint.sh
   grep '^enabled:' /app/docker/plugins/her-antitalker-poc/stop-hook-rules.yaml
 "
 
@@ -616,15 +641,14 @@ docker run --rm --entrypoint sh <img-tag> -c "
 # (同场景 A 的 .env 改 IMAGE_TAG → compose up)
 
 # 5. 验证运行时 patch + 功能
-docker exec carher-<id> sh -c "
-  grep -c carher_P7_outer /app/dist/server.impl-*.js   # expect 1
-  grep -c carher_P7_inner /app/dist/server-startup-memory-*.js  # expect 1
-"
-docker logs carher-<id> | grep -E "memory startup|qmd memory startup initialization failed"
-# 期望: 无 "initialization failed" 错
+docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|patch-agent-loop|PATCHED"
+docker exec carher-<id> sh -lc '
+  p=/data/.openclaw/extensions/node_modules/@larksuite/openclaw-lark/src/messaging/inbound/dispatch.js
+  grep -n "CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER" "$p"
+'
 
-# 6. 功能验证:主人飞书 @ bot 做 /new + "回忆刚才" 测试 memory_search sources=sessions
-#    (用 python sqlite3 查 chunks 表验证索引增长 — 见第 10 章 P7 验证)
+# 6. 功能验证:主人飞书群里测 /new @bot, @bot /new, /new @bot1 @bot2, /status @bot
+#    log 期望 detected system command + delivered=true;不应进 dispatching to agent
 
 # 7. OK 了再推 fleet
 # 逐台重复场景 A,把 IMAGE_TAG 改到新 tag
@@ -679,34 +703,30 @@ compose 的 `${VAR}` 在 parse 时从 `.env` / shell env 读取，不从 `env_fi
 
 3 层 fallback 兜底后 `/app/openclaw-src/src` 可能是空目录，不影响 runtime。
 
-### 踩坑 7:`apply-reset-archive-patches.sh` 静默 SKIP 后 PR #76666 fix 丢失
+### 踩坑 7:`apply-reset-archive-patches.sh` 已是 no-op,不要再按 P7 marker 验证
 
-**症状**:image build 成功,`memory_search sources=["sessions"]` 返回空或仅有老数据,`/reset` / `/new` 产生的 `.jsonl.reset.<iso>` 不进 chunks。
+**症状**:升级 runbook 仍在 grep `carher_P7_outer` / `carher_P7_inner`,然后误判新 image 没打 patch。
 
-**根因**:openclaw upstream refactor 了 `/app/dist/*.js` 结构,本地 patch script 的 anchor 找不到,全部 **SKIP**(idempotent 设计,build 不 fail)。
+**根因**:P7 / PR #76666 相关 build-time patch 已在 `d6139a2e61c` revert 成 no-op stub。当前 active patch 面是第 10 章的 7 个 runtime patches,不是 P7 marker。
 
 **检查**:
 ```bash
-docker run --rm --entrypoint sh <new-image> -c "
-  grep -c carher_P7_outer /app/dist/server.impl-*.js
-  grep -c carher_P7_inner /app/dist/server-startup-memory-*.js
-"
-# 两个都 0 = SKIP 了,patch 没打上
+docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|patch-agent-loop|PATCHED"
+docker exec carher-<id> sh -lc '
+  p=/data/.openclaw/extensions/node_modules/@larksuite/openclaw-lark/src/messaging/inbound/dispatch.js
+  grep -n "CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER" "$p"
+'
 ```
 
-**修复**:grep build log 里 `p7_outer ... OK` / `p7_inner ... OK`,任一是 `SKIP` 就去 `/app/dist/` 读当前源码,更新 `scripts/apply-reset-archive-patches.sh` 的 anchor。
+**修复**:不要恢复 P7 marker 检查。只在 upstream 给出异步、低 stall 的 memory fix 后,再重新设计 build-time patch。
 
-### 踩坑 8:P7-inner 只 patch 1 行 → `resolved.qmd.update` crash
+### 踩坑 8:command-body V1 看似 patched,但 `/new` 仍有漏网形态
 
-**症状**:
-```
-[gateway] qmd memory startup initialization failed:
-  TypeError: Cannot read properties of undefined (reading 'update')
-```
+**症状**:`/new @bot` 正常,但 `@bot /new` 进 agent,或者 `/new @bot1 @bot2` 有 bot `delivered=false`。
 
-**根因**:P7-inner 如果只 patch `if (resolved.backend !== "qmd" || !resolved.qmd) continue;` 这一行,builtin backend 过了这 gate 之后,**紧接着下一行** `if (!shouldRunQmdStartupBootSync(resolved.qmd)) continue;` 里会访问 `resolved.qmd.update` → builtin 的 `resolved.qmd=undefined` → crash。
+**根因**:V1 只处理 slash 在最前、且只剥当前 bot mention。多 mention 或 mention 在命令前会漏掉。
 
-**修法**:P7-inner 的 anchor **必须吃下这 2 行**,用 `_isBuiltinSessionsPreload` flag 同时跳过 qmd gate + qmd boot-sync check,让 builtin 直接走到 `getActiveMemorySearchManager`。
+**检查 / 修法**:容器内必须是 `CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER`;如果是旧 `CARHER_COMMAND_BODY_NORMALIZE_PATCH_MARKER` 或 `NONE`,服务器拉最新 dev 后 `docker compose up -d --force-recreate`。
 
 ### 踩坑 9:S3 bot scaffold 后 EAI_AGAIN 无限 restart(缺 REDIS_URL)
 

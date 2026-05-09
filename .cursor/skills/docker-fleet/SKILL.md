@@ -18,13 +18,15 @@ metadata:
 
 其他 her 没 sshpass 也没 servers.txt，load 这个 skill 会跑不起来。发现不是 admin 就拒绝。
 
-## Fleet 拓扑（2026-04-30 现状）
+## Fleet 拓扑（2026-05-09 现状）
 
 | 服务器 | IP | 跑的容器 | 架构 |
 |---|---|---|---|
-| S1 | 10.68.13.186 | carher-13 (卜弋天), **carher-198 (admin/研究1)**, carher-199 (研究2), carher-200 (研究3) | compose |
+| S1 | 10.68.13.186 | carher-12 (test), carher-13 (卜弋天), **carher-198 (admin/研究1)**, carher-199 (研究2), carher-200 (研究3) | compose |
 | S2 | 10.68.13.187 | 仅 carher-fallback (nginx) | — |
-| S3 | 10.68.13.188 | carher-14 (刘国现), carher-75 (林森), carher-fallback, cloudflared | 待迁移 |
+| S3 | 10.68.13.188 | carher-14 (刘国现), carher-75 (林森), carher-fallback, cloudflared | compose |
+
+当前 fleet 运行 dev `cf2d750b06` + image `localhost:5001/carher-core:2026.5.8-p10`;7 个 bot 都应有 R-7 `CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER`。升级时不要假设 git remote 名一致:S1 `/Data/CarHer` 通常用 `carher`,S3 通常用 `origin`。
 
 ## SSH helper（每 session 开头设一次）
 
@@ -45,6 +47,18 @@ s3() { sshpass -p "$S3_PW" ssh -o StrictHostKeyChecking=no cltx@10.68.13.188 "$@
 ## 核心运维（compose 命令）
 
 所有服务器的 compose 目录在 `/Data/CarHer/deploy/carher-{id}/`。
+
+### 拉最新 dev（严禁直接改服务器代码）
+
+```bash
+# S1 通常:
+s1 "cd /Data/CarHer && git pull --ff-only carher dev"
+
+# S3 通常:
+s3 "cd /Data/CarHer && git pull --ff-only origin dev"
+```
+
+如果 remote 名不同,先 `git remote -v`。不要用 `git reset --hard` 当常规升级手段;本地 commit + push 后,服务器只做 fast-forward pull。
 
 ### 查某个 her 日志
 ```bash

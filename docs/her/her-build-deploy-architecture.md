@@ -1,10 +1,10 @@
 # CarHer Build/Deploy/Run 架构（compose + registry）
 
 **配合文档**：
-- [`her-image-architecture.md`](./her-image-architecture.md) — A+B 三轴镜像解耦
-- [`config-architecture.md`](./config-architecture.md) — 三层 config
+- [Her Image Architecture](/her/her-image-architecture) — A+B 三轴镜像解耦
+- [Config Architecture](/her/config-architecture) — 三层 config
 
-**状态**：PoC 已在 carher-101（Mac local tester）+ S1 carher-199（生产灰度）跑通。
+**状态**：compose + registry 已跑在 fleet；当前生产仍保留一层 git-synced runtime patch plane。
 
 ---
 
@@ -15,8 +15,9 @@
 | **Image 不可变** | 同一个 image 被所有 user 复用；per-user 差异只在 compose yaml + bind mount |
 | **Config 运行时注入** | Dockerfile 不 `COPY` 任何 config；全部通过 bind mount 从 git 仓库（static）+ env_file（secrets） |
 | **Declarative run** | 所有运行时参数（ACP flag、A2A hub/spoke、memory、ports、volumes）写在 `compose.yaml` 里，caller 无需传 |
-| **Registry 分发** | server 通过 `docker pull <registry>/carher-core:<tag>` 拿 image，**不再 `git clone` 或 `docker save\|load`** |
-| **Upgrade = 改一行** | 升级/回滚唯一动作：编 `.env` 的 `IMAGE_TAG`，再 `docker compose up -d` |
+| **Registry 分发** | 目标态由 server 通过 `docker pull <registry>/carher-core:<tag>` 拿 image；当前生产仍保留 git-synced runtime patch control plane |
+| **Upgrade = 改一行** | image 升级/回滚的唯一动作：编 `.env` 的 `IMAGE_TAG`，再 `docker compose up -d` |
+| **Runtime patch 也算发布面** | `scripts/carher-entrypoint.sh` 和 `scripts/carher-patches/` 通过 bind mount 注入；改这些文件后，即使 image tag 不变，也必须 git sync + force-recreate |
 
 ---
 
@@ -41,7 +42,7 @@
 │                                                                  │
 │    任何人 `docker pull` 拿同一份不可变 image                     │
 │    不再 scp/ssh docker save|load                                 │
-│    不再 server 上 git clone /Data/CarHer                         │
+│    目标态不再依赖 server 上 git clone /Data/CarHer               │
 └─────────────────────────────────────────────────────────────────┘
                                 ↓
 ┌─────────────────────────────────────────────────────────────────┐
@@ -67,7 +68,7 @@
 
 ### 和 A+B 三轴镜像架构的关系
 
-A+B 是 **Build** 层的内部结构（见 [`her-image-architecture.md`](./her-image-architecture.md)）：
+A+B 是 **Build** 层的内部结构（见 [Her Image Architecture](/her/her-image-architecture)）：
 
 ```
 Dockerfile.carher.v2:
@@ -100,18 +101,21 @@ Dockerfile.carher.v2:
 │   ├── users.csv                    # per-user CSV（gitignored：含 secret）
 │   ├── servers.txt                  # SSH 凭证（gitignored）
 │   └── server.env                   # 共享 API key（gitignored）
-└── deploy/                          # Run 层：declarative manifest
-    ├── build-and-push.sh            # CI: build image + push to registry
-    ├── migrate-carher-101.sh        # 一次性迁移: compose → compose
-    ├── init-user.sh                 # first-boot: voice token + device pairing
-    ├── scaffold.sh                  # 从 users.csv 生成 deploy/carher-N/
-    ├── common/
-    │   ├── redis.yaml               # 共享 redis (a2a-gateway peer registry)
-    │   └── compose.template.yaml    # scaffold.sh 的模板
-    └── carher-{id}/
-        ├── compose.yaml             # declarative service 定义
-        ├── .env                     # IMAGE_TAG=... (唯一升级入口, git-tracked)
-        └── secrets.env              # FEISHU_APP_SECRET (gitignored)
+├── deploy/                          # Run 层：declarative manifest
+│   ├── build-and-push.sh            # CI: build image + push to registry
+│   ├── migrate-carher-101.sh        # 一次性迁移: compose → compose
+│   ├── init-user.sh                 # first-boot: voice token + device pairing
+│   ├── scaffold.sh                  # 从 users.csv 生成 deploy/carher-N/
+│   ├── common/
+│   │   ├── redis.yaml               # 共享 redis (a2a-gateway peer registry)
+│   │   └── compose.template.yaml    # scaffold.sh 的模板
+│   └── carher-{id}/
+│       ├── compose.yaml             # declarative service 定义
+│       ├── .env                     # IMAGE_TAG=... (唯一升级入口, git-tracked)
+│       └── secrets.env              # FEISHU_APP_SECRET (gitignored)
+└── scripts/
+    ├── carher-entrypoint.sh          # Run 层：container 启动时的 runtime patch 编排
+    └── carher-patches/               # Run 层：openclaw-lark 等闭源/上游漂移补丁
 ```
 
 ---
@@ -132,10 +136,12 @@ Dockerfile.carher.v2:
 
 | 旧 | 新 |
 |---|---|
-| S1/S3 都是 `/Data/CarHer` 的 git clone，**server = 开发机** | S1/S3 只需要 `/etc/carher/` 放 compose + config + secrets，**不含源码** |
+| S1/S3 都是 `/Data/CarHer` 的 git clone，**server = 开发机** | 目标态：S1/S3 只需要部署包放 compose + config + secrets，**不含源码** |
 | 新版本：`git pull origin dev` + `build-image.sh` + restart | 新版本：`docker pull <registry>/carher-core:<new-tag>` + `docker compose up -d` |
 | image 分发：`docker save \| ssh docker load` 给每台服务器 | image 分发：`docker push` 一次，所有 server `docker pull`（幂等，可审计，可签名） |
 | SPOF：只有 admin 容器有 sshpass + `docker save` 能力 | 任何能 `docker pull` 的机器都能部署 |
+
+**当前生产注记（2026-05-09）**：fleet 还没有完全达到“server 不含源码”的目标态。`compose.yaml` 会 bind mount repo 里的 `scripts/carher-entrypoint.sh` 和 `scripts/carher-patches/`，因此 `/Data/CarHer` 仍是运行时控制面的一部分。改 image 只需要 bump `IMAGE_TAG`；改 runtime patch、entrypoint、compose template 或 config，则必须先把服务器上的 repo fast-forward 到 dev，再 `docker compose up -d --force-recreate`。
 
 ### Config ↔ Image 解耦
 
@@ -165,7 +171,58 @@ docker inspect <container> --format '{{.Image}}' \
 
 ---
 
-## 5. 日常运维命令速查
+## 5. Runtime Patch Plane
+
+当前 fleet 的可运行形态不是“只靠 image”。为了把官方 OpenClaw base、闭源 `@larksuite/openclaw-lark`、自家 CarHer plugin、以及快速变化的三组件架构拼在一起，container 启动时还会执行一组 runtime patches。它们由 `scripts/carher-entrypoint.sh` 编排，主要 patch target 来自 runtime npm install 或 bind mount，因此不能只在 Docker build 时打一次。
+
+这层 patch plane 不是临时 hack；它是当前架构的显式兼容层。未来每次升级 OpenClaw base、`@larksuite/openclaw-lark`、三组件插件契约、或 entrypoint 时，都必须把它当作发布面验证。
+
+### 为什么需要 runtime patches
+
+| Patch | 作用 | 为什么不能只靠 image |
+|---|---|---|
+| `stripBotMentions` | 群里同时 @ 多个 bot 时保留 bot mention，避免 bot 误判“没被 @”而 NO_REPLY | `@larksuite/openclaw-lark` 是 runtime npm package，且上游硬编码行为会覆盖 image 内状态 |
+| `command-body mention normalization` | `/new @bot`、`@bot /new`、`/new @bot1 @bot2` 归一成裸 `/new`，让系统命令直接 reset session，不进 LLM | 必须在 Feishu inbound dispatch 的 command surface 上修，不应退回直接发 Feishu ack 或 `CommandSource:native` |
+| `openclaw-lark channel-only` | 三组件架构下只保留 channel，tools/skills 交给 `lark-cli` | manifest 来自 runtime package，升级或 reinstall 会恢复上游 manifest |
+| `feishu-her contracts.tools` | 显式声明 30 个 Feishu tools 和 startup activation | OpenClaw 插件契约升级后，manifest 和 runtime 注册必须对齐 |
+| `shadow-daemon activation` | container 启动即跑 shadow sync | 自家 plugin manifest 需要显式 onStartup |
+| `patch-agent-loop` | 给 antitalker stop-hook pipeline 接入 agent loop | 上游 agent loop 没有足够 extension point |
+| `history-fill` | 群聊冷启动或重启后主动补最近 20 条消息，避免上下文失忆 | Feishu group history 不应只依赖被动 WS event 累积 |
+
+曾经的 build-time `apply-reset-archive-patches.sh` 现在是 no-op stub。它保留为历史记忆，不代表当前有 active build-time patch。
+
+### Upgrade Invariants
+
+1. Runtime patch 文件和 image 一样重要。改 `scripts/carher-entrypoint.sh` 或 `scripts/carher-patches/` 后，即使 `IMAGE_TAG` 不变，也必须在目标服务器 fast-forward dev 并 force-recreate 容器。
+2. 不要直接 SSH 改服务器代码。正确路径是本地 commit + push，服务器 `git pull --ff-only <remote> dev`，再 compose recreate。
+3. S1 和 S3 的 remote 名称可以不同。当前 S1 使用 `carher`，S3 使用 `origin`；升级脚本不能假设 remote 名固定。
+4. `command-body mention normalization` 必须保持 V2 marker：`CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER`。V1 只能算未升级。
+5. 任一 patch anchor 失效都不要 ship。先读目标上游文件，更新 patch script，再跑本地和服务器上的 patch tests。
+6. 功能 smoke 至少覆盖：`/new @bot`、`@bot /new`、`/new @bot1 @bot2`、`/status @bot`。期望日志是 `detected system command` 和 `system command dispatched (delivered=true)`，不应出现命令消息 `dispatching to agent`。
+7. 不要用直接 Feishu ack 或 `CommandSource:native` 修 `/new`。前者绕过 core reset 语义，后者曾导致 `/status` 双回复。
+
+### Runtime Patch Self-Check
+
+每台容器启动后必须看到 7 个 runtime patch 全中：
+
+```bash
+docker logs carher-<id> 2>&1 \
+  | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|patch-agent-loop|PATCHED"
+```
+
+`command-body` 还要查容器内 marker：
+
+```bash
+docker exec carher-<id> sh -lc '
+  p=/data/.openclaw/extensions/node_modules/@larksuite/openclaw-lark/src/messaging/inbound/dispatch.js
+  grep -n "CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER" "$p"
+  grep -n "carherStripMentionsForCommandBody" "$p"
+'
+```
+
+---
+
+## 6. 日常运维命令速查
 
 ### 升级（Build + Deploy）
 
@@ -216,7 +273,7 @@ cd deploy/carher-N && docker compose up -d
 
 ---
 
-## 6. 迁移路径（分阶段，不 disrupt 生产）
+## 7. 迁移路径（分阶段，不 disrupt 生产）
 
 | Step | 动作 | 影响 | 可回滚性 |
 |---|---|---|---|
@@ -230,7 +287,7 @@ cd deploy/carher-N && docker compose up -d
 
 ---
 
-## 7. PoC 验证记录（carher-101, 2026-04-29）
+## 8. PoC 验证记录（carher-101, 2026-04-29）
 
 - ✅ `migrate-carher-101.sh` 一键接管（stop compose 版 + compose up + wait healthy 31s）
 - ✅ 升级实验：`.env` IMAGE_TAG 切到 `test-build-hash-101` → recreate 8s → healthy 26s
@@ -240,7 +297,7 @@ cd deploy/carher-N && docker compose up -d
 - ✅ `models list` 显示所有 alias 正确解析（gpt-5.5 1M ctx、ds=deepseek-v4-pro）
 - ✅ 飞书 bot 正常响应（`Feishu WSClient connected` + `/or-opus` 切换 + 自然对话）
 
-## 8. 已知限制与后续工作
+## 9. 已知限制与后续工作
 
 ### 已解决
 - **Anthropic auth mirror** — compose.yaml 里显式 mirror `ANTHROPIC_AUTH_TOKEN → ANTHROPIC_API_KEY`（compose 在 bash 里做这件事；compose 需要显式声明，否则 bot 回 `Missing API key for provider "anthropic"`）
@@ -266,7 +323,7 @@ openclaw 2026.4.24+ 引入 **"lazy runtime deps"** 机制：plugin 依赖（`@an
 - **Image 签名**：`cosign sign` + `cosign verify` 供应链安全
 - **SBOM**：`syft` 生成 image 内容清单
 - **carher-102/103/104 volume state**：Mac 本地 tester 的 feishu 插件在某些 volume state 下启动后不触发 `starting Feishu bot`；需要 A/B 对照 compose 定位根因（独立任务）
-- **生产 fleet 迁移**：S1 carher-199 已完成灰度；S1（carher-12/13/198/200）+ S3（carher-14/75）尚未从 compose 切到 compose
+- **server 不含源码目标态**：生产 fleet 已 compose 化；下一步是把 `/Data/CarHer` 里的 runtime patch/control-plane 文件打包成部署 artifact，减少服务器源码 clone 依赖。
 
 ### 设计未覆盖
 - **K8s / Nomad**：容器数 <20 时 docker compose 足够；扩到 50+ 时换 orchestrator
