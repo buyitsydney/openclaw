@@ -50,21 +50,23 @@ deploy/carher-{id}/
 
 ## 第 2 章 · 当前部署真相（2026-05-09)
 
-**S1 + S3 全部 7 个 bot 已 compose 化,当前运行 dev `cf2d750b06` + image `localhost:5001/carher-core:2026.5.8-p10`。**
+**S1 + S3 全部 7 个 bot 已 compose 化。2026-05-09 knownBots/history-fill 修复后，线上已验证到 dev `94baa426a4a` + image `localhost:5001/carher-core:2026.5.9-p13-knownbots`；后续 A2A 修复需继续以 `scripts/carher-verify.sh`、registry dump 和端到端 A2A 测试确认。**
 
-| 位置              | 容器         | 用户         | Bot App ID             | 当前 image / runtime patch       |
-| ----------------- | ------------ | ------------ | ---------------------- | --------------------------------- |
-| S1 (10.68.13.186) | `carher-12`  | test/tester  | `cli_a917fa892ff91bb5` | `2026.5.8-p10` + R-7 V2           |
-| S1 (10.68.13.186) | `carher-13`  | 卜弋天       | `cli_a917e5525178dbb3` | `2026.5.8-p10` + R-7 V2           |
-| S1 (10.68.13.186) | `carher-198` | admin/研究1  | `cli_a96f0bfba3789cd4` | `2026.5.8-p10` + R-7 V2           |
-| S1 (10.68.13.186) | `carher-199` | 研究2        | `cli_a96f043660f99cef` | `2026.5.8-p10` + R-7 V2           |
-| S1 (10.68.13.186) | `carher-200` | 研究3/Nova   | `cli_a96f044b4ef95cc0` | `2026.5.8-p10` + R-7 V2           |
-| S3 (10.68.13.188) | `carher-14`  | 刘国现       | `cli_a91569fab9b81bc6` | `2026.5.8-p10` + R-7 V2           |
-| S3 (10.68.13.188) | `carher-75`  | 林森         | `cli_a94a0b73a878dbcb` | `2026.5.8-p10` + R-7 V2           |
+| 位置              | 容器         | 用户        | Bot App ID             | 当前 image / runtime patch        |
+| ----------------- | ------------ | ----------- | ---------------------- | --------------------------------- |
+| S1 (10.68.13.186) | `carher-12`  | test/tester | `cli_a917fa892ff91bb5` | `2026.5.9-p13-knownbots` + R-7/P8 |
+| S1 (10.68.13.186) | `carher-13`  | 卜弋天      | `cli_a917e5525178dbb3` | `2026.5.9-p13-knownbots` + R-7/P8 |
+| S1 (10.68.13.186) | `carher-198` | admin/研究1 | `cli_a96f0bfba3789cd4` | `2026.5.9-p13-knownbots` + R-7/P8 |
+| S1 (10.68.13.186) | `carher-199` | 研究2       | `cli_a96f043660f99cef` | `2026.5.9-p13-knownbots` + R-7/P8 |
+| S1 (10.68.13.186) | `carher-200` | 研究3/Nova  | `cli_a96f044b4ef95cc0` | `2026.5.9-p13-knownbots` + R-7/P8 |
+| S3 (10.68.13.188) | `carher-14`  | 刘国现      | `cli_a91569fab9b81bc6` | `2026.5.9-p13-knownbots` + R-7/P8 |
+| S3 (10.68.13.188) | `carher-75`  | 林森        | `cli_a94a0b73a878dbcb` | `2026.5.9-p13-knownbots` + R-7/P8 |
 
 **A2A hub 名单**(`a2a-gateway.outbound.enabled=true`):13 / 198 / 199 / 200。其他全 spoke。
 
 **Bot Registry / knownBots 真相**:三组件架构下 `openclaw-lark` 是 channel,`feishu-her/gateway.ts` 不一定启动;动态 knownBots 必须由 `docker/plugins/feishu-her/index.ts` 在 plugin register 阶段启动 `initBotRegistry()`。history-fill 注入 group context 时也必须消费 Redis Bot Registry / `account.knownBots`,把 app sender 渲染成 `弋天的her (cli_a917...)`,不能让模型只看到裸 `cli_xxx`。
+
+**A2A Registry 真相**:每台物理服务器必须在 `docker/server.env` / per-user `.env` 里显式设置 `CARHER_SERVER`(`S1`/`S3`) 和 `CARHER_LAN_IP`。如果 S1/S3 都注册成 `server=local`,`a2a-gateway` 会误判跨机 peer 为同机,优先走 Docker DNS `http://carher-N:18800`,导致“S1 的 her 找不到 S3 的 her”。当前代码已在 `docker/plugins/a2a-gateway/src/registry.ts` 加兜底:当 `server=local` 且 peer 有非 loopback LAN endpoint 时优先走 LAN,但正确运维仍是修 `.env` 后 recreate。
 
 **Mac 本地测试容器**（id=101/102/103/104）:`carher-101`=tester, `carher-102`=tester2, `carher-103`=tester3, `carher-104`=tester4。
 
@@ -281,19 +283,19 @@ scripts/carher-verify.sh --id=N --wait=60
 # exit 0 = 全过 / exit 3 = 有 FAIL / exit 2 = 容器不存在
 ```
 
-| #   | Gate                       | 检查内容                                                                 | 失败含义                    |
-| --- | -------------------------- | ------------------------------------------------------------------------ | --------------------------- |
-| 1   | gateway ready              | `[gateway] ready`                                                        | 容器没起来                  |
-| 2   | plugin 数量                | N ≥ 7                                                                    | A+B 缺插件                  |
-| 3   | feishu websocket           | `WSClient connected` 或 `starting WebSocket connection`                  | token 失效或 appId 错       |
-| 4   | A2A peers                  | `refreshRegistryPeers found N`, N>0                                      | Redis 或 A2A 未启用（警告） |
-| 5   | acpx runtime               | `acpx runtime backend ready` / `embedded acpx` / `ACP ready`             | ACP 未启用（警告）          |
-| 6   | 无 plugin 契约错误         | 无 `plugin validation/schema failed`                                     | **SDK drift — 立刻回滚**    |
-| 7   | openclaw-lark channel-only | runtime manifest 中 `contracts.tools=[]` 且 `skills=[]`                  | 上游 lark tools/skills 吃上下文 |
-| 8   | runtime patch markers      | command-body / history-fill / inbound-meta / session-decay marker 全在   | runtime patch 未落地        |
-| 9   | a2a-gateway ioredis        | `node_modules/ioredis` 存在                                              | npm install 失败            |
-| 10  | feishu-her 依赖            | `@larksuiteoapi` 存在                                                    | feishu 连不上               |
-| 11  | 无严重运行时错误           | 无 `FATAL/uncaughtException/crash`                                       | 立刻回滚                    |
+| #   | Gate                       | 检查内容                                                               | 失败含义                        |
+| --- | -------------------------- | ---------------------------------------------------------------------- | ------------------------------- |
+| 1   | gateway ready              | `[gateway] ready`                                                      | 容器没起来                      |
+| 2   | plugin 数量                | N ≥ 7                                                                  | A+B 缺插件                      |
+| 3   | feishu websocket           | `WSClient connected` 或 `starting WebSocket connection`                | token 失效或 appId 错           |
+| 4   | A2A peers                  | `refreshRegistryPeers found N`, N>0                                    | Redis 或 A2A 未启用（警告）     |
+| 5   | acpx runtime               | `acpx runtime backend ready` / `embedded acpx` / `ACP ready`           | ACP 未启用（警告）              |
+| 6   | 无 plugin 契约错误         | 无 `plugin validation/schema failed`                                   | **SDK drift — 立刻回滚**        |
+| 7   | openclaw-lark channel-only | runtime manifest 中 `contracts.tools=[]` 且 `skills=[]`                | 上游 lark tools/skills 吃上下文 |
+| 8   | runtime patch markers      | command-body / history-fill / inbound-meta / session-decay marker 全在 | runtime patch 未落地            |
+| 9   | a2a-gateway ioredis        | `node_modules/ioredis` 存在                                            | npm install 失败                |
+| 10  | feishu-her 依赖            | `@larksuiteoapi` 存在                                                  | feishu 连不上                   |
+| 11  | 无严重运行时错误           | 无 `FATAL/uncaughtException/crash`                                     | 立刻回滚                        |
 
 ### Monitor 模板
 
@@ -408,10 +410,10 @@ carher 对 openclaw / 闭源上游 npm 包打的本地 patch。**修改前必读
 
 ### 判定规则:runtime vs build-time patch
 
-| 目标文件会被 runtime 覆盖吗? | 路径 | 典型 |
-|---|---|---|
-| 会(npm install 重写 / bind-mount 覆盖) | **entrypoint runtime patch**(`scripts/carher-entrypoint.sh` 每次 container 启动) | stripBotMentions / P8 history-fill |
-| 不会(image COPY read-only layer) | **Dockerfile build-time patch**(`scripts/apply-reset-archive-patches.sh`,`RUN` 走 build layer) | (当前无;P7 已撤) |
+| 目标文件会被 runtime 覆盖吗?           | 路径                                                                                           | 典型                               |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------- | ---------------------------------- |
+| 会(npm install 重写 / bind-mount 覆盖) | **entrypoint runtime patch**(`scripts/carher-entrypoint.sh` 每次 container 启动)               | stripBotMentions / P8 history-fill |
+| 不会(image COPY read-only layer)       | **Dockerfile build-time patch**(`scripts/apply-reset-archive-patches.sh`,`RUN` 走 build layer) | (当前无;P7 已撤)                   |
 
 选错方向 = 下次 npm install / image rebuild 时 patch 失效。
 
@@ -537,9 +539,9 @@ docker exec carher-<id> sh -lc '
 ### 升级 openclaw 新版本 / 改 entrypoint.sh 的 SOP
 
 1. **改 entrypoint.sh 前**:读本章。Diff 之后逐 section 核对。commit message 列出 add / remove 哪些 section header。
-2. **新 image build**:grep build log 找 `OK` / `SKIP`(只 B-* patches 有)。当前 B-1 是 no-op stub,不要期待 P7 marker。
+2. **新 image build**:grep build log 找 `OK` / `SKIP`(只 B-\* patches 有)。当前 B-1 是 no-op stub,不要期待 P7 marker。
 3. **runtime patch 改动**:即使 image tag 不变,也必须服务器 `git pull --ff-only <remote> dev` + `docker compose up -d --force-recreate`,因为 entrypoint/patch dir 是 bind mount。
-4. **新容器启动**:跑上面的自检 grep,7 个 R-* patch 全中才算 ship;R-7 必须是 V2 marker。
+4. **新容器启动**:跑上面的自检 grep,7 个 R-\* patch 全中才算 ship;R-7 必须是 V2 marker。
 5. **命令 smoke**:飞书群里测 `/new @bot`,`@bot /new`,`/new @bot1 @bot2`,`/status @bot`;期望 log 是 `detected system command` + `system command dispatched (delivered=true)`,不能有命令消息 `dispatching to agent`。
 6. SKIP 本身不破坏 image(idempotent + safe degrade),但功能静默缺失,**用户察觉不到**。
 7. 任一 patch 的 anchor 失效 → 不要 ship。先读上游新代码,更新 anchor,重新 build。
@@ -552,18 +554,20 @@ Antitalker 是 carher 的"同 turn 防睡 / 光说不练拦截"。数据驱动,�
 
 ### 关键文件
 
-| 位置 | 作用 |
-|---|---|
-| `/data/.openclaw/workspace/.antitalker/stop-hook-rules.yaml` | **runtime 规则**(可热加载) |
+| 位置                                                          | 作用                                                          |
+| ------------------------------------------------------------- | ------------------------------------------------------------- |
+| `/data/.openclaw/workspace/.antitalker/stop-hook-rules.yaml`  | **runtime 规则**(可热加载)                                    |
 | `/app/docker/plugins/her-antitalker-poc/stop-hook-rules.yaml` | **image 里的 seed 源**(默认 `enabled: false`,2026-05-07 之后) |
-| `docker/plugins/her-antitalker-poc/` | plugin 代码(stop-hook-pipeline.ts + index.ts) |
+| `docker/plugins/her-antitalker-poc/`                          | plugin 代码(stop-hook-pipeline.ts + index.ts)                 |
 
 ### Seed 行为(Entrypoint)
 
 `scripts/carher-entrypoint.sh` 首次启动时:
+
 ```bash
 [ ! -f "/data/.../.antitalker/stop-hook-rules.yaml" ] && cp image:/app/... → volume
 ```
+
 **不覆盖已存在的 yaml**,保护主人手改。
 
 ### Default `enabled: false` 的含义(2026-05-07 起)
@@ -683,8 +687,10 @@ docker exec carher-<id> sh -lc '
 ### S3 升级特别注意
 
 1. **REDIS_URL 必须显式加**(scaffold.sh 基于 template default `redis://carher-redis:6379` docker DNS,S3 解析不到 → EAI_AGAIN 无限 restart)
-2. **/data/.openclaw/plugin-runtime-deps/** 首次 cold start 会 lazy npm install 25+ 依赖,3-5 分钟才 healthy(`start_period: 300s` 保护)
-3. S3 从来不 build image,只 pull via `docker save | ssh docker load` 或 registry
+2. **CARHER_SERVER 必须是 S3,不能是 local**。A2A registry 需要它区分同机 Docker DNS 和跨机 LAN endpoint。
+3. **CARHER_LAN_IP 必须是 10.68.13.188**。否则 S1/S3 跨机 A2A 会发布 loopback/错误地址。
+4. **/data/.openclaw/plugin-runtime-deps/** 首次 cold start 会 lazy npm install 25+ 依赖,3-5 分钟才 healthy(`start_period: 300s` 保护)
+5. S3 从来不 build image,只 pull via `docker save | ssh docker load` 或 registry
 
 ### 清 antitalker 旧 yaml 让新默认生效(可选)
 
@@ -723,9 +729,33 @@ openclaw 的 "lazy runtime deps" 机制：首次启动时 npm install 25+ 个 pl
 
 出现 `TypeError: xxx.yyy is not a function`、`manifest validation failed` → 立刻回滚 + 补 `patches/drift-fix/` patch。
 
-### 踩坑 5：compose `${VAR}` 替换为空
+### 踩坑 5：compose `${VAR}` 替换为空 / A2A `server=local`
 
-compose 的 `${VAR}` 在 parse 时从 `.env` / shell env 读取，不从 `env_file:` 读取。确保 `.env` 里有 `ANTHROPIC_AUTH_TOKEN`、`CARHER_LAN_IP` 等变量。
+compose 的 `${VAR}` 在 parse 时从 `.env` / shell env 读取，不从 `env_file:` 读取。确保 `.env` 里有 `ANTHROPIC_AUTH_TOKEN`、`CARHER_SERVER`、`CARHER_LAN_IP` 等变量。
+
+**A2A 事故复盘(2026-05-09)**:S1/S3 容器都注册成 `server=local`,Redis `a2a:card:*` 里 S3 peer 虽有 `lan=http://10.68.13.188:29746/...`,但旧 discovery 因 `card.server === selfServer` 选择了 Docker DNS `http://carher-75:18800/...`。Docker DNS 不跨主机,所以 S1 的 Her 找不到 S3 的 Her。修复包含两层:
+
+1. `deploy/scaffold.sh` 从 `docker/server.env` 镜像 `CARHER_SERVER` 到每个 `deploy/carher-N/.env`,老 `.env` 缺失时追加。
+2. `docker/plugins/a2a-gateway/src/registry.ts` 把 `local` 视为非路由 server 名;只在 S1/S3 这类 concrete server 完全相等时走 Docker DNS,否则优先走非 loopback LAN endpoint。
+
+现场检查:
+
+```bash
+docker exec carher-200 node -e '
+const Redis=require("ioredis");
+(async()=>{
+  const r=new Redis(process.env.REDIS_URL);
+  const ids=await r.smembers("a2a:index");
+  for (const id of ids.sort()) {
+    const c=JSON.parse(await r.get("a2a:card:"+id));
+    console.log(id, c.server, c.endpoints);
+  }
+  r.disconnect();
+})().catch(e=>{console.error(e);process.exit(1)})
+'
+```
+
+期望:S1 bot 是 `server=S1`,S3 bot 是 `server=S3`;如果仍是 `local`,修 `deploy/carher-N/.env` 后 `docker compose up -d --force-recreate`。
 
 ### 踩坑 6：openclaw-src-fetcher clone 失败
 
@@ -738,6 +768,7 @@ compose 的 `${VAR}` 在 parse 时从 `.env` / shell env 读取，不从 `env_fi
 **根因**:P7 / PR #76666 相关 build-time patch 已在 `d6139a2e61c` revert 成 no-op stub。当前 active patch 面是第 10 章的 7 个 runtime patches,不是 P7 marker。
 
 **检查**:
+
 ```bash
 docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|patch-agent-loop|session-decay|PATCHED"
 docker exec carher-<id> sh -lc '
@@ -780,6 +811,7 @@ scripts/carher-verify.sh --id=<N> --wait=60
 ### 踩坑 10:S3 bot scaffold 后 EAI_AGAIN 无限 restart(缺 REDIS_URL)
 
 **症状**:S3 升级 bot 后持续 restart,log 狂刷:
+
 ```
 [plugins] [discussion-state] Redis error: Error: getaddrinfo EAI_AGAIN carher-redis
 ```
@@ -787,9 +819,11 @@ scripts/carher-verify.sh --id=<N> --wait=60
 **根因**:S3 没有 `carher-redis` 容器(redis 只在 S1 跑)。scaffold template 默认 `REDIS_URL=${REDIS_URL:-redis://carher-redis:6379}` 用的是 docker internal DNS,S3 解析不到。
 
 **修法**:S3 每个 bot 的 `deploy/carher-<id>/.env` 必须显式加:
+
 ```
 REDIS_URL=redis://10.68.13.186:6379
 ```
+
 scaffold `.env` 只在不存在时创建,已存在时保护。所以升级 S3 老 bot 时,第一次 scaffold 后手工加这行就锁死了。
 
 ### 踩坑 11:antitalker `enable=false` 升级后不生效(volume 里老 yaml 残留)
@@ -799,6 +833,7 @@ scaffold `.env` 只在不存在时创建,已存在时保护。所以升级 S3 �
 **根因**:entrypoint seed 逻辑是 `[ ! -f "$DST" ] && cp`,**不覆盖**。老 volume 里的 `stop-hook-rules.yaml` 是 `enabled: true` 时期 seed 的,保留着。
 
 **修法**:cold start 前主动 mv 老文件让 entrypoint re-seed:
+
 ```bash
 docker exec carher-<id> sh -c "
   cd /data/.openclaw/workspace/.antitalker 2>/dev/null &&
@@ -859,12 +894,12 @@ docker inspect carher-N --format '{{.Image}}' \
 
 ### 关键文档
 
-| 文档                                           | 内容               |
-| ---------------------------------------------- | ------------------ |
-| `docs/her/her-build-deploy-architecture.md`    | Build/Deploy 架构  |
-| `docs/her/her-image-architecture.md`           | A+B 镜像架构       |
-| `docs/her/her-feishu-bot-architecture.md`      | 飞书 bot 架构      |
-| `deploy/README.md`                             | compose 部署指南   |
-| `docker/servers.txt`                           | 服务器凭证（敏感） |
-| `scripts/carher-verify.sh`                     | 11 gate 自检       |
-| `docs/her/acp-claude-code-setup.md`            | ACP 开启指南       |
+| 文档                                        | 内容               |
+| ------------------------------------------- | ------------------ |
+| `docs/her/her-build-deploy-architecture.md` | Build/Deploy 架构  |
+| `docs/her/her-image-architecture.md`        | A+B 镜像架构       |
+| `docs/her/her-feishu-bot-architecture.md`   | 飞书 bot 架构      |
+| `deploy/README.md`                          | compose 部署指南   |
+| `docker/servers.txt`                        | 服务器凭证（敏感） |
+| `scripts/carher-verify.sh`                  | 11 gate 自检       |
+| `docs/her/acp-claude-code-setup.md`         | ACP 开启指南       |

@@ -232,9 +232,12 @@ GROQ_API_KEY=...
 CARHER_GATEWAY_TOKEN=...
 CARHER_AUTH_HOST=...              # per-server OAuth hostname
 CARHER_SERVER=S1|S3|local
+CARHER_LAN_IP=10.68.13.186        # A2A registry LAN endpoint
 ```
 
 `compose` 自动 source 这个文件，所有 docker 容器都收到这些 env。
+生产服务器必须使用真实 `CARHER_SERVER`（例如 S1/S3），不能都留成 `local`。
+A2A peer discovery 依赖它区分同机 Docker DNS 和跨机 LAN endpoint。
 
 ### 4.3 Per-user docker secrets
 

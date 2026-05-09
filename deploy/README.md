@@ -31,6 +31,7 @@ deploy/
 ## Registry-based image distribution (Phase 1 — replaces docker save|load)
 
 ### Local PoC registry
+
 ```bash
 # One-time: start local registry
 docker run -d --name carher-registry --restart unless-stopped \
@@ -46,6 +47,7 @@ docker compose up -d
 ```
 
 ### Production registry (ghcr.io example)
+
 ```bash
 # One-time: docker login to ghcr.io (needs write:packages PAT)
 echo $GH_PAT | docker login ghcr.io -u YOUR_USER --password-stdin
@@ -61,12 +63,14 @@ docker pull ghcr.io/YOUR_USER/carher-core:2026.4.29
 ## Usage
 
 ### Start (first time or after tag change)
+
 ```bash
 cd deploy/carher-101
 docker compose up -d
 ```
 
 ### Upgrade to new image
+
 ```bash
 # Edit .env: IMAGE_TAG=carher-core:2026.4.28-new
 docker compose up -d         # compose detects changed image, recreates container
@@ -74,12 +78,14 @@ docker compose up -d         # compose detects changed image, recreates containe
 ```
 
 ### Rollback
+
 ```bash
 # Edit .env: IMAGE_TAG back to old tag
 docker compose up -d
 ```
 
 ### Logs / stop
+
 ```bash
 docker compose logs -f carher
 docker compose down           # keeps volumes
@@ -89,10 +95,17 @@ docker compose down           # keeps volumes
 
 Compose resolves `${VAR}` at **parse time** from shell env / `--env-file` / project `.env`,
 **NOT** from `env_file:` directives. `scaffold.sh` automatically mirrors critical vars
-(`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `CARHER_LAN_IP`) from `docker/server.env`
+(`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `CARHER_SERVER`, `CARHER_LAN_IP`) from `docker/server.env`
 into each user's `.env` so they are available at parse time.
 
+For production, `CARHER_SERVER` must be the real host identity (`S1`, `S2`,
+`S3`, etc.), not `local`. A2A uses this field to decide whether a peer should be
+called through Docker DNS (`http://carher-N:18800`) or through its LAN endpoint
+(`http://<CARHER_LAN_IP>:<CARHER_A2A_PORT>`). If every host registers as
+`local`, S1 can misroute S3 peers to unreachable Docker names.
+
 ### What legacy script still does that compose doesn't (yet)
+
 - Voice token generation (first-boot)
 - Device pairing scope repair (first-boot)
 - Feishu WSClient health probe (can be done via `docker compose wait` + custom check)
@@ -101,5 +114,6 @@ For the PoC these are deferred — first-boot state already exists in volumes
 for carher-101 tester. New users would need a separate init step.
 
 ### Verified deployments
+
 - carher-101 (Mac local tester) — PoC validated 2026-04-29
 - carher-199 (S1 production grayscale) — validated 2026-04-30 (OAuth fix + compose ${VAR} fix)

@@ -57,10 +57,13 @@ for ID in "${IDS[@]}"; do
   SERVER_ENV="$ROOT/docker/server.env"
   ANTHROPIC_AUTH_TOKEN_VAL=""
   ANTHROPIC_BASE_URL_VAL=""
+  CARHER_SERVER_VAL="local"
   CARHER_LAN_IP_VAL="127.0.0.1"
   if [ -f "$SERVER_ENV" ]; then
     ANTHROPIC_AUTH_TOKEN_VAL=$(awk -F= "/^ANTHROPIC_AUTH_TOKEN=/{print substr(\$0, index(\$0, \"=\") + 1)}" "$SERVER_ENV")
     ANTHROPIC_BASE_URL_VAL=$(awk -F= "/^ANTHROPIC_BASE_URL=/{print substr(\$0, index(\$0, \"=\") + 1)}" "$SERVER_ENV")
+    server_name=$(awk -F= "/^CARHER_SERVER=/{print substr(\$0, index(\$0, \"=\") + 1)}" "$SERVER_ENV")
+    [ -n "$server_name" ] && CARHER_SERVER_VAL="$server_name"
     lan_ip=$(awk -F= "/^CARHER_LAN_IP=/{print substr(\$0, index(\$0, \"=\") + 1)}" "$SERVER_ENV")
     [ -n "$lan_ip" ] && CARHER_LAN_IP_VAL="$lan_ip"
   fi
@@ -78,11 +81,29 @@ CARHER_GATEWAY_TOKEN=carher-container-token
 # These are needed because compose env_file directives are NOT consulted
 # during \${VAR} expansion — only shell env / --env-file / this project .env.
 # Without these, ANTHROPIC_API_KEY ends up blank and CARHER_LAN_IP stays
-# loopback, breaking anthropic calls and cross-container A2A respectively.
+# loopback, and CARHER_SERVER stays local, breaking cross-server A2A routing.
 ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN_VAL}
 ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL_VAL}
+CARHER_SERVER=${CARHER_SERVER_VAL}
 CARHER_LAN_IP=${CARHER_LAN_IP_VAL}
 EOF
+  else
+    # Preserve user-managed IMAGE_TAG/secrets, but add newly required compose
+    # substitution vars when older generated .env files are missing them.
+    if ! grep -q '^CARHER_SERVER=' "$USER_DIR/.env"; then
+      {
+        echo
+        echo "# Compose \${VAR} substitution source for A2A cross-server routing."
+        echo "CARHER_SERVER=${CARHER_SERVER_VAL}"
+      } >> "$USER_DIR/.env"
+    fi
+    if ! grep -q '^CARHER_LAN_IP=' "$USER_DIR/.env"; then
+      {
+        echo
+        echo "# Compose \${VAR} substitution source for A2A LAN endpoint advertising."
+        echo "CARHER_LAN_IP=${CARHER_LAN_IP_VAL}"
+      } >> "$USER_DIR/.env"
+    fi
   fi
 
   # Write secrets.env only if absent

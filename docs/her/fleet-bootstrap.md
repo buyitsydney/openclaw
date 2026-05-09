@@ -55,6 +55,7 @@ git log --oneline -1
 #   OPENROUTER_API_KEY=sk-or-v1-...
 #   CARHER_AUTH_HOST=s1-u198-auth.carher.net   # S1 上 admin 用 u198 路由
 #   CARHER_SERVER=S1
+#   CARHER_LAN_IP=10.68.13.186
 # 部署: scp 从其他服务器 (或本地 Mac 的 ops 目录) 过来
 
 # docker/users.csv — 用户注册表 (含 Feishu appId/secret)
@@ -64,6 +65,9 @@ git log --oneline -1
 # docker/servers.txt — 三台服务器 IP/密码
 # 部署: scp 或手填
 ```
+
+`CARHER_SERVER` 是 A2A 路由的物理主机名，S1/S3 不能都保持 `local`；同机 peer
+走 Docker DNS，跨机 peer 走 `CARHER_LAN_IP:CARHER_A2A_PORT`。
 
 **任何时候改 `users.csv` / `server.env` / `servers.txt`，必须同步到所有三台服务器**（`md5sum` 验证一致）。
 

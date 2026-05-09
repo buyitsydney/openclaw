@@ -427,6 +427,14 @@ Bot 注册时写入两个地址，调用方按优先级选择：
 
 调用方自己知道自己在哪台服务器（通过环境变量 `CARHER_SERVER`）。
 
+生产环境必须在每台服务器的 `docker/server.env` 中设置真实服务器名：
+S1 写 `CARHER_SERVER=S1`，S3 写 `CARHER_SERVER=S3`。不能让生产容器都使用
+默认值 `local`，否则 discovery 会把跨主机 peer 当成同机 peer，优先选择
+`http://carher-N:18800/...` 这种 Docker DNS 地址，S1 就找不到 S3 的 Her。
+当前插件还有一层运行时兜底：当 `server=local` 且 peer 有非 loopback 的
+`lan` endpoint 时，优先走 LAN，以避免旧 compose/env 遗留值再次造成跨机
+错路由；但正确配置仍然是每台服务器显式声明 `CARHER_SERVER`。
+
 ### 3.4 安全设计
 
 #### 认证：共享 Bearer Token
@@ -488,12 +496,12 @@ a2a 插件在收到请求时校验调用方 ID。
 
 ### Phase 1：基础设施（1-2 天）
 
-| 步骤 | 内容                                                         | 改动                         |
-| ---- | ------------------------------------------------------------ | ---------------------------- |
-| 1    | `compose` 增加 a2a 端口映射                            | `compose`              |
-| 2    | `compose` 注入 `A2A_TOKEN` 和 `CARHER_SERVER` 环境变量 | `compose`              |
-| 3    | a2a 插件烧入 Docker 镜像                                     | `Dockerfile`                 |
-| 4    | `shared-config.json5` 加 a2a 默认配置                        | `docker/shared-config.json5` |
+| 步骤 | 内容                                                   | 改动                         |
+| ---- | ------------------------------------------------------ | ---------------------------- |
+| 1    | `compose` 增加 a2a 端口映射                            | `compose`                    |
+| 2    | `compose` 注入 `A2A_TOKEN` 和 `CARHER_SERVER` 环境变量 | `compose`                    |
+| 3    | a2a 插件烧入 Docker 镜像                               | `Dockerfile`                 |
+| 4    | `shared-config.json5` 加 a2a 默认配置                  | `docker/shared-config.json5` |
 
 ### Phase 2：Registry 功能（2-3 天）
 

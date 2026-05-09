@@ -6,7 +6,10 @@
  *   a2a:index          = SET of registered botIds
  */
 
-import type Redis from "ioredis";
+import { createRequire } from "node:module";
+import type { Redis } from "ioredis";
+
+const require = createRequire(import.meta.url);
 
 const KEY_PREFIX = "a2a:card:";
 const INDEX_KEY = "a2a:index";
@@ -31,6 +34,45 @@ export interface PeerFromRegistry {
   name: string;
   agentCardUrl: string;
   card: A2AAgentCard;
+}
+
+const NON_ROUTING_SERVER_NAMES = new Set(["", "local"]);
+
+function isConcreteServerName(server: string | undefined): boolean {
+  return !NON_ROUTING_SERVER_NAMES.has((server || "").trim().toLowerCase());
+}
+
+function hasUsableLanEndpoint(endpoint: string | undefined): endpoint is string {
+  if (!endpoint) {
+    return false;
+  }
+  try {
+    const host = new URL(endpoint).hostname.toLowerCase();
+    return host !== "localhost" && host !== "0.0.0.0" && host !== "::1" && !host.startsWith("127.");
+  } catch {
+    return false;
+  }
+}
+
+function selectPeerEndpoint(card: A2AAgentCard, selfServer: string): string {
+  // Same physical server can use Docker DNS. Cross-server traffic must use LAN
+  // because Docker service names do not resolve across hosts.
+  const sameConcreteServer =
+    isConcreteServerName(card.server) &&
+    isConcreteServerName(selfServer) &&
+    card.server === selfServer;
+  if (sameConcreteServer) {
+    return card.endpoints.docker;
+  }
+
+  // Older/generated compose files defaulted CARHER_SERVER to "local" on every
+  // host. Treat that as non-routing metadata and prefer a real LAN endpoint so
+  // S1 can still reach S3 instead of trying http://carher-75:18800.
+  if (hasUsableLanEndpoint(card.endpoints.lan)) {
+    return card.endpoints.lan;
+  }
+
+  return card.endpoints.docker;
 }
 
 // ---------------------------------------------------------------------------
@@ -85,11 +127,7 @@ export async function discoverPeers(
     } // TTL expired, stale index entry
     try {
       const card = JSON.parse(raw) as A2AAgentCard;
-      // Same server → Docker DNS; cross server → LAN IP
-      const sameServer = card.server === selfServer;
-      const endpoint = sameServer
-        ? card.endpoints.docker
-        : card.endpoints.lan || card.endpoints.docker;
+      const endpoint = selectPeerEndpoint(card, selfServer);
       peers.push({
         name: card.name || card.id,
         agentCardUrl: endpoint.replace("/a2a/jsonrpc", "/.well-known/agent-card.json"),

@@ -12,6 +12,7 @@ metadata:
 ## 谁能用
 
 只有 **admin 容器**（通常 id=198, 身份=研究1，带 `CARHER_ADMIN=1`）有工具链：
+
 - `/usr/bin/sshpass` (apt 装好)
 - `/data/.openclaw/servers.txt` (三台服务器凭证)
 - env `CARHER_ADMIN=1`
@@ -20,13 +21,15 @@ metadata:
 
 ## Fleet 拓扑（2026-05-09 现状）
 
-| 服务器 | IP | 跑的容器 | 架构 |
-|---|---|---|---|
-| S1 | 10.68.13.186 | carher-12 (test), carher-13 (卜弋天), **carher-198 (admin/研究1)**, carher-199 (研究2), carher-200 (研究3) | compose |
-| S2 | 10.68.13.187 | 仅 carher-fallback (nginx) | — |
-| S3 | 10.68.13.188 | carher-14 (刘国现), carher-75 (林森), carher-fallback, cloudflared | compose |
+| 服务器 | IP           | 跑的容器                                                                                                   | 架构    |
+| ------ | ------------ | ---------------------------------------------------------------------------------------------------------- | ------- |
+| S1     | 10.68.13.186 | carher-12 (test), carher-13 (卜弋天), **carher-198 (admin/研究1)**, carher-199 (研究2), carher-200 (研究3) | compose |
+| S2     | 10.68.13.187 | 仅 carher-fallback (nginx)                                                                                 | —       |
+| S3     | 10.68.13.188 | carher-14 (刘国现), carher-75 (林森), carher-fallback, cloudflared                                         | compose |
 
-当前 fleet 运行 dev `cf2d750b06` + image `localhost:5001/carher-core:2026.5.8-p10`;7 个 bot 都应有 R-7 `CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER`。升级时不要假设 git remote 名一致:S1 `/Data/CarHer` 通常用 `carher`,S3 通常用 `origin`。
+当前 fleet 2026-05-09 已验证到 dev `94baa426a4a` + image `localhost:5001/carher-core:2026.5.9-p13-knownbots`;7 个 bot 都应有 R-7 `CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER`、P8 history-fill、Bot Registry/knownBots。升级时不要假设 git remote 名一致:S1 `/Data/CarHer` 通常用 `carher`,S3 通常用 `origin`。
+
+A2A 跨 S1/S3 依赖 `CARHER_SERVER`：S1 必须注册 `S1`,S3 必须注册 `S3`,不能都保持 `local`。`server=local` 会让跨主机 peer 被误判成同机 Docker DNS (`http://carher-N:18800`),表现为 S1 her 找不到 S3 her。检查 Redis `a2a:card:*` 时同时看 `server` 和 `endpoints.lan`。
 
 ## SSH helper（每 session 开头设一次）
 
@@ -61,11 +64,13 @@ s3 "cd /Data/CarHer && git pull --ff-only origin dev"
 如果 remote 名不同,先 `git remote -v`。不要用 `git reset --hard` 当常规升级手段;本地 commit + push 后,服务器只做 fast-forward pull。
 
 ### 查某个 her 日志
+
 ```bash
 s1 "cd /Data/CarHer/deploy/carher-13 && docker compose logs --tail 100 carher"
 ```
 
 ### 停某个 her
+
 ```bash
 s1 "cd /Data/CarHer/deploy/carher-13 && docker compose down"
 ```
@@ -73,11 +78,13 @@ s1 "cd /Data/CarHer/deploy/carher-13 && docker compose down"
 ### 重启某个 her
 
 **轻量 restart**（process hang，config 不变）：
+
 ```bash
 s1 "docker restart carher-13"
 ```
 
 **完整 recreate**（config/image 变了）：
+
 ```bash
 s1 "cd /Data/CarHer/deploy/carher-13 && docker compose up -d --force-recreate"
 ```
@@ -92,6 +99,7 @@ s1 "cd /Data/CarHer/deploy/carher-13 && sed -i 's|IMAGE_TAG=.*|IMAGE_TAG=carher-
 ```
 
 ### 新建 her（scaffold）
+
 ```bash
 # 本地生成 compose 目录
 ./deploy/scaffold.sh N
@@ -101,6 +109,7 @@ s1 "cd /Data/CarHer/deploy/carher-N && docker compose up -d"
 ```
 
 ## 查 image 清单
+
 ```bash
 s1 "docker images carher-core --format '{{.Repository}}:{{.Tag}} ({{.CreatedSince}})'"
 ```
