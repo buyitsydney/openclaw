@@ -756,7 +756,25 @@ docker exec carher-<id> sh -lc '
 
 **检查 / 修法**:容器内必须是 `CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER`;如果是旧 `CARHER_COMMAND_BODY_NORMALIZE_PATCH_MARKER` 或 `NONE`,服务器拉最新 dev 后 `docker compose up -d --force-recreate`。
 
-### 踩坑 9:S3 bot scaffold 后 EAI_AGAIN 无限 restart(缺 REDIS_URL)
+### 踩坑 9:`openclaw-lark` contracts.tools 警告不是升级失败
+
+**症状**:启动日志里刷出多行:
+
+```text
+plugin must declare contracts.tools before registering agent tools (plugin=openclaw-lark)
+```
+
+**原因**:R-2 会把 `openclaw-lark` manifest 改成 channel-only (`contracts.tools=[]`,`skills=[]`),但上游 runtime 仍会尝试注册它自带的 tool。OpenClaw 会打警告,但 channel-only gate 会阻止这些 tools 进入可用面。
+
+**判断**:只看目录或这条 warning 会误判。正确判断是跑:
+
+```bash
+scripts/carher-verify.sh --id=<N> --wait=60
+```
+
+只要 Gate 7 `openclaw-lark channel-only` 和 Gate 8 `runtime patch markers` 全绿,这条 warning 是已知兼容噪音,不是回滚条件。
+
+### 踩坑 10:S3 bot scaffold 后 EAI_AGAIN 无限 restart(缺 REDIS_URL)
 
 **症状**:S3 升级 bot 后持续 restart,log 狂刷:
 ```
@@ -771,7 +789,7 @@ REDIS_URL=redis://10.68.13.186:6379
 ```
 scaffold `.env` 只在不存在时创建,已存在时保护。所以升级 S3 老 bot 时,第一次 scaffold 后手工加这行就锁死了。
 
-### 踩坑 10:antitalker `enable=false` 升级后不生效(volume 里老 yaml 残留)
+### 踩坑 11:antitalker `enable=false` 升级后不生效(volume 里老 yaml 残留)
 
 **症状**:升 p7+ image(里面 seed 源默认 `enabled: false`)的 bot,实际 runtime 仍然 `enabled=true` 跑着防睡。
 
