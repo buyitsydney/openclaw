@@ -465,7 +465,7 @@ carher 对 openclaw / 闭源上游 npm 包打的本地 patch。**修改前必读
 - **Target**:`$LARK_PKG/src/messaging/inbound/dispatch.js`(加 require helper 的一行注入)+ `$LARK_PKG/src/messaging/inbound/carher-history-fill.js`(helper,cp from bind-mount)
 - **Upstream**:`@larksuite/openclaw-lark`(闭源)
 - **Bug**:三组件迁移后 group 历史只走被动 WS event 累积;bot 重启 / 群冷场 > 20 秒 → 被 @ 时 0 条上下文,"失忆"
-- **Fix**:被 @ 时(非 `/` 系统命令)调 `/im/v1/messages` 拉最近 20 条填 Map;补出的 entry 必须走 openclaw-lark content converter,并把 sender 渲染成 `姓名 (open_id)` label;interactive/card 必须提前展开,如果正文出现 `请升级至最新版本客户端，以查看内容` 这类 Feishu 降级占位,必须按 `message_id` 再拉 canonical message 重新解析,仍失败只能注入媒体占位,不能把坏文案交给模型
+- **Fix**:被 @ 时(非 `/` 系统命令)调 `/im/v1/messages` 拉最近 20 条填 Map;补出的 entry 必须走 openclaw-lark content converter,并把 sender 渲染成 `姓名 (open_id)` label;interactive/card 不能信任 list item,必须按 `message_id` 先拉 canonical message(等价 `lark-cli im +messages-mget` 的 `<card>` 视图)再解析;仍失败只能注入媒体占位,不能把 `请升级至最新版本客户端，以查看内容` 这类坏文案交给模型
 - **事故记忆(2026-05-09)**:旧 helper 只写 `sender=open_id` 且把 interactive/card 保留为 raw JSON,导致 `carher-75` 在群 context 中错认“超过限额非常惨”这句话是谁说的。随后又确认普通 interactive card 通过 `lark-cli im +chat-messages-list` / `+messages-mget` 能看到完整 `<card>` 内容,但 runtime context 注入可能只拿到 `请升级至最新版本客户端，以查看内容`。以后改 P8 必须保留 sender label + converter + placeholder 拦截 + canonical refetch 回归测试。
 - **Source**:`scripts/carher-patches/`(bind-mount 成容器 `/carher-patches:ro`)
 - **Kill switch**:

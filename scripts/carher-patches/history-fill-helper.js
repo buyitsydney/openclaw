@@ -355,10 +355,33 @@ async function extractMessageText(m, dc, testHooks) {
   const body = m && m.body;
   const raw = body && typeof body.content === "string" ? body.content : "";
   const messageType = m && (m.msg_type || m.message_type || m.content_type);
+
+  // Mirror feishu-her's chat-history canonicalization step: timeline/list
+  // results can contain degraded interactive bodies, while message.get returns
+  // the stable card payload that lark-cli +messages-mget renders as <card>.
+  if (messageId && messageType === "interactive") {
+    const canonical = await fetchCanonicalMessageItem({
+      messageId,
+      fetchImpl: testHooks && testHooks.fetchImpl,
+      token: testHooks && testHooks.token,
+      log: testHooks && testHooks.log,
+      testFetchCanonicalMessage: testHooks && testHooks.fetchCanonicalMessage,
+    });
+    if (canonical) {
+      const canonicalText = await extractMessageTextFromItem(canonical, dc, testHooks);
+      if (canonicalText && !isWeakInteractiveText(canonicalText, messageType)) {
+        return canonicalText;
+      }
+      if (canonicalText && !hasUpgradeHint(canonicalText)) {
+        return canonicalText;
+      }
+    }
+  }
+
   const localText = await extractMessageTextFromItem(m, dc, testHooks);
   const shouldTryCanonical =
     messageId &&
-    messageType === "interactive" &&
+    messageType !== "interactive" &&
     (hasUpgradeHint(raw) || !localText || isWeakInteractiveText(localText, messageType));
   if (!shouldTryCanonical && localText && !isWeakInteractiveText(localText, messageType)) {
     return localText;

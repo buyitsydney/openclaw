@@ -345,6 +345,90 @@ test("FIX: fillChatHistoryIfSparse refetches canonical interactive content when 
   assert.doesNotMatch(entries[0].body, /请升级至最新版本客户端/);
 });
 
+test("FIX: fillChatHistoryIfSparse canonicalizes every interactive card before accepting list text", async () => {
+  const { fillChatHistoryIfSparse } = await import(HELPER_JS);
+
+  const chatHistories = new Map();
+  const dc = makeDc();
+  const listDegradedContent = JSON.stringify({
+    elements: [[{ tag: "text", text: "全部默认值出齐。看 fallback 的 compact 模式逻辑：" }]],
+  });
+  const canonicalContent = JSON.stringify({
+    json_card: JSON.stringify({
+      header: { title: { tag: "plain_text", content: "完整答案有了" } },
+      body: {
+        elements: [
+          {
+            tag: "markdown",
+            content:
+              "OpenClaw config 里的 skill 限额机制非常具体。\n\n| 限额 | 默认值 |\n| --- | --- |\n| maxSkillsPromptChars | 18000 |",
+          },
+        ],
+      },
+    }),
+    card_schema: 2,
+  });
+  const fakeFetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      code: 0,
+      data: {
+        items: [
+          {
+            message_id: "om_card_plausible_but_degraded",
+            chat_id: "oc_test_group",
+            msg_type: "interactive",
+            create_time: "1000",
+            sender: { id: "ou_owner", sender_type: "user" },
+            body: { content: listDegradedContent },
+          },
+        ],
+        has_more: false,
+      },
+    }),
+  });
+  let canonicalFetches = 0;
+
+  await fillChatHistoryIfSparse({
+    dc,
+    params: { chatHistories, historyLimit: 50 },
+    _testFetch: fakeFetch,
+    _testTokenProvider: async () => "t",
+    _testNameMap: new Map([["ou_owner", "卜弋天"]]),
+    _testFetchCanonicalMessage: async (messageId) => {
+      canonicalFetches++;
+      assert.equal(messageId, "om_card_plausible_but_degraded");
+      return {
+        message_id: messageId,
+        chat_id: "oc_test_group",
+        msg_type: "interactive",
+        create_time: "1000",
+        sender: { id: "ou_owner", sender_type: "user" },
+        body: { content: canonicalContent },
+      };
+    },
+    _testConvertMessageContent: async (raw, type) => {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed.json_card === "string") {
+        const card = JSON.parse(parsed.json_card);
+        return {
+          content: `<card title="${card.header.title.content}">\n${card.body.elements[0].content}\n</card>`,
+          resources: [],
+        };
+      }
+      return { content: `${type}: ${parsed.elements?.[0]?.[0]?.text ?? ""}`, resources: [] };
+    },
+  });
+
+  const entries = chatHistories.get(threadScopedKey(dc.ctx.chatId)) ?? [];
+  assert.equal(canonicalFetches, 1);
+  assert.equal(entries.length, 1);
+  assert.match(entries[0].body, /<card title="完整答案有了">/);
+  assert.match(entries[0].body, /maxSkillsPromptChars/);
+  assert.doesNotMatch(entries[0].body, /全部默认值出齐/);
+});
+
 test("FIX: fillChatHistoryIfSparse never injects upgrade placeholders for image-only cards", async () => {
   const { fillChatHistoryIfSparse } = await import(HELPER_JS);
 
