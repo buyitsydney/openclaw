@@ -192,6 +192,7 @@ docker inspect <container> --format '{{.Image}}' \
 | `history-fill` + `inbound-history metadata` | 群聊冷启动或重启后主动补最近 20 条消息，避免上下文失忆 | Feishu group history 不应只依赖被动 WS event 累积；补历史的 primary path 必须走 `lark-cli im +chat-messages-list --chat-id <oc_...> --page-size 20 --sort desc --format json` 的默认 user-token 视图，和 Her 自己做 1:1 审计时看到的“真实群消息”保持一致；entry 必须携带 `messageId` / `messageType` / `replyToId` 并在模型的 `InboundHistory` JSON 里渲染为 `message_id` / `message_type` / `reply_to_id`；app sender 必须通过 Redis Bot Registry / `knownBots` 渲染成 `林森的her (cli_...)`，不能退化成裸 `cli_...`；只有 lark-cli 不可用时才 fallback 到裸 `/im/v1/messages` + `card_msg_content_type=raw_card_content`，并继续保证 sender 可读、card 不退化、坏占位不进模型 |
 | `reply-card default` | 普通群回复默认发送 interactive card，和旧 `feishu-her` 的美观回复面一致 | `@larksuite/openclaw-lark` static group mode 只对表格/代码块走 card，短文本会退成 `msg_type=post`；每次 runtime npm install 都会恢复上游行为 |
 | `footer-status` | CardKit footer 恢复旧 Her 的紧凑状态条 | fleet config 开启上游 streaming/footer 后，默认会输出 status/tokens/cache/context 等多行冗余字段。R-10 从 session store 读 `compactionCount`，从 Redis `group:mode:{chatId}:{appId}` 读群模式，并把 footer 压成一行：`耗时 18.4s · opus4.7 · 👥群@ · 216k/1.0m (22%) · 🧹1`；无压缩时不显示扫帚，tokens/cache/status 文案不进 footer |
+| `outbound-card default` | cron / proactive / direct outbound 文本也默认发送 interactive card | cron `--announce` 不经过 realtime reply dispatcher，会走 OpenClaw core `deliverOutboundPayloads` → openclaw-lark `feishuOutbound.sendText` → 上游 `sendTextLark`，普通文本固定 `msg_type=post`。R-11 在 outbound adapter text-only direct path 包一层 CardKit v2 markdown card；显式 card JSON 和空文本仍走上游，避免二次包裹 |
 | `session-decay` | 从 `.reset.<ISO>.Z` session archive 文件名解析时间，恢复 memory temporal decay | OpenClaw 2026.5.3 的 session path fallback 会 stat 错路径，导致 session archive 噪音不降权 |
 
 曾经的 build-time `apply-reset-archive-patches.sh` 现在是 no-op stub。它保留为历史记忆，不代表当前有 active build-time patch。
@@ -208,15 +209,16 @@ docker inspect <container> --format '{{.Image}}' \
 8. 不要用直接 Feishu ack 或 `CommandSource:native` 修 `/new`。前者绕过 core reset 语义，后者曾导致 `/status` 双回复。
 9. 启动日志里可能出现 `plugin must declare contracts.tools before registering agent tools (plugin=openclaw-lark)`。这是 channel-only manifest 把 tools/skills 剥掉后，上游 runtime 仍尝试注册 tools 产生的兼容警告；只要 `scripts/carher-verify.sh` Gate 7/8 通过，不要把它当成升级失败。
 10. 普通 Her 群回复也必须检查 `msg_type=interactive`。如果短文本回复重新变成 `post`，优先检查 `reply-card default` patch 是否落地，不要把丑文本当成正常退化。
-11. 普通长回复 / 工具回复也必须检查“一个 turn 尽量一个 CardKit 卡片”。fleet config 应开启 `channels.feishu.streaming=true`、`replyMode.default/group/direct="streaming"`、`footer.*=true`；如果又出现连续十几个 `post`，先查 config 是否被 `$include` 覆盖、再查 `footer-status` 和 openclaw-lark streaming logs。
+11. 普通长回复 / 工具回复也必须检查“一个 turn 尽量一个 CardKit 卡片”。fleet config 应开启 `channels.feishu.streaming=true`、`replyMode.default/group/direct="streaming"`、`footer.status=false`、`footer.elapsed/model/context=true`、`footer.tokens/cache=false`；如果又出现连续十几个 `post`，先查 config 是否被 `$include` 覆盖、再查 `footer-status` 和 openclaw-lark streaming logs。
+12. cron / announce / proactive outbound 要单独测。它们不经过 realtime reply dispatcher；如果 one-shot cron 回复是 `post`，优先查 `outbound-card default` patch，而不是 R-9/R-10。
 
 ### Runtime Patch Self-Check
 
-每台容器启动后必须看到 10 个 runtime patch 全中：
+每台容器启动后必须看到 11 个 runtime patch 全中：
 
 ```bash
 docker logs carher-<id> 2>&1 \
-  | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|reply-card default|footer-status|patch-agent-loop|session-decay|PATCHED"
+  | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|reply-card default|outbound-card default|footer-status|patch-agent-loop|session-decay|PATCHED"
 ```
 
 `command-body` 还要查容器内 marker：

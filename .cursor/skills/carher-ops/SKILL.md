@@ -50,7 +50,7 @@ deploy/carher-{id}/
 
 ## 第 2 章 · 当前部署真相（2026-05-09)
 
-**S1 + S3 全部 7 个 bot 已 compose 化。2026-05-09 已验证到 dev `77b5571f36` + image `localhost:5001/carher-core:2026.5.9-p14-a2a-route`；knownBots/history-fill、A2A registry S1/S3 路由、跨主机 agent-card、S1↔S3 A2A healthcheck、ordinary interactive-card replies、streaming card coalescing、CardKit footer(status/model/tokens/cache/context/compaction/group-mode) 均已通过。**
+**S1 + S3 全部 7 个 bot 已 compose 化。2026-05-10 已验证到 dev `c6ef7aae6b` + image `localhost:5001/carher-core:2026.5.9-p14-a2a-route`；knownBots/history-fill、A2A registry S1/S3 路由、跨主机 agent-card、S1↔S3 A2A healthcheck、ordinary interactive-card replies、streaming card coalescing、compact CardKit footer、cron/direct outbound card replies 均已通过。**
 
 | 位置              | 容器         | 用户        | Bot App ID             | 当前 image / runtime patch |
 | ----------------- | ------------ | ----------- | ---------------------- | -------------------------- |
@@ -292,7 +292,7 @@ scripts/carher-verify.sh --id=N --wait=60
 | 5   | acpx runtime               | `acpx runtime backend ready` / `embedded acpx` / `ACP ready`           | ACP 未启用（警告）              |
 | 6   | 无 plugin 契约错误         | 无 `plugin validation/schema failed`                                   | **SDK drift — 立刻回滚**        |
 | 7   | openclaw-lark channel-only | runtime manifest 中 `contracts.tools=[]` 且 `skills=[]`                | 上游 lark tools/skills 吃上下文 |
-| 8   | runtime patch markers      | command-body / history-fill / inbound-meta / reply-card / footer-status / session-decay marker 全在 | runtime patch 未落地            |
+| 8   | runtime patch markers      | command-body / history-fill / inbound-meta / reply-card / outbound-card / footer-status / session-decay marker 全在 | runtime patch 未落地            |
 | 9   | a2a-gateway ioredis        | `node_modules/ioredis` 存在                                            | npm install 失败                |
 | 10  | feishu-her 依赖            | `@larksuiteoapi` 存在                                                  | feishu 连不上                   |
 | 11  | 无严重运行时错误           | 无 `FATAL/uncaughtException/crash`                                     | 立刻回滚                        |
@@ -301,7 +301,7 @@ scripts/carher-verify.sh --id=N --wait=60
 
 ```bash
 docker compose logs -f carher 2>&1 | grep --line-buffered -E \
-  "(deliver:|gateway\] ready|starting WebSocket connection|WSClient connected|command-body normalize|history-fill|inbound-history metadata|reply-card default|footer-status|session-decay|acpx runtime backend ready|refreshRegistryPeers found|Error|FAILED|exception|plugin (validation|schema))"
+  "(deliver:|gateway\] ready|starting WebSocket connection|WSClient connected|command-body normalize|history-fill|inbound-history metadata|reply-card default|outbound-card default|footer-status|session-decay|acpx runtime backend ready|refreshRegistryPeers found|Error|FAILED|exception|plugin (validation|schema))"
 ```
 
 ### 真人验收（11 gate 之外必做）
@@ -412,7 +412,7 @@ carher 对 openclaw / 闭源上游 npm 包打的本地 patch。**修改前必读
 
 | 目标文件会被 runtime 覆盖吗?           | 路径                                                                                           | 典型                               |
 | -------------------------------------- | ---------------------------------------------------------------------------------------------- | ---------------------------------- |
-| 会(npm install 重写 / bind-mount 覆盖) | **entrypoint runtime patch**(`scripts/carher-entrypoint.sh` 每次 container 启动)               | stripBotMentions / P8 history-fill / reply-card default / footer-status |
+| 会(npm install 重写 / bind-mount 覆盖) | **entrypoint runtime patch**(`scripts/carher-entrypoint.sh` 每次 container 启动)               | stripBotMentions / P8 history-fill / reply-card default / outbound-card default / footer-status |
 | 不会(image COPY read-only layer)       | **Dockerfile build-time patch**(`scripts/apply-reset-archive-patches.sh`,`RUN` 走 build layer) | (当前无;P7 已撤)                   |
 
 选错方向 = 下次 npm install / image rebuild 时 patch 失效。
@@ -423,7 +423,7 @@ carher 对 openclaw / 闭源上游 npm 包打的本地 patch。**修改前必读
 - Reviewer 必须逐个 section 核对,**只要有一个少了就打回**。
 - 教训:`f3d83cfd493`(2026-05-05) 加 a2a-gateway manifest patch 时顺手删了整个 CommandSource section,commit message 只提 a2a-gateway。后来 2026-05-08 尝试恢复才发现 CommandSource 方向在群里根本无效(见 R-7 条目),但这不降低"改 entrypoint 必须列 section diff"这条铁律的重要性。
 
-### 完整 Patch 清单(2026-05-09,10 个 runtime + 1 个 no-op build-time stub)
+### 完整 Patch 清单(2026-05-10,11 个 runtime + 1 个 no-op build-time stub)
 
 #### 🔧 R-1:`stripBotMentions` (runtime, entrypoint)
 
@@ -525,11 +525,23 @@ carher 对 openclaw / 闭源上游 npm 包打的本地 patch。**修改前必读
 - **Marker**:`CARHER_FOOTER_STATUS_PATCH_MARKER`
 - **Bug**:旧 `feishu-her` 的 AI 回复 footer 能看到模型 / context / compact / 群聊模式;新三组件默认 `footer` 全关,即使开启 upstream footer,也只有 status/elapsed/model/tokens/cache/context,没有 `compactionCount` 和 CarHer group mode。
 - **Fix**:
-  - fleet config 必须开启 `channels.feishu.streaming=true`、`replyMode.default/group/direct="streaming"`、`footer.status/elapsed/model/tokens/cache/context=true`,让普通长回复和工具回复尽量聚合到一个 CardKit 卡片。
+  - fleet config 必须开启 `channels.feishu.streaming=true`、`replyMode.default/group/direct="streaming"`、`footer.status=false`、`footer.elapsed/model/context=true`、`footer.tokens/cache=false`,让普通长回复和工具回复尽量聚合到一个 CardKit 卡片。
   - runtime patch 在 footer metrics 里加入 `entry.compactionCount`,并从 Redis `group:mode:{chatId}:{appId}` 读取群模式,渲染成 `🔒主人@` / `👥群@` / `🗣️讨论`。
+  - footer 压成一行高密度浅色状态条:`耗时 18.4s · opus4.7 · 👥群@ · 216k/1.0m (22%) · 🧹1`;无压缩时不显示 `🧹0`,不再显示 `已完成`、tokens、cache、`上下文` 字样。
 - **Kill switch**:`CARHER_DISABLE_FOOTER_STATUS_PATCH=1`
 - **log 成功**:`✓ footer-status patch applied`
-- **E2E**:普通回复、长回复、工具/多步回复都要查:用户可见 `msg_type=interactive`;同一 turn 不应刷出十几个 `post`;最终 card footer 应含模型/context/token/cache/压缩/群模式(能取到指标时)。
+- **E2E**:普通回复、长回复、工具/多步回复都要查:用户可见 `msg_type=interactive`;同一 turn 不应刷出十几个 `post`;最终 card footer 应是一行 compact footer,并有正文/footer 分割线。
+
+#### 🔧 R-11:`outbound-card default` — cron/direct outbound text 统一 interactive card (runtime, entrypoint)
+
+- **Target**:`$LARK_PKG/src/messaging/outbound/outbound.js`
+- **Source**:`scripts/carher-patches/apply-outbound-card-default.sh`
+- **Marker**:`CARHER_OUTBOUND_CARD_DEFAULT_PATCH_MARKER`
+- **Bug**:cron `--announce` / failure announce / direct outbound 不经过 realtime reply dispatcher,而是 OpenClaw core `deliverOutboundPayloads` → openclaw-lark `feishuOutbound.sendText` → `sendTextLark`,上游固定把普通文本发成 `msg_type=post`。R-9/R-10 只覆盖普通会话回复,不覆盖这条主动投递路径。
+- **Fix**:在 openclaw-lark outbound adapter 的 text-only direct path 把普通文本包成 CardKit v2 `{schema:"2.0", body.elements:[{tag:"markdown"}]}` 后调用 `sendCardLark`;显式 card JSON 和空文本仍交给上游 `sendTextLark`,避免二次包裹。
+- **Kill switch**:`CARHER_DISABLE_OUTBOUND_CARD_DEFAULT_PATCH=1`
+- **log 成功**:`✓ outbound-card default patch applied`
+- **E2E**:在 docker198/199/200 任一测试 bot 创建一次性 cron:`openclaw cron add --at <ISO> --message "<marker>" --announce --channel feishu --to <oc_...> --delete-after-run`;触发后 `lark-cli im +chat-messages-list --format json` 必须看到 bot 回复 `msg_type=interactive`,不能是 `post`。
 
 #### 🔧 B-1(历史,当前 no-op):`apply-reset-archive-patches.sh`
 
@@ -547,7 +559,7 @@ carher 对 openclaw / 闭源上游 npm 包打的本地 patch。**修改前必读
 
 ```bash
 # R-* runtime patches 都应出现在 entrypoint 启动 log 里
-docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|reply-card default|footer-status|patch-agent-loop|session-decay|PATCHED"
+docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|reply-card default|outbound-card default|footer-status|patch-agent-loop|session-decay|PATCHED"
 # 应看到每个相关 patch 的 ✓/PATCHED 成功记录
 
 # R-7 必须是 V2 marker；R-6 metadata 两端 marker 都必须在
@@ -654,7 +666,7 @@ sleep 75
 docker ps --format "{{.Names}}\t{{.Image}}\t{{.Status}}" | grep carher-<id>
 
 # 运行时 patch 自检
-docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|reply-card default|footer-status|patch-agent-loop|session-decay|PATCHED"
+docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|reply-card default|outbound-card default|footer-status|patch-agent-loop|session-decay|PATCHED"
 docker exec carher-<id> sh -lc '
   p=/data/.openclaw/extensions/node_modules/@larksuite/openclaw-lark/src/messaging/inbound/dispatch.js
   grep -n "CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER" "$p"
@@ -692,7 +704,7 @@ docker run --rm --entrypoint sh <img-tag> -c "
 # (同场景 A 的 .env 改 IMAGE_TAG → compose up)
 
 # 5. 验证运行时 patch + 功能
-docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|reply-card default|footer-status|patch-agent-loop|session-decay|PATCHED"
+docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|reply-card default|outbound-card default|footer-status|patch-agent-loop|session-decay|PATCHED"
 docker exec carher-<id> sh -lc '
   p=/data/.openclaw/extensions/node_modules/@larksuite/openclaw-lark/src/messaging/inbound/dispatch.js
   grep -n "CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER" "$p"
@@ -789,12 +801,12 @@ const Redis=require("ioredis");
 
 **症状**:升级 runbook 仍在 grep `carher_P7_outer` / `carher_P7_inner`,然后误判新 image 没打 patch。
 
-**根因**:P7 / PR #76666 相关 build-time patch 已在 `d6139a2e61c` revert 成 no-op stub。当前 active patch 面是第 10 章的 10 个 runtime patches,不是 P7 marker。
+**根因**:P7 / PR #76666 相关 build-time patch 已在 `d6139a2e61c` revert 成 no-op stub。当前 active patch 面是第 10 章的 11 个 runtime patches,不是 P7 marker。
 
 **检查**:
 
 ```bash
-docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|reply-card default|footer-status|patch-agent-loop|session-decay|PATCHED"
+docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|reply-card default|outbound-card default|footer-status|patch-agent-loop|session-decay|PATCHED"
 docker exec carher-<id> sh -lc '
   p=/data/.openclaw/extensions/node_modules/@larksuite/openclaw-lark/src/messaging/inbound/dispatch.js
   grep -n "CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER" "$p"

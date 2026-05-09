@@ -127,7 +127,8 @@ Run these before full rollout:
 | card-output     | normal Her answer                              | user-visible reply is an interactive card unless a documented fallback applies                                                                     |
 | card-coalesce   | prompt asks for 5-8 short numbered points      | one bot turn should produce one interactive card, not many `post`/card fragments                                                                  |
 | tool-coalesce   | prompt asks bot to inspect something with tools | tool/progress/final output should remain in one card when the channel supports it; any fallback fragments must be explained by logs                 |
-| footer-status   | normal Her answer                              | final card footer includes model, context/tokens, cache/compact state when available, and group mode when the chat is a group                       |
+| footer-status   | normal Her answer                              | final card footer is one compact grey line: elapsed, short model alias, group mode, context ratio, and `🧹N` only when compactions > 0               |
+| cron-card       | one-shot cron with `--message ... --announce`  | cron/direct outbound final text is `msg_type=interactive`, not old `post`; explicit card JSON must still pass through without double wrapping       |
 | self-send       | bot sends a proactive/follow-up style message  | bot-originated outbound path is interactive/card-shaped or explicitly documented as a safe fallback                                                 |
 | a2a-route       | S1 test bot asks for an S3 bot capability      | A2A logs show registry lookup and LAN endpoint route when peer is remote                                                                           |
 
@@ -146,21 +147,22 @@ The model-visible `InboundHistory` does not need to be byte-for-byte identical t
 
 ## Validated Baseline
 
-2026-05-09 run `20260509T2330_r10` on docker200 / `研究3` in chat `oc_394c3ebe4ca009aba9b5662cce366810` is the current reference:
+2026-05-10 run `20260510T_footer_final` on docker200 / `研究3` in chat `oc_394c3ebe4ca009aba9b5662cce366810` is the current reference:
 
-- `footer_short`: one `interactive` reply; footer included model, elapsed, tokens, cache, context, `Compactions 0`, and `👥群@`.
+- `footer_v4_ready`: one `interactive` reply; lark-cli rendered `<card> footer-v4-ready-ok --- 耗时 11.5s · opus4.7 · 👥群@ · 70.7k/1.0m (7%) </card>`.
 - `coalesce_long`: six-point answer produced exactly one `interactive` bot message after the trigger.
 - `tool_coalesce`: logs showed `tools=[exec]`; final user-visible output was still exactly one `interactive` card.
 - `/status @bot`: exactly one system status reply; no double reply.
 - `/new @bot` and `@bot /new`: exactly one `✅ New session started.` each; logs showed `detected system command` and `system command dispatched (delivered=true)`.
 - `history_card_context`: without tools, bot read a previous interactive card from injected context and rendered `研究3 (cli_a96f044b4ef95cc0)`, not a bare `cli_...`.
+- `cron_card_after`: one-shot cron announce previously produced `msg_type=post`; after R-11 the same path produced `msg_type=interactive` with `<card> cron-card-after-ok </card>`.
 
 ## Server Log Checks
 
 Patch markers that must appear after container start:
 
 ```bash
-docker logs carher-200 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|reply-card default|footer-status|patch-agent-loop|session-decay|PATCHED"
+docker logs carher-200 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|reply-card default|outbound-card default|footer-status|patch-agent-loop|session-decay|PATCHED"
 ```
 
 For `/new` and `/status` command tests, look for:

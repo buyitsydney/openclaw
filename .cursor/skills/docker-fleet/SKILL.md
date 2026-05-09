@@ -27,7 +27,7 @@ metadata:
 | S2     | 10.68.13.187 | 仅 carher-fallback (nginx)                                                                                 | —       |
 | S3     | 10.68.13.188 | carher-14 (刘国现), carher-75 (林森), carher-fallback, cloudflared                                         | compose |
 
-当前 fleet 2026-05-09 已验证到 dev `77b5571f36` + image `localhost:5001/carher-core:2026.5.9-p14-a2a-route`;7 个 bot 都应有 R-7 `CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER`、P8 history-fill、Bot Registry/knownBots、A2A S1/S3 路由修复、R-9 `reply-card default`、R-10 `footer-status`。升级时不要假设 git remote 名一致:S1 `/Data/CarHer` 通常用 `carher`,S3 通常用 `origin`。
+当前 fleet 2026-05-10 已验证到 dev `c6ef7aae6b` + image `localhost:5001/carher-core:2026.5.9-p14-a2a-route`;7 个 bot 都应有 R-7 `CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER`、P8 history-fill、Bot Registry/knownBots、A2A S1/S3 路由修复、R-9 `reply-card default`、R-10 compact `footer-status`、R-11 `outbound-card default`。升级时不要假设 git remote 名一致:S1 `/Data/CarHer` 通常用 `carher`,S3 通常用 `origin`。
 
 A2A 跨 S1/S3 依赖 `CARHER_SERVER`：S1 必须注册 `S1`,S3 必须注册 `S3`,不能都保持 `local`。`server=local` 会让跨主机 peer 被误判成同机 Docker DNS (`http://carher-N:18800`),表现为 S1 her 找不到 S3 her。检查 Redis `a2a:card:*` 时同时看 `server` 和 `endpoints.lan`。
 

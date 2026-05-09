@@ -154,3 +154,17 @@ Append dated entries here as work progresses:
 - Fleet rollout: S1 `carher-12/13/198/199/200` and S3 `carher-14/75` all fast-forwarded to dev `77b5571f364` and force-recreated. Startup logs for all 7 show `reply-card default patch applied`, `footer-status patch applied`, history-fill, inbound metadata, session-decay, channel-only, contracts.tools, patch-agent-loop, and `gateway ready`.
 - Known non-blocking warning: all containers still log `failed to persist plugin auto-enable changes: Config write would flatten $include-owned config at <root>`; this is the pre-existing include-preservation warning and was not treated as rollback because channel-only/gateway/patch gates are green.
 - Decision: R-10 is accepted as the old-Her card/footer parity layer. Remaining broader diff-alignment work should continue from the E2E skill matrix rather than relying on one-off manual assertions.
+
+## Checkpoint 2026-05-10 07:40
+
+- Commit/worktree: `carher/dev` at `c6ef7aae6b` (`CarHer: cardify direct Feishu outbound text`).
+- Changed files: R-10 footer formatter is now marker `builder-v4` so already-patched v3 volumes upgrade correctly; R-11 `apply-outbound-card-default.sh` patches openclaw-lark `src/messaging/outbound/outbound.js` so cron/announce/direct text-only sends use CardKit v2 interactive cards.
+- Tests run:
+  - `node --test scripts/carher-patches/apply-outbound-card-default.test.mjs scripts/carher-patches/apply-footer-status.test.mjs scripts/carher-patches/apply-reply-card-default.test.mjs` → 12/12 pass.
+  - `bash -n scripts/carher-entrypoint.sh` → pass.
+  - `git diff --check` → pass.
+- Online docker200 E2E evidence (`oc_394c3ebe4ca009aba9b5662cce366810`, bot `cli_a96f044b4ef95cc0`):
+  - `footer_v4_ready`: `msg_type=interactive`, content renders as `<card> footer-v4-ready-ok --- 耗时 11.5s · opus4.7 · 👥群@ · 70.7k/1.0m (7%) </card>`.
+  - `cron_card_before`: one-shot cron announce before R-11 produced `msg_type=post`, proving cron direct delivery bypassed R-9/R-10.
+  - `cron_card_after`: one-shot cron announce after R-11 produced `msg_type=interactive`, content `<card> cron-card-after-ok </card>`.
+- Decision: footer compact UX and cron/direct outbound card shape are part of the active patch plane. Future upgrade runbooks must test both normal realtime replies and cron/direct outbound paths.
