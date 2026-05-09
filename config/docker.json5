@@ -99,6 +99,20 @@
         "openrouter/deepseek/deepseek-v4-pro": { alias: "ds" },
         "openrouter/deepseek/deepseek-v4-flash": { alias: "ds-flash" },
       },
+      // 2026-05-09 R-8 fleet promote · 13 灰度 (~/openclaw-baselines/13-memory-search-20260509/)
+      // 验证 60d half-life 在 dev HEAD 94baa426a4a + image p13-knownbots 上稳定:
+      //  - >21d 老 session noise 命中 16.9% → 5.0%
+      //  - >28d 0.4% (基本清零)
+      //  - 36 个 session-only query 全部保持 8/8 hits 不丢
+      //  - top-1 与 baseline 一致率 51% (温和)
+      // 必须配合 R-8 runtime patch (apply-session-decay.sh) 才能对 sessions/* 生效。
+      memorySearch: {
+        query: {
+          hybrid: {
+            temporalDecay: { enabled: true, halfLifeDays: 60 },
+          },
+        },
+      },
     },
   },
 
