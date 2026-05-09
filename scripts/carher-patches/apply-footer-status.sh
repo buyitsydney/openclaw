@@ -185,7 +185,7 @@ async function carherReadGroupModeLabel(params) {
 
 function patchBuilder(path) {
   let code = fs.readFileSync(path, "utf8");
-  if (code.includes(`${marker}:builder-v3`)) {
+  if (code.includes(`${marker}:builder-v4`)) {
     console.log(`apply-footer-status.sh: builder already patched (${path})`);
     return;
   }
@@ -205,7 +205,7 @@ function patchBuilder(path) {
   }
   code = code.replace(
     helperAnchor,
-    () => `// === ${marker}:builder-v3 ===
+    () => `// === ${marker}:builder-v4 ===
 function carherFooterText(value) {
     return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
@@ -294,7 +294,7 @@ function carherBuildCompactFooterRuntimeSegments(params) {
         ? { primaryZh, primaryEn, detailZh: [], detailEn: [] }
         : undefined;
 }
-// === end ${marker}:builder-v3 ===
+// === end ${marker}:builder-v4 ===
 ${helperAnchor}`,
   );
 

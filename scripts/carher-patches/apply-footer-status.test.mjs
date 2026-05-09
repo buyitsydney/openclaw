@@ -138,7 +138,7 @@ test("patch adds compaction and group mode footer metrics", () => {
     assert.match(controllerCode, /groupMode/);
 
     const builderCode = readFileSync(builder, "utf8");
-    assert.match(builderCode, /CARHER_FOOTER_STATUS_PATCH_MARKER:builder-v3/);
+    assert.match(builderCode, /CARHER_FOOTER_STATUS_PATCH_MARKER:builder-v4/);
     assert.match(builderCode, /carherBuildCompactFooterRuntimeSegments/);
     assert.match(builderCode, /carherFooterModelAlias/);
     assert.match(builderCode, /footer-separator/);
@@ -256,8 +256,27 @@ test("patch upgrades old builder marker from backup", () => {
     writeFileSync(builder, `${original}\n// CARHER_FOOTER_STATUS_PATCH_MARKER:builder\n`);
     execFileSync("bash", [APPLY_PATCH_SH, dir], { stdio: "pipe" });
     const upgraded = readFileSync(builder, "utf8");
-    assert.match(upgraded, /CARHER_FOOTER_STATUS_PATCH_MARKER:builder-v3/);
+    assert.match(upgraded, /CARHER_FOOTER_STATUS_PATCH_MARKER:builder-v4/);
     assert.doesNotMatch(upgraded, /CARHER_FOOTER_STATUS_PATCH_MARKER:builder\\n/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("patch upgrades v3 builder marker from backup", () => {
+  const { dir, builder } = writeFixture();
+  try {
+    const original = readFileSync(builder, "utf8");
+    writeFileSync(`${builder}.bak.footer-status`, original);
+    writeFileSync(
+      builder,
+      `${original}\n// === CARHER_FOOTER_STATUS_PATCH_MARKER:builder-v3 ===\n// old compact footer patch\n// === end CARHER_FOOTER_STATUS_PATCH_MARKER:builder-v3 ===\n`,
+    );
+    execFileSync("bash", [APPLY_PATCH_SH, dir], { stdio: "pipe" });
+    const upgraded = readFileSync(builder, "utf8");
+    assert.match(upgraded, /CARHER_FOOTER_STATUS_PATCH_MARKER:builder-v4/);
+    assert.doesNotMatch(upgraded, /CARHER_FOOTER_STATUS_PATCH_MARKER:builder-v3/);
+    assert.match(upgraded, /primaryEn\.push\(`耗时 \$\{d\}`\)/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
