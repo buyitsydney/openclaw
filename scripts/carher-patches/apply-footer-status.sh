@@ -185,9 +185,17 @@ async function carherReadGroupModeLabel(params) {
 
 function patchBuilder(path) {
   let code = fs.readFileSync(path, "utf8");
-  if (code.includes(`${marker}:builder`)) {
+  if (code.includes(`${marker}:builder-v3`)) {
     console.log(`apply-footer-status.sh: builder already patched (${path})`);
     return;
+  }
+  if (code.includes(`${marker}:builder`)) {
+    const backupPath = `${path}.bak.footer-status`;
+    if (!fs.existsSync(backupPath)) {
+      throw new Error("builder has old footer-status patch but missing .bak.footer-status backup");
+    }
+    code = fs.readFileSync(backupPath, "utf8");
+    console.log(`apply-footer-status.sh: upgrading builder from existing footer-status patch (${path})`);
   }
   backup(path, code, "footer-status");
 
@@ -197,50 +205,147 @@ function patchBuilder(path) {
   }
   code = code.replace(
     helperAnchor,
-    () => `// === ${marker}:builder ===
+    () => `// === ${marker}:builder-v3 ===
 function carherFooterText(value) {
     return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
-// === end ${marker}:builder ===
-${helperAnchor}`,
-  );
-
-  const modelAnchor = `    if (footer?.model && metrics?.model) {
-        const model = metrics.model.trim();
-        if (model) {
-            primaryZh.push(model);
-            primaryEn.push(model);
-        }
-    }`;
-  if (!code.includes(modelAnchor)) {
-    throw new Error("builder model anchor not found");
-  }
-  code = code.replace(
-    modelAnchor,
-    () => `${modelAnchor}
-    // === ${marker}:group-mode ===
+function carherFooterModelAlias(value) {
+    const raw = carherFooterText(value);
+    if (!raw)
+        return undefined;
+    const normalized = raw
+        .replace(/^anthropic\\//, '')
+        .replace(/^openai\\//, '')
+        .replace(/^google\\//, '')
+        .replace(/^deepseek\\//, '')
+        .replace(/^minimax\\//, '')
+        .replace(/^anthropic\\./, '')
+        .replace(/^claude-/, '')
+        .toLowerCase();
+    const opus = normalized.match(/^opus[-.]?(\\d+)[-.](\\d+)$/);
+    if (opus)
+        return \`opus\${opus[1]}.\${opus[2]}\`;
+    const sonnet = normalized.match(/^sonnet[-.]?(\\d+)[-.](\\d+)$/);
+    if (sonnet)
+        return \`sonnet\${sonnet[1]}.\${sonnet[2]}\`;
+    const gpt = normalized.match(/^gpt[-.]?(\\d+)[-.](\\d+)$/);
+    if (gpt)
+        return \`gpt\${gpt[1]}.\${gpt[2]}\`;
+    if (normalized === 'deepseek-v4-pro')
+        return 'ds-v4-pro';
+    if (normalized === 'deepseek-v4-flash')
+        return 'ds-v4-flash';
+    if (normalized === 'gemini-3.1-pro-preview')
+        return 'gemini3.1p';
+    return raw
+        .replace(/^anthropic\\/(?:anthropic\\.)?claude-/, '')
+        .replace(/^anthropic\\//, '')
+        .replace(/^openai\\//, '')
+        .replace(/^google\\//, '')
+        .replace(/^deepseek\\//, '')
+        .replace(/^minimax\\//, '');
+}
+function carherFooterContextLabel(metrics) {
+    const freshTotal = metrics?.totalTokensFresh === false ? undefined : metrics?.totalTokens;
+    const total = typeof freshTotal === 'number' ? Math.max(0, freshTotal) : undefined;
+    const ctx = typeof metrics?.contextTokens === 'number' ? Math.max(0, metrics.contextTokens) : undefined;
+    if (total == null || ctx == null)
+        return undefined;
+    const totalLabel = compactNumber(total);
+    const ctxLabel = compactNumber(ctx);
+    const pct = ctx > 0 ? Math.round((total / ctx) * 100) : 0;
+    return \`\${totalLabel}/\${ctxLabel} (\${pct}%)\`;
+}
+function carherBuildCompactFooterRuntimeSegments(params) {
+    const { footer, metrics, elapsedMs, isError, isAborted } = params;
+    if (isError || isAborted)
+        return undefined;
+    const primaryZh = [];
+    const primaryEn = [];
+    if (footer?.elapsed && elapsedMs != null) {
+        const d = formatElapsed(elapsedMs);
+        primaryZh.push(\`耗时 \${d}\`);
+        primaryEn.push(\`耗时 \${d}\`);
+    }
+    const model = footer?.model ? carherFooterModelAlias(metrics?.model) : undefined;
+    if (model) {
+        primaryZh.push(model);
+        primaryEn.push(model);
+    }
     const groupMode = carherFooterText(metrics?.groupMode);
-    if (footer?.status && groupMode) {
+    if (groupMode) {
         primaryZh.push(groupMode);
         primaryEn.push(groupMode);
     }
-    // === end ${marker}:group-mode ===`,
-  );
-
-  const returnAnchor = `    return { primaryZh, primaryEn, detailZh, detailEn };`;
-  if (!code.includes(returnAnchor)) {
-    throw new Error("builder return anchor not found");
-  }
-  code = code.replace(
-    returnAnchor,
-    () => `    // === ${marker}:compactions ===
+    const context = footer?.context ? carherFooterContextLabel(metrics) : undefined;
+    if (context) {
+        primaryZh.push(context);
+        primaryEn.push(context);
+    }
     if (footer?.context && metrics && typeof metrics.compactionCount === 'number') {
         const compactions = Math.max(0, Math.round(metrics.compactionCount));
-        detailZh.push(\`压缩 \${compactions}\`);
-        detailEn.push(\`Compactions \${compactions}\`);
+        if (compactions > 0) {
+            const label = \`🧹\${compactions}\`;
+            primaryZh.push(label);
+            primaryEn.push(label);
+        }
     }
-    // === end ${marker}:compactions ===
-${returnAnchor}`,
+    return primaryZh.length || primaryEn.length
+        ? { primaryZh, primaryEn, detailZh: [], detailEn: [] }
+        : undefined;
+}
+// === end ${marker}:builder-v3 ===
+${helperAnchor}`,
+  );
+
+  const compactAnchor = `    const detailEn = [];`;
+  if (!code.includes(compactAnchor)) {
+    throw new Error("builder compact insert anchor not found");
+  }
+  code = code.replace(
+    compactAnchor,
+    () => `${compactAnchor}
+    // === ${marker}:compact-render ===
+    const carherCompactFooter = carherBuildCompactFooterRuntimeSegments(params);
+    if (carherCompactFooter)
+        return carherCompactFooter;
+    // === end ${marker}:compact-render ===`,
+  );
+
+  const footerColorAnchor = [
+    "    const zhContent = isError ? `<font color='red'>${zhText}</font>` : zhText;",
+    "    const enContent = isError ? `<font color='red'>${enText}</font>` : enText;",
+  ].join("\n");
+  if (!code.includes(footerColorAnchor)) {
+    throw new Error("builder footer color anchor not found");
+  }
+  code = code.replace(
+    footerColorAnchor,
+    () => [
+      "    const zhContent = isError",
+      "        ? `<font color='red'>${zhText}</font>`",
+      "        : `<font color='grey'>${zhText}</font>`;",
+      "    const enContent = isError",
+      "        ? `<font color='red'>${enText}</font>`",
+      "        : `<font color='grey'>${enText}</font>`;",
+    ].join("\n"),
+  );
+
+  const footerPushAnchor = `    if (footerZhLines.length > 0) {
+        elements.push(...buildFooter(footerZhLines.join('\\n'), footerEnLines.join('\\n'), isError));
+    }`;
+  if (!code.includes(footerPushAnchor)) {
+    throw new Error("builder footer separator anchor not found");
+  }
+  code = code.replace(
+    footerPushAnchor,
+    () => `    if (footerZhLines.length > 0) {
+        // === ${marker}:footer-separator ===
+        if (text.trim() && !isError)
+            elements.push({ tag: 'hr' });
+        // === end ${marker}:footer-separator ===
+        elements.push(...buildFooter(footerZhLines.join('\\n'), footerEnLines.join('\\n'), isError));
+    }`,
   );
 
   fs.writeFileSync(path, code);

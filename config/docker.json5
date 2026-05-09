@@ -34,17 +34,17 @@
       // 2026-05-09 old-Her UX alignment:
       // - group/direct replies use a single CardKit streaming card instead of
       //   flooding the group with block/final post fragments.
-      // - footer is visible again: status/elapsed/model/tokens/cache/context.
+      // - footer is visible again as a compact one-line status bar.
       //   R-10 enriches the upstream footer metrics with compaction count and
-      //   group mode.
+      //   group mode, then renders only high-density fields.
       streaming: true,
       replyMode: { default: "streaming", group: "streaming", direct: "streaming" },
       footer: {
-        status: true,
+        status: false,
         elapsed: true,
         model: true,
-        tokens: true,
-        cache: true,
+        tokens: false,
+        cache: false,
         context: true,
       },
       // Deep-merged with per-user channels.feishu (appId/secret/etc) via $include.

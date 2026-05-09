@@ -49,7 +49,20 @@ module.exports = { StreamingCardController };
   writeFileSync(
     builder,
     `"use strict";
+function buildFooter(zhText, enText, isError) {
+    const zhContent = isError ? \`<font color='red'>\${zhText}</font>\` : zhText;
+    const enContent = isError ? \`<font color='red'>\${enText}</font>\` : enText;
+    return [
+        {
+            tag: 'markdown',
+            content: enContent,
+            i18n_content: { zh_cn: zhContent, en_us: enContent },
+            text_size: 'notation',
+        },
+    ];
+}
 function compactNumber(value) { return String(Math.round(value)); }
+function formatElapsed(ms) { return (ms / 1000).toFixed(1) + "s"; }
 function formatFooterRuntimeSegments(params) {
     const { footer, metrics, elapsedMs, isError, isAborted } = params;
     const primaryZh = [];
@@ -78,7 +91,33 @@ function formatFooterRuntimeSegments(params) {
     }
     return { primaryZh, primaryEn, detailZh, detailEn };
 }
-module.exports = { formatFooterRuntimeSegments };
+function buildCompleteCard(params) {
+    const { text, elapsedMs, isError, isAborted, footer, footerMetrics } = params;
+    const elements = [];
+    elements.push({ tag: 'markdown', content: text });
+    const fp = formatFooterRuntimeSegments({
+        footer,
+        metrics: footerMetrics,
+        elapsedMs,
+        isError,
+        isAborted,
+    });
+    const footerZhLines = [];
+    const footerEnLines = [];
+    if (fp.primaryZh.length > 0) {
+        footerZhLines.push(fp.primaryZh.join(' · '));
+        footerEnLines.push(fp.primaryEn.join(' · '));
+    }
+    if (fp.detailZh.length > 0) {
+        footerZhLines.push(fp.detailZh.join(' · '));
+        footerEnLines.push(fp.detailEn.join(' · '));
+    }
+    if (footerZhLines.length > 0) {
+        elements.push(...buildFooter(footerZhLines.join('\\n'), footerEnLines.join('\\n'), isError));
+    }
+    return { elements };
+}
+module.exports = { formatFooterRuntimeSegments, buildCompleteCard };
 `,
   );
 
@@ -99,28 +138,126 @@ test("patch adds compaction and group mode footer metrics", () => {
     assert.match(controllerCode, /groupMode/);
 
     const builderCode = readFileSync(builder, "utf8");
-    assert.match(builderCode, /CARHER_FOOTER_STATUS_PATCH_MARKER:builder/);
-    assert.match(builderCode, /Compactions/);
+    assert.match(builderCode, /CARHER_FOOTER_STATUS_PATCH_MARKER:builder-v3/);
+    assert.match(builderCode, /carherBuildCompactFooterRuntimeSegments/);
+    assert.match(builderCode, /carherFooterModelAlias/);
+    assert.match(builderCode, /footer-separator/);
+    assert.match(builderCode, /font color='grey'/);
     assert.match(builderCode, /groupMode/);
 
     const sandbox = { module: { exports: {} }, exports: {} };
     vm.runInNewContext(builderCode, sandbox);
     const { formatFooterRuntimeSegments } = sandbox.module.exports;
     const result = formatFooterRuntimeSegments({
-      footer: { status: true, model: true, context: true },
+      footer: { status: false, elapsed: true, model: true, tokens: false, cache: false, context: true },
       metrics: {
-        model: "opus-4",
+        model: "anthropic/anthropic.claude-opus-4-7",
         groupMode: "🔒主人@",
         compactionCount: 3,
         totalTokens: 120000,
         contextTokens: 200000,
       },
+      elapsedMs: 18400,
     });
 
-    assert.deepEqual(Array.from(result.primaryZh), ["opus-4", "🔒主人@"]);
-    assert.ok(result.detailZh.includes("上下文 120000/200000 (60%)"));
-    assert.ok(result.detailZh.includes("压缩 3"));
-    assert.ok(result.detailEn.includes("Compactions 3"));
+    assert.deepEqual(Array.from(result.primaryZh), [
+      "耗时 18.4s",
+      "opus4.7",
+      "🔒主人@",
+      "120000/200000 (60%)",
+      "🧹3",
+    ]);
+    assert.deepEqual(Array.from(result.detailZh), []);
+    assert.deepEqual(Array.from(result.detailEn), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("compact footer is visually separated and de-emphasized", () => {
+  const { dir, builder } = writeFixture();
+  try {
+    execFileSync("bash", [APPLY_PATCH_SH, dir], { stdio: "pipe" });
+    const builderCode = readFileSync(builder, "utf8");
+    const sandbox = { module: { exports: {} }, exports: {} };
+    vm.runInNewContext(builderCode, sandbox);
+    const { buildCompleteCard } = sandbox.module.exports;
+    const card = buildCompleteCard({
+      text: "正文内容",
+      footer: { status: false, elapsed: true, model: true, tokens: false, cache: false, context: true },
+      footerMetrics: {
+        model: "anthropic/anthropic.claude-opus-4-7",
+        groupMode: "👥群@",
+        compactionCount: 1,
+        totalTokens: 216000,
+        contextTokens: 1000000,
+      },
+      elapsedMs: 18400,
+    });
+
+    assert.deepEqual(Array.from(card.elements.map((e) => e.tag)), ["markdown", "hr", "markdown"]);
+    const footer = card.elements[2];
+    assert.equal(footer.text_size, "notation");
+    assert.equal(
+      footer.content,
+      "<font color='grey'>耗时 18.4s · opus4.7 · 👥群@ · 216000/1000000 (22%) · 🧹1</font>",
+    );
+    assert.equal(
+      footer.i18n_content.zh_cn,
+      "<font color='grey'>耗时 18.4s · opus4.7 · 👥群@ · 216000/1000000 (22%) · 🧹1</font>",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("compact footer hides zero compactions and noisy token/cache labels", () => {
+  const { dir, builder } = writeFixture();
+  try {
+    execFileSync("bash", [APPLY_PATCH_SH, dir], { stdio: "pipe" });
+    const builderCode = readFileSync(builder, "utf8");
+    const sandbox = { module: { exports: {} }, exports: {} };
+    vm.runInNewContext(builderCode, sandbox);
+    const { formatFooterRuntimeSegments } = sandbox.module.exports;
+    const result = formatFooterRuntimeSegments({
+      footer: { status: false, elapsed: true, model: true, tokens: false, cache: false, context: true },
+      metrics: {
+        inputTokens: 7,
+        outputTokens: 353,
+        cacheRead: 215000,
+        cacheWrite: 537,
+        model: "anthropic/claude-sonnet-4.6",
+        groupMode: "👥群@",
+        compactionCount: 0,
+        totalTokens: 216000,
+        contextTokens: 1000000,
+      },
+      elapsedMs: 18400,
+    });
+
+    assert.deepEqual(Array.from(result.primaryZh), [
+      "耗时 18.4s",
+      "sonnet4.6",
+      "👥群@",
+      "216000/1000000 (22%)",
+    ]);
+    const rendered = `${result.primaryZh.join(" · ")} ${result.detailZh.join(" · ")}`;
+    assert.doesNotMatch(rendered, /已完成|缓存|上下文|↑|↓|🧹0/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("patch upgrades old builder marker from backup", () => {
+  const { dir, builder } = writeFixture();
+  try {
+    const original = readFileSync(builder, "utf8");
+    writeFileSync(`${builder}.bak.footer-status`, original);
+    writeFileSync(builder, `${original}\n// CARHER_FOOTER_STATUS_PATCH_MARKER:builder\n`);
+    execFileSync("bash", [APPLY_PATCH_SH, dir], { stdio: "pipe" });
+    const upgraded = readFileSync(builder, "utf8");
+    assert.match(upgraded, /CARHER_FOOTER_STATUS_PATCH_MARKER:builder-v3/);
+    assert.doesNotMatch(upgraded, /CARHER_FOOTER_STATUS_PATCH_MARKER:builder\\n/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
