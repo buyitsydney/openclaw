@@ -91,6 +91,7 @@ DOCKER_BUILDKIT=1 docker build -f Dockerfile.carher.v2 \
 - BuildKit **必须开**（cache mount 依赖）
 - Image labels 自动注入：`carher.build.hash`、`carher.openclaw.tag`（可追溯）
 - **永远不覆盖旧 tag**，至少保留 30 天
+- `scripts/freeze-git-info.sh` 在 build 前生成 `/opt/carher/image-info.json`，默认只索引 `HEAD` 最近 200 条 commit。**不要改成 `git log --all` 或无上限历史**；S1/S3 有大量 stale refs/worktree/备份分支，会把发布卡在 Docker build 前。一次性取证才显式传 `CARHER_FREEZE_DEPTH` / `CARHER_FREEZE_SCOPE`。
 
 ### 升级 = 改 1 个字符串
 

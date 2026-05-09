@@ -169,6 +169,8 @@ docker inspect <container> --format '{{.Image}}' \
 # 直接拿到 git sha，对应 prod 实际跑的 commit
 ```
 
+`/opt/carher/image-info.json` 由 `scripts/freeze-git-info.sh` 在 build 前生成，供 `her-self-inspect` 在运行时报告最近 commit。这个步骤是构建关键路径，必须保持有界：默认只索引 `HEAD` 最近 200 条 commit，不能默认扫 `git log --all` 或无上限历史。生产服务器上有大量 stale refs / worktree / 备份分支，无界扫描会在 Docker build 开始前卡住发布。需要做一次性取证时，调用方显式设置 `CARHER_FREEZE_DEPTH` / `CARHER_FREEZE_SCOPE`，不要改默认 build path。
+
 ---
 
 ## 5. Runtime Patch Plane

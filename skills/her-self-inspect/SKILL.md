@@ -46,7 +46,7 @@ description: her 自检当前跑的镜像身份和热 patch 状态（只看自�
 | `build_branch`     | 构建时的 git branch                                               |
 | `build_time`       | 镜像构建时间（ISO 8601 UTC）                                      |
 | `build_tag`        | 如果构建点打了 git tag                                            |
-| `recent_commits`   | 构建时冻结的最近 5 条 commit（hash/time/author/subject）          |
+| `recent_commits`   | 构建时冻结的 HEAD 最近 commit（默认索引 200 条，输出最近 5 条）   |
 | `hot_patches`      | `/app/dist/*.bak*` 文件列表（非空 = 镜像被手改过）                |
 | `uptime`           | 容器主进程 uptime（`ps -o etime= -p 1`）                          |
 
@@ -55,6 +55,10 @@ description: her 自检当前跑的镜像身份和热 patch 状态（只看自�
 - **镜像构建期冻结身份**：`/opt/carher/image-info.json`（444 只读）由 Dockerfile 在
   build 时从 `scripts/freeze-git-info.sh` 生成，runtime **不需要任何 .git 目录**，
   k8s / immutable-rootfs 友好。
+- **构建期必须有界**：`freeze-git-info.sh` 默认只索引 `HEAD` 最近 200 条 commit。
+  不要在构建默认路径里扫 `git log --all` 或无上限历史；生产服务器有大量 refs /
+  worktree / 备份分支，会卡住 deploy。需要取更多时显式设置
+  `CARHER_FREEZE_DEPTH` / `CARHER_FREEZE_SCOPE`。
 - **降级优雅**：老镜像（没有 image-info.json）不崩溃，所有 `build_*` 字段输出
   `N/A · upgrade required to see this`，exit 0。
 - **单容器 only**：不 SSH、不读跨容器路径、不接触任何服务器清单。

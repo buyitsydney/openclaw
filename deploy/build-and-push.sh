@@ -44,7 +44,11 @@ echo "  openclaw base: $OPENCLAW_TAG"
 echo "  git HEAD:      $BUILD_HASH"
 echo
 
-# ---- her-self-inspect v2: freeze git metadata on host (build context lives in $ROOT/build/)
+# ---- her-self-inspect v2: freeze bounded git metadata on host
+# Default is HEAD-scoped recent history only. Do not switch this to full `--all`
+# scanning in the build script; production hosts carry many stale refs/worktrees.
+# If a one-off forensic image needs more, set CARHER_FREEZE_DEPTH / SCOPE
+# explicitly in the caller environment.
 mkdir -p "$ROOT/build"
 echo -e "${YELLOW}\xe2\x96\xb6${NC} Freezing git metadata -> build/image-info.json"
 bash "$ROOT/scripts/freeze-git-info.sh" > "$ROOT/build/image-info.json"
