@@ -41,6 +41,108 @@ function extractPlainText(body) {
   return raw;
 }
 
+function optionalRequire(path) {
+  try {
+    return require(path);
+  } catch {
+    return null;
+  }
+}
+
+function senderIdFromMessage(m) {
+  return (m && m.sender && m.sender.id) || "unknown";
+}
+
+function senderTypeFromMessage(m) {
+  return (m && m.sender && m.sender.sender_type) || "";
+}
+
+function formatSenderLabel(senderId, name) {
+  if (!senderId || senderId === "unknown") return name || "unknown";
+  if (!name || name === senderId) return senderId;
+  return `${name} (${senderId})`;
+}
+
+async function resolveHistorySenderNames({ dc, items, nameMap, log }) {
+  const names = new Map(nameMap ? Array.from(nameMap.entries()) : []);
+  const accountId = dc && dc.account && dc.account.accountId;
+  if (!accountId) return names;
+
+  const userNameModule = optionalRequire("./user-name-cache.js");
+  const cache =
+    userNameModule && typeof userNameModule.getUserNameCache === "function"
+      ? userNameModule.getUserNameCache(accountId)
+      : null;
+
+  const ids = [];
+  for (const m of items) {
+    const id = senderIdFromMessage(m);
+    if (!id || id === "unknown" || names.has(id)) continue;
+    const cached = cache && typeof cache.get === "function" ? cache.get(id) : undefined;
+    if (cached) {
+      names.set(id, cached);
+      continue;
+    }
+    if (senderTypeFromMessage(m) === "user") ids.push(id);
+  }
+
+  const missingUsers = [...new Set(ids.filter((id) => !names.has(id)))];
+  if (
+    missingUsers.length > 0 &&
+    userNameModule &&
+    typeof userNameModule.batchResolveUserNames === "function"
+  ) {
+    try {
+      const resolved = await userNameModule.batchResolveUserNames({
+        account: dc.account,
+        openIds: missingUsers,
+        log,
+      });
+      for (const [id, name] of resolved.entries()) {
+        if (name) names.set(id, name);
+      }
+    } catch (err) {
+      log(`[carher-history-fill] sender name resolve failed: ${String(err)}`);
+    }
+  }
+
+  return names;
+}
+
+async function extractMessageText(m, dc, testHooks) {
+  const body = m && m.body;
+  const raw = body && typeof body.content === "string" ? body.content : "";
+  const messageType = m && (m.msg_type || m.message_type || m.content_type);
+  const converterModule =
+    testHooks && testHooks.convertMessageContent
+      ? null
+      : optionalRequire("../converters/content-converter.js");
+  const convertMessageContent =
+    (testHooks && testHooks.convertMessageContent) ||
+    (converterModule && converterModule.convertMessageContent);
+  const buildConvertContextFromItem =
+    (testHooks && testHooks.buildConvertContextFromItem) ||
+    (converterModule && converterModule.buildConvertContextFromItem);
+
+  if (typeof convertMessageContent === "function" && raw && messageType) {
+    try {
+      const accountId = dc && dc.account && dc.account.accountId;
+      const ctx =
+        typeof buildConvertContextFromItem === "function"
+          ? buildConvertContextFromItem(m, m.message_id, accountId)
+          : { accountId };
+      const converted = await convertMessageContent(raw, messageType, ctx);
+      if (converted && typeof converted.content === "string" && converted.content.trim()) {
+        return converted.content;
+      }
+    } catch {
+      // Fall back to the lightweight parser below.
+    }
+  }
+
+  return extractPlainText(body);
+}
+
 async function defaultTokenProvider(dc) {
   try {
     const { LarkClient } = require("../../core/lark-client.js");
@@ -156,17 +258,27 @@ async function fillChatHistoryIfSparse(args) {
   // so it isn't double-counted with the @mention it's being dispatched for.
   const currentMessageId = dc.ctx && dc.ctx.messageId;
   const chronological = items.slice().reverse();
+  const senderNames = await resolveHistorySenderNames({
+    dc,
+    items: chronological,
+    nameMap: args._testNameMap,
+    log: _log,
+  });
 
   const entries = [];
   for (const m of chronological) {
     if (!m || typeof m !== "object") continue;
     if (currentMessageId && m.message_id === currentMessageId) continue;
-    const senderId = (m.sender && m.sender.id) || "unknown";
-    const text = extractPlainText(m.body);
+    const senderId = senderIdFromMessage(m);
+    const senderLabel = formatSenderLabel(senderId, senderNames.get(senderId));
+    const text = await extractMessageText(m, dc, {
+      convertMessageContent: args._testConvertMessageContent,
+      buildConvertContextFromItem: args._testBuildConvertContextFromItem,
+    });
     if (!text) continue;
     const ts = Number(m.create_time);
     entries.push({
-      sender: senderId,
+      sender: senderLabel,
       body: text,
       timestamp: Number.isFinite(ts) ? ts : Date.now(),
       messageId: m.message_id,

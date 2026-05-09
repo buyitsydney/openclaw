@@ -185,6 +185,50 @@ test("FIX: fillChatHistoryIfSparse skips fetch when Map already has ≥20 entrie
   assert.equal(chatHistories.get(historyKey).length, 20, "existing entries untouched");
 });
 
+test("FIX: fillChatHistoryIfSparse labels senders and uses the content converter", async () => {
+  const { fillChatHistoryIfSparse } = await import(HELPER_JS);
+
+  const chatHistories = new Map();
+  const dc = makeDc();
+  const fakeFetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      code: 0,
+      data: {
+        items: [
+          {
+            message_id: "om_history_1",
+            chat_id: "oc_test_group",
+            msg_type: "interactive",
+            create_time: "1000",
+            sender: { id: "ou_owner", sender_type: "user" },
+            body: { content: JSON.stringify({ json_card: "{}" }) },
+          },
+        ],
+        has_more: false,
+      },
+    }),
+  });
+
+  await fillChatHistoryIfSparse({
+    dc,
+    params: { chatHistories, historyLimit: 50 },
+    _testFetch: fakeFetch,
+    _testTokenProvider: async () => "t",
+    _testNameMap: new Map([["ou_owner", "卜弋天"]]),
+    _testConvertMessageContent: async (raw, type) => ({
+      content: `${type}: ${JSON.parse(raw).json_card}`,
+      resources: [],
+    }),
+  });
+
+  const entries = chatHistories.get(threadScopedKey(dc.ctx.chatId)) ?? [];
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].sender, "卜弋天 (ou_owner)");
+  assert.equal(entries[0].body, "interactive: {}");
+});
+
 // -------- TEST 4a: URL omits start_time / end_time (no 2h window) --------
 //
 // Rationale: if a user leaves a group overnight and @mentions the bot the
