@@ -163,6 +163,31 @@ else
 fi
 # ── end R-9 reply-card default patch ──────────────────────────────
 
+# ── R-11: direct outbound text defaults to interactive cards ──────
+# Cron/announce delivery does not pass through the realtime reply dispatcher.
+# It calls openclaw-lark's outbound adapter sendText directly, whose upstream
+# implementation sends ordinary text as msg_type=post. Keep the same visual
+# contract for proactive/cron text-only messages by wrapping them in CardKit.
+#
+# Source of truth: scripts/carher-patches/apply-outbound-card-default.sh
+# Kill switch: CARHER_DISABLE_OUTBOUND_CARD_DEFAULT_PATCH=1
+LARK_OUTBOUND="$LARK_PKG/src/messaging/outbound/outbound.js"
+if [ "${CARHER_DISABLE_OUTBOUND_CARD_DEFAULT_PATCH:-0}" = "1" ]; then
+  echo "  ⏭  outbound-card default patch skipped (CARHER_DISABLE_OUTBOUND_CARD_DEFAULT_PATCH=1)"
+elif [ ! -d "$CARHER_PATCHES_DIR" ]; then
+  echo "  ⚠️  $CARHER_PATCHES_DIR not mounted — outbound-card default patch skipped"
+elif [ ! -f "$LARK_OUTBOUND" ]; then
+  echo "  ⚠️  $LARK_OUTBOUND not found — outbound-card default patch skipped"
+else
+  echo "  ▶ Patching openclaw-lark outbound.js → direct text defaults to card..."
+  if bash "$CARHER_PATCHES_DIR/apply-outbound-card-default.sh" "$LARK_OUTBOUND"; then
+    echo "    ✓ outbound-card default patch applied"
+  else
+    echo "    ✗ outbound-card default patch failed — cron/direct sends may stay as post" >&2
+  fi
+fi
+# ── end R-11 outbound-card default patch ──────────────────────────
+
 # ── R-10: CardKit footer Her status fields ────────────────────────
 # Fleet config enables openclaw-lark streaming cards + footer. Upstream footer
 # covers status/elapsed/model/tokens/cache/context, but old Her also exposed
