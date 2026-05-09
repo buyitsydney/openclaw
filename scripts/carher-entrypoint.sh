@@ -114,6 +114,29 @@ else
 fi
 # ── end P8 history-fill patch ────────────────────────────────────
 
+# ── P8b: structured InboundHistory metadata render ----------------
+# history-fill entries now carry messageId/messageType/replyToId from
+# lark-cli's user-token view. New OpenClaw source builds render these fields
+# directly; this runtime patch keeps older /app/dist/get-reply bundles aligned
+# so the model can see message_id/msg_type/reply_to for every injected history
+# line during CarHer staged rollouts.
+CORE_GET_REPLY=$(ls /app/dist/get-reply-*.js 2>/dev/null | head -1 || true)
+if [ "${CARHER_DISABLE_INBOUND_HISTORY_META_PATCH:-0}" = "1" ]; then
+  echo "  ⏭  inbound-history metadata patch skipped (CARHER_DISABLE_INBOUND_HISTORY_META_PATCH=1)"
+elif [ ! -d "$CARHER_PATCHES_DIR" ]; then
+  echo "  ⚠️  $CARHER_PATCHES_DIR not mounted — inbound-history metadata patch skipped"
+elif [ -z "$CORE_GET_REPLY" ] || [ ! -f "$CORE_GET_REPLY" ]; then
+  echo "  ⚠️  /app/dist/get-reply-*.js not found — inbound-history metadata patch skipped"
+else
+  echo "  ▶ Patching OpenClaw get-reply → InboundHistory message metadata..."
+  if bash "$CARHER_PATCHES_DIR/apply-inbound-history-meta.sh" "$CORE_GET_REPLY"; then
+    echo "    ✓ inbound-history metadata patch applied"
+  else
+    echo "    ✗ inbound-history metadata patch failed — group history reply_to may be hidden" >&2
+  fi
+fi
+# ── end P8b inbound-history metadata render -----------------------
+
 # NOTE: an R-7 "CommandSource" / "sourceReplyDeliveryMode" patch was attempted
 # 2026-05-08 to fix /new delivered=false in groups. Neither approach worked:
 # core's /new native handler does a silent session-reset (no onBlockReply

@@ -460,18 +460,19 @@ carher 对 openclaw / 闭源上游 npm 包打的本地 patch。**修改前必读
 - **Kill switch**:无 env(可临时 `sed -i "2i exit 0" /app/docker/plugins/her-antitalker-poc/patch-agent-loop.sh` + restart + 手 cp `.orig.<ts>` 回 agent-loop.js)
 - **log 成功**:`[patch-agent-loop] PATCHED ...` 或 `[patch-agent-loop] SKIP: ... already patched`
 
-#### 🔧 R-6:`P8 proactive 20-msg history fill` (runtime, entrypoint)
+#### 🔧 R-6:`P8 proactive 20-msg history fill + metadata` (runtime, entrypoint)
 
-- **Target**:`$LARK_PKG/src/messaging/inbound/dispatch.js`(加 require helper 的一行注入)+ `$LARK_PKG/src/messaging/inbound/carher-history-fill.js`(helper,cp from bind-mount)
+- **Target**:`$LARK_PKG/src/messaging/inbound/dispatch.js`(加 require helper 的一行注入,并把 entry 的 `messageId/messageType/replyToId` 传给 InboundHistory)+ `$LARK_PKG/src/messaging/inbound/carher-history-fill.js`(helper,cp from bind-mount)+ `/app/dist/get-reply-*.js`(旧 dist 若还没从 dev 源码构建,由 `apply-inbound-history-meta.sh` 补渲染)
 - **Upstream**:`@larksuite/openclaw-lark`(闭源)
 - **Bug**:三组件迁移后 group 历史只走被动 WS event 累积;bot 重启 / 群冷场 > 20 秒 → 被 @ 时 0 条上下文,"失忆"
-- **Fix**:被 @ 时(非 `/` 系统命令)调 `/im/v1/messages` 拉最近 20 条填 Map;补出的 entry 必须走 openclaw-lark content converter,并把 sender 渲染成 `姓名 (open_id)` label;interactive/card 不能信任 list item,必须按 `message_id` 先拉 canonical message(等价 `lark-cli im +messages-mget` 的 `<card>` 视图)再解析;仍失败只能注入媒体占位,不能把 `请升级至最新版本客户端，以查看内容` 这类坏文案交给模型
-- **事故记忆(2026-05-09)**:旧 helper 只写 `sender=open_id` 且把 interactive/card 保留为 raw JSON,导致 `carher-75` 在群 context 中错认“超过限额非常惨”这句话是谁说的。随后又确认普通 interactive card 通过 `lark-cli im +chat-messages-list` / `+messages-mget` 能看到完整 `<card>` 内容,但 runtime context 注入可能只拿到 `请升级至最新版本客户端，以查看内容`。以后改 P8 必须保留 sender label + converter + placeholder 拦截 + canonical refetch 回归测试。
+- **Fix**:被 @ 时(非 `/` 系统命令)优先执行 `lark-cli im +chat-messages-list --chat-id <oc_...> --page-size 20 --sort desc --format json`(默认 user 身份)拉最近消息填 Map;这是 Her 自己做 1:1 审计用的真实群消息视图。lark-cli 不可用时才 fallback 到 `/im/v1/messages?card_msg_content_type=raw_card_content`;补出的 entry 必须把 sender 渲染成 `姓名 (open_id/cli_id)` label,并带上 `messageId`/`messageType`/`replyToId`,最终模型看到的 JSON 必须有 `message_id`/`message_type`/`reply_to_id`;interactive/card 不能信任降级 list item, fallback 路径仍需按 `message_id` 拉 canonical message 并解析;仍失败只能注入媒体占位,不能把 `请升级至最新版本客户端，以查看内容` 这类坏文案交给模型
+- **事故记忆(2026-05-09)**:旧 helper 只写 `sender=open_id` 且把 interactive/card 保留为 raw JSON,导致 `carher-75` 在群 context 中错认“超过限额非常惨”这句话是谁说的。随后又确认 Her 通过 `lark-cli im +chat-messages-list --format json` 默认 user-token 能看到完整 `<card>` 内容,但 runtime context 注入只拿到 `请升级至最新版本客户端，以查看内容`,且丢了 `reply_to` 链。以后改 P8 必须保留 lark-cli primary path + sender label + `message_id/message_type/reply_to_id` + converter + placeholder 拦截 + fallback canonical refetch 回归测试。
 - **Source**:`scripts/carher-patches/`(bind-mount 成容器 `/carher-patches:ro`)
 - **Kill switch**:
   - `CARHER_DISABLE_HISTORY_FILL_PATCH=1` (boot 时完全 skip patch)
   - `CARHER_DISABLE_HISTORY_FILL=1` (patch 在但 helper runtime no-op)
-- **log 成功**:`✓ history-fill patch applied (helper + dispatch.js)` + 运行时 `[carher-history-fill] done ... filled 19 in NNNms`
+  - `CARHER_DISABLE_INBOUND_HISTORY_META_PATCH=1` (只 skip 旧 dist 的 `message_id`/`reply_to_id` 渲染补丁)
+- **log 成功**:`✓ history-fill patch applied (helper + dispatch.js)` + `✓ inbound-history metadata patch applied` + 运行时 `[carher-history-fill] done ... filled 19 via lark-cli in NNNms`
 
 #### 🔧 R-7:`command-body mention normalization` — 群 /new @bot 修复 (runtime, entrypoint)
 
@@ -515,15 +516,17 @@ carher 对 openclaw / 闭源上游 npm 包打的本地 patch。**修改前必读
 ### Patch 完整性自检(新 image / entrypoint diff 后必跑)
 
 ```bash
-# 8 个 R-* runtime patches 都应出现在 entrypoint 启动 log 里
-docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|patch-agent-loop|session-decay|PATCHED"
-# 应看到 8 行 ✓
+# R-* runtime patches 都应出现在 entrypoint 启动 log 里
+docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|patch-agent-loop|session-decay|PATCHED"
+# 应看到每个相关 patch 的 ✓/PATCHED 成功记录
 
-# R-7 必须是 V2 marker
+# R-7 必须是 V2 marker；R-6 metadata 两端 marker 都必须在
 docker exec carher-<id> sh -lc '
   p=/data/.openclaw/extensions/node_modules/@larksuite/openclaw-lark/src/messaging/inbound/dispatch.js
   grep -n "CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER" "$p"
   grep -n "carherStripMentionsForCommandBody" "$p"
+  grep -n "CARHER_HISTORY_META_PATCH_MARKER" "$p"
+  grep -n "CARHER_INBOUND_HISTORY_META_PATCH_MARKER" /app/dist/get-reply-*.js
 '
 ```
 
@@ -619,7 +622,7 @@ sleep 75
 docker ps --format "{{.Names}}\t{{.Image}}\t{{.Status}}" | grep carher-<id>
 
 # 运行时 patch 自检
-docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|patch-agent-loop|PATCHED"
+docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|patch-agent-loop|PATCHED"
 docker exec carher-<id> sh -lc '
   p=/data/.openclaw/extensions/node_modules/@larksuite/openclaw-lark/src/messaging/inbound/dispatch.js
   grep -n "CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER" "$p"
@@ -654,7 +657,7 @@ docker run --rm --entrypoint sh <img-tag> -c "
 # (同场景 A 的 .env 改 IMAGE_TAG → compose up)
 
 # 5. 验证运行时 patch + 功能
-docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|patch-agent-loop|PATCHED"
+docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|patch-agent-loop|PATCHED"
 docker exec carher-<id> sh -lc '
   p=/data/.openclaw/extensions/node_modules/@larksuite/openclaw-lark/src/messaging/inbound/dispatch.js
   grep -n "CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER" "$p"
@@ -724,7 +727,7 @@ compose 的 `${VAR}` 在 parse 时从 `.env` / shell env 读取，不从 `env_fi
 
 **检查**:
 ```bash
-docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|patch-agent-loop|PATCHED"
+docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|patch-agent-loop|PATCHED"
 docker exec carher-<id> sh -lc '
   p=/data/.openclaw/extensions/node_modules/@larksuite/openclaw-lark/src/messaging/inbound/dispatch.js
   grep -n "CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER" "$p"

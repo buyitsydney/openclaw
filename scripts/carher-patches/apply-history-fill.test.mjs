@@ -9,7 +9,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -23,6 +23,7 @@ const DISPATCH_PATH = join(
   "test-assets/lark-pkg/package/src/messaging/inbound/dispatch.js",
 );
 const APPLY_PATCH_SH = join(__dirname, "apply-history-fill.sh");
+const APPLY_INBOUND_HISTORY_META_SH = join(__dirname, "apply-inbound-history-meta.sh");
 const HELPER_JS = join(__dirname, "history-fill-helper.js");
 
 // -------- Fixtures --------
@@ -148,6 +149,76 @@ test("FIX: fillChatHistoryIfSparse populates Map with 20 entries via fake fetch"
     assert.ok(typeof e.body === "string" && e.body.length > 0, "body present");
     assert.ok(typeof e.timestamp === "number", "timestamp present");
   }
+});
+
+test("FIX: fillChatHistoryIfSparse prefers lark-cli user history view before raw API fallback", async () => {
+  const { fillChatHistoryIfSparse } = await import(HELPER_JS);
+
+  const chatHistories = new Map();
+  const dc = makeDc();
+  let fetchCalls = 0;
+  let capturedCommand = null;
+  let capturedArgs = null;
+
+  await fillChatHistoryIfSparse({
+    dc,
+    params: { chatHistories, historyLimit: 50 },
+    _testFetch: async () => {
+      fetchCalls++;
+      return { ok: true, status: 200, json: async () => fakeFeishuMessagesResponse(20) };
+    },
+    _testExecFileJson: async (command, args) => {
+      capturedCommand = command;
+      capturedArgs = args;
+      return {
+        ok: true,
+        data: {
+          messages: [
+            {
+              message_id: "om_current_msg",
+              msg_type: "text",
+              create_time: "2026-05-09 14:39",
+              sender: { id: "ou_sender", sender_type: "user", name: "卜弋天" },
+              content: "@bot hello",
+            },
+            {
+              message_id: "om_card_full",
+              msg_type: "interactive",
+              create_time: "2026-05-09 14:38",
+              reply_to: "om_parent_msg",
+              sender: { id: "cli_peer", sender_type: "app", name: "弋天的her" },
+              content: "<card>\n天哥，我自己的 config **不是 32k，是 200k**\n</card>",
+            },
+          ],
+        },
+      };
+    },
+  });
+
+  assert.equal(fetchCalls, 0, "raw Feishu API fallback should not run after lark-cli succeeds");
+  assert.equal(capturedCommand, "lark-cli");
+  assert.deepEqual(capturedArgs, [
+    "im",
+    "+chat-messages-list",
+    "--chat-id",
+    "oc_test_group",
+    "--page-size",
+    "20",
+    "--sort",
+    "desc",
+    "--format",
+    "json",
+  ]);
+  assert.equal(capturedArgs.includes("--as"), false, "must use lark-cli's default user identity");
+
+  const entries = chatHistories.get(threadScopedKey(dc.ctx.chatId)) ?? [];
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].sender, "弋天的her (cli_peer)");
+  assert.equal(entries[0].messageId, "om_card_full");
+  assert.equal(entries[0].messageType, "interactive");
+  assert.equal(entries[0].replyToId, "om_parent_msg");
+  assert.match(entries[0].body, /<card>/);
+  assert.match(entries[0].body, /200k/);
 });
 
 // -------- TEST 3: Helper skips fetch when Map already has enough entries --------
@@ -324,17 +395,19 @@ test("FIX: fillChatHistoryIfSparse refetches canonical interactive content when 
     _testFetch: fakeFetch,
     _testTokenProvider: async () => "t",
     _testNameMap: new Map([["ou_owner", "卜弋天"]]),
-    _testFetchCanonicalMessage: async (messageId) => {
+    _testFetchCanonicalMessages: async (messageIds) => {
       canonicalFetches++;
-      assert.equal(messageId, "om_card_degraded");
-      return {
-        message_id: messageId,
-        chat_id: "oc_test_group",
-        msg_type: "interactive",
-        create_time: "1000",
-        sender: { id: "ou_owner", sender_type: "user" },
-        body: { content: canonicalContent },
-      };
+      assert.deepEqual(messageIds, ["om_card_degraded"]);
+      return [
+        {
+          message_id: "om_card_degraded",
+          chat_id: "oc_test_group",
+          msg_type: "interactive",
+          create_time: "1000",
+          sender: { id: "ou_owner", sender_type: "user" },
+          body: { content: canonicalContent },
+        },
+      ];
     },
   });
 
@@ -345,7 +418,7 @@ test("FIX: fillChatHistoryIfSparse refetches canonical interactive content when 
   assert.doesNotMatch(entries[0].body, /请升级至最新版本客户端/);
 });
 
-test("FIX: fillChatHistoryIfSparse canonicalizes every interactive card before accepting list text", async () => {
+test("FIX: fillChatHistoryIfSparse batch-canonicalizes every interactive card before accepting list text", async () => {
   const { fillChatHistoryIfSparse } = await import(HELPER_JS);
 
   const chatHistories = new Map();
@@ -383,6 +456,14 @@ test("FIX: fillChatHistoryIfSparse canonicalizes every interactive card before a
             sender: { id: "ou_owner", sender_type: "user" },
             body: { content: listDegradedContent },
           },
+          {
+            message_id: "om_card_second_degraded",
+            chat_id: "oc_test_group",
+            msg_type: "interactive",
+            create_time: "900",
+            sender: { id: "ou_owner", sender_type: "user" },
+            body: { content: listDegradedContent },
+          },
         ],
         has_more: false,
       },
@@ -396,17 +477,17 @@ test("FIX: fillChatHistoryIfSparse canonicalizes every interactive card before a
     _testFetch: fakeFetch,
     _testTokenProvider: async () => "t",
     _testNameMap: new Map([["ou_owner", "卜弋天"]]),
-    _testFetchCanonicalMessage: async (messageId) => {
+    _testFetchCanonicalMessages: async (messageIds) => {
       canonicalFetches++;
-      assert.equal(messageId, "om_card_plausible_but_degraded");
-      return {
+      assert.deepEqual(messageIds, ["om_card_second_degraded", "om_card_plausible_but_degraded"]);
+      return messageIds.map((messageId) => ({
         message_id: messageId,
         chat_id: "oc_test_group",
         msg_type: "interactive",
-        create_time: "1000",
+        create_time: messageId === "om_card_second_degraded" ? "900" : "1000",
         sender: { id: "ou_owner", sender_type: "user" },
         body: { content: canonicalContent },
-      };
+      }));
     },
     _testConvertMessageContent: async (raw, type) => {
       const parsed = JSON.parse(raw);
@@ -423,10 +504,101 @@ test("FIX: fillChatHistoryIfSparse canonicalizes every interactive card before a
 
   const entries = chatHistories.get(threadScopedKey(dc.ctx.chatId)) ?? [];
   assert.equal(canonicalFetches, 1);
-  assert.equal(entries.length, 1);
-  assert.match(entries[0].body, /<card title="完整答案有了">/);
-  assert.match(entries[0].body, /maxSkillsPromptChars/);
-  assert.doesNotMatch(entries[0].body, /全部默认值出齐/);
+  assert.equal(entries.length, 2);
+  for (const entry of entries) {
+    assert.match(entry.body, /<card title="完整答案有了">/);
+    assert.match(entry.body, /maxSkillsPromptChars/);
+    assert.doesNotMatch(entry.body, /全部默认值出齐/);
+  }
+});
+
+test("FIX: fillChatHistoryIfSparse uses raw_card_content mget and parses json_card", async () => {
+  const { fillChatHistoryIfSparse } = await import(HELPER_JS);
+
+  const chatHistories = new Map();
+  const dc = makeDc();
+  const degradedContent = JSON.stringify({
+    elements: [[{ tag: "text", text: "请升级至最新版本客户端，以查看内容" }]],
+  });
+  const rawCardContent = JSON.stringify({
+    json_card: JSON.stringify({
+      body: {
+        property: {
+          elements: [
+            {
+              tag: "div",
+              property: {
+                elements: [
+                  { tag: "plain_text", property: { content: "天哥，我自己的 config " } },
+                  { tag: "plain_text", property: { content: "不是 32k，是 200k" } },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    }),
+  });
+  let capturedMgetUrl = null;
+  const fakeFetch = async (url) => {
+    if (String(url).includes("/im/v1/messages/mget")) {
+      capturedMgetUrl = String(url);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          code: 0,
+          data: {
+            items: ["om_card_a", "om_card_b"].map((messageId) => ({
+              message_id: messageId,
+              chat_id: "oc_test_group",
+              msg_type: "interactive",
+              create_time: messageId === "om_card_a" ? "1000" : "900",
+              sender: { id: "ou_owner", sender_type: "user" },
+              body: { content: rawCardContent },
+            })),
+          },
+        }),
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        code: 0,
+        data: {
+          items: ["om_card_a", "om_card_b"].map((messageId) => ({
+            message_id: messageId,
+            chat_id: "oc_test_group",
+            msg_type: "interactive",
+            create_time: messageId === "om_card_a" ? "1000" : "900",
+            sender: { id: "ou_owner", sender_type: "user" },
+            body: { content: degradedContent },
+          })),
+        },
+      }),
+    };
+  };
+
+  await fillChatHistoryIfSparse({
+    dc,
+    params: { chatHistories, historyLimit: 50 },
+    _testFetch: fakeFetch,
+    _testTokenProvider: async () => "t",
+    _testNameMap: new Map([["ou_owner", "卜弋天"]]),
+  });
+
+  assert.ok(capturedMgetUrl, "interactive cards must be refetched through messages/mget");
+  const mgetUrl = new URL(capturedMgetUrl);
+  assert.equal(mgetUrl.searchParams.get("card_msg_content_type"), "raw_card_content");
+  assert.deepEqual(mgetUrl.searchParams.getAll("message_ids"), ["om_card_b", "om_card_a"]);
+
+  const entries = chatHistories.get(threadScopedKey(dc.ctx.chatId)) ?? [];
+  assert.equal(entries.length, 2);
+  assert.match(entries[0].body, /<card>/);
+  assert.match(entries[0].body, /不是 32k，是 200k/);
+  assert.doesNotMatch(entries[0].body, /请升级至最新版本客户端/);
+  assert.doesNotMatch(entries[0].body, /json_card/);
 });
 
 test("FIX: fillChatHistoryIfSparse never injects upgrade placeholders for image-only cards", async () => {
@@ -558,6 +730,21 @@ test("PATCH: apply-history-fill.sh injects one line before buildEnvelopeWithHist
       /require\(['"]\.\/carher-history-fill\.js['"]\)/,
       "patched code must require the helper",
     );
+    assert.match(
+      once,
+      /CARHER_HISTORY_META_PATCH_MARKER/,
+      "history metadata marker must be present after first apply",
+    );
+    assert.match(
+      once,
+      /messageId: entry\.messageId/,
+      "patched dispatch must pass message_id metadata into InboundHistory",
+    );
+    assert.match(
+      once,
+      /replyToId: entry\.replyToId/,
+      "patched dispatch must pass reply_to metadata into InboundHistory",
+    );
     // Anchor line must still be present and appear AFTER the inserted block.
     const markerIdx = once.indexOf("CARHER_HISTORY_FILL_PATCH_MARKER");
     const anchorIdx = once.indexOf("buildEnvelopeWithHistory");
@@ -568,12 +755,54 @@ test("PATCH: apply-history-fill.sh injects one line before buildEnvelopeWithHist
     // so single-apply = 2 and double-apply must still = 2.
     const singleCount = (once.match(/CARHER_HISTORY_FILL_PATCH_MARKER/g) ?? []).length;
     assert.equal(singleCount, 2, "single apply: exactly one block (2 marker lines)");
+    const singleMetaCount = (once.match(/CARHER_HISTORY_META_PATCH_MARKER/g) ?? []).length;
+    assert.equal(singleMetaCount, 2, "single apply: exactly one metadata block");
     execSync(`bash ${APPLY_PATCH_SH} ${scratch}`, { stdio: "pipe" });
     const twice = readFileSync(scratch, "utf-8");
     const doubleCount = (twice.match(/CARHER_HISTORY_FILL_PATCH_MARKER/g) ?? []).length;
     assert.equal(doubleCount, 2, "idempotent: double-apply must not duplicate the block");
+    const doubleMetaCount = (twice.match(/CARHER_HISTORY_META_PATCH_MARKER/g) ?? []).length;
+    assert.equal(doubleMetaCount, 2, "idempotent: double-apply must not duplicate metadata block");
 
     // Syntax check: patched dispatch.js must still parse (no JS broken).
+    execSync(`node --check ${scratch}`, { stdio: "pipe" });
+  } finally {
+    execSync(`rm -f ${scratch}`);
+  }
+});
+
+test("PATCH: apply-inbound-history-meta.sh renders message metadata in core history JSON", () => {
+  const scratch = join(dirname(DISPATCH_PATH), "get-reply-meta.patchscratch.js");
+  writeFileSync(
+    scratch,
+    `
+function normalizePromptMetadataString(value) { return value == null ? undefined : String(value).trim() || undefined; }
+function sanitizePromptBody(value) { return value == null ? undefined : String(value); }
+function render(boundedHistory) {
+  const label = "Chat history since last reply (untrusted, for context):";
+  return boundedHistory.map((entry) => ({
+    sender: sanitizePromptBody(entry.sender),
+    timestamp_ms: entry.timestamp,
+    body: sanitizePromptBody(entry.body)
+  }));
+}
+`,
+  );
+  try {
+    execSync(`bash ${APPLY_INBOUND_HISTORY_META_SH} ${scratch}`, { stdio: "pipe" });
+    const once = readFileSync(scratch, "utf-8");
+    assert.match(once, /CARHER_INBOUND_HISTORY_META_PATCH_MARKER/);
+    assert.match(once, /message_id: normalizePromptMetadataString\(entry\.messageId\)/);
+    assert.match(once, /message_type: normalizePromptMetadataString\(entry\.messageType\)/);
+    assert.match(once, /reply_to_id: normalizePromptMetadataString\(entry\.replyToId\)/);
+
+    const singleMetaCount = (once.match(/CARHER_INBOUND_HISTORY_META_PATCH_MARKER/g) ?? []).length;
+    assert.equal(singleMetaCount, 2, "single apply: exactly one metadata block");
+    execSync(`bash ${APPLY_INBOUND_HISTORY_META_SH} ${scratch}`, { stdio: "pipe" });
+    const twice = readFileSync(scratch, "utf-8");
+    const doubleMetaCount = (twice.match(/CARHER_INBOUND_HISTORY_META_PATCH_MARKER/g) ?? [])
+      .length;
+    assert.equal(doubleMetaCount, 2, "idempotent: double-apply must not duplicate metadata");
     execSync(`node --check ${scratch}`, { stdio: "pipe" });
   } finally {
     execSync(`rm -f ${scratch}`);

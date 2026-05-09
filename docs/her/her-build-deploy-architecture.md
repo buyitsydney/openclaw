@@ -187,7 +187,7 @@ docker inspect <container> --format '{{.Image}}' \
 | `feishu-her contracts.tools` | 显式声明 30 个 Feishu tools 和 startup activation | OpenClaw 插件契约升级后，manifest 和 runtime 注册必须对齐 |
 | `shadow-daemon activation` | container 启动即跑 shadow sync | 自家 plugin manifest 需要显式 onStartup |
 | `patch-agent-loop` | 给 antitalker stop-hook pipeline 接入 agent loop | 上游 agent loop 没有足够 extension point |
-| `history-fill` | 群聊冷启动或重启后主动补最近 20 条消息，避免上下文失忆 | Feishu group history 不应只依赖被动 WS event 累积；补历史必须解析消息内容并把 sender 渲染成人类可读 label；interactive/card 不能信任 `/im/v1/messages` 列表项，必须先按 message_id 拉 canonical message（等价于 `+messages-mget` 的 `<card>` 视图）再注入；仍失败时只能注入明确媒体占位，不能把 `请升级至最新版本客户端，以查看内容` 这类坏文案交给模型 |
+| `history-fill` + `inbound-history metadata` | 群聊冷启动或重启后主动补最近 20 条消息，避免上下文失忆 | Feishu group history 不应只依赖被动 WS event 累积；补历史的 primary path 必须走 `lark-cli im +chat-messages-list --chat-id <oc_...> --page-size 20 --sort desc --format json` 的默认 user-token 视图，和 Her 自己做 1:1 审计时看到的“真实群消息”保持一致；entry 必须携带 `messageId` / `messageType` / `replyToId` 并在模型的 `InboundHistory` JSON 里渲染为 `message_id` / `message_type` / `reply_to_id`；只有 lark-cli 不可用时才 fallback 到裸 `/im/v1/messages` + `card_msg_content_type=raw_card_content`，并继续保证 sender 可读、card 不退化、坏占位不进模型 |
 
 曾经的 build-time `apply-reset-archive-patches.sh` 现在是 no-op stub。它保留为历史记忆，不代表当前有 active build-time patch。
 
@@ -197,18 +197,18 @@ docker inspect <container> --format '{{.Image}}' \
 2. 不要直接 SSH 改服务器代码。正确路径是本地 commit + push，服务器 `git pull --ff-only <remote> dev`，再 compose recreate。
 3. S1 和 S3 的 remote 名称可以不同。当前 S1 使用 `carher`，S3 使用 `origin`；升级脚本不能假设 remote 名固定。
 4. `command-body mention normalization` 必须保持 V2 marker：`CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER`。V1 只能算未升级。
-5. `history-fill` 不能退化成 raw API dump。回归测试必须覆盖 sender name label、interactive/card converter、API 降级占位拦截、interactive 一律 canonical message refetch。模型视角的 group history 应和 `lark-cli im +chat-messages-list` / `+messages-mget` 的可读正文保持内容等价，不允许出现 `请升级至最新版本客户端，以查看内容`、raw `ou_xxx` / `cli_xxx`、或 raw card JSON 穿透。
+5. `history-fill` 不能退化成 raw API dump。回归测试必须覆盖 lark-cli default-user primary path、sender name label、`message_id` / `message_type` / `reply_to_id` 注入、interactive/card converter、API 降级占位拦截、interactive fallback canonical refetch。模型视角的 group history 应和 `lark-cli im +chat-messages-list --format json` 的可读正文保持内容等价，不允许出现 `请升级至最新版本客户端，以查看内容` 或 raw card JSON 穿透，不能丢 reply 链结构。
 6. 任一 patch anchor 失效都不要 ship。先读目标上游文件，更新 patch script，再跑本地和服务器上的 patch tests。
 7. 功能 smoke 至少覆盖：`/new @bot`、`@bot /new`、`/new @bot1 @bot2`、`/status @bot`。期望日志是 `detected system command` 和 `system command dispatched (delivered=true)`，不应出现命令消息 `dispatching to agent`。
 8. 不要用直接 Feishu ack 或 `CommandSource:native` 修 `/new`。前者绕过 core reset 语义，后者曾导致 `/status` 双回复。
 
 ### Runtime Patch Self-Check
 
-每台容器启动后必须看到 7 个 runtime patch 全中：
+每台容器启动后必须看到 8 个 runtime patch 全中：
 
 ```bash
 docker logs carher-<id> 2>&1 \
-  | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|patch-agent-loop|PATCHED"
+  | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|patch-agent-loop|PATCHED"
 ```
 
 `command-body` 还要查容器内 marker：
@@ -218,6 +218,8 @@ docker exec carher-<id> sh -lc '
   p=/data/.openclaw/extensions/node_modules/@larksuite/openclaw-lark/src/messaging/inbound/dispatch.js
   grep -n "CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER" "$p"
   grep -n "carherStripMentionsForCommandBody" "$p"
+  grep -n "CARHER_HISTORY_META_PATCH_MARKER" "$p"
+  grep -n "CARHER_INBOUND_HISTORY_META_PATCH_MARKER" /app/dist/get-reply-*.js
 '
 ```
 

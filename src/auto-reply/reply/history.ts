@@ -32,6 +32,8 @@ export type HistoryEntry = {
   body: string;
   timestamp?: number;
   messageId?: string;
+  messageType?: string;
+  replyToId?: string;
 };
 
 export function buildHistoryContext(params: {

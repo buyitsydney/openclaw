@@ -3,13 +3,17 @@
 //
 // CARHER PATCH: proactive 20-msg group history fill.
 //
-// Why this exists: 1-week-ago feishu-her/gateway.ts fetched the most recent
-// 20 group messages via tenant_access_token on every @mention. That code was
-// removed when the channel moved to @larksuite/openclaw-lark, which now
-// accumulates history passively via `im.message.receive_v1` events. After a
-// container restart the in-memory Map is empty, so bots lose context until
-// humans rebuild it message-by-message. This helper restores pre-migration
-// behavior without forking the lark package.
+// Why this exists: 1-week-ago feishu-her/gateway.ts proactively fetched recent
+// group messages on every @mention. That code was removed when the channel
+// moved to @larksuite/openclaw-lark, which now accumulates history passively via
+// `im.message.receive_v1` events. After a container restart the in-memory Map is
+// empty, so bots lose context until humans rebuild it message-by-message. This
+// helper restores pre-migration behavior without forking the lark package.
+//
+// Primary source: lark-cli's default user-token view, matching the audit command
+// Her uses for 1:1 comparisons:
+//   lark-cli im +chat-messages-list --chat-id <oc_...> --page-size 20 --sort desc --format json
+// The raw Feishu API path below is only a fallback when lark-cli is unavailable.
 //
 // Shipped into the container at:
 //   /data/.openclaw/extensions/node_modules/@larksuite/openclaw-lark/src/messaging/inbound/carher-history-fill.js
@@ -82,7 +86,15 @@ function formatMention(node) {
 
 function extractTextNodeContent(node) {
   if (!node || typeof node !== "object") return "";
-  return usableText(node.content) || usableText(node.text);
+  const property = node.property && typeof node.property === "object" ? node.property : null;
+  const directText = node.text;
+  const propertyText = property && property.text;
+  return (
+    usableText(node.content) ||
+    (typeof directText === "string" ? usableText(directText) : extractTextNodeContent(directText)) ||
+    (property ? usableText(property.content) : "") ||
+    (typeof propertyText === "string" ? usableText(propertyText) : extractTextNodeContent(propertyText))
+  );
 }
 
 function pushUnique(list, value) {
@@ -99,32 +111,41 @@ function flattenCardElement(element, acc) {
   }
 
   const tag = trimString(element.tag);
+  const property = element.property && typeof element.property === "object" ? element.property : null;
   switch (tag) {
     case "text":
     case "plain_text":
     case "markdown":
     case "lark_md":
-      return usableText(element.text) || usableText(element.content);
+      return extractTextNodeContent(element);
     case "a": {
-      const text = usableText(element.text) || usableText(element.content);
-      const href = trimString(element.href) || trimString(element.url);
+      const text = extractTextNodeContent(element);
+      const href =
+        trimString(element.href) ||
+        trimString(element.url) ||
+        (property ? trimString(property.href) || trimString(property.url) : "");
       return text && href ? `[${text}](${href})` : text;
     }
     case "at":
       return formatMention(element);
     case "img": {
-      const imageKey = trimString(element.img_key) || trimString(element.image_key);
+      const imageKey =
+        trimString(element.img_key) ||
+        trimString(element.image_key) ||
+        (property ? trimString(property.img_key) || trimString(property.image_key) : "");
       pushUnique(acc.imageKeys, imageKey);
       return acc.imagePlaceholder;
     }
     case "media": {
-      const fileName = trimString(element.file_name) || "video";
+      const fileName =
+        trimString(element.file_name) || (property ? trimString(property.file_name) : "") || "video";
       return `[video:${fileName}]`;
     }
     case "emotion":
       return element.emoji_type ? `[${trimString(element.emoji_type)}]` : "[emotion]";
     case "button": {
-      const label = extractTextNodeContent(element.text);
+      const label =
+        extractTextNodeContent(element.text) || (property ? extractTextNodeContent(property.text) : "");
       return label ? `[button: ${label}]` : "[button]";
     }
     case "hr":
@@ -139,6 +160,16 @@ function flattenCardElement(element, acc) {
           if (fieldText) parts.push(fieldText);
         }
       }
+      if (property && Array.isArray(property.fields)) {
+        for (const field of property.fields) {
+          const fieldText = extractTextNodeContent(field && field.text);
+          if (fieldText) parts.push(fieldText);
+        }
+      }
+      if (property && Array.isArray(property.elements)) {
+        const childText = flattenCardChildren(property.elements, acc);
+        if (childText) parts.push(childText);
+      }
       return parts.join("\n");
     }
     case "note":
@@ -150,9 +181,11 @@ function flattenCardElement(element, acc) {
       if (Array.isArray(element.elements)) childGroups.push(element.elements);
       if (Array.isArray(element.columns)) childGroups.push(element.columns);
       if (Array.isArray(element.actions)) childGroups.push(element.actions);
+      if (property && Array.isArray(property.elements)) childGroups.push(property.elements);
+      if (property && Array.isArray(property.columns)) childGroups.push(property.columns);
+      if (property && Array.isArray(property.actions)) childGroups.push(property.actions);
       const childText = childGroups
-        .flat()
-        .map((child) => flattenCardElement(child, acc))
+        .map((children) => flattenCardChildren(children, acc, tag))
         .filter(Boolean)
         .join(tag === "note" ? " " : "\n");
       if (childText) return childText;
@@ -161,25 +194,61 @@ function flattenCardElement(element, acc) {
   }
 }
 
+function isInlineCardElement(element) {
+  if (!element || typeof element !== "object" || Array.isArray(element)) return false;
+  const tag = trimString(element.tag);
+  return ["text", "plain_text", "markdown", "lark_md", "a", "at", "img", "emotion"].includes(tag);
+}
+
+function flattenCardChildren(children, acc, parentTag) {
+  if (!Array.isArray(children)) return "";
+  const parts = children.map((child) => flattenCardElement(child, acc)).filter(Boolean);
+  if (parts.length === 0) return "";
+  if (parentTag === "note") return parts.join(" ");
+  const allInline = children.every(isInlineCardElement);
+  return parts.join(allInline ? "" : "\n");
+}
+
 function parseInteractiveText(parsed) {
   if (!parsed || typeof parsed !== "object") return "";
+  if (typeof parsed.json_card === "string") {
+    const jsonCard = parseJson(parsed.json_card);
+    const text = parseInteractiveText(jsonCard);
+    return text ? `<card>\n${text}\n</card>` : "";
+  }
   const acc = { imageKeys: [], imagePlaceholder: "<media:image>" };
   const lines = [];
-  const headerTitle = extractTextNodeContent(parsed.header && parsed.header.title);
-  const title = usableText(parsed.title);
+  const header = parsed.header && typeof parsed.header === "object" ? parsed.header : null;
+  const headerProperty = header && header.property && typeof header.property === "object" ? header.property : null;
+  const headerTitle =
+    extractTextNodeContent(header && header.title) || extractTextNodeContent(headerProperty && headerProperty.title);
+  const title =
+    usableText(parsed.title) ||
+    extractTextNodeContent(parsed.title) ||
+    (parsed.property && typeof parsed.property === "object" ? extractTextNodeContent(parsed.property.title) : "");
   if (headerTitle) lines.push(headerTitle);
   else if (title) lines.push(title);
 
   const bodyElements =
     parsed.body && typeof parsed.body === "object" && Array.isArray(parsed.body.elements)
       ? parsed.body.elements
+      : parsed.body &&
+          typeof parsed.body === "object" &&
+          parsed.body.property &&
+          typeof parsed.body.property === "object" &&
+          Array.isArray(parsed.body.property.elements)
+        ? parsed.body.property.elements
       : null;
-  const topElements = Array.isArray(parsed.elements) ? parsed.elements : null;
+  const topElements = Array.isArray(parsed.elements)
+    ? parsed.elements
+    : parsed.property && typeof parsed.property === "object" && Array.isArray(parsed.property.elements)
+      ? parsed.property.elements
+      : null;
   const elementGroups = bodyElements || topElements;
   if (Array.isArray(elementGroups)) {
     for (const element of elementGroups) {
       if (Array.isArray(element)) {
-        const row = element.map((child) => flattenCardElement(child, acc)).join("").trim();
+        const row = flattenCardChildren(element, acc).trim();
         if (row) lines.push(row);
       } else {
         const text = flattenCardElement(element, acc).trim();
@@ -194,6 +263,12 @@ function parseInteractiveText(parsed) {
     return `[interactive card: image ${acc.imageKeys.join(", ")}]`;
   }
   return "";
+}
+
+function isRawInteractiveJsonText(text, messageType) {
+  if (messageType !== "interactive" || typeof text !== "string") return false;
+  const parsed = parseJson(text.trim());
+  return Boolean(parsed && typeof parsed === "object" && "json_card" in parsed);
 }
 
 function resolvePostBody(parsed) {
@@ -290,6 +365,51 @@ function optionalRequire(path) {
   }
 }
 
+function execFileJson(command, args, options) {
+  const childProcess = optionalRequire("node:child_process") || optionalRequire("child_process");
+  if (!childProcess || typeof childProcess.execFile !== "function") {
+    return Promise.reject(new Error("execFile_unavailable"));
+  }
+  return new Promise((resolve, reject) => {
+    childProcess.execFile(
+      command,
+      args,
+      {
+        timeout: options.timeoutMs,
+        maxBuffer: options.maxBuffer,
+        env: { ...process.env, NO_COLOR: "1" },
+      },
+      (err, stdout, stderr) => {
+        if (err) {
+          err.stderr = stderr;
+          reject(err);
+          return;
+        }
+        try {
+          resolve(parseLarkCliJson(stdout));
+        } catch (parseErr) {
+          reject(parseErr);
+        }
+      },
+    );
+  });
+}
+
+function parseLarkCliJson(stdout) {
+  const raw = typeof stdout === "string" ? stdout.trim() : "";
+  if (!raw) throw new Error("empty_lark_cli_stdout");
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const start = raw.indexOf("{");
+    const end = raw.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      return JSON.parse(raw.slice(start, end + 1));
+    }
+    throw new Error("invalid_lark_cli_json");
+  }
+}
+
 function senderIdFromMessage(m) {
   return (m && m.sender && m.sender.id) || "unknown";
 }
@@ -302,6 +422,148 @@ function formatSenderLabel(senderId, name) {
   if (!senderId || senderId === "unknown") return name || "unknown";
   if (!name || name === senderId) return senderId;
   return `${name} (${senderId})`;
+}
+
+function firstTrimmedString(...values) {
+  for (const value of values) {
+    const trimmed = trimString(value);
+    if (trimmed) return trimmed;
+  }
+  return "";
+}
+
+function messageTypeFromMessage(message) {
+  return firstTrimmedString(message && message.msg_type, message && message.message_type, message && message.content_type);
+}
+
+function replyToIdFromMessage(message) {
+  if (!message || typeof message !== "object") return "";
+  const reply = message.reply && typeof message.reply === "object" ? message.reply : null;
+  return firstTrimmedString(
+    message.reply_to,
+    message.reply_to_id,
+    message.parent_id,
+    reply && reply.parentId,
+    reply && reply.parent_id,
+  );
+}
+
+function parseHistoryTimestamp(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value > 1e12 ? value : value * 1000;
+  }
+  const raw = trimString(value);
+  if (!raw) return Date.now();
+  if (/^\d+$/.test(raw)) {
+    const numeric = Number(raw);
+    return numeric > 1e12 ? numeric : numeric * 1000;
+  }
+  const shanghaiMatch = raw.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::(\d{2}))?$/);
+  if (shanghaiMatch) {
+    const parsed = Date.parse(`${shanghaiMatch[1]}T${shanghaiMatch[2]}:${shanghaiMatch[3] || "00"}+08:00`);
+    return Number.isFinite(parsed) ? parsed : Date.now();
+  }
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function buildHistoryEntryFromLarkCliMessage(message, currentMessageId) {
+  if (!message || typeof message !== "object") return null;
+  if (currentMessageId && message.message_id === currentMessageId) return null;
+  const body = usableText(message.content);
+  if (!body || hasUpgradeHint(body)) return null;
+  const sender = message.sender && typeof message.sender === "object" ? message.sender : {};
+  const senderId = trimString(sender.id) || "unknown";
+  const senderLabel = formatSenderLabel(senderId, trimString(sender.name));
+  return {
+    sender: senderLabel,
+    body,
+    timestamp: parseHistoryTimestamp(message.create_time),
+    messageId: message.message_id,
+    messageType: messageTypeFromMessage(message),
+    replyToId: replyToIdFromMessage(message),
+  };
+}
+
+async function fetchHistoryEntriesViaLarkCli(params) {
+  if (typeof params.testFetchLarkCliHistory === "function") {
+    const messages = await params.testFetchLarkCliHistory({
+      chatId: params.chatId,
+      threadId: params.threadId,
+      want: params.want,
+    });
+    return buildHistoryEntriesFromLarkCliMessages({
+      messages,
+      currentMessageId: params.currentMessageId,
+      want: params.want,
+    });
+  }
+
+  const isThread = Boolean(params.threadId);
+  const cliArgs = isThread
+    ? [
+        "im",
+        "+threads-messages-list",
+        "--thread",
+        params.threadId,
+        "--page-size",
+        String(params.want),
+        "--sort",
+        "desc",
+        "--format",
+        "json",
+      ]
+    : [
+        "im",
+        "+chat-messages-list",
+        "--chat-id",
+        params.chatId,
+        "--page-size",
+        String(params.want),
+        "--sort",
+        "desc",
+        "--format",
+        "json",
+      ];
+  const candidates = [
+    trimString(process.env.CARHER_LARK_CLI_BIN),
+    "lark-cli",
+    "/usr/local/bin/lark-cli",
+  ].filter(Boolean);
+  const execJson = params.testExecFileJson || execFileJson;
+  let lastError = null;
+  for (const command of params.testExecFileJson ? ["lark-cli"] : [...new Set(candidates)]) {
+    try {
+      const payload = await execJson(command, cliArgs, {
+        timeoutMs: 5000,
+        maxBuffer: 5 * 1024 * 1024,
+      });
+      const messages = payload && payload.data && payload.data.messages;
+      return buildHistoryEntriesFromLarkCliMessages({
+        messages,
+        currentMessageId: params.currentMessageId,
+        want: params.want,
+      });
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  if (params.log) {
+    params.log(`[carher-history-fill] lark-cli history failed: ${String(lastError)}`);
+  }
+  return [];
+}
+
+function buildHistoryEntriesFromLarkCliMessages(params) {
+  const messages = Array.isArray(params.messages) ? params.messages : [];
+  const entries = [];
+  for (const message of messages.slice().reverse()) {
+    const entry = buildHistoryEntryFromLarkCliMessage(message, params.currentMessageId);
+    if (!entry) continue;
+    entries.push(entry);
+    if (entries.length >= params.want) break;
+  }
+  return entries;
 }
 
 async function resolveHistorySenderNames({ dc, items, nameMap, log }) {
@@ -356,34 +618,17 @@ async function extractMessageText(m, dc, testHooks) {
   const raw = body && typeof body.content === "string" ? body.content : "";
   const messageType = m && (m.msg_type || m.message_type || m.content_type);
 
-  // Mirror feishu-her's chat-history canonicalization step: timeline/list
-  // results can contain degraded interactive bodies, while message.get returns
-  // the stable card payload that lark-cli +messages-mget renders as <card>.
-  if (messageId && messageType === "interactive") {
-    const canonical = await fetchCanonicalMessageItem({
-      messageId,
-      fetchImpl: testHooks && testHooks.fetchImpl,
-      token: testHooks && testHooks.token,
-      log: testHooks && testHooks.log,
-      testFetchCanonicalMessage: testHooks && testHooks.fetchCanonicalMessage,
-    });
-    if (canonical) {
-      const canonicalText = await extractMessageTextFromItem(canonical, dc, testHooks);
-      if (canonicalText && !isWeakInteractiveText(canonicalText, messageType)) {
-        return canonicalText;
-      }
-      if (canonicalText && !hasUpgradeHint(canonicalText)) {
-        return canonicalText;
-      }
-    }
-  }
-
   const localText = await extractMessageTextFromItem(m, dc, testHooks);
   const shouldTryCanonical =
     messageId &&
     messageType !== "interactive" &&
     (hasUpgradeHint(raw) || !localText || isWeakInteractiveText(localText, messageType));
-  if (!shouldTryCanonical && localText && !isWeakInteractiveText(localText, messageType)) {
+  if (
+    !shouldTryCanonical &&
+    localText &&
+    !isWeakInteractiveText(localText, messageType) &&
+    !isRawInteractiveJsonText(localText, messageType)
+  ) {
     return localText;
   }
 
@@ -397,7 +642,11 @@ async function extractMessageText(m, dc, testHooks) {
     });
     if (canonical && canonical !== m) {
       const canonicalText = await extractMessageTextFromItem(canonical, dc, testHooks);
-      if (canonicalText && !isWeakInteractiveText(canonicalText, messageType)) {
+      if (
+        canonicalText &&
+        !isWeakInteractiveText(canonicalText, messageType) &&
+        !isRawInteractiveJsonText(canonicalText, messageType)
+      ) {
         return canonicalText;
       }
       if (canonicalText && !hasUpgradeHint(canonicalText)) {
@@ -434,7 +683,11 @@ async function extractMessageTextFromItem(m, dc, testHooks) {
       const converted = await convertMessageContent(raw, messageType, ctx);
       if (converted && typeof converted.content === "string") {
         const text = usableText(converted.content);
-        if (text && !isWeakInteractiveText(text, messageType)) {
+        if (
+          text &&
+          !isWeakInteractiveText(text, messageType) &&
+          !isRawInteractiveJsonText(text, messageType)
+        ) {
           return text;
         }
       }
@@ -446,6 +699,62 @@ async function extractMessageTextFromItem(m, dc, testHooks) {
   const fallback = fallbackMessageText(raw, messageType || "text");
   if (fallback) return fallback;
   return extractPlainText(body);
+}
+
+async function fetchCanonicalMessageItems(params) {
+  const ids = [...new Set((params.messageIds || []).filter(Boolean))].slice(0, 50);
+  const result = new Map();
+  if (ids.length === 0) return result;
+  if (typeof params.testFetchCanonicalMessages === "function") {
+    try {
+      const messages = await params.testFetchCanonicalMessages(ids);
+      if (messages instanceof Map) return messages;
+      if (Array.isArray(messages)) {
+        for (const item of messages) {
+          if (item && item.message_id) result.set(item.message_id, item);
+        }
+      }
+      return result;
+    } catch (err) {
+      if (params.log) params.log(`[carher-history-fill] test canonical batch fetch failed: ${String(err)}`);
+      return result;
+    }
+  }
+  if (!params.token || typeof params.fetchImpl !== "function") return result;
+
+  const query = new URLSearchParams();
+  query.set("card_msg_content_type", "raw_card_content");
+  for (const id of ids) query.append("message_ids", id);
+  const url = `https://open.feishu.cn/open-apis/im/v1/messages/mget?${query.toString()}`;
+  try {
+    const signal =
+      typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
+        ? AbortSignal.timeout(3000)
+        : undefined;
+    const resp = await params.fetchImpl(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${params.token}` },
+      ...(signal ? { signal } : {}),
+    });
+    if (!resp || !resp.ok) {
+      if (params.log) {
+        params.log(`[carher-history-fill] canonical mget !ok count=${ids.length} status=${resp && resp.status}`);
+      }
+      return result;
+    }
+    const payload = await resp.json();
+    const items = payload && payload.data && payload.data.items;
+    if (!Array.isArray(items)) return result;
+    for (const item of items) {
+      if (item && item.message_id) result.set(item.message_id, item);
+    }
+    return result;
+  } catch (err) {
+    if (params.log) {
+      params.log(`[carher-history-fill] canonical mget error count=${ids.length}: ${String(err)}`);
+    }
+    return result;
+  }
 }
 
 async function fetchCanonicalMessageItem(params) {
@@ -540,6 +849,25 @@ async function fillChatHistoryIfSparse(args) {
   }
   _log(`[carher-history-fill] start ${chatId}: have=${have} want=${want}`);
 
+  const currentMessageId = dc.ctx && dc.ctx.messageId;
+  if (!args._testFetch || args._testFetchLarkCliHistory || args._testExecFileJson) {
+    const cliStart = Date.now();
+    const cliEntries = await fetchHistoryEntriesViaLarkCli({
+      chatId,
+      threadId: dc.isThread ? dc.ctx.threadId : undefined,
+      currentMessageId,
+      want,
+      log: _log,
+      testFetchLarkCliHistory: args._testFetchLarkCliHistory,
+      testExecFileJson: args._testExecFileJson,
+    });
+    if (cliEntries.length > 0) {
+      params.chatHistories.set(historyKey, cliEntries);
+      _log(`[carher-history-fill] done ${chatId}: filled ${cliEntries.length} via lark-cli in ${Date.now() - cliStart}ms`);
+      return;
+    }
+  }
+
   const fetchImpl = args._testFetch || globalThis.fetch;
   const tokenProvider = args._testTokenProvider || (() => defaultTokenProvider(dc));
 
@@ -566,6 +894,7 @@ async function fillChatHistoryIfSparse(args) {
     "https://open.feishu.cn/open-apis/im/v1/messages?" +
     "container_id_type=chat" +
     `&container_id=${encodeURIComponent(chatId)}` +
+    "&card_msg_content_type=raw_card_content" +
     "&sort_type=ByCreateTimeDesc" +
     `&page_size=${want}`;
 
@@ -603,8 +932,22 @@ async function fillChatHistoryIfSparse(args) {
   // API returns newest-first; reverse to chronological (oldest first) so the
   // prompt injection reads naturally. Also drop the current trigger message
   // so it isn't double-counted with the @mention it's being dispatched for.
-  const currentMessageId = dc.ctx && dc.ctx.messageId;
   const chronological = items.slice().reverse();
+  const fillCandidates = chronological.filter((m) => {
+    if (!m || typeof m !== "object") return false;
+    return !(currentMessageId && m.message_id === currentMessageId);
+  });
+  const interactiveMessageIds = fillCandidates
+    .filter((m) => (m.msg_type || m.message_type || m.content_type) === "interactive")
+    .map((m) => m.message_id)
+    .filter(Boolean);
+  const canonicalInteractiveMessages = await fetchCanonicalMessageItems({
+    messageIds: interactiveMessageIds,
+    fetchImpl,
+    token,
+    log: _log,
+    testFetchCanonicalMessages: args._testFetchCanonicalMessages,
+  });
   const senderNames = await resolveHistorySenderNames({
     dc,
     items: chronological,
@@ -613,12 +956,12 @@ async function fillChatHistoryIfSparse(args) {
   });
 
   const entries = [];
-  for (const m of chronological) {
+  for (const m of fillCandidates) {
     if (!m || typeof m !== "object") continue;
-    if (currentMessageId && m.message_id === currentMessageId) continue;
     const senderId = senderIdFromMessage(m);
     const senderLabel = formatSenderLabel(senderId, senderNames.get(senderId));
-    const text = await extractMessageText(m, dc, {
+    const contentItem = canonicalInteractiveMessages.get(m.message_id) || m;
+    const text = await extractMessageText(contentItem, dc, {
       convertMessageContent: args._testConvertMessageContent,
       buildConvertContextFromItem: args._testBuildConvertContextFromItem,
       fetchCanonicalMessage: args._testFetchCanonicalMessage,
@@ -633,6 +976,8 @@ async function fillChatHistoryIfSparse(args) {
       body: text,
       timestamp: Number.isFinite(ts) ? ts : Date.now(),
       messageId: m.message_id,
+      messageType: messageTypeFromMessage(m),
+      replyToId: replyToIdFromMessage(m),
     });
     if (entries.length >= want) break;
   }

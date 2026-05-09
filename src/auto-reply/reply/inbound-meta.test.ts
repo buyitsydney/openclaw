@@ -579,4 +579,32 @@ describe("buildInboundUserContextPrefix", () => {
     expect(history[0]?.["body"]).toBe("body-5");
     expect(history.at(-1)?.["body"]).toBe("body-24");
   });
+
+  it("includes per-message history ids and reply targets when present", () => {
+    const text = buildInboundUserContextPrefix({
+      ChatType: "group",
+      InboundHistory: [
+        {
+          sender: "弋天的her (cli_a917e5525178dbb3)",
+          body: "<card>\n能，但只是软约束。\n</card>",
+          timestamp: 1778304060000,
+          messageId: "om_x100b50d809bfd480b2bede635b96fe6",
+          messageType: "interactive",
+          replyToId: "om_x100b50d80fd604acc45d5591810bd02",
+        },
+      ],
+    } as TemplateContext);
+
+    const history = parseHistoryPayload(text);
+    expect(history).toEqual([
+      {
+        message_id: "om_x100b50d809bfd480b2bede635b96fe6",
+        message_type: "interactive",
+        reply_to_id: "om_x100b50d80fd604acc45d5591810bd02",
+        sender: "弋天的her (cli_a917e5525178dbb3)",
+        timestamp_ms: 1778304060000,
+        body: "<card>\n能，但只是软约束。\n</card>",
+      },
+    ]);
+  });
 });

@@ -271,6 +271,9 @@ export function buildInboundUserContextPrefix(
       formatUntrustedJsonBlock(
         "Chat history since last reply (untrusted, for context):",
         boundedHistory.map((entry) => ({
+          message_id: normalizePromptMetadataString(entry.messageId),
+          message_type: normalizePromptMetadataString(entry.messageType),
+          reply_to_id: normalizePromptMetadataString(entry.replyToId),
           sender: sanitizePromptBody(entry.sender),
           timestamp_ms: entry.timestamp,
           body: sanitizePromptBody(entry.body),
