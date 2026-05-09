@@ -125,6 +125,10 @@ Run these before full rollout:
 | known-bots      | group contains multiple Her app senders        | model-visible sender labels include names like `弋天的her (cli_...)`, not bare `cli_...` only                                                      |
 | reply-chain     | trigger is a reply/thread message              | context includes `message_id`, `message_type`, and `reply_to_id` when lark-cli exposes them                                                        |
 | card-output     | normal Her answer                              | user-visible reply is an interactive card unless a documented fallback applies                                                                     |
+| card-coalesce   | prompt asks for 5-8 short numbered points      | one bot turn should produce one interactive card, not many `post`/card fragments                                                                  |
+| tool-coalesce   | prompt asks bot to inspect something with tools | tool/progress/final output should remain in one card when the channel supports it; any fallback fragments must be explained by logs                 |
+| footer-status   | normal Her answer                              | final card footer includes model, context/tokens, cache/compact state when available, and group mode when the chat is a group                       |
+| self-send       | bot sends a proactive/follow-up style message  | bot-originated outbound path is interactive/card-shaped or explicitly documented as a safe fallback                                                 |
 | a2a-route       | S1 test bot asks for an S3 bot capability      | A2A logs show registry lookup and LAN endpoint route when peer is remote                                                                           |
 
 ## Pass Criteria For History 1:1
@@ -145,7 +149,7 @@ The model-visible `InboundHistory` does not need to be byte-for-byte identical t
 Patch markers that must appear after container start:
 
 ```bash
-docker logs carher-200 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|reply-card default|patch-agent-loop|session-decay|PATCHED"
+docker logs carher-200 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|reply-card default|footer-status|patch-agent-loop|session-decay|PATCHED"
 ```
 
 For `/new` and `/status` command tests, look for:

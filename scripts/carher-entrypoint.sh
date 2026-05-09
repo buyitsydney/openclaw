@@ -163,6 +163,30 @@ else
 fi
 # ── end R-9 reply-card default patch ──────────────────────────────
 
+# ── R-10: CardKit footer Her status fields ────────────────────────
+# Fleet config enables openclaw-lark streaming cards + footer. Upstream footer
+# covers status/elapsed/model/tokens/cache/context, but old Her also exposed
+# compaction count and group-chat mode. This patch enriches footer metrics by
+# reading session compactionCount and Redis group:mode:{chatId}:{appId}.
+#
+# Source of truth: scripts/carher-patches/apply-footer-status.sh
+# Kill switch: CARHER_DISABLE_FOOTER_STATUS_PATCH=1
+if [ "${CARHER_DISABLE_FOOTER_STATUS_PATCH:-0}" = "1" ]; then
+  echo "  ⏭  footer-status patch skipped (CARHER_DISABLE_FOOTER_STATUS_PATCH=1)"
+elif [ ! -d "$CARHER_PATCHES_DIR" ]; then
+  echo "  ⚠️  $CARHER_PATCHES_DIR not mounted — footer-status patch skipped"
+elif [ ! -d "$LARK_PKG" ]; then
+  echo "  ⚠️  $LARK_PKG not found — footer-status patch skipped"
+else
+  echo "  ▶ Patching openclaw-lark CardKit footer → compaction + group mode..."
+  if bash "$CARHER_PATCHES_DIR/apply-footer-status.sh" "$LARK_PKG"; then
+    echo "    ✓ footer-status patch applied"
+  else
+    echo "    ✗ footer-status patch failed — CardKit footer may miss compact/group mode" >&2
+  fi
+fi
+# ── end R-10 footer status patch ─────────────────────────────────
+
 # NOTE: an R-7 "CommandSource" / "sourceReplyDeliveryMode" patch was attempted
 # 2026-05-08 to fix /new delivered=false in groups. Neither approach worked:
 # core's /new native handler does a silent session-reset (no onBlockReply

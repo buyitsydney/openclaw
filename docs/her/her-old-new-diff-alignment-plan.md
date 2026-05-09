@@ -26,6 +26,9 @@ Known regressions already fixed or partially fixed:
 Current new focus:
 
 - Her sometimes sends interactive cards and sometimes ugly plain text. Determine every outbound reply path and make regular Her answers consistently card-rendered.
+- Her should avoid flooding groups with many fragmented `post` messages. Old `feishu-her` accumulated block/final reply pieces into one user-facing card whenever possible; new architecture must recover that experience.
+- Her card footer must come back: model, token/context usage, cache/compact state, and group-chat mode should be visible on normal AI replies.
+- Online verification must cover multiple outbound paths, not just one short final answer: normal answer, long answer, multi-step/tool answer, bot-initiated/self-send path, reply/thread path, system command, and error/fallback paths where practical.
 - Create a reusable online E2E test skill and use docker198/199/200 for real Feishu group tests.
 
 ## Constraints
@@ -76,6 +79,8 @@ Current new focus:
 | Slash commands        | `/new` and `/status` are system commands and never enter LLM             | command text can include bot mentions before/after command | command logs + user-visible ack                 |
 | History injection     | group context has readable sender/content for recent messages            | passive WS or raw API can lose cards/senders/reply chain   | history-card, known-bots, reply-chain           |
 | Interactive cards     | Her replies use nice card formatting where expected                      | mixed reply paths emit ugly text/post                      | card-output                                     |
+| Reply aggregation     | one turn is collapsed into one card where possible                       | block/tool/final events can flood group with many posts    | card-coalesce, tool-coalesce                    |
+| Status footer         | card footer shows model/context/compact/group mode                       | openclaw-lark footer defaults off and lacks group mode     | footer-status                                   |
 | Bot registry          | app senders resolve to Her names                                         | bare `cli_xxx` causes attribution mistakes                 | known-bots                                      |
 | A2A                   | authorized Her can find peers across fleet                               | stale server/local routing or missing registry data        | a2a-route                                       |
 | lark-cli tools/skills | tools/skills available through lark-cli skill layer                      | new channel-only openclaw-lark removed old plugin surfaces | tool smoke by domain                            |
@@ -121,3 +126,12 @@ Append dated entries here as work progresses:
 - Online evidence: S1 `/Data/CarHer` checked out the gray branch and only `carher-200` was force-recreated. Startup logs show `✓ reply-card default patch applied`. First lark-cli send using raw `cli_a96...` did not trigger because the outgoing text became `<at user_id="">研究3</at>`; corrected by resolving `研究3` to `ou_c2bc759110aa5bc80b2edea2ede864e9` via `lark-cli im chat.members bots`. Second trigger `HER_E2E_20260509T2258_card_default` produced bot reply `om_x100b50c0fe60bca4b10bc45863b2999`, `sender_id=cli_a96f044b4ef95cc0`, `msg_type=interactive`, content `<card>card-default-ok</card>`.
 - Decisions: valid automated Feishu E2E must resolve bot mentions through group membership first; `cli_xxx` is an app id, not a safe mention id for `+messages-send`.
 - Next step: commit this E2E skill correction, merge R-9 into `dev`, deploy via dev to docker198/199/200, then run the core regression set.
+
+## Checkpoint 2026-05-09 23:05
+
+- Commit/worktree: `carher/dev` at `7caffd2ce0a`; local branch still `her-old-new-diff-e2e-codex`.
+- Changed files: pending new work for coalesced cards and footer.
+- Tests run: pending for new requirements.
+- Online evidence: S1 dev was fast-forwarded to `7caffd2ce0a` and `carher-198/199/200` were recreated. All three show `✓ reply-card default patch applied` and `gateway ready`.
+- Decisions: R-9 alone is insufficient proof because it covers only one short static final-answer path. The broader fix should prefer openclaw-lark's built-in streaming CardKit controller for normal replies, because it naturally coalesces partial/tool/final content into one card and already has a footer pipeline. A new runtime patch is still needed to restore old-Her-only footer fields: compaction count and group mode.
+- Next step: enable streaming reply mode + footer in fleet config, patch footer metrics for compaction/group mode, then run a multi-case E2E matrix on docker200 before rollout.
