@@ -284,7 +284,7 @@ scripts/carher-verify.sh --id=N --wait=60
 | 2   | plugin 数量                | N ≥ 7                                                                    | A+B 缺插件                  |
 | 3   | feishu websocket           | `WSClient connected` 或 `starting WebSocket connection`                  | token 失效或 appId 错       |
 | 4   | A2A peers                  | `refreshRegistryPeers found N`, N>0                                      | Redis 或 A2A 未启用（警告） |
-| 5   | acpx runtime               | `acpx runtime backend ready`                                             | ACP 未启用（警告）          |
+| 5   | acpx runtime               | `acpx runtime backend ready` / `embedded acpx` / `ACP ready`             | ACP 未启用（警告）          |
 | 6   | 无 plugin 契约错误         | 无 `plugin validation/schema failed`                                     | **SDK drift — 立刻回滚**    |
 | 7   | openclaw-lark channel-only | runtime manifest 中 `contracts.tools=[]` 且 `skills=[]`                  | 上游 lark tools/skills 吃上下文 |
 | 8   | runtime patch markers      | command-body / history-fill / inbound-meta / session-decay marker 全在   | runtime patch 未落地        |

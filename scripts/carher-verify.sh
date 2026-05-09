@@ -126,7 +126,7 @@ fi
 
 echo ""
 echo "--- Gate 2: plugin 数量 ---"
-plugins_line=$(logs_all | grep -E '\[gateway\].*ready.*plugins' | tail -1)
+plugins_line=$(logs_all | grep -E '\[gateway\].*(ready.*plugins|http server listening \([0-9]+ plugins)' | tail -1)
 if [[ -n "$plugins_line" ]]; then
     count=$(echo "$plugins_line" | grep -oE '[0-9]+ plugins' | grep -oE '[0-9]+' | head -1)
     if [[ "$count" -ge 7 ]]; then
@@ -175,7 +175,7 @@ fi
 
 echo ""
 echo "--- Gate 5: acpx runtime ---"
-if logs_all | grep -qE 'acpx runtime backend ready|embedded acpx'; then
+if logs_all | grep -qE 'acpx runtime backend ready|embedded acpx|ACP ready'; then
     gate_pass "acpx runtime backend ready"
 else
     gate_warn "acpx runtime 未 ready (如果此用户未开 CARHER_ACP_ENABLED 可忽略)"
