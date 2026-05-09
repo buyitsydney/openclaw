@@ -67,7 +67,20 @@ For @ mention tests, use the Feishu text mention syntax documented by lark-im:
 <at user_id="...">display name</at>
 ```
 
-If exact mention payload is uncertain, send the message manually in the Feishu UI and then use lark-cli to fetch the raw message JSON as the ground truth.
+For bot mentions, do not guess from `cli_xxx`. First resolve the bot's group
+member `bot_id` through the real chat:
+
+```bash
+lark-cli im chat.members bots --as user \
+  --params '{"chat_id":"oc_xxx"}' \
+  --format json
+```
+
+Then use the returned `bot_id` (usually `ou_...`) in the `<at user_id="...">`
+tag. If you use `cli_xxx`, lark-cli may send `<at user_id="">name</at>`,
+which is only text and will not trigger the bot.
+
+If exact mention payload is still uncertain, send the message manually in the Feishu UI and then use lark-cli to fetch the raw message JSON as the ground truth.
 
 ## Required Evidence Loop
 
@@ -102,17 +115,17 @@ For every test case:
 
 Run these before full rollout:
 
-| Case | Trigger | Expected evidence |
-| --- | --- | --- |
-| group-new-head | `@bot /new` | log has `detected system command` and `system command dispatched (delivered=true)`; no `dispatching to agent`; user sees `✅ New session started.` |
-| group-new-tail | `/new @bot` | same as above |
-| group-new-multi | `/new @bot1 @bot2` | each addressed bot handles system command directly; no LLM `noreply` |
-| group-status | `/status @bot` | one system status response; no double reply |
-| history-card | recent history includes `msg_type=interactive` | injected context has readable card text, not `请升级至最新版本客户端，以查看内容`, not raw card JSON |
-| known-bots | group contains multiple Her app senders | model-visible sender labels include names like `弋天的her (cli_...)`, not bare `cli_...` only |
-| reply-chain | trigger is a reply/thread message | context includes `message_id`, `message_type`, and `reply_to_id` when lark-cli exposes them |
-| card-output | normal Her answer | user-visible reply is an interactive card unless a documented fallback applies |
-| a2a-route | S1 test bot asks for an S3 bot capability | A2A logs show registry lookup and LAN endpoint route when peer is remote |
+| Case            | Trigger                                        | Expected evidence                                                                                                                                  |
+| --------------- | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| group-new-head  | `@bot /new`                                    | log has `detected system command` and `system command dispatched (delivered=true)`; no `dispatching to agent`; user sees `✅ New session started.` |
+| group-new-tail  | `/new @bot`                                    | same as above                                                                                                                                      |
+| group-new-multi | `/new @bot1 @bot2`                             | each addressed bot handles system command directly; no LLM `noreply`                                                                               |
+| group-status    | `/status @bot`                                 | one system status response; no double reply                                                                                                        |
+| history-card    | recent history includes `msg_type=interactive` | injected context has readable card text, not `请升级至最新版本客户端，以查看内容`, not raw card JSON                                               |
+| known-bots      | group contains multiple Her app senders        | model-visible sender labels include names like `弋天的her (cli_...)`, not bare `cli_...` only                                                      |
+| reply-chain     | trigger is a reply/thread message              | context includes `message_id`, `message_type`, and `reply_to_id` when lark-cli exposes them                                                        |
+| card-output     | normal Her answer                              | user-visible reply is an interactive card unless a documented fallback applies                                                                     |
+| a2a-route       | S1 test bot asks for an S3 bot capability      | A2A logs show registry lookup and LAN endpoint route when peer is remote                                                                           |
 
 ## Pass Criteria For History 1:1
 

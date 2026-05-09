@@ -70,15 +70,15 @@ Current new focus:
 
 ## Diff Matrix Seed
 
-| Surface | Old architecture expectation | New architecture risk | Test |
-| --- | --- | --- | --- |
-| Mention activation | `feishu-her` knew all local bot mentions and activated the addressed bot | `openclaw-lark` may strip or mis-handle bot mentions | group-new-head, group-new-tail, group-new-multi |
-| Slash commands | `/new` and `/status` are system commands and never enter LLM | command text can include bot mentions before/after command | command logs + user-visible ack |
-| History injection | group context has readable sender/content for recent messages | passive WS or raw API can lose cards/senders/reply chain | history-card, known-bots, reply-chain |
-| Interactive cards | Her replies use nice card formatting where expected | mixed reply paths emit ugly text/post | card-output |
-| Bot registry | app senders resolve to Her names | bare `cli_xxx` causes attribution mistakes | known-bots |
-| A2A | authorized Her can find peers across fleet | stale server/local routing or missing registry data | a2a-route |
-| lark-cli tools/skills | tools/skills available through lark-cli skill layer | new channel-only openclaw-lark removed old plugin surfaces | tool smoke by domain |
+| Surface               | Old architecture expectation                                             | New architecture risk                                      | Test                                            |
+| --------------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------- | ----------------------------------------------- |
+| Mention activation    | `feishu-her` knew all local bot mentions and activated the addressed bot | `openclaw-lark` may strip or mis-handle bot mentions       | group-new-head, group-new-tail, group-new-multi |
+| Slash commands        | `/new` and `/status` are system commands and never enter LLM             | command text can include bot mentions before/after command | command logs + user-visible ack                 |
+| History injection     | group context has readable sender/content for recent messages            | passive WS or raw API can lose cards/senders/reply chain   | history-card, known-bots, reply-chain           |
+| Interactive cards     | Her replies use nice card formatting where expected                      | mixed reply paths emit ugly text/post                      | card-output                                     |
+| Bot registry          | app senders resolve to Her names                                         | bare `cli_xxx` causes attribution mistakes                 | known-bots                                      |
+| A2A                   | authorized Her can find peers across fleet                               | stale server/local routing or missing registry data        | a2a-route                                       |
+| lark-cli tools/skills | tools/skills available through lark-cli skill layer                      | new channel-only openclaw-lark removed old plugin surfaces | tool smoke by domain                            |
 
 ## Checkpoint Format
 
@@ -112,3 +112,12 @@ Append dated entries here as work progresses:
 - Online evidence: copied docker200's actual `/data/.openclaw/extensions/node_modules/@larksuite/openclaw-lark/src/card/reply-mode.js` to a local temp file and verified `apply-reply-card-default.sh` patches the live upstream shape and passes `node --check`.
 - Decisions: R-9 is the narrow first fix for the mixed `post` vs `interactive` regression. It changes only openclaw-lark's static reply card decision: non-empty text uses cards, too many markdown tables still fall back.
 - Next step: commit the branch, push, deploy to docker200 first, send a real marked Feishu prompt, and verify the bot's short reply is `msg_type=interactive` in lark-cli history plus server logs.
+
+## Checkpoint 2026-05-09 22:58
+
+- Commit/worktree: `e5cb5527da8` on branch `her-old-new-diff-e2e-codex`, pushed to `carher/her-old-new-diff-e2e-codex`.
+- Changed files: same R-9 patch set, plus E2E skill correction for resolving bot mention IDs from `im chat.members bots`.
+- Tests run: R-9 unit test and syntax gates still pass before deploy.
+- Online evidence: S1 `/Data/CarHer` checked out the gray branch and only `carher-200` was force-recreated. Startup logs show `✓ reply-card default patch applied`. First lark-cli send using raw `cli_a96...` did not trigger because the outgoing text became `<at user_id="">研究3</at>`; corrected by resolving `研究3` to `ou_c2bc759110aa5bc80b2edea2ede864e9` via `lark-cli im chat.members bots`. Second trigger `HER_E2E_20260509T2258_card_default` produced bot reply `om_x100b50c0fe60bca4b10bc45863b2999`, `sender_id=cli_a96f044b4ef95cc0`, `msg_type=interactive`, content `<card>card-default-ok</card>`.
+- Decisions: valid automated Feishu E2E must resolve bot mentions through group membership first; `cli_xxx` is an app id, not a safe mention id for `+messages-send`.
+- Next step: commit this E2E skill correction, merge R-9 into `dev`, deploy via dev to docker198/199/200, then run the core regression set.
