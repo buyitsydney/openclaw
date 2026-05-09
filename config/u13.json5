@@ -13,22 +13,7 @@
   },
 
   // 2026-05-04 bug #11 fix · heartbeat.target=last lets wake/heartbeat reply auto-route to session.lastChannel (feishu group)
-  // 2026-05-09 memory_search 灰度 A/B · 13 单独打开 temporalDecay (halfLifeDays=7)。
-  // baseline (decay off): ~/openclaw-baselines/13-memory-search-20260509/
-  // 13 上 76% 命中是 sessions/main/*.reset.* archive,跨 4/9-5/9 一个月,21% 老于 2.5 周。
-  // 期望: 老 archive 被指数衰减压下去,memory/* 占比上升,top-15 集中度下降。
-  agents: {
-    defaults: {
-      heartbeat: { target: "last" },
-      memorySearch: {
-        query: {
-          hybrid: {
-            temporalDecay: { enabled: true, halfLifeDays: 7 },
-          },
-        },
-      },
-    },
-  },
+  agents: { defaults: { heartbeat: { target: "last" } } },
 
   // A2A hub 模式:carher-13 (弋天) 是 god mode/hub,可以主动调度其他 peer。
   plugins: {
