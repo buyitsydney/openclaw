@@ -50,17 +50,17 @@ deploy/carher-{id}/
 
 ## 第 2 章 · 当前部署真相（2026-05-09)
 
-**S1 + S3 全部 7 个 bot 已 compose 化。2026-05-09 knownBots/history-fill 修复后，线上已验证到 dev `94baa426a4a` + image `localhost:5001/carher-core:2026.5.9-p13-knownbots`；后续 A2A 修复需继续以 `scripts/carher-verify.sh`、registry dump 和端到端 A2A 测试确认。**
+**S1 + S3 全部 7 个 bot 已 compose 化。2026-05-09 已验证到 dev `67ffa4069b` + image `localhost:5001/carher-core:2026.5.9-p14-a2a-route`；knownBots/history-fill、A2A registry S1/S3 路由、跨主机 agent-card、S1↔S3 A2A healthcheck 均已通过。**
 
-| 位置              | 容器         | 用户        | Bot App ID             | 当前 image / runtime patch        |
-| ----------------- | ------------ | ----------- | ---------------------- | --------------------------------- |
-| S1 (10.68.13.186) | `carher-12`  | test/tester | `cli_a917fa892ff91bb5` | `2026.5.9-p13-knownbots` + R-7/P8 |
-| S1 (10.68.13.186) | `carher-13`  | 卜弋天      | `cli_a917e5525178dbb3` | `2026.5.9-p13-knownbots` + R-7/P8 |
-| S1 (10.68.13.186) | `carher-198` | admin/研究1 | `cli_a96f0bfba3789cd4` | `2026.5.9-p13-knownbots` + R-7/P8 |
-| S1 (10.68.13.186) | `carher-199` | 研究2       | `cli_a96f043660f99cef` | `2026.5.9-p13-knownbots` + R-7/P8 |
-| S1 (10.68.13.186) | `carher-200` | 研究3/Nova  | `cli_a96f044b4ef95cc0` | `2026.5.9-p13-knownbots` + R-7/P8 |
-| S3 (10.68.13.188) | `carher-14`  | 刘国现      | `cli_a91569fab9b81bc6` | `2026.5.9-p13-knownbots` + R-7/P8 |
-| S3 (10.68.13.188) | `carher-75`  | 林森        | `cli_a94a0b73a878dbcb` | `2026.5.9-p13-knownbots` + R-7/P8 |
+| 位置              | 容器         | 用户        | Bot App ID             | 当前 image / runtime patch |
+| ----------------- | ------------ | ----------- | ---------------------- | -------------------------- |
+| S1 (10.68.13.186) | `carher-12`  | test/tester | `cli_a917fa892ff91bb5` | `2026.5.9-p14-a2a-route`   |
+| S1 (10.68.13.186) | `carher-13`  | 卜弋天      | `cli_a917e5525178dbb3` | `2026.5.9-p14-a2a-route`   |
+| S1 (10.68.13.186) | `carher-198` | admin/研究1 | `cli_a96f0bfba3789cd4` | `2026.5.9-p14-a2a-route`   |
+| S1 (10.68.13.186) | `carher-199` | 研究2       | `cli_a96f043660f99cef` | `2026.5.9-p14-a2a-route`   |
+| S1 (10.68.13.186) | `carher-200` | 研究3/Nova  | `cli_a96f044b4ef95cc0` | `2026.5.9-p14-a2a-route`   |
+| S3 (10.68.13.188) | `carher-14`  | 刘国现      | `cli_a91569fab9b81bc6` | `2026.5.9-p14-a2a-route`   |
+| S3 (10.68.13.188) | `carher-75`  | 林森        | `cli_a94a0b73a878dbcb` | `2026.5.9-p14-a2a-route`   |
 
 **A2A hub 名单**(`a2a-gateway.outbound.enabled=true`):13 / 198 / 199 / 200。其他全 spoke。
 
