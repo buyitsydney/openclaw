@@ -122,6 +122,34 @@ fi
 # still works because DMs take a different core path.
 # See `.cursor/skills/carher-ops/SKILL.md` 第 13 章 踩坑 #11.
 
+# ── R-8: temporalDecay session-reset path parser ─────────────────────
+# openclaw 2026.5.3's extractTimestamp falls back to fs.stat for sessions,
+# but the chunks DB stores `sessions/main/<id>.jsonl.reset.<ISO>.Z` while
+# the actual file lives at `<agentDir>/sessions/<id>...`. fs.stat misses
+# every time → decay is silently skipped for archived transcripts → the
+# fleet's "失忆" symptom (76% of top-8 hits stay equally weighted across
+# a 30-day window). This patch parses the archive moment directly from
+# the .reset.<ISO>.Z filename and bypasses fs.stat.
+#
+# Source of truth: scripts/carher-patches/apply-session-decay.sh
+# Kill switch: CARHER_DISABLE_SESSION_DECAY_PATCH=1
+MEMORY_MANAGER=$(ls /app/dist/manager-*.js 2>/dev/null | xargs grep -l "applyTemporalDecayToHybridResults" 2>/dev/null | head -1 || true)
+if [ "${CARHER_DISABLE_SESSION_DECAY_PATCH:-0}" = "1" ]; then
+  echo "  ⏭  session-decay patch skipped (CARHER_DISABLE_SESSION_DECAY_PATCH=1)"
+elif [ ! -d "$CARHER_PATCHES_DIR" ]; then
+  echo "  ⚠️  $CARHER_PATCHES_DIR not mounted — session-decay patch skipped"
+elif [ -z "$MEMORY_MANAGER" ] || [ ! -f "$MEMORY_MANAGER" ]; then
+  echo "  ⚠️  manager-*.js not found in /app/dist — session-decay patch skipped"
+else
+  echo "  ▶ Patching $MEMORY_MANAGER → session-reset archive date parser..."
+  if bash "$CARHER_PATCHES_DIR/apply-session-decay.sh" "$MEMORY_MANAGER"; then
+    echo "    ✓ session-decay patch applied"
+  else
+    echo "    ✗ session-decay patch failed — temporalDecay will no-op for sessions" >&2
+  fi
+fi
+# ── end R-8 session-decay patch ───────────────────────────────────
+
 # lark-cli: 24 AI skills (Go binary)
 LARK_CLI_WANT="${CARHER_LARK_CLI_VERSION:-latest}"
 if ! command -v lark-cli &>/dev/null || [ "${CARHER_FORCE_PLUGIN_INSTALL:-}" = "1" ]; then

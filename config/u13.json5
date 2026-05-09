@@ -13,7 +13,22 @@
   },
 
   // 2026-05-04 bug #11 fix · heartbeat.target=last lets wake/heartbeat reply auto-route to session.lastChannel (feishu group)
-  agents: { defaults: { heartbeat: { target: "last" } } },
+  // 2026-05-09 R-8 灰度 · temporalDecay halfLifeDays=7 only on 13.
+  // Requires R-8 runtime patch (apply-session-decay.sh) to make decay
+  // actually fire for sessions/main/*.reset.<ISO>.Z paths. Promote to
+  // docker.json5 once 13 baseline diff confirms the fix.
+  agents: {
+    defaults: {
+      heartbeat: { target: "last" },
+      memorySearch: {
+        query: {
+          hybrid: {
+            temporalDecay: { enabled: true, halfLifeDays: 7 },
+          },
+        },
+      },
+    },
+  },
 
   // A2A hub 模式:carher-13 (弋天) 是 god mode/hub,可以主动调度其他 peer。
   plugins: {

@@ -417,7 +417,7 @@ carher 对 openclaw / 闭源上游 npm 包打的本地 patch。**修改前必读
 - Reviewer 必须逐个 section 核对,**只要有一个少了就打回**。
 - 教训:`f3d83cfd493`(2026-05-05) 加 a2a-gateway manifest patch 时顺手删了整个 CommandSource section,commit message 只提 a2a-gateway。后来 2026-05-08 尝试恢复才发现 CommandSource 方向在群里根本无效(见 R-7 条目),但这不降低"改 entrypoint 必须列 section diff"这条铁律的重要性。
 
-### 完整 Patch 清单(2026-05-09,7 个 runtime + 1 个 no-op build-time stub)
+### 完整 Patch 清单(2026-05-09,8 个 runtime + 1 个 no-op build-time stub)
 
 #### 🔧 R-1:`stripBotMentions` (runtime, entrypoint)
 
@@ -488,6 +488,18 @@ carher 对 openclaw / 闭源上游 npm 包打的本地 patch。**修改前必读
 - **log 成功**:`✓ command-body normalize patch applied`
 - **反例**:不要再打 `CommandSource:native` 或直接 `sendMessageFeishu` ack。前者导致 `/status` 双回复,后者绕过 core reset 语义。
 
+#### 🔧 R-8:`temporalDecay session-reset path parser` (runtime, entrypoint)
+
+- **Target**:`/app/dist/manager-<hash>.js`(entrypoint glob 找含 `applyTemporalDecayToHybridResults` 的 dist 文件)
+- **Source**:`scripts/carher-patches/apply-session-decay.sh`
+- **Marker**:`CARHER_SESSION_DECAY_PATCH_MARKER`
+- **Bug**:openclaw 2026.5.3 的 `extractTimestamp` 对 session 路径走 `fs.stat` fallback;chunks DB 存的 path = `sessions/main/<id>.jsonl[.reset.<ISO>.Z]`,实际文件在 `<agentDir>/sessions/<id>...`,**多了一层 `main/`**,fs.stat ENOENT → 返回 null → decay 全跳过。结果:打开 `temporalDecay.enabled=true` 反而把 `memory/YYYY-MM-DD.md` 精华笔记压下去,session-archive 噪音原地不动 — 召回更糟。
+- **Fix**:在 `extractTimestamp` 里 `if (fromPath) return fromPath;` 之后,加 `parseSessionResetDateFromPath` 直接从 `.reset.YYYY-MM-DDTHH-MM-SS.<ms>Z` 文件名解析时间。完全 bypass fs.stat,所以 workspaceDir 错位也无所谓。覆盖率:baseline 13 上 76% session-archive 命中里有 71%(.reset 后缀的)被修好,剩下 5% 是 live `.jsonl`,继续走原 fs.stat fallback。
+- **Kill switch**:`CARHER_DISABLE_SESSION_DECAY_PATCH=1`
+- **log 成功**:`✓ session-decay patch applied`
+- **配套 config**:还需要 `agents.defaults.memorySearch.query.hybrid.temporalDecay = {enabled:true, halfLifeDays:7}`(13 灰度在 `config/u13.json5`,验证后 promote 到 `config/docker.json5`)
+- **upstream**:同 fix 已在 `extensions/memory-core/src/memory/temporal-decay.ts` 提交 + 6 个测试,可作为 openclaw/openclaw PR
+
 #### 🔧 B-1(历史,当前 no-op):`apply-reset-archive-patches.sh`
 
 - **原用途**:P7(PR #76666)— `MemoryIndexManager` lazy-load 下 /reset archive race 窗口
@@ -503,9 +515,9 @@ carher 对 openclaw / 闭源上游 npm 包打的本地 patch。**修改前必读
 ### Patch 完整性自检(新 image / entrypoint diff 后必跑)
 
 ```bash
-# 7 个 R-* runtime patches 都应出现在 entrypoint 启动 log 里
-docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|patch-agent-loop|PATCHED"
-# 应看到 7 行 ✓
+# 8 个 R-* runtime patches 都应出现在 entrypoint 启动 log 里
+docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|patch-agent-loop|session-decay|PATCHED"
+# 应看到 8 行 ✓
 
 # R-7 必须是 V2 marker
 docker exec carher-<id> sh -lc '
