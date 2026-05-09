@@ -144,6 +144,17 @@ The model-visible `InboundHistory` does not need to be byte-for-byte identical t
 - no client fallback placeholder such as `请升级至最新版本客户端，以查看内容`.
 - no opaque raw card JSON unless no converter can decode it and the failure is recorded.
 
+## Validated Baseline
+
+2026-05-09 run `20260509T2330_r10` on docker200 / `研究3` in chat `oc_394c3ebe4ca009aba9b5662cce366810` is the current reference:
+
+- `footer_short`: one `interactive` reply; footer included model, elapsed, tokens, cache, context, `Compactions 0`, and `👥群@`.
+- `coalesce_long`: six-point answer produced exactly one `interactive` bot message after the trigger.
+- `tool_coalesce`: logs showed `tools=[exec]`; final user-visible output was still exactly one `interactive` card.
+- `/status @bot`: exactly one system status reply; no double reply.
+- `/new @bot` and `@bot /new`: exactly one `✅ New session started.` each; logs showed `detected system command` and `system command dispatched (delivered=true)`.
+- `history_card_context`: without tools, bot read a previous interactive card from injected context and rendered `研究3 (cli_a96f044b4ef95cc0)`, not a bare `cli_...`.
+
 ## Server Log Checks
 
 Patch markers that must appear after container start:

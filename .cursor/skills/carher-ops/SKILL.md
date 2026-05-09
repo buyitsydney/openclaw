@@ -50,7 +50,7 @@ deploy/carher-{id}/
 
 ## 第 2 章 · 当前部署真相（2026-05-09)
 
-**S1 + S3 全部 7 个 bot 已 compose 化。2026-05-09 已验证到 dev `67ffa4069b` + image `localhost:5001/carher-core:2026.5.9-p14-a2a-route`；knownBots/history-fill、A2A registry S1/S3 路由、跨主机 agent-card、S1↔S3 A2A healthcheck 均已通过。**
+**S1 + S3 全部 7 个 bot 已 compose 化。2026-05-09 已验证到 dev `77b5571f36` + image `localhost:5001/carher-core:2026.5.9-p14-a2a-route`；knownBots/history-fill、A2A registry S1/S3 路由、跨主机 agent-card、S1↔S3 A2A healthcheck、ordinary interactive-card replies、streaming card coalescing、CardKit footer(status/model/tokens/cache/context/compaction/group-mode) 均已通过。**
 
 | 位置              | 容器         | 用户        | Bot App ID             | 当前 image / runtime patch |
 | ----------------- | ------------ | ----------- | ---------------------- | -------------------------- |

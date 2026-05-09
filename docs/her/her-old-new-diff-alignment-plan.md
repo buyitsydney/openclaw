@@ -135,3 +135,22 @@ Append dated entries here as work progresses:
 - Online evidence: S1 dev was fast-forwarded to `7caffd2ce0a` and `carher-198/199/200` were recreated. All three show `✓ reply-card default patch applied` and `gateway ready`.
 - Decisions: R-9 alone is insufficient proof because it covers only one short static final-answer path. The broader fix should prefer openclaw-lark's built-in streaming CardKit controller for normal replies, because it naturally coalesces partial/tool/final content into one card and already has a footer pipeline. A new runtime patch is still needed to restore old-Her-only footer fields: compaction count and group mode.
 - Next step: enable streaming reply mode + footer in fleet config, patch footer metrics for compaction/group mode, then run a multi-case E2E matrix on docker200 before rollout.
+
+## Checkpoint 2026-05-09 23:45
+
+- Commit/worktree: `carher/dev` at `77b5571f364` (`CarHer: restore streaming card footers`); local `/Users/buyitian/Documents/work/openclaw` dev also fast-forwarded to the same commit while preserving unrelated dirty skill-source files.
+- Changed files: fleet config enables `channels.feishu.streaming=true`, `replyMode.default/group/direct="streaming"`, and footer status/elapsed/model/tokens/cache/context; R-10 runtime patch `apply-footer-status.sh` enriches openclaw-lark CardKit footer metrics with `compactionCount` and Redis group mode.
+- Tests run:
+  - `node --test scripts/carher-patches/apply-footer-status.test.mjs scripts/carher-patches/apply-reply-card-default.test.mjs` → 5/5 pass.
+  - `bash -n scripts/carher-entrypoint.sh` → pass.
+  - `git diff --check` → pass.
+- Online docker200 E2E evidence (`oc_394c3ebe4ca009aba9b5662cce366810`, bot `cli_a96f044b4ef95cc0`):
+  - `footer_short`: one `interactive` reply, body `footer-ok`, footer includes Completed, elapsed, model, `👥群@`, tokens, cache, context, `Compactions 0`.
+  - `coalesce_long`: trigger asked for six numbered points; exactly one bot message after trigger, `msg_type=interactive`, footer complete.
+  - `tool_coalesce`: logs show `tools=[exec]`; exactly one bot message after trigger, `msg_type=interactive`, footer complete.
+  - `/status @研究3`: exactly one system `post` status reply; no double reply.
+  - `/new @研究3` and `@研究3 /new`: exactly one `✅ New session started.` ack each; logs show `detected system command` + `system command dispatched (delivered=true)`.
+  - `history_card_context`: prompt forbade tools; bot read the previous interactive card from injected context and rendered sender as `研究3 (cli_a96f044b4ef95cc0)`, not a bare `cli_...`; logs show `filled 19 via lark-cli` and no bad client placeholder.
+- Fleet rollout: S1 `carher-12/13/198/199/200` and S3 `carher-14/75` all fast-forwarded to dev `77b5571f364` and force-recreated. Startup logs for all 7 show `reply-card default patch applied`, `footer-status patch applied`, history-fill, inbound metadata, session-decay, channel-only, contracts.tools, patch-agent-loop, and `gateway ready`.
+- Known non-blocking warning: all containers still log `failed to persist plugin auto-enable changes: Config write would flatten $include-owned config at <root>`; this is the pre-existing include-preservation warning and was not treated as rollback because channel-only/gateway/patch gates are green.
+- Decision: R-10 is accepted as the old-Her card/footer parity layer. Remaining broader diff-alignment work should continue from the E2E skill matrix rather than relying on one-off manual assertions.
