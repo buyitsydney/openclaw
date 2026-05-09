@@ -208,7 +208,7 @@ docker inspect <container> --format '{{.Image}}' \
 
 ```bash
 docker logs carher-<id> 2>&1 \
-  | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|patch-agent-loop|PATCHED"
+  | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|patch-agent-loop|session-decay|PATCHED"
 ```
 
 `command-body` 还要查容器内 marker：
@@ -298,7 +298,7 @@ cd deploy/carher-N && docker compose up -d
 - ✅ Registry PoC：删本地 image → `docker compose up -d` 从 `localhost:5001` 自动 pull → 31s healthy
 - ✅ Image labels：`carher.build.hash=bdf72f8503…`, `carher.openclaw.tag=2026.4.24`
 - ✅ `models list` 显示所有 alias 正确解析（gpt-5.5 1M ctx、ds=deepseek-v4-pro）
-- ✅ 飞书 bot 正常响应（`Feishu WSClient connected` + `/or-opus` 切换 + 自然对话）
+- ✅ 飞书 bot 正常响应（`starting WebSocket connection` / `WSClient connected` + `/or-opus` 切换 + 自然对话）
 
 ## 9. 已知限制与后续工作
 
@@ -311,7 +311,7 @@ cd deploy/carher-N && docker compose up -d
 openclaw 2026.4.24+ 引入 **"lazy runtime deps"** 机制：plugin 依赖（`@anthropic-ai/sdk`、`@mariozechner/pi-ai`、`@aws-sdk/*` 等 25+ 包）不在 image 里 bundle，改为首次启动时 npm install 到持久化 volume `/data/.openclaw/plugin-runtime-deps/openclaw-<version>-<hash>/`。
 
 **表现**：
-- **首次启动**（新容器、volume 里没有对应 openclaw 版本的 plugin-runtime-deps）= **3-5 分钟**直到 `Feishu WSClient connected`。期间 log 显示 "starting channels and sidecars..." 后没动静，直到 npm install 完成。
+- **首次启动**（新容器、volume 里没有对应 openclaw 版本的 plugin-runtime-deps）= **3-5 分钟**直到 feishu websocket 初始化（`starting WebSocket connection` 或 `WSClient connected`）。期间 log 显示 "starting channels and sidecars..." 后没动静，直到 npm install 完成。
 - **第二次起及以后**（同 volume）= **< 10 秒**。
 - **跨版本升级**（openclaw tag 变）= 视为首次启动，重装一遍（目录按 `<version>-<hash>` 隔离）。
 

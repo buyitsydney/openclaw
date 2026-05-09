@@ -203,7 +203,7 @@ plugins: {
 ### 验证
 
 ```bash
-docker compose logs carher | grep 'WSClient connected'
+docker compose logs carher | grep -E 'WSClient connected|starting WebSocket connection'
 docker compose logs carher | grep 'gateway] ready'
 docker compose logs carher | grep 'acpx.*ready'
 ```
@@ -258,7 +258,7 @@ cd deploy/carher-N
 docker compose up -d
 
 # 6. 验证
-docker compose logs -f carher | grep 'WSClient connected'
+docker compose logs -f carher | grep -E 'WSClient connected|starting WebSocket connection'
 ```
 
 ### 回滚（改回 .env IMAGE_TAG）
@@ -271,34 +271,35 @@ cd deploy/carher-N && docker compose up -d
 
 ---
 
-## 第 6 章 · 自动自检 10 Gate
+## 第 6 章 · 自动自检 11 Gate
 
 ```bash
 scripts/carher-verify.sh --id=N --wait=60
 # exit 0 = 全过 / exit 3 = 有 FAIL / exit 2 = 容器不存在
 ```
 
-| #   | Gate                | 检查内容                             | 失败含义                    |
-| --- | ------------------- | ------------------------------------ | --------------------------- |
-| 1   | gateway ready       | `[gateway] ready (N plugins...)`     | 容器没起来                  |
-| 2   | plugin 数量         | N ≥ 7                                | A+B 缺插件                  |
-| 3   | feishu WSClient     | `WSClient connected`                 | token 失效或 appId 错       |
-| 4   | A2A peers           | `refreshRegistryPeers found N`, N>0  | Redis 或 A2A 未启用（警告） |
-| 5   | acpx runtime        | `acpx runtime backend ready`         | ACP 未启用（警告）          |
-| 6   | 无 plugin 契约错误  | 无 `plugin validation/schema failed` | **SDK drift — 立刻回滚**    |
-| 7   | bundled feishu 清理 | feishu 残留目录不存在                | Dockerfile rm 不全          |
-| 8   | a2a-gateway ioredis | `node_modules/ioredis` 存在          | npm install 失败            |
-| 9   | feishu-her 依赖     | `@larksuiteoapi` 存在                | feishu 连不上               |
-| 10  | 无严重运行时错误    | 无 `FATAL/uncaughtException/crash`   | 立刻回滚                    |
+| #   | Gate                       | 检查内容                                                                 | 失败含义                    |
+| --- | -------------------------- | ------------------------------------------------------------------------ | --------------------------- |
+| 1   | gateway ready              | `[gateway] ready`                                                        | 容器没起来                  |
+| 2   | plugin 数量                | N ≥ 7                                                                    | A+B 缺插件                  |
+| 3   | feishu websocket           | `WSClient connected` 或 `starting WebSocket connection`                  | token 失效或 appId 错       |
+| 4   | A2A peers                  | `refreshRegistryPeers found N`, N>0                                      | Redis 或 A2A 未启用（警告） |
+| 5   | acpx runtime               | `acpx runtime backend ready`                                             | ACP 未启用（警告）          |
+| 6   | 无 plugin 契约错误         | 无 `plugin validation/schema failed`                                     | **SDK drift — 立刻回滚**    |
+| 7   | openclaw-lark channel-only | runtime manifest 中 `contracts.tools=[]` 且 `skills=[]`                  | 上游 lark tools/skills 吃上下文 |
+| 8   | runtime patch markers      | command-body / history-fill / inbound-meta / session-decay marker 全在   | runtime patch 未落地        |
+| 9   | a2a-gateway ioredis        | `node_modules/ioredis` 存在                                              | npm install 失败            |
+| 10  | feishu-her 依赖            | `@larksuiteoapi` 存在                                                    | feishu 连不上               |
+| 11  | 无严重运行时错误           | 无 `FATAL/uncaughtException/crash`                                       | 立刻回滚                    |
 
 ### Monitor 模板
 
 ```bash
 docker compose logs -f carher 2>&1 | grep --line-buffered -E \
-  "(deliver:|gateway\] ready|WSClient connected|acpx runtime backend ready|refreshRegistryPeers found|Error|FAILED|exception|plugin (validation|schema))"
+  "(deliver:|gateway\] ready|starting WebSocket connection|WSClient connected|command-body normalize|history-fill|inbound-history metadata|session-decay|acpx runtime backend ready|refreshRegistryPeers found|Error|FAILED|exception|plugin (validation|schema))"
 ```
 
-### 真人验收（10 gate 之外必做）
+### 真人验收（11 gate 之外必做）
 
 请真人在飞书私聊发：`你好。检查下 A2A 和 ACP 状态？`
 期望：回复含 `A2A ✅` 和 `ACP` 关键词。
@@ -622,10 +623,13 @@ sleep 75
 docker ps --format "{{.Names}}\t{{.Image}}\t{{.Status}}" | grep carher-<id>
 
 # 运行时 patch 自检
-docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|patch-agent-loop|PATCHED"
+docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|patch-agent-loop|session-decay|PATCHED"
 docker exec carher-<id> sh -lc '
   p=/data/.openclaw/extensions/node_modules/@larksuite/openclaw-lark/src/messaging/inbound/dispatch.js
   grep -n "CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER" "$p"
+  grep -n "CARHER_HISTORY_FILL_PATCH_MARKER" "$p"
+  grep -n "CARHER_HISTORY_META_PATCH_MARKER" "$p"
+  grep -n "CARHER_INBOUND_HISTORY_META_PATCH_MARKER" /app/dist/get-reply-*.js
 '
 ```
 
@@ -657,10 +661,13 @@ docker run --rm --entrypoint sh <img-tag> -c "
 # (同场景 A 的 .env 改 IMAGE_TAG → compose up)
 
 # 5. 验证运行时 patch + 功能
-docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|patch-agent-loop|PATCHED"
+docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|patch-agent-loop|session-decay|PATCHED"
 docker exec carher-<id> sh -lc '
   p=/data/.openclaw/extensions/node_modules/@larksuite/openclaw-lark/src/messaging/inbound/dispatch.js
   grep -n "CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER" "$p"
+  grep -n "CARHER_HISTORY_FILL_PATCH_MARKER" "$p"
+  grep -n "CARHER_HISTORY_META_PATCH_MARKER" "$p"
+  grep -n "CARHER_INBOUND_HISTORY_META_PATCH_MARKER" /app/dist/get-reply-*.js
 '
 
 # 6. 功能验证:主人飞书群里测 /new @bot, @bot /new, /new @bot1 @bot2, /status @bot
@@ -692,11 +699,13 @@ docker exec carher-<id> sh -c "
 
 ## 第 13 章 · 踩坑库
 
-### 踩坑 1：bundled feishu 残留
+### 踩坑 1：bundled feishu 残留检查已过时
 
 ```bash
 docker run --rm carher-core:<tag> ls /app/extensions/ /app/dist/extensions/ /app/dist-runtime/extensions/ | grep feishu
-# 应无输出。有 = Dockerfile rm -rf 不全
+# 2026-05-09 当前 image 允许保留 bundled feishu 源/manifest 残留。
+# 真正的运行态判断不是目录是否存在,而是 openclaw-lark 是否 channel-only,
+# 以及 gateway 是否只启用 feishu-her / openclaw-lark channel 路径。
 ```
 
 ### 踩坑 2：A2A peers=0
@@ -727,10 +736,13 @@ compose 的 `${VAR}` 在 parse 时从 `.env` / shell env 读取，不从 `env_fi
 
 **检查**:
 ```bash
-docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|patch-agent-loop|PATCHED"
+docker logs carher-<id> 2>&1 | grep -E "stripBotMentions|command-body normalize|channel-only|contracts.tools \(30\)|shadow-daemon|history-fill|inbound-history metadata|patch-agent-loop|session-decay|PATCHED"
 docker exec carher-<id> sh -lc '
   p=/data/.openclaw/extensions/node_modules/@larksuite/openclaw-lark/src/messaging/inbound/dispatch.js
   grep -n "CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER" "$p"
+  grep -n "CARHER_HISTORY_FILL_PATCH_MARKER" "$p"
+  grep -n "CARHER_HISTORY_META_PATCH_MARKER" "$p"
+  grep -n "CARHER_INBOUND_HISTORY_META_PATCH_MARKER" /app/dist/get-reply-*.js
 '
 ```
 
@@ -833,5 +845,5 @@ docker inspect carher-N --format '{{.Image}}' \
 | `docs/her/her-feishu-bot-architecture.md`      | 飞书 bot 架构      |
 | `deploy/README.md`                             | compose 部署指南   |
 | `docker/servers.txt`                           | 服务器凭证（敏感） |
-| `scripts/carher-verify.sh`                     | 10 gate 自检       |
+| `scripts/carher-verify.sh`                     | 11 gate 自检       |
 | `docs/her/acp-claude-code-setup.md`            | ACP 开启指南       |

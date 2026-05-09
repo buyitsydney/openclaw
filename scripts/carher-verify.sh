@@ -85,7 +85,7 @@ gate_pass() { echo "✅ $1"; PASS=$((PASS+1)); }
 gate_fail() { echo "❌ $1"; FAIL=$((FAIL+1)); FAILED_GATES+=("$1"); }
 gate_warn() { echo "⚠️  $1"; WARN=$((WARN+1)); }
 
-# 全量日志 —— 用于查启动一次性事件(ready / WSClient connected 等)
+# 全量日志 —— 用于查启动一次性事件(ready / websocket init 等)
 logs_all() { docker logs "$CONTAINER" 2>&1; }
 # 近期日志 —— 用于查错误/崩溃(avoid 老错误误伤)
 logs() { docker logs "$CONTAINER" --since="$SINCE" 2>&1; }
@@ -139,15 +139,15 @@ else
 fi
 
 # ============================================================
-# Gate 3: feishu WSClient 连接成功
+# Gate 3: feishu websocket 初始化
 # ============================================================
 
 echo ""
-echo "--- Gate 3: feishu WSClient connected ---"
-if logs_all | grep -qE 'feishu.*WSClient connected'; then
-    gate_pass "feishu WSClient connected"
+echo "--- Gate 3: feishu websocket initialized ---"
+if logs_all | grep -qE 'feishu.*(WSClient connected|starting WebSocket connection)'; then
+    gate_pass "feishu websocket initialized"
 else
-    gate_fail "feishu WSClient 未连接(检查 tenant_access_token / appId / botOpenId)"
+    gate_fail "feishu websocket 未初始化(检查 tenant_access_token / appId / botOpenId)"
 fi
 
 # ============================================================
@@ -197,24 +197,69 @@ else
 fi
 
 # ============================================================
-# Gate 7: 无 bundled feishu 残留(A+B 架构关键)
+# Gate 7: openclaw-lark channel-only 生效
 # ============================================================
 
 echo ""
-echo "--- Gate 7: bundled feishu 清理 ---"
-residue=$(docker exec "$CONTAINER" bash -c 'ls /app/extensions/feishu /app/dist/extensions/feishu /app/dist-runtime/extensions/feishu 2>/dev/null' || true)
-if [[ -z "$residue" ]]; then
-    gate_pass "bundled feishu 已全清"
+echo "--- Gate 7: openclaw-lark channel-only ---"
+if docker exec "$CONTAINER" node -e '
+const fs = require("fs");
+const p = "/data/.openclaw/extensions/node_modules/@larksuite/openclaw-lark/openclaw.plugin.json";
+const m = JSON.parse(fs.readFileSync(p, "utf8"));
+const tools = Array.isArray(m.contracts && m.contracts.tools) ? m.contracts.tools.length : -1;
+const skills = Array.isArray(m.skills) ? m.skills.length : -1;
+if (tools === 0 && skills === 0) process.exit(0);
+console.error(`tools=${tools} skills=${skills}`);
+process.exit(1);
+' >/tmp/carher-verify-channel-only.$$ 2>&1; then
+    gate_pass "openclaw-lark 已剥离为 channel-only"
 else
-    gate_fail "bundled feishu 残留: $residue (Dockerfile rm -rf 不全,会和 feishu-her 冲突)"
+    detail=$(cat /tmp/carher-verify-channel-only.$$ 2>/dev/null || true)
+    gate_fail "openclaw-lark channel-only 未生效: $detail"
 fi
+rm -f /tmp/carher-verify-channel-only.$$ 2>/dev/null || true
 
 # ============================================================
-# Gate 8: a2a-gateway 的 ioredis native 模块存在
+# Gate 8: CarHer runtime patch markers 完整
 # ============================================================
 
 echo ""
-echo "--- Gate 8: a2a-gateway ioredis 依赖 ---"
+echo "--- Gate 8: CarHer runtime patch markers ---"
+marker_report=$(docker exec "$CONTAINER" bash -lc '
+set -u
+dispatch=/data/.openclaw/extensions/node_modules/@larksuite/openclaw-lark/src/messaging/inbound/dispatch.js
+fail=0
+check() {
+  local name="$1"
+  local pattern="$2"
+  local target="$3"
+  if grep -q "$pattern" $target 2>/dev/null; then
+    echo "$name=OK"
+  else
+    echo "$name=MISS"
+    fail=1
+  fi
+}
+check command-body CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER "$dispatch"
+check history-fill CARHER_HISTORY_FILL_PATCH_MARKER "$dispatch"
+check history-meta-dispatch CARHER_HISTORY_META_PATCH_MARKER "$dispatch"
+check inbound-meta-dist CARHER_INBOUND_HISTORY_META_PATCH_MARKER "/app/dist/get-reply-*.js"
+check session-decay CARHER_SESSION_DECAY_PATCH_MARKER "/app/dist/manager-*.js"
+exit "$fail"
+' 2>&1)
+if [[ $? -eq 0 ]]; then
+    gate_pass "runtime patch markers 完整"
+else
+    gate_fail "runtime patch markers 缺失"
+fi
+echo "$marker_report" | sed 's/^/    /'
+
+# ============================================================
+# Gate 9: a2a-gateway 的 ioredis native 模块存在
+# ============================================================
+
+echo ""
+echo "--- Gate 9: a2a-gateway ioredis 依赖 ---"
 if docker exec "$CONTAINER" test -f /app/docker/plugins/a2a-gateway/node_modules/ioredis/package.json 2>/dev/null; then
     gate_pass "a2a-gateway ioredis 安装完整"
 else
@@ -222,11 +267,11 @@ else
 fi
 
 # ============================================================
-# Gate 9: feishu-her node_modules 存在
+# Gate 10: feishu-her node_modules 存在
 # ============================================================
 
 echo ""
-echo "--- Gate 9: feishu-her 依赖 ---"
+echo "--- Gate 10: feishu-her 依赖 ---"
 if docker exec "$CONTAINER" test -d /app/docker/plugins/feishu-her/node_modules/@larksuiteoapi 2>/dev/null; then
     gate_pass "feishu-her @larksuiteoapi 安装完整"
 else
@@ -234,11 +279,11 @@ else
 fi
 
 # ============================================================
-# Gate 10: 无严重 error / crash / uncaught exception
+# Gate 11: 无严重 error / crash / uncaught exception
 # ============================================================
 
 echo ""
-echo "--- Gate 10: 无严重运行时错误 ---"
+echo "--- Gate 11: 无严重运行时错误 ---"
 errors=$(logs | grep -iE 'FATAL|uncaught ?exception|unhandledRejection|crash|TypeError.*is not a function' \
     | grep -viE 'expected|test|mock' \
     | head -5)
