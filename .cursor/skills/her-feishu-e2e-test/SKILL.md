@@ -13,6 +13,49 @@ This is the required workflow for real online tests of the new Her Feishu archit
 - Do not use `carher-75` / S3 docker75 for experiments unless the user explicitly re-authorizes it.
 - User has authorized sending test messages in any Feishu group that contains docker198/199/200. Keep messages clearly marked and low-noise.
 - Always use a unique marker: `HER_E2E_<yyyymmddHHMMSS>_<case>`.
+- **Mac local variant**: `carher-101..104` on the host Mac also have lark-cli authorized as the user (`卜弋天`, `ou_a7afacbb81237891a181832ac7a76294`). Use them as the user-proxy when testing local PoCs (e.g. `hermestest-103/104` at `~/Documents/work/hermestest/`).
+
+## Mac Local PoC Variant — using carher-101 as user proxy
+
+You can drive the entire E2E loop without ever asking the human to type in
+Feishu, by using any local `carher-N` container's lark-cli auth as the
+sender. This is the "last mile" that closes the test loop on your side.
+
+```bash
+# 1. Pick any local carher container that's running and has lark-cli auth.
+# carher-101 typically has auth as 卜弋天 (verify with `lark-cli auth list`).
+docker start carher-101  # if stopped
+docker exec carher-101 lark-cli auth list
+# expect: { "userName":"卜弋天", "tokenStatus":"needs_refresh"|"valid", ... }
+# tokenStatus=needs_refresh is fine — auto-refreshes on first request.
+
+# 2. Find the chat_id from the bot under test (e.g. hermestest-103).
+docker exec hermestest-103 tail -100 /opt/data/logs/gateway.log \
+  | grep -oE "oc_[0-9a-f]+" | sort -u
+# DM with bot: typically 1 chat_id; group: another chat_id.
+
+# 3. Send AS 卜弋天 (user identity, not bot identity).
+docker exec carher-101 lark-cli im +messages-send \
+  --as user \
+  --chat-id "oc_xxxx" \
+  --text "test prompt here"
+
+# 4. Wait for the bot to reply (Hermes typically 4-30s, carher 6-90s with
+#    tool calls). Use Monitor with an until-loop on the gateway.log:
+until docker exec hermestest-103 tail -30 /opt/data/logs/gateway.log \
+        2>/dev/null | grep -q "<chat_id>.*time=.*api_calls"; do sleep 3; done
+
+# 5. Read back the reply via lark-cli.
+docker exec carher-101 lark-cli im +chat-messages-list \
+  --as user --chat-id "oc_xxxx" --sort desc --page-size 5
+```
+
+For DM specifically, the chat_id between you and a given bot is stable —
+record it the first time and reuse it across runs.
+
+The same loop works for the S1 fleet: you can run the user-proxy lark-cli
+on any S1 carher container (12, 13, 14, 75, 198, 199, 200) and direct it
+at any bot's chat_id you've ever interacted with.
 
 ## Preflight
 
@@ -115,22 +158,22 @@ For every test case:
 
 Run these before full rollout:
 
-| Case            | Trigger                                        | Expected evidence                                                                                                                                  |
-| --------------- | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| group-new-head  | `@bot /new`                                    | log has `detected system command` and `system command dispatched (delivered=true)`; no `dispatching to agent`; user sees `✅ New session started.` |
-| group-new-tail  | `/new @bot`                                    | same as above                                                                                                                                      |
-| group-new-multi | `/new @bot1 @bot2`                             | each addressed bot handles system command directly; no LLM `noreply`                                                                               |
-| group-status    | `/status @bot`                                 | one system status response; no double reply                                                                                                        |
-| history-card    | recent history includes `msg_type=interactive` | injected context has readable card text, not `请升级至最新版本客户端，以查看内容`, not raw card JSON                                               |
-| known-bots      | group contains multiple Her app senders        | model-visible sender labels include names like `弋天的her (cli_...)`, not bare `cli_...` only                                                      |
-| reply-chain     | trigger is a reply/thread message              | context includes `message_id`, `message_type`, and `reply_to_id` when lark-cli exposes them                                                        |
-| card-output     | normal Her answer                              | user-visible reply is an interactive card unless a documented fallback applies                                                                     |
-| card-coalesce   | prompt asks for 5-8 short numbered points      | one bot turn should produce one interactive card, not many `post`/card fragments                                                                  |
-| tool-coalesce   | prompt asks bot to inspect something with tools | tool/progress/final output should remain in one card when the channel supports it; any fallback fragments must be explained by logs                 |
-| footer-status   | normal Her answer                              | final card footer is one compact grey line: elapsed, short model alias, group mode, context ratio, and `🧹N` only when compactions > 0               |
-| cron-card       | one-shot cron with `--message ... --announce`  | cron/direct outbound final text is `msg_type=interactive`, not old `post`; explicit card JSON must still pass through without double wrapping       |
-| self-send       | bot sends a proactive/follow-up style message  | bot-originated outbound path is interactive/card-shaped or explicitly documented as a safe fallback                                                 |
-| a2a-route       | S1 test bot asks for an S3 bot capability      | A2A logs show registry lookup and LAN endpoint route when peer is remote                                                                           |
+| Case            | Trigger                                         | Expected evidence                                                                                                                                  |
+| --------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| group-new-head  | `@bot /new`                                     | log has `detected system command` and `system command dispatched (delivered=true)`; no `dispatching to agent`; user sees `✅ New session started.` |
+| group-new-tail  | `/new @bot`                                     | same as above                                                                                                                                      |
+| group-new-multi | `/new @bot1 @bot2`                              | each addressed bot handles system command directly; no LLM `noreply`                                                                               |
+| group-status    | `/status @bot`                                  | one system status response; no double reply                                                                                                        |
+| history-card    | recent history includes `msg_type=interactive`  | injected context has readable card text, not `请升级至最新版本客户端，以查看内容`, not raw card JSON                                               |
+| known-bots      | group contains multiple Her app senders         | model-visible sender labels include names like `弋天的her (cli_...)`, not bare `cli_...` only                                                      |
+| reply-chain     | trigger is a reply/thread message               | context includes `message_id`, `message_type`, and `reply_to_id` when lark-cli exposes them                                                        |
+| card-output     | normal Her answer                               | user-visible reply is an interactive card unless a documented fallback applies                                                                     |
+| card-coalesce   | prompt asks for 5-8 short numbered points       | one bot turn should produce one interactive card, not many `post`/card fragments                                                                   |
+| tool-coalesce   | prompt asks bot to inspect something with tools | tool/progress/final output should remain in one card when the channel supports it; any fallback fragments must be explained by logs                |
+| footer-status   | normal Her answer                               | final card footer is one compact grey line: elapsed, short model alias, group mode, context ratio, and `🧹N` only when compactions > 0             |
+| cron-card       | one-shot cron with `--message ... --announce`   | cron/direct outbound final text is `msg_type=interactive`, not old `post`; explicit card JSON must still pass through without double wrapping      |
+| self-send       | bot sends a proactive/follow-up style message   | bot-originated outbound path is interactive/card-shaped or explicitly documented as a safe fallback                                                |
+| a2a-route       | S1 test bot asks for an S3 bot capability       | A2A logs show registry lookup and LAN endpoint route when peer is remote                                                                           |
 
 ## Pass Criteria For History 1:1
 
