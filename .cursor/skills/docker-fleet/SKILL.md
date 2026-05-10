@@ -47,6 +47,32 @@ s1() { sshpass -p "$S1_PW" ssh -o StrictHostKeyChecking=no cltx@10.68.13.186 "$@
 s3() { sshpass -p "$S3_PW" ssh -o StrictHostKeyChecking=no cltx@10.68.13.188 "$@"; }
 ```
 
+**Shell footgun — do not compress the assignment and SSH into one command.**
+This is wrong:
+
+```bash
+S1_PW=$(awk '/^10\.68\.13\.186/ {print $3; exit}' docker/servers.txt) sshpass -p "$S1_PW" ssh -o StrictHostKeyChecking=no cltx@10.68.13.186 'hostname'
+```
+
+In POSIX shells, `$S1_PW` in the same command line is expanded before the
+temporary assignment is visible to that argument, so `sshpass` may receive an
+empty or stale password and report a fake `Permission denied`. Use two
+commands, a semicolon, or the `s1` helper:
+
+```bash
+S1_PW=$(awk '/^10\.68\.13\.186/ {print $3; exit}' docker/servers.txt)
+sshpass -p "$S1_PW" ssh -o StrictHostKeyChecking=no cltx@10.68.13.186 'hostname'
+
+# or
+S1_PW=$(awk '/^10\.68\.13\.186/ {print $3; exit}' docker/servers.txt); sshpass -p "$S1_PW" ssh -o StrictHostKeyChecking=no cltx@10.68.13.186 'hostname'
+
+# preferred after defining helpers above
+s1 'hostname'
+```
+
+If the user gives an explicit one-off `sshpass -p '...' ssh ...` command in
+chat, run that exact shape instead of re-deriving credentials.
+
 ## 核心运维（compose 命令）
 
 所有服务器的 compose 目录在 `/Data/CarHer/deploy/carher-{id}/`。

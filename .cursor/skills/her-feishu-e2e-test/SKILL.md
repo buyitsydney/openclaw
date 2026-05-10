@@ -76,6 +76,13 @@ at any bot's chat_id you've ever interacted with.
      'cd /Data/CarHer && docker logs carher-200 --since 15m 2>&1 | grep -E "WSClient connected|gateway] ready|PATCHED|history-fill|command-body|reply-card default|BotRegistry"'
    ```
 
+   Do **not** compress this into
+   `S1_PW=$(awk ...) sshpass -p "$S1_PW" ssh ...`. The `$S1_PW` argument is
+   expanded before the same-line temporary assignment is visible, so `sshpass`
+   can receive an empty/stale password and falsely fail with
+   `Permission denied`. Use two lines, a semicolon, or the `s1` helper from the
+   `docker-fleet` skill.
+
 3. Keep evidence under `artifacts/her-e2e/<run-id>/` in the active worktree. Save raw lark-cli JSON, relevant docker log snippets, and a short `result.md`.
 
 ## Finding A Test Chat
@@ -87,6 +94,9 @@ S1_PW=$(awk '/^10\.68\.13\.186/ {print $3; exit}' docker/servers.txt)
 sshpass -p "$S1_PW" ssh -o StrictHostKeyChecking=no cltx@10.68.13.186 \
   'docker logs carher-200 --since 6h 2>&1 | grep -E "oc_[0-9a-f]+|chatId|chat_id" | tail -80'
 ```
+
+Again, keep the password assignment separated from the `sshpass` command; do
+not put `S1_PW=$(...) sshpass -p "$S1_PW"` on one line.
 
 If a known chat_id is available, list recent messages with user identity:
 

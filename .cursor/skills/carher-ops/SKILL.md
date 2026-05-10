@@ -72,6 +72,37 @@ deploy/carher-{id}/
 
 **行动原则**:`docker/servers.txt` 是手动维护的真相表。S1 `/Data/CarHer` remote 名通常是 `carher`;S3 remote 名通常是 `origin`,不要在 runbook 里写死同一个 remote。
 
+**S1 SSH 入口铁律**:S1 是能登录的。不要把本机错误写法导致的
+`Permission denied` 误判成服务器不可达。正确的一次性形态是:
+
+```bash
+sshpass -p 'PASSWORD_FROM_SERVERS_TXT' ssh -o StrictHostKeyChecking=no cltx@10.68.13.186 'hostname'
+```
+
+从 `docker/servers.txt` 读密码时,必须分成两步或用 helper:
+
+```bash
+S1_PW=$(awk '/^10\.68\.13\.186/ {print $3; exit}' docker/servers.txt)
+sshpass -p "$S1_PW" ssh -o StrictHostKeyChecking=no cltx@10.68.13.186 'hostname'
+```
+
+也可以用分号,但必须让变量赋值先完成:
+
+```bash
+S1_PW=$(awk '/^10\.68\.13\.186/ {print $3; exit}' docker/servers.txt); sshpass -p "$S1_PW" ssh -o StrictHostKeyChecking=no cltx@10.68.13.186 'hostname'
+```
+
+**绝对禁止** 写成下面这样:
+
+```bash
+S1_PW=$(awk '/^10\.68\.13\.186/ {print $3; exit}' docker/servers.txt) sshpass -p "$S1_PW" ssh -o StrictHostKeyChecking=no cltx@10.68.13.186 'hostname'
+```
+
+原因:`$S1_PW` 会在同一条命令执行前先展开,这时前面的临时赋值还没对
+参数生效,`sshpass` 可能拿到空密码或旧密码,从而假报
+`Permission denied (publickey,password)`。遇到这种错误,先检查是否踩了
+这个 shell 展开坑,不要立刻宣称 S1 不能通信。
+
 ---
 
 ## 第 3 章 · 镜像构建 + Registry 分发
@@ -283,19 +314,19 @@ scripts/carher-verify.sh --id=N --wait=60
 # exit 0 = 全过 / exit 3 = 有 FAIL / exit 2 = 容器不存在
 ```
 
-| #   | Gate                       | 检查内容                                                               | 失败含义                        |
-| --- | -------------------------- | ---------------------------------------------------------------------- | ------------------------------- |
-| 1   | gateway ready              | `[gateway] ready`                                                      | 容器没起来                      |
-| 2   | plugin 数量                | N ≥ 7                                                                  | A+B 缺插件                      |
-| 3   | feishu websocket           | `WSClient connected` 或 `starting WebSocket connection`                | token 失效或 appId 错           |
-| 4   | A2A peers                  | `refreshRegistryPeers found N`, N>0                                    | Redis 或 A2A 未启用（警告）     |
-| 5   | acpx runtime               | `acpx runtime backend ready` / `embedded acpx` / `ACP ready`           | ACP 未启用（警告）              |
-| 6   | 无 plugin 契约错误         | 无 `plugin validation/schema failed`                                   | **SDK drift — 立刻回滚**        |
-| 7   | openclaw-lark channel-only | runtime manifest 中 `contracts.tools=[]` 且 `skills=[]`                | 上游 lark tools/skills 吃上下文 |
+| #   | Gate                       | 检查内容                                                                                                            | 失败含义                        |
+| --- | -------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| 1   | gateway ready              | `[gateway] ready`                                                                                                   | 容器没起来                      |
+| 2   | plugin 数量                | N ≥ 7                                                                                                               | A+B 缺插件                      |
+| 3   | feishu websocket           | `WSClient connected` 或 `starting WebSocket connection`                                                             | token 失效或 appId 错           |
+| 4   | A2A peers                  | `refreshRegistryPeers found N`, N>0                                                                                 | Redis 或 A2A 未启用（警告）     |
+| 5   | acpx runtime               | `acpx runtime backend ready` / `embedded acpx` / `ACP ready`                                                        | ACP 未启用（警告）              |
+| 6   | 无 plugin 契约错误         | 无 `plugin validation/schema failed`                                                                                | **SDK drift — 立刻回滚**        |
+| 7   | openclaw-lark channel-only | runtime manifest 中 `contracts.tools=[]` 且 `skills=[]`                                                             | 上游 lark tools/skills 吃上下文 |
 | 8   | runtime patch markers      | command-body / history-fill / inbound-meta / reply-card / outbound-card / footer-status / session-decay marker 全在 | runtime patch 未落地            |
-| 9   | a2a-gateway ioredis        | `node_modules/ioredis` 存在                                            | npm install 失败                |
-| 10  | feishu-her 依赖            | `@larksuiteoapi` 存在                                                  | feishu 连不上                   |
-| 11  | 无严重运行时错误           | 无 `FATAL/uncaughtException/crash`                                     | 立刻回滚                        |
+| 9   | a2a-gateway ioredis        | `node_modules/ioredis` 存在                                                                                         | npm install 失败                |
+| 10  | feishu-her 依赖            | `@larksuiteoapi` 存在                                                                                               | feishu 连不上                   |
+| 11  | 无严重运行时错误           | 无 `FATAL/uncaughtException/crash`                                                                                  | 立刻回滚                        |
 
 ### Monitor 模板
 
@@ -410,10 +441,10 @@ carher 对 openclaw / 闭源上游 npm 包打的本地 patch。**修改前必读
 
 ### 判定规则:runtime vs build-time patch
 
-| 目标文件会被 runtime 覆盖吗?           | 路径                                                                                           | 典型                               |
-| -------------------------------------- | ---------------------------------------------------------------------------------------------- | ---------------------------------- |
+| 目标文件会被 runtime 覆盖吗?           | 路径                                                                                           | 典型                                                                                            |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | 会(npm install 重写 / bind-mount 覆盖) | **entrypoint runtime patch**(`scripts/carher-entrypoint.sh` 每次 container 启动)               | stripBotMentions / P8 history-fill / reply-card default / outbound-card default / footer-status |
-| 不会(image COPY read-only layer)       | **Dockerfile build-time patch**(`scripts/apply-reset-archive-patches.sh`,`RUN` 走 build layer) | (当前无;P7 已撤)                   |
+| 不会(image COPY read-only layer)       | **Dockerfile build-time patch**(`scripts/apply-reset-archive-patches.sh`,`RUN` 走 build layer) | (当前无;P7 已撤)                                                                                |
 
 选错方向 = 下次 npm install / image rebuild 时 patch 失效。
 
@@ -889,6 +920,16 @@ docker compose down && docker compose up -d
 cat docker/servers.txt
 sshpass -p 'PASSWORD' ssh -o StrictHostKeyChecking=no USER@IP "COMMAND"
 ```
+
+S1 快速自检:
+
+```bash
+S1_PW=$(awk '/^10\.68\.13\.186/ {print $3; exit}' docker/servers.txt)
+sshpass -p "$S1_PW" ssh -o StrictHostKeyChecking=no cltx@10.68.13.186 'hostname; docker ps --format "{{.Names}} {{.Status}}" | grep -E "carher-198|carher-199|carher-200|hermestest-199"'
+```
+
+不要写成 `S1_PW=$(awk ...) sshpass -p "$S1_PW" ...`;这是 shell 展开坑,
+会把可登录的 S1 误诊为 `Permission denied`。
 
 ### 代码同步铁律
 
