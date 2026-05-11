@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { SessionManager } from "@mariozechner/pi-coding-agent";
+import { stripInboundMetadata } from "../../auto-reply/reply/strip-inbound-meta.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.types.js";
 import {
@@ -364,6 +365,22 @@ function appendModelSnapshot(sessionManager: SessionManager, data: ModelSnapshot
   }
 }
 
+function stripReplayInboundMetadata(messages: AgentMessage[]): AgentMessage[] {
+  let touched = false;
+  const stripped = messages.map((message) => {
+    if (message.role !== "user" || typeof message.content !== "string") {
+      return message;
+    }
+    const cleaned = stripInboundMetadata(message.content);
+    if (cleaned === message.content) {
+      return message;
+    }
+    touched = true;
+    return { ...message, content: cleaned };
+  });
+  return touched ? stripped : messages;
+}
+
 function isSameModelSnapshot(a: ModelSnapshotEntry, b: ModelSnapshotEntry): boolean {
   const normalize = (value?: string | null) => value ?? "";
   return (
@@ -404,6 +421,7 @@ export async function sanitizeSessionHistory(params: {
       model: params.model,
     });
   const withInterSessionMarkers = annotateInterSessionUserMessages(params.messages);
+  const withReplayInboundMetadataStripped = stripReplayInboundMetadata(withInterSessionMarkers);
   const allowProviderOwnedThinkingReplay = shouldAllowProviderOwnedThinkingReplay({
     modelApi: params.modelApi,
     policy,
@@ -413,7 +431,7 @@ export async function sanitizeSessionHistory(params: {
     params.modelApi === "openai-codex-responses" ||
     params.modelApi === "azure-openai-responses";
   const sanitizedImages = await sanitizeSessionMessagesImages(
-    withInterSessionMarkers,
+    withReplayInboundMetadataStripped,
     "session:history",
     {
       sanitizeMode: policy.sanitizeMode,

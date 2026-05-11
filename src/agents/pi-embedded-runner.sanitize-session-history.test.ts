@@ -445,6 +445,37 @@ describe("sanitizeSessionHistory", () => {
     expect(first.content as string).toContain("sourceSession=agent:main:req");
   });
 
+  it("strips stale inbound metadata blocks from replayed user messages", async () => {
+    setNonGoogleModelApi();
+
+    const priorUserMessage = [
+      "Conversation info (untrusted metadata):",
+      "```json",
+      JSON.stringify({ chat_type: "group", history_count: 2 }),
+      "```",
+      "",
+      "Chat history since last reply (untrusted, for context):",
+      "```json",
+      JSON.stringify([
+        { sender: "研究1", body: "old group context A" },
+        { sender: "研究2", body: "old group context B" },
+      ]),
+      "```",
+      "",
+      "actual previous user question",
+    ].join("\n");
+
+    const result = await sanitizeAnthropicHistory({
+      messages: [makeUserMessage(priorUserMessage)],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      role: "user",
+      content: "actual previous user question",
+    });
+  });
+
   it("drops stale assistant usage snapshots kept before latest compaction summary", async () => {
     vi.mocked(mockedHelpers.isGoogleModelApi).mockReturnValue(false);
 
