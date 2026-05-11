@@ -555,3 +555,45 @@ Runtime OpenClaw mode 也必须跑同一矩阵，将 `198` 替换为 runtime can
 5. OpenClaw-only、Hermes-only、Runtime 三套真实 Feishu E2E 全绿。
 6. runtime canary 最终回到 OpenClaw 安全态。
 7. 文档、skills、artifact 全部更新。
+
+---
+
+## 10. 2026-05-11 当前验收结果
+
+当前已完成一次基于三个 `dev` 的 S1 runtime canary 验收。
+
+### 10.1 三仓 dev 状态
+
+| 仓库                         | dev commit     | 状态                                                                                      |
+| ---------------------------- | -------------- | ----------------------------------------------------------------------------------------- |
+| `carher-openclaw` / `CarHer` | `74ea84b0db9`  | 已推送 `carher/dev`，S1 `/Data/CarHer` 已 fast-forward 到该提交                           |
+| `carher-hermes`              | `ae5542fd9ef6` | 已推送 `origin/dev`；S1 Hermes image 使用 `1224dbbace9d` 行为源，`ae5542f` 仅追加基线文档 |
+| `carher-runtime`             | `742ff122e346` | 已推送 `origin/dev`，S1 `/Data/carher-runtime` 已由该 commit 的 `git archive` 同步        |
+
+### 10.2 S1 runtime canary
+
+| 项                   | 值                                                                        |
+| -------------------- | ------------------------------------------------------------------------- |
+| Runtime 容器         | `hermestest-200`                                                          |
+| Runtime source       | `/Data/carher-runtime/.carher-runtime-source-ref = 742ff12`               |
+| Runtime image        | `carher-runtime:dev`                                                      |
+| Runtime image digest | `sha256:e9d17af6e22e7afe6727fd539289cc9e512595fde255ddc2566004c1ecc66cb8` |
+| OpenClaw control     | `carher-198`                                                              |
+| Hermes control       | `hermestest-199`                                                          |
+| Test group           | `oc_fd0624fa2a9cb343cc9371be5c527686`                                     |
+| Final engine marker  | `/data/.engine/active=openclaw`                                           |
+
+### 10.3 已通过的真实 Feishu E2E artifacts
+
+| Artifact                            | 覆盖内容                                                                                                                                                |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `s1-dual-200-20260511T094344`       | 198 OpenClaw control、199 Hermes control、200 OpenClaw mode、`/hermes`、Hermes group continuity、Hermes DM、`/openclaw`、OpenClaw DM history continuity |
+| `s1-feature-20260511T094908`        | 199 table card、199 KQA、199→200 A2A、199 `/gpt`、199 `/opus`、200 Hermes KQA、切回 OpenClaw                                                            |
+| `s1-command-matrix-20260511T095943` | 多 bot 普通 mention、`/status @198 @200`、`/new @198 @200`、`@200 /status`、`@200 /new`                                                                 |
+
+### 10.4 关键结论
+
+- `carher-runtime` 没有吞掉 OpenClaw/Hermes UX patch；runtime 只拥有 supervisor、marker、switch glue 和 E2E。
+- OpenClaw DM history-fill 是 runtime-aware 可选补丁：默认保持纯 OpenClaw 行为，只有 runtime 设置 `CARHER_DUAL_ENGINE_HISTORY_FILL=1` 时启用 DM/thread history continuity。
+- `@larksuite/openclaw-lark` 在 runtime 中固定为 `2026.4.10`，不使用 `@latest`。
+- S1 200 最终已回到 OpenClaw 安全态。
