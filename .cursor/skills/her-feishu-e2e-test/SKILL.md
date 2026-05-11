@@ -157,7 +157,8 @@ Required PASS evidence:
 - 200 OpenClaw DM reads the prior Hermes DM marker and returns
   `OPENCLAW200_DM_OK`.
 
-Latest known green run: `s1-dual-200-20260510T173926`.
+Latest known green run after git-archive replay + rebuild + compose recreate:
+`s1-dual-200-20260511T080356`.
 
 For cloud feature parity, also run a feature matrix that covers:
 
@@ -167,7 +168,25 @@ For cloud feature parity, also run a feature matrix that covers:
 - 199 `/gpt` and `/opus` model switches.
 - 200 Hermes Knowledge QA through lark-cli user token.
 
-Latest known green run: `s1-feature-20260510T174818`.
+Latest known green run after git-archive replay + rebuild + compose recreate:
+`s1-feature-20260511T080935`.
+
+S1 replay source of truth for these runs:
+
+- Local `hermestest` `dev` HEAD:
+  `1224dbb CarHer dual: keep Feishu secrets out of compose`.
+- S1 `/Data/hermestest/.carher-dual-source-ref`:
+  `1224dbbace9d90f31f7ff156364ee4e958a86123`.
+- Rebuilt `hermestest:dev`:
+  `sha256:f3729711a3c7137dd87607a25977eb3a517ecfc0ce0b33fae8b085cca3396e2e`.
+- Rebuilt `hermestest:dual` for 200:
+  `sha256:24ad6668aebac4f6760db36d7282dbba8dbf27a88f38a3fb59e1677a05db4369`.
+- Final 200 safe state after feature E2E:
+  `/data/.engine/active=openclaw`.
+
+Do not claim 199/200 parity by only inspecting live containers. The required
+release proof is: local git commit/tag/bundle -> `git archive HEAD` to S1 ->
+S1 build -> compose recreate -> this E2E matrix.
 
 Dual-engine lark-cli trap: 200 has two homes. OpenClaw uses `HOME=/data`;
 Hermes uses `HOME=/opt/data`. A valid OpenClaw token does not prove Hermes

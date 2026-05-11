@@ -114,6 +114,18 @@ compose 均保留为 rollback。当前已验证的 dual image id 是
 probe、memory reindex/reset-index、A2A 14→75 真调用。后续如果要改 dual，先新建
 commit/tag；失败时先回滚到这份 baseline。
 
+**S1 199/200 replay baseline（2026-05-11）**:本地 `hermestest dev` HEAD
+`1224dbb CarHer dual: keep Feishu secrets out of compose` 已打包成
+`git archive` 同步到 S1 `/Data/hermestest`，并写入
+`.carher-dual-source-ref=1224dbbace9d90f31f7ff156364ee4e958a86123`。S1
+重新 build `hermestest:dev`=`sha256:f3729711a3c7137dd87607a25977eb3a517ecfc0ce0b33fae8b085cca3396e2e`
+和 `hermestest:dual`=`sha256:24ad6668aebac4f6760db36d7282dbba8dbf27a88f38a3fb59e1677a05db4369`，
+然后 compose recreate `hermestest-199` / `hermestest-200`。部署后 E2E:
+`s1-dual-200-20260511T080356` 和 `s1-feature-20260511T080935` 均通过；200
+最终安全态为 `/data/.engine/active=openclaw`。以后不要只测 live 200 就宣称固化，
+必须按 git commit/tag/bundle -> git archive -> S1 build -> compose recreate -> E2E
+闭环证明。
+
 **Hermes dual lark-cli token trap**:200 有两个 HOME：OpenClaw=`/data`,
 Hermes=`/opt/data`。飞书 user refresh token 会轮换，不能只检查 `.lark-cli`
 里是否有 user 元数据；必须确认 `.local/share/lark-cli` 的加密 token store

@@ -40,6 +40,7 @@ metadata:
 - 原 `carher-13` / `carher-14` / `carher-75` / `carher-200` compose 保留为 rollback；看到这些 `carher-*` 不在 `docker ps` 里不要误判离线，先查对应 `hermestest-*`。
 - dual 容器的 active marker 是 `/data/.engine/active`，默认/安全态应为 `openclaw`。OpenClaw HOME=`/data`，Hermes HOME=`/opt/data`，lark-cli user token store 必须双向同步。
 - 2026-05-11 已验证 13/14/75 使用同一 `hermestest:dual` image id `sha256:dce47696b6d96f54de54942199ff5bfd7f2e5b2613198e9a88c8b103c61fb448`，14/75 在 Her 产品测试群完成 hot-switch、`/new`、context、knownBots、KQA、ACP、daemon、reset index、A2A 回归。基线文档在 `hermestest/parity/DUAL_BASELINE_20260511.md`。
+- 2026-05-11 已重新从 `hermestest` git HEAD `1224dbb` 通过 `git archive` 同步 S1 `/Data/hermestest`，重建 `hermestest:dev`=`sha256:f3729711a3c7137dd87607a25977eb3a517ecfc0ce0b33fae8b085cca3396e2e` 和 `hermestest:dual`=`sha256:24ad6668aebac4f6760db36d7282dbba8dbf27a88f38a3fb59e1677a05db4369`，compose recreate 199/200 后通过 `s1-dual-200-20260511T080356` 与 `s1-feature-20260511T080935`。200 最终安全态是 `openclaw`。
 
 A2A 跨 S1/S3 依赖 `CARHER_SERVER`：S1 必须注册 `S1`,S3 必须注册 `S3`,不能都保持 `local`。`server=local` 会让跨主机 peer 被误判成同机 Docker DNS (`http://carher-N:18800`),表现为 S1 her 找不到 S3 her。检查 Redis `a2a:card:*` 时同时看 `server` 和 `endpoints.lan`。
 
