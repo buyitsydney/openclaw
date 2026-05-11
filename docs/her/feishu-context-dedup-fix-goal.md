@@ -323,3 +323,58 @@ The fix is not complete until all criteria are true:
 - Do not change 12/13/14/75 during this fix unless explicitly requested.
 - Do not deploy before failing tests prove the bugs and green tests prove the
   fix.
+
+## Final Evidence
+
+Completed on 2026-05-11.
+
+Authoritative commits:
+
+- `carher-openclaw dev`: `c572b7bbecb Feishu: scrub archived runtime context`.
+- `carher-hermes dev`: `0023813 Feishu: keep context preamble transient`.
+- `carher-runtime dev`: `f6fbe16 E2E: check OpenClaw context structurally`.
+
+Local verification:
+
+```text
+bash -n scripts/carher-patches/apply-inbound-history-meta.sh
+node --test scripts/carher-patches/apply-history-fill.test.mjs
+OPENCLAW_LOCAL_CHECK=0 pnpm test scripts/carher-patches/apply-history-fill.test.mjs src/auto-reply/reply/inbound-meta.test.ts src/auto-reply/reply/strip-inbound-meta.test.ts src/agents/pi-embedded-runner.sanitize-session-history.test.ts
+
+cd /Users/buyitian/Documents/work/hermestest
+bash scripts/test-dual-lark-token-store-sync.sh
+bash scripts/test-card-output-renderer.sh
+bash scripts/test-context-preamble-dedup.sh
+bash scripts/test-engine-swap-runtime-gate.sh
+```
+
+S1 deployment verification:
+
+```text
+carher-198      localhost:5001/carher-core:2026.5.11-p15-context-dedup  healthy
+hermestest-199  hermestest:dev                                         healthy
+hermestest-200  carher-runtime:dev                                      healthy
+hermestest-200  /data/.engine/active=openclaw
+```
+
+Real Feishu E2E artifact:
+
+```text
+/Data/carher-runtime/deploy/carher-200/artifacts/s1-context-dedup-20260511T151651
+```
+
+The final run proved:
+
+- Multi-bot group mention, `/status`, and `/new` still work across 198/199/200.
+- Pure Hermes 199 group self-check sees exactly one current
+  `[Recent group history]` block, and persisted rows for the test markers have
+  `bad_user_preamble_rows=0`.
+- Pure Hermes 199 DM stores only the real user text (`has_preamble=False`) and
+  `/openclaw` is rejected without writing a runtime engine marker.
+- Runtime 200 Hermes group self-check sees exactly one current history block,
+  with zero persisted preamble rows.
+- Runtime 200 Hermes DM stores only the real user text (`has_preamble=False`).
+- Runtime 200 OpenClaw DM stores no structural
+  `customType=openclaw.runtime-context` records and no user message containing
+  `Chat history since last reply`.
+- Runtime 200 ends in the safe OpenClaw state.
