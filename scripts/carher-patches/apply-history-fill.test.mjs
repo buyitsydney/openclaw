@@ -892,6 +892,10 @@ test("PATCH: apply-inbound-history-meta.sh filters replayed runtime context bloc
   const queueScratch = join(scratchDir, "runtime-context-prompt.patchscratch.js");
   const dataRoot = join(scratchDir, "runtime-context-scrub-data.patchscratch");
   const sessionFile = join(dataRoot, "agents/main/sessions/test.jsonl");
+  const resetSessionFile = join(
+    dataRoot,
+    "agents/main/sessions/test.jsonl.reset.2026-05-11T00-00-00.000Z",
+  );
   writeFileSync(
     getReplyScratch,
     `
@@ -986,6 +990,14 @@ main();
       },
     })}\n${JSON.stringify({ type: "message", role: "user", content: "real user text" })}\n`,
   );
+  writeFileSync(
+    resetSessionFile,
+    `${JSON.stringify({
+      type: "custom_message",
+      customType: "openclaw.runtime-context",
+      content: "Chat history since last reply (untrusted, for context):\narchived",
+    })}\n${JSON.stringify({ type: "message", role: "user", content: "archived real text" })}\n`,
+  );
   try {
     execSync(
       `CARHER_OPENCLAW_DATA_ROOT=${dataRoot} bash ${APPLY_INBOUND_HISTORY_META_SH} ${getReplyScratch}`,
@@ -1009,6 +1021,9 @@ main();
     assert.doesNotMatch(scrubbed, /Chat history since last reply/);
     assert.match(scrubbed, /real prompt/);
     assert.match(scrubbed, /real user text/);
+    const scrubbedReset = readFileSync(resetSessionFile, "utf-8");
+    assert.doesNotMatch(scrubbedReset, /openclaw\.runtime-context/);
+    assert.match(scrubbedReset, /archived real text/);
 
     execSync(
       `CARHER_OPENCLAW_DATA_ROOT=${dataRoot} bash ${APPLY_INBOUND_HISTORY_META_SH} ${getReplyScratch}`,

@@ -122,7 +122,7 @@ def strip_nested_runtime_context(value):
         return next_obj, changed
     return value, False
 
-for path in root.glob("agents/*/sessions/*.jsonl"):
+for path in root.glob("agents/*/sessions/*.jsonl*"):
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError:
