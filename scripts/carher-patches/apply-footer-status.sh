@@ -185,7 +185,7 @@ async function carherReadGroupModeLabel(params) {
 
 function patchBuilder(path) {
   let code = fs.readFileSync(path, "utf8");
-  if (code.includes(`${marker}:builder-v4`)) {
+  if (code.includes(`${marker}:builder-v5`)) {
     console.log(`apply-footer-status.sh: builder already patched (${path})`);
     return;
   }
@@ -205,7 +205,7 @@ function patchBuilder(path) {
   }
   code = code.replace(
     helperAnchor,
-    () => `// === ${marker}:builder-v4 ===
+    () => `// === ${marker}:builder-v5 ===
 function carherFooterText(value) {
     return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
@@ -253,8 +253,16 @@ function carherFooterContextLabel(metrics) {
         return undefined;
     const totalLabel = compactNumber(total);
     const ctxLabel = compactNumber(ctx);
+    return \`\${totalLabel}/\${ctxLabel}\`;
+}
+function carherFooterContextPercentLabel(metrics) {
+    const freshTotal = metrics?.totalTokensFresh === false ? undefined : metrics?.totalTokens;
+    const total = typeof freshTotal === 'number' ? Math.max(0, freshTotal) : undefined;
+    const ctx = typeof metrics?.contextTokens === 'number' ? Math.max(0, metrics.contextTokens) : undefined;
+    if (total == null || ctx == null)
+        return undefined;
     const pct = ctx > 0 ? Math.round((total / ctx) * 100) : 0;
-    return \`\${totalLabel}/\${ctxLabel} (\${pct}%)\`;
+    return \`\${pct}%\`;
 }
 function carherBuildCompactFooterRuntimeSegments(params) {
     const { footer, metrics, elapsedMs, isError, isAborted } = params;
@@ -262,39 +270,38 @@ function carherBuildCompactFooterRuntimeSegments(params) {
         return undefined;
     const primaryZh = [];
     const primaryEn = [];
-    if (footer?.elapsed && elapsedMs != null) {
-        const d = formatElapsed(elapsedMs);
-        primaryZh.push(\`耗时 \${d}\`);
-        primaryEn.push(\`耗时 \${d}\`);
-    }
+    primaryZh.push('🦞 **OpenClaw**');
+    primaryEn.push('🦞 **OpenClaw**');
     const model = footer?.model ? carherFooterModelAlias(metrics?.model) : undefined;
     if (model) {
         primaryZh.push(model);
         primaryEn.push(model);
-    }
-    const groupMode = carherFooterText(metrics?.groupMode);
-    if (groupMode) {
-        primaryZh.push(groupMode);
-        primaryEn.push(groupMode);
     }
     const context = footer?.context ? carherFooterContextLabel(metrics) : undefined;
     if (context) {
         primaryZh.push(context);
         primaryEn.push(context);
     }
-    if (footer?.context && metrics && typeof metrics.compactionCount === 'number') {
-        const compactions = Math.max(0, Math.round(metrics.compactionCount));
-        if (compactions > 0) {
-            const label = \`🧹\${compactions}\`;
-            primaryZh.push(label);
-            primaryEn.push(label);
-        }
+    const contextPercent = footer?.context ? carherFooterContextPercentLabel(metrics) : undefined;
+    if (contextPercent) {
+        primaryZh.push(contextPercent);
+        primaryEn.push(contextPercent);
+    }
+    const groupMode = carherFooterText(metrics?.groupMode);
+    if (groupMode) {
+        primaryZh.push(groupMode);
+        primaryEn.push(groupMode);
+    }
+    if (footer?.elapsed && elapsedMs != null) {
+        const d = formatElapsed(elapsedMs);
+        primaryZh.push(d);
+        primaryEn.push(d);
     }
     return primaryZh.length || primaryEn.length
         ? { primaryZh, primaryEn, detailZh: [], detailEn: [] }
         : undefined;
 }
-// === end ${marker}:builder-v4 ===
+// === end ${marker}:builder-v5 ===
 ${helperAnchor}`,
   );
 
