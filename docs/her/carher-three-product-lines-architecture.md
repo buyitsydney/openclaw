@@ -43,6 +43,29 @@ CarHer 后续应拆成三条产品线，而不是一个巨型镜像承载所有�
 - `carher-hermes` 是当前 `hermestest` 工程成熟后的正式名称。
 - `carher-dual` 是二合一组合工程，只负责热切换和兼容性验证，不复制两边业务代码。
 
+### 2.1 2026-05-11 临时权威状态
+
+正式 `carher-dual` 独立仓库尚未拆出之前，dual 线的临时权威是
+`/Users/buyitian/Documents/work/hermestest` 的 `dev` 分支，而不是
+`hermestest-dual-engine` 历史 worktree，也不是 OpenClaw 的
+`feat/dual-engine-poc`。
+
+当前已验证的 dual 灰度基线：
+
+| 容器             | 服务器            | 运行入口                                               | 状态                     |
+| ---------------- | ----------------- | ------------------------------------------------------ | ------------------------ |
+| `hermestest-13`  | S1 `10.68.13.186` | `/Data/hermestest/deploy/carher-13/compose.dual.yaml`  | healthy，默认 `openclaw` |
+| `hermestest-14`  | S3 `10.68.13.188` | `/Data/hermestest/deploy/carher-14/compose.dual.yaml`  | healthy，默认 `openclaw` |
+| `hermestest-75`  | S3 `10.68.13.188` | `/Data/hermestest/deploy/carher-75/compose.dual.yaml`  | healthy，默认 `openclaw` |
+| `hermestest-200` | S1 `10.68.13.186` | `/Data/hermestest/deploy/carher-200/compose.dual.yaml` | dual candidate           |
+
+今天的 S3 14/75 灰度验证覆盖：OpenClaw/Hermes 双向热切换、`/new`
+多 bot/命令位置回归、群历史注入、knownBots、interactive card、飞书知识问答、
+ACP/acpx、daemon/gateway probe、memory reindex/reset-index、A2A 14→75 真调用。
+完整冻结记录在 `hermestest` 仓库的 `parity/DUAL_BASELINE_20260511.md`。
+
+任何后续迭代必须先新建 commit/tag。若出事故，先回到这份 baseline，再做差异分析。
+
 ---
 
 ## 3. 核心原则

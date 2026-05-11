@@ -11,11 +11,11 @@ This is the required workflow for real online tests of the new Her Feishu archit
 
 Choose the test lane before touching containers:
 
-| Product line      | Local source of truth                                                                        | S1 source of truth                   | Test targets                                      |
-| ----------------- | -------------------------------------------------------------------------------------------- | ------------------------------------ | ------------------------------------------------- |
-| `carher-openclaw` | `/Users/buyitian/Documents/work/openclaw`                                                    | `/Data/CarHer`                       | pure OpenClaw `carher-*`; S1 control `carher-198` |
-| `carher-hermes`   | `/Users/buyitian/Documents/work/hermestest` `dev`                                            | `/Data/hermestest`                   | pure Hermes `hermestest-199`                      |
-| `carher-dual`     | currently `/Users/buyitian/Documents/work/hermestest` `dev`; future standalone `carher-dual` | `/Data/hermestest/deploy/carher-200` | dual candidate `hermestest-200`                   |
+| Product line      | Local source of truth                                                                        | S1 source of truth                              | Test targets                                      |
+| ----------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------- |
+| `carher-openclaw` | `/Users/buyitian/Documents/work/openclaw`                                                    | `/Data/CarHer`                                  | pure OpenClaw `carher-*`; S1 control `carher-198` |
+| `carher-hermes`   | `/Users/buyitian/Documents/work/hermestest` `dev`                                            | `/Data/hermestest`                              | pure Hermes `hermestest-199`                      |
+| `carher-dual`     | currently `/Users/buyitian/Documents/work/hermestest` `dev`; future standalone `carher-dual` | `/Data/hermestest/deploy/carher-{13,14,75,200}` | dual candidates `hermestest-13/14/75/200`         |
 
 Do **not** start new CICD/deploy work from `/Users/buyitian/Documents/work/hermestest-dual-engine`. That worktree is historical evidence for `feat/dual-engine` at `38abd1f`; the current authoritative Hermes/Dual source is `hermestest dev` at/after `d20ad65`, which includes the dual lark-cli token-store sync fix.
 
@@ -23,9 +23,12 @@ Do **not** treat OpenClaw `carher/feat/dual-engine-poc` as the full delivery. It
 
 ## Scope
 
-- Approved online test bots on S1: `carher-198`, `carher-199`, `carher-200`.
-- Do not use `carher-75` / S3 docker75 for experiments unless the user explicitly re-authorizes it.
-- User has authorized sending test messages in any Feishu group that contains docker198/199/200. Keep messages clearly marked and low-noise.
+- Approved online test bots:
+  - S1 control: `carher-198`.
+  - S1 Hermes/Dual: `hermestest-13`, `hermestest-199`, `hermestest-200`.
+  - S3 Dual: `hermestest-14`, `hermestest-75`.
+- The user explicitly authorized S3 docker14/75 dual gray testing on 2026-05-11. Future destructive changes still require rollback discipline, but normal E2E messages in Her 产品测试群 are allowed for regression.
+- Keep messages clearly marked and low-noise.
 - Always use a unique marker: `HER_E2E_<yyyymmddHHMMSS>_<case>`.
 - **Mac local variant**: `carher-101..104` on the host Mac also have lark-cli authorized as the user (`卜弋天`, `ou_a7afacbb81237891a181832ac7a76294`). Use them as the user-proxy when testing local PoCs (e.g. `hermestest-103/104` at `~/Documents/work/hermestest/`).
 
@@ -195,6 +198,44 @@ verify.
 Busy-mode parity: OpenClaw's default behavior is `steer`, not `queue`. Hermes
 parity configs must set `display.busy_input_mode: steer` and should keep
 busy-ack cards disabled for one-card group UX.
+
+### Dual-engine S1/S3 13/14/75 gate
+
+Use this gate when validating the 2026-05-11 dual gray baseline:
+
+- `hermestest-13` = S1 dual baseline, owner 卜弋天, default `openclaw`.
+- `hermestest-14` = S3 dual baseline, owner 刘国现, default `openclaw`.
+- `hermestest-75` = S3 dual baseline, owner 林森, default `openclaw`.
+- Test group: Her 产品测试群 `oc_d62389662e7fb4405477265912c00951`.
+- Group mention ids:
+  - `弋天的her`: `ou_9edec5b24a9d5399a68feb118d3a03bc`
+  - `国现的her`: `ou_3f04c45ab940dfd5f64dfff240d85951`
+  - `林森的her`: `ou_31044043927cc567e65d71b8d1e947df`
+
+Required PASS evidence before claiming parity:
+
+- `docker ps` shows 13/14/75 as `hermestest-*` with `healthy`.
+- `/data/.engine/active` is `openclaw` as the safe final state.
+- Image id matches the frozen baseline unless intentionally changed:
+  `sha256:dce47696b6d96f54de54942199ff5bfd7f2e5b2613198e9a88c8b103c61fb448`.
+- `/hermes` and `/openclaw` work for each bot's owner allowlist; non-owner rejection is expected.
+- Hermes replies can read the immediately preceding OpenClaw switch card.
+- OpenClaw replies can read the immediately preceding Hermes switch card.
+- `/new` works in all group command shapes:
+  - `@bot /new`
+  - `/new @bot`
+  - `/new @bot1 @bot2`
+- Group history injection recovers a fresh anchor from the prior message.
+- knownBots renders app senders as `弋天的her` / `国现的her` / `林森的her`, not raw `cli_*`.
+- Interactive card/file history is visible; no `"请升级至最新版本客户端，以查看内容"` fallback in model-visible history.
+- Knowledge QA through lark-cli user token returns a `KQA*_OK` marker.
+- ACP/acpx, daemon/gateway probe, memory index/reset-index, and one ordinary Feishu read operation return OK markers.
+- A2A true call is verified from logs, not only from prose. Latest S3 proof:
+  14 called 75 and 75 log contained `A2A75_INBOUND_OK HER_S3_A2A_KNOWN_20260511T062809Z`,
+  with `task.started`, `task.finished`, and JSON-RPC 200.
+
+Rollback for 13/14/75 is always: stop `/Data/hermestest/deploy/carher-N/compose.dual.yaml`,
+then start the original `/Data/CarHer/deploy/carher-N` compose. Do not delete volumes.
 
 ## Preflight
 
