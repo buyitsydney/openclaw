@@ -1,6 +1,6 @@
 ---
 name: docker-fleet
-description: Fleet-wide CarHer 运维（S1/S2/S3 所有 docker）。使用 docker compose 管理容器。仅 admin 容器可用（需 sshpass + /data/.openclaw/servers.txt）。
+description: Fleet-wide CarHer 运维（S1/S2/S3 所有 docker），包括 carher-openclaw、carher-hermes、carher-dual 当前容器角色。使用 docker compose 管理容器。仅 admin 容器可用（需 sshpass + /data/.openclaw/servers.txt）。
 metadata:
   requires:
     bins: ["sshpass", "ssh"]
@@ -28,6 +28,14 @@ metadata:
 | S3     | 10.68.13.188 | carher-14 (刘国现), carher-75 (林森), carher-fallback, cloudflared                                         | compose |
 
 当前 fleet 2026-05-10 已验证到 dev `56ba82d3ee`（runtime code `c6ef7aae6b`）+ image `localhost:5001/carher-core:2026.5.9-p14-a2a-route`;7 个 bot 都应有 R-7 `CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER`、P8 history-fill、Bot Registry/knownBots、A2A S1/S3 路由修复、R-9 `reply-card default`、R-10 compact `footer-status`、R-11 `outbound-card default`。升级时不要假设 git remote 名一致:S1 `/Data/CarHer` 通常用 `carher`,S3 通常用 `origin`。
+
+### 2026-05-11 Hermes / Dual 角色
+
+- `carher-198` = 纯 OpenClaw control，仍在 `/Data/CarHer`。
+- `hermestest-199` = 成熟 Hermes baseline，来源 `/Data/hermestest`。
+- `hermestest-200` = dual hot-switch candidate，替代原 `carher-200`，来源 `/Data/hermestest/deploy/carher-200/compose.dual.yaml`。
+- 原 `carher-200` compose 保留为 rollback；看到 `carher-200` 不在 `docker ps` 里不要误判 200 离线，先查 `hermestest-200`。
+- `hermestest-200` 的 active marker 是 `/data/.engine/active`，默认/安全态应为 `openclaw`。OpenClaw HOME=`/data`，Hermes HOME=`/opt/data`，lark-cli user token store 必须双向同步。
 
 A2A 跨 S1/S3 依赖 `CARHER_SERVER`：S1 必须注册 `S1`,S3 必须注册 `S3`,不能都保持 `local`。`server=local` 会让跨主机 peer 被误判成同机 Docker DNS (`http://carher-N:18800`),表现为 S1 her 找不到 S3 her。检查 Redis `a2a:card:*` 时同时看 `server` 和 `endpoints.lan`。
 
@@ -75,7 +83,7 @@ chat, run that exact shape instead of re-deriving credentials.
 
 ## 核心运维（compose 命令）
 
-所有服务器的 compose 目录在 `/Data/CarHer/deploy/carher-{id}/`。
+OpenClaw fleet compose 目录在 `/Data/CarHer/deploy/carher-{id}/`。Hermes/Dual 实验目录在 `/Data/hermestest/deploy/...`；不要把两者混用。
 
 ### 拉最新 dev（严禁直接改服务器代码）
 

@@ -1,11 +1,25 @@
 ---
 name: her-feishu-e2e-test
-description: Use this when testing CarHer/Her Feishu bot behavior end-to-end with real Lark groups, lark-cli, docker198/199/200, context/history injection, slash commands, knownBots, A2A, or interactive-card output. It defines the approved online test loop and evidence format for old-vs-new architecture parity work.
+description: Use this when testing CarHer/Her Feishu bot behavior end-to-end with real Lark groups, lark-cli, docker198/199/200, context/history injection, slash commands, knownBots, A2A, interactive-card output, Hermes parity, or OpenClaw/Hermes dual hot-switch. It defines the approved online test loop, product-line-specific gates, and evidence format for old-vs-new architecture parity work.
 ---
 
 # Her Feishu E2E Test
 
 This is the required workflow for real online tests of the new Her Feishu architecture. Use it before claiming a bot behavior is fixed.
+
+## Product-line authority
+
+Choose the test lane before touching containers:
+
+| Product line      | Local source of truth                                                                        | S1 source of truth                   | Test targets                                      |
+| ----------------- | -------------------------------------------------------------------------------------------- | ------------------------------------ | ------------------------------------------------- |
+| `carher-openclaw` | `/Users/buyitian/Documents/work/openclaw`                                                    | `/Data/CarHer`                       | pure OpenClaw `carher-*`; S1 control `carher-198` |
+| `carher-hermes`   | `/Users/buyitian/Documents/work/hermestest` `dev`                                            | `/Data/hermestest`                   | pure Hermes `hermestest-199`                      |
+| `carher-dual`     | currently `/Users/buyitian/Documents/work/hermestest` `dev`; future standalone `carher-dual` | `/Data/hermestest/deploy/carher-200` | dual candidate `hermestest-200`                   |
+
+Do **not** start new CICD/deploy work from `/Users/buyitian/Documents/work/hermestest-dual-engine`. That worktree is historical evidence for `feat/dual-engine` at `38abd1f`; the current authoritative Hermes/Dual source is `hermestest dev` at/after `d20ad65`, which includes the dual lark-cli token-store sync fix.
+
+Do **not** treat OpenClaw `carher/feat/dual-engine-poc` as the full delivery. It is an OpenClaw-side PoC archive: useful for `carher-engine-swap`, `apply-history-fill-dm.sh`, and docs, but not the Hermes/Dual image, S1 compose, or final parity scripts.
 
 ## Scope
 
@@ -56,6 +70,131 @@ record it the first time and reuse it across runs.
 The same loop works for the S1 fleet: you can run the user-proxy lark-cli
 on any S1 carher container (12, 13, 14, 75, 198, 199, 200) and direct it
 at any bot's chat_id you've ever interacted with.
+
+### Dual-engine local 103/104 gate
+
+For Hermes/OpenClaw hot-switch work:
+
+- `hermestest-103` is the dual-engine candidate (`hermestest:dual`).
+- `carher-104` is the local pure-OpenClaw control.
+- `carher-101` remains the lark-cli user-token driver.
+- Test group: `oc_d37eb39f87a3363e490658d47b2315c7`.
+- tester3 bot mention id: `ou_9179cb60fcbdd851cd88d4d88a02d66b`;
+  app id: `cli_a94a51d8873bdbb6`.
+- tester4 bot mention id: `ou_13061e520c10feb6ac43219e8a18a9b9`;
+  app id: `cli_a94e4cee07e69bc2`.
+- tester3 DM chat: `oc_58e9be8f83f3595f7a83f24cebea5684`.
+
+Run the full hot-switch gate from the current authority, `~/Documents/work/hermestest`:
+
+```bash
+cd ~/Documents/work/hermestest
+bash parity/dual_swap_e2e.sh
+```
+
+`~/Documents/work/hermestest-dual-engine` is only a historical worktree for
+reproducing commit `38abd1f`; do not use it for new deploy/CICD decisions.
+
+Required PASS evidence:
+
+- group OpenClaw baseline says current engine is OpenClaw in one card;
+- group `/hermes` writes marker and sends one switch card;
+- Hermes group reply remembers the immediately preceding OpenClaw turn;
+- DM Hermes reply works;
+- DM `/openclaw` writes marker and sends one switch card;
+- OpenClaw DM reply after the switch correctly reads Feishu history and says
+  the previous DM engine was Hermes / Opus;
+- `/openclaw` no-op does not fall through to the LLM;
+- second `/hermes` returns to Hermes and preserves group continuity.
+
+Do not claim dual-engine DM continuity from logs alone. Inspect the OpenClaw
+session snapshot if needed and verify that the model-visible context contains
+`Chat history since last reply` with the previous DM markers. The 2026-05-10
+fix proved that "history-fill done 49" is insufficient by itself: the patch
+must also enable DM injection in `dispatch-builders.js` and `dispatch.js`
+through `CARHER_HISTORY_FILL_DM_INJECT_PATCH_MARKER`.
+
+Local-only trap: the 103 OpenClaw workspace must be initialized. If
+`/data/.openclaw/workspace/BOOTSTRAP.md` exists, OpenClaw may obey bootstrap
+instructions and say the DM is a new workspace even though Feishu history was
+correctly injected. Production Her workspaces are initialized, so remove the
+local bootstrap file or initialize `IDENTITY.md` / `USER.md` / `SOUL.md` before
+using 103 as a parity signal.
+
+### Dual-engine S1 198/199/200 gate
+
+Use this gate when validating the cloud hot-switch candidate:
+
+- `carher-198` is the pure OpenClaw control.
+- `hermestest-199` is the mature Hermes control.
+- `hermestest-200` is the dual-engine candidate replacing `carher-200`.
+- Test group: `oc_fd0624fa2a9cb343cc9371be5c527686`.
+- 198 bot mention id: `ou_b115c0942d35446311232f584e697d2c`.
+- 199 bot mention id: `ou_57078c733f9584da21aa37d4373b4969`.
+- 200 bot mention id: `ou_c2bc759110aa5bc80b2edea2ede864e9`.
+- 200 DM chat: `oc_f5065ccf48849859a8fe7d04f42db6e6`.
+
+Run the cloud hot-switch matrix on S1:
+
+```bash
+cd /Data/hermestest
+bash parity/s1_dual_200_e2e.sh
+```
+
+Required PASS evidence:
+
+- 198 returns `OPENCLAW198_OK` in one interactive card.
+- 199 returns `HERMES199_OK` in one interactive card.
+- 200 OpenClaw mode returns `OPENCLAW200_OK`.
+- `/hermes @研究3` switches `/data/.engine/active` from `openclaw` to `hermes`.
+- 200 Hermes mode returns `HERMES200_OK` and can describe the immediately
+  preceding OpenClaw -> Hermes switch card from Feishu history.
+- 200 Hermes DM returns `HERMES200_DM_OK`.
+- `/openclaw` switches back to `openclaw`.
+- 200 OpenClaw DM reads the prior Hermes DM marker and returns
+  `OPENCLAW200_DM_OK`.
+
+Latest known green run: `s1-dual-200-20260510T173926`.
+
+For cloud feature parity, also run a feature matrix that covers:
+
+- 199 native table card rendering: raw card contains a `table` element.
+- 199 Knowledge QA through lark-cli user token.
+- 199 -> 200 A2A.
+- 199 `/gpt` and `/opus` model switches.
+- 200 Hermes Knowledge QA through lark-cli user token.
+
+Latest known green run: `s1-feature-20260510T174818`.
+
+Dual-engine lark-cli trap: 200 has two homes. OpenClaw uses `HOME=/data`;
+Hermes uses `HOME=/opt/data`. A valid OpenClaw token does not prove Hermes
+tools work. Feishu refresh tokens rotate, so a copied Hermes token store can
+become stale after OpenClaw refreshes the user token. Verify both:
+
+```bash
+docker exec hermestest-200 sh -lc 'env -u HERMES_HOME -u HERMES_DATA_DIR HOME=/data lark-cli auth status'
+docker exec hermestest-200 sh -lc 'HOME=/opt/data HERMES_HOME=/opt/data HERMES_DATA_DIR=/opt/data lark-cli auth status'
+```
+
+If the Hermes command shows the user but says no token, copy the encrypted token
+store as a pair; the `*_ou_*.enc` file and `master.key` must come from the same
+directory:
+
+```bash
+docker exec hermestest-200 sh -lc 'rm -rf /opt/data/.local/share/lark-cli && mkdir -p /opt/data/.local/share && cp -a /data/.local/share/lark-cli /opt/data/.local/share/lark-cli'
+```
+
+The current dual entrypoint does this automatically when Hermes has no
+`*_ou_*.enc` user-token file, and it now compares token-store mtimes so the
+newer OpenClaw or Hermes store refreshes the older side after refresh-token
+rotation. If a heartbeat sees `needs_refresh`, run `auth status --verify` on
+the active/fresher side first; if the inactive side becomes `no_token`, replace
+its whole `.local/share/lark-cli` directory from the valid side and rerun
+verify.
+
+Busy-mode parity: OpenClaw's default behavior is `steer`, not `queue`. Hermes
+parity configs must set `display.busy_input_mode: steer` and should keep
+busy-ack cards disabled for one-card group UX.
 
 ## Preflight
 
