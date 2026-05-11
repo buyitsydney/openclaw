@@ -14,17 +14,17 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const REPO_ROOT = join(__dirname, "..", "..");
+const currentFile = fileURLToPath(import.meta.url);
+const currentDir = dirname(currentFile);
+const REPO_ROOT = join(currentDir, "..", "..");
 
 const DISPATCH_PATH = join(
   REPO_ROOT,
   "test-assets/lark-pkg/package/src/messaging/inbound/dispatch.js",
 );
-const APPLY_PATCH_SH = join(__dirname, "apply-history-fill.sh");
-const APPLY_INBOUND_HISTORY_META_SH = join(__dirname, "apply-inbound-history-meta.sh");
-const HELPER_JS = join(__dirname, "history-fill-helper.js");
+const APPLY_PATCH_SH = join(currentDir, "apply-history-fill.sh");
+const APPLY_INBOUND_HISTORY_META_SH = join(currentDir, "apply-inbound-history-meta.sh");
+const HELPER_JS = join(currentDir, "history-fill-helper.js");
 
 // -------- Fixtures --------
 
@@ -882,5 +882,69 @@ function render(boundedHistory) {
     execSync(`node --check ${scratch}`, { stdio: "pipe" });
   } finally {
     execSync(`rm -f ${scratch}`);
+  }
+});
+
+test("PATCH: apply-inbound-history-meta.sh filters replayed runtime context blocks", () => {
+  const scratchDir = dirname(DISPATCH_PATH);
+  const getReplyScratch = join(scratchDir, "get-reply-meta-replay.patchscratch.js");
+  const replayScratch = join(scratchDir, "compaction-successor-transcript.patchscratch.js");
+  writeFileSync(
+    getReplyScratch,
+    `
+function normalizePromptMetadataString(value) { return value == null ? undefined : String(value).trim() || undefined; }
+function sanitizePromptBody(value) { return value == null ? undefined : String(value); }
+function render(boundedHistory) {
+  const label = "Chat history since last reply (untrusted, for context):";
+  return boundedHistory.map((entry) => ({
+    sender: sanitizePromptBody(entry.sender),
+    timestamp_ms: entry.timestamp,
+    body: sanitizePromptBody(entry.body)
+  }));
+}
+`,
+  );
+  writeFileSync(
+    replayScratch,
+    `
+function annotateInterSessionUserMessages(messages) { return messages; }
+function normalizeAssistantReplayContent(messages) { return messages; }
+async function sanitizeSessionMessagesImages(messages) { return messages; }
+async function sanitizeSessionHistory(params) {
+\tconst withInterSessionMarkers = annotateInterSessionUserMessages(params.messages);
+\tconst sanitizedImages = await sanitizeSessionMessagesImages(normalizeAssistantReplayContent(withInterSessionMarkers), "session:history", {});
+\treturn sanitizedImages;
+}
+sanitizeSessionHistory({ messages: [
+  {
+    role: "custom",
+    customType: "openclaw.runtime-context",
+    content: "Chat history since last reply (untrusted, for context):\\nold"
+  },
+  {
+    role: "user",
+    content: "Conversation info (untrusted metadata):\\n\`\`\`json\\n{}\\n\`\`\`\\n\\nChat history since last reply (untrusted, for context):\\n\`\`\`json\\n[{\\"body\\":\\"old\\"}]\\n\`\`\`\\n\\nactual question"
+  }
+] }).then((out) => {
+  if (out.length !== 1) throw new Error("expected stale runtime-context to be dropped");
+  if (out[0].content !== "actual question") throw new Error("expected replayed inbound metadata to be stripped");
+});
+`,
+  );
+  try {
+    execSync(`bash ${APPLY_INBOUND_HISTORY_META_SH} ${getReplyScratch}`, { stdio: "pipe" });
+    const once = readFileSync(replayScratch, "utf-8");
+    assert.match(once, /CARHER_REPLAY_CONTEXT_FILTER_PATCH_MARKER/);
+    assert.match(once, /customType !== "openclaw\.runtime-context"/);
+    execSync(`node --check ${replayScratch}`, { stdio: "pipe" });
+    execSync(`node ${replayScratch}`, { stdio: "pipe" });
+
+    execSync(`bash ${APPLY_INBOUND_HISTORY_META_SH} ${getReplyScratch}`, { stdio: "pipe" });
+    const twice = readFileSync(replayScratch, "utf-8");
+    const markerCount = (twice.match(/CARHER_REPLAY_CONTEXT_FILTER_PATCH_MARKER/g) ?? []).length;
+    assert.equal(markerCount, 1, "idempotent: double-apply must not duplicate replay filter");
+    execSync(`node ${replayScratch}`, { stdio: "pipe" });
+  } finally {
+    execSync(`rm -f ${getReplyScratch} ${replayScratch}`);
   }
 });

@@ -476,6 +476,30 @@ describe("sanitizeSessionHistory", () => {
     });
   });
 
+  it("drops stale runtime context blocks from replayed session messages", async () => {
+    setNonGoogleModelApi();
+
+    const result = await sanitizeAnthropicHistory({
+      messages: castAgentMessages([
+        {
+          role: "custom",
+          customType: "openclaw.runtime-context",
+          content:
+            'Chat history since last reply (untrusted, for context):\n```json\n[{"body":"old group context"}]\n```',
+        },
+        makeUserMessage("current user question"),
+      ]),
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      role: "user",
+      content: "current user question",
+    });
+    expect(JSON.stringify(result)).not.toContain("Chat history since last reply");
+    expect(JSON.stringify(result)).not.toContain("openclaw.runtime-context");
+  });
+
   it("drops stale assistant usage snapshots kept before latest compaction summary", async () => {
     vi.mocked(mockedHelpers.isGoogleModelApi).mockReturnValue(false);
 

@@ -45,6 +45,7 @@ import { dropThinkingBlocks } from "./thinking.js";
 
 const INTER_SESSION_PREFIX_BASE = "[Inter-session message]";
 const MODEL_SNAPSHOT_CUSTOM_TYPE = "model-snapshot";
+const REPLAY_INBOUND_CONTEXT_CUSTOM_TYPE = "openclaw.runtime-context";
 type CustomEntryLike = { type?: unknown; customType?: unknown; data?: unknown };
 type ModelSnapshotEntry = {
   timestamp: number;
@@ -367,17 +368,24 @@ function appendModelSnapshot(sessionManager: SessionManager, data: ModelSnapshot
 
 function stripReplayInboundMetadata(messages: AgentMessage[]): AgentMessage[] {
   let touched = false;
-  const stripped = messages.map((message) => {
+  const stripped: AgentMessage[] = [];
+  for (const message of messages) {
+    if ((message as { customType?: unknown }).customType === REPLAY_INBOUND_CONTEXT_CUSTOM_TYPE) {
+      touched = true;
+      continue;
+    }
     if (message.role !== "user" || typeof message.content !== "string") {
-      return message;
+      stripped.push(message);
+      continue;
     }
     const cleaned = stripInboundMetadata(message.content);
     if (cleaned === message.content) {
-      return message;
+      stripped.push(message);
+      continue;
     }
     touched = true;
-    return { ...message, content: cleaned };
-  });
+    stripped.push({ ...message, content: cleaned });
+  }
   return touched ? stripped : messages;
 }
 
