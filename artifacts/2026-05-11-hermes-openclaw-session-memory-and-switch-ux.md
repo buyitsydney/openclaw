@@ -2,12 +2,44 @@
 
 Date: 2026-05-11
 Owner: aligned with @卜弋天
-Status: planning note for serial implementation
+Status: Workstream B delivered and E2E-verified; Workstream A remains planned
 
 This file captures two related but separate workstreams:
 
 1. Hermes/OpenClaw cross-session visibility plus official OpenClaw-to-Hermes memory migration.
 2. CarHer engine branding and hot-switch UX, to start only after the current Feishu Context Dedup Fix lands and passes E2E.
+
+## Update: Workstream B Delivered
+
+Updated on 2026-05-12 after the final S1 live E2E run.
+
+Delivered scope:
+
+- `carher-openclaw` dev: `30b10ad5a15` (`CarHer: add engine footer branding`).
+- `carher-hermes` dev: `c551a4b` (`CarHer: add Hermes footer branding`).
+- `carher-runtime` dev: `0708b27f0e74` through the swap-card animation and E2E-window fixes.
+- S1 deploy targets: `carher-12`, `carher-198`, `hermestest-199`, and `hermestest-200`.
+
+Final live E2E:
+
+- Run id: `s1-branding-swap-20260511T165913`.
+- Artifact root: `/Data/carher-runtime/deploy/carher-200/artifacts/s1-branding-swap-20260511T165913`.
+- Result: `PASS s1-branding-swap-20260511T165913`.
+
+Verified online:
+
+- `carher-12` and `carher-198` OpenClaw reply footers show the OpenClaw engine marker.
+- `hermestest-199` Hermes reply footer shows the Hermes engine marker.
+- `hermestest-200` shows the OpenClaw marker before `/hermes` and the Hermes marker after `/hermes`.
+- `/hermes` edits the same Feishu card to 100%, sends the independent Hermes welcome card, and deletes `/data/.engine/swap-card.json`.
+- `/openclaw` edits the same Feishu card to 100%, sends the independent OpenClaw welcome card, and deletes `/data/.engine/swap-card.json`.
+- Stale `swap-card.json` degrades to welcome-card-only and cleanup.
+- A fresh state with an invalid `message_id` logs the Feishu edit error, still sends a welcome card, and cleans up.
+- Pure Hermes `hermestest-199` rejects `/openclaw` and does not start a swap animation.
+
+Out of this delivered scope:
+
+- Workstream A remains a separate planned implementation: stable cross-engine session file search skill plus official OpenClaw-to-Hermes memory migration with before/after memory verification. It is documented below but was not claimed as part of the Workstream B production pass.
 
 ## Update: Conflict-Avoidance Test Lane
 
