@@ -2,12 +2,77 @@
 
 Date: 2026-05-11
 Owner: aligned with @卜弋天
-Status: Workstream B delivered and E2E-verified; Workstream A remains planned
+Status: Workstreams A and B delivered and live E2E-verified on hermestest-200
 
 This file captures two related but separate workstreams:
 
 1. Hermes/OpenClaw cross-session visibility plus official OpenClaw-to-Hermes memory migration.
 2. CarHer engine branding and hot-switch UX, to start only after the current Feishu Context Dedup Fix lands and passes E2E.
+
+## Update: Workstream A Delivered
+
+Updated on 2026-05-12 after the missing original Workstream A was implemented and live-tested.
+
+Delivered scope:
+
+- Added shared skill `carher-peer-sessions`.
+  - Local audit copy: `artifacts/carher-peer-sessions-skill/carher-peer-sessions/`.
+  - S1 OpenClaw skill root: `/home/cltx/.openclaw/skills/carher-peer-sessions/`.
+  - S1 Hermes skill root: `/Data/hermestest/skills/carher-peer-sessions/`.
+  - Runtime-visible OpenClaw path: `/data/.openclaw/skills/carher-peer-sessions/`.
+  - Runtime-visible Hermes path: `/opt/hermestest/skills/carher-peer-sessions/`.
+- The skill is read-only and provides `status`, `memory`, `recent`, `search`, and `show` commands through `scripts/peer-session-search.sh`.
+- It auto-detects active engine from `/data/.engine/active`, maps `peer` to the inactive engine, and searches OpenClaw/Hermes session and memory roots without mutating either store.
+- It excludes noisy `*.trajectory.jsonl` files and truncates long JSONL snippets so bot answers remain usable.
+
+Live cross-session E2E on `hermestest-200`:
+
+- `active=hermes`: `peer=openclaw`; the helper found `R200_OPENCLAW_DM_OK` in `/data/.openclaw/agents/main/sessions/601139fd-b89b-45a5-af50-56381f056fcc.jsonl` with line evidence.
+- Real DM `/openclaw` switch succeeded, then `active=openclaw`: `peer=hermes`; the helper found `HERMES200_DM_OK` in Hermes session files under `/opt/data/sessions/`.
+- `/new` OpenClaw bot-level validation passed:
+  - Test marker: `PEERSESS_20260512T072334_BOT_OPENCLAW2`.
+  - Bot reply used `carher-peer-sessions` and returned Hermes evidence including `/opt/data/sessions/20260510_171346_63e0ebee.jsonl:3` and `/opt/data/sessions/20260511_180839_a18db3db.jsonl:3`.
+- `/new` Hermes bot-level validation passed:
+  - Test marker: `PEERSESS_20260512T072947_BOT_HERMES`.
+  - Bot reply used `carher-peer-sessions` and returned OpenClaw evidence including `/data/.openclaw/agents/main/sessions/601139fd-b89b-45a5-af50-56381f056fcc.jsonl.reset.2026-05-11T23-21-50.197Z` lines 14, 16, 19, 21, and 23.
+
+Official Hermes OpenClaw migration:
+
+- Verified official CLI path from Hermes docs: `hermes claw migrate --source /data/.openclaw --preset user-data`.
+- Dry-run artifact: `/Data/carher-runtime/deploy/carher-200/artifacts/memory-migration-20260512T073239/dry-run-yes.txt`.
+  - Preview: 20 items would migrate, 1 conflict (`soul`, because Hermes already had an empty `SOUL.md`), 32 skipped.
+- Apply command used:
+  - `/opt/hermes/venv/bin/hermes claw migrate --source /data/.openclaw --preset user-data --overwrite --skill-conflict rename --yes`
+  - `user-data` was used deliberately; secrets/API keys were not migrated.
+- Backup created by official migrator:
+  - `/opt/data/backups/pre-migration-2026-05-11-233313.zip`.
+- Migration report:
+  - `/opt/data/migration/openclaw/20260511T233317/summary.md`
+  - `/opt/data/migration/openclaw/20260511T233317/report.json`
+- Apply result: 19 migrated, 31 skipped, 0 conflicts, 0 errors.
+
+Before vs after memory verification:
+
+- Before:
+  - OpenClaw `SOUL.md`: 72 lines, sha256 `4bab4962f5a85bd4e419054fa32e0a4e6b5c98857d254105b6b9ef8b83d7d945`.
+  - OpenClaw `USER.md`: 33 lines, sha256 `3870fbfbf7150d035f35aa1e915d02f39be4e628aa41535d17252f779bfa1dbe`.
+  - OpenClaw `MEMORY.md`: 19 lines, sha256 `e758b5fb3b6c0077e539372340a734924f199035e13c5f443f9359f426859dbd`.
+  - Hermes `SOUL.md`, `memories/USER.md`, and `memories/MEMORY.md`: all 0 lines.
+- After:
+  - Hermes `SOUL.md`: 72 lines, same sha256 as OpenClaw `SOUL.md`; byte-exact match.
+  - Hermes `memories/USER.md`: 45 lines, official transformed Hermes memory format.
+  - Hermes `memories/MEMORY.md`: 39 lines, official transformed Hermes memory format.
+  - Key phrase verification passed for `卜弋天`, `Open ID`, `Asia/Shanghai`, `Nova / 研究3`, `Glory Liao`, `闭环 > 宣告闭环`, and `影 (Shadow)`.
+- New Hermes session memory-load validation passed:
+  - Test marker: `MEMMIG_20260512T073543_HERMES_MEMORY`.
+  - After `/new`, Hermes answered from loaded long-term memory with `卜弋天`, `Nova / 研究3`, and `Glory Liao`.
+
+Skipped or intentionally not migrated:
+
+- Secrets/API keys: not selected; official output says re-run with `--migrate-secrets` only if desired.
+- Workspace `AGENTS.md`: skipped because no `--workspace-target` was provided.
+- Messaging/provider/model/deep channel config: skipped where no Hermes-compatible source values were found.
+- Sensitive binary/runtime OpenClaw state: archived/skipped by the official migrator.
 
 ## Update: Workstream B Delivered
 
@@ -37,9 +102,9 @@ Verified online:
 - A fresh state with an invalid `message_id` logs the Feishu edit error, still sends a welcome card, and cleans up.
 - Pure Hermes `hermestest-199` rejects `/openclaw` and does not start a swap animation.
 
-Out of this delivered scope:
+Historical note for the first Workstream B pass:
 
-- Workstream A remains a separate planned implementation: stable cross-engine session file search skill plus official OpenClaw-to-Hermes memory migration with before/after memory verification. It is documented below but was not claimed as part of the Workstream B production pass.
+- At the time of the initial branding/swap delivery, Workstream A had not been implemented and was not claimed as part of that production pass. It is now delivered in the Workstream A update above.
 
 ## Update: Extended Production Validation
 
