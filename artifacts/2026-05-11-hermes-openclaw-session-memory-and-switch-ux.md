@@ -41,6 +41,64 @@ Out of this delivered scope:
 
 - Workstream A remains a separate planned implementation: stable cross-engine session file search skill plus official OpenClaw-to-Hermes memory migration with before/after memory verification. It is documented below but was not claimed as part of the Workstream B production pass.
 
+## Update: Extended Production Validation
+
+Updated again on 2026-05-12 after the user requested a broader end-to-end sweep
+covering the Feishu context-dedup work from the parallel session, lark-cli/KQA,
+session storage cleanliness, and hot-switch failure boundaries.
+
+Validated from the same S1 dev deployment:
+
+- `carher-openclaw` dev: `73b1a2761ef`.
+- `carher-hermes` dev: `c551a4b`.
+- `carher-runtime` dev: `0708b27f0e74`.
+- Targets: `carher-12`, `carher-198`, `hermestest-199`, `hermestest-200`.
+
+Additional live E2E runs:
+
+- `s1-context-dedup-20260511T172735`: PASS.
+  - Multi-bot group context worked for 198/199/200.
+  - `hermestest-199` group self-check saw exactly one `[Recent group history]` block.
+  - `hermestest-199` DM persisted user rows without group-history preamble.
+  - `hermestest-200` Hermes group self-check saw exactly one group-history block.
+  - `hermestest-200` Hermes DM persisted clean user rows.
+  - `hermestest-200` OpenClaw DM jsonl had no `Chat history since last reply` or `openclaw.runtime-context` pollution for the tested marker.
+  - Pure Hermes `hermestest-199` still did not write runtime engine markers for `/openclaw`.
+- `s1-feature-20260511T174247`: PASS.
+  - 199 native table card raw content contained a `table` element.
+  - 199 KQA through lark-cli user token returned the `Base 逐版本升级实验` wiki result.
+  - 199 A2A to 200 returned `A2A_FROM_199_TO_200_OK`.
+  - 199 `/gpt` and `/opus` model switches both worked.
+  - 200 Hermes KQA through lark-cli user token returned the same wiki result.
+- `s1-command-matrix-20260511T175428`: PASS.
+  - Ordinary multi-bot mention, multi-bot `/status`, multi-bot `/new`, suffix `/status`, and suffix `/new` all worked.
+- `s1-branding-swap-20260511T175812`: PASS.
+  - Revalidated footer branding, `/hermes`, `/openclaw`, welcome cards, and swap-card cleanup after the broader traffic.
+- `s1-dual-200-20260511T180518`: PASS.
+  - 200 Hermes DM returned `HERMES200_DM_OK`.
+  - After DM `/openclaw`, 200 OpenClaw DM recovered the previous Hermes DM marker and returned `OPENCLAW200_DM_OK`.
+- `lark-cli-smoke-20260511T181147`: PASS.
+  - 199 lark-cli auth status OK.
+  - 200 OpenClaw HOME `/data` lark-cli auth status OK.
+  - 200 Hermes HOME `/opt/data` lark-cli auth status OK.
+  - Real `im +chat-messages-list` and raw `api GET /im/v1/messages/{id}` calls succeeded.
+- `swap-fault-injection-20260511T181323`: PASS for docker-restart interruption cases.
+  - Restart during OpenClaw -> Hermes still ended with `✅ ☤ Hermes 已就位`, `active=hermes`, and no `swap-card.json`.
+  - Restart during Hermes -> OpenClaw still ended with `✅ 🦞 OpenClaw 已就位`, `active=openclaw`, and no `swap-card.json`.
+- `swap-fault-injection-retry-20260511T181938`: PASS.
+  - Corrupted Feishu `message_id` caused a real Feishu 400 edit failure; helper logged `frame 12 failed`, sent the independent OpenClaw welcome card, and cleaned `swap-card.json`.
+  - Stale `swap-card.json` degraded directly to welcome-card-only and cleanup.
+- `swap-during-message-20260511T182126`: PASS.
+  - A message sent during OpenClaw -> Hermes was recoverable by Hermes from Feishu history after readiness.
+  - A message sent during Hermes -> OpenClaw was recoverable by OpenClaw from Feishu history after readiness.
+- `storage-audit-20260511T182954`: PASS.
+  - Hermes SQLite audit found no persisted group-history preamble rows for the tested markers.
+  - OpenClaw jsonl audit found no structural `openclaw.runtime-context` records and no user-message history preamble pollution for the tested markers.
+
+Operational note:
+
+- The first invalid-edit fault script run had a test harness issue: `docker exec python3 -` was missing `-i`, so the intended state corruption was not applied. The corrected retry run above is the authoritative invalid-edit evidence.
+
 ## Update: Conflict-Avoidance Test Lane
 
 Updated on 2026-05-11 after the user clarified that another Codex session is pressure-testing the 198/199/200 lane on `dev`.
