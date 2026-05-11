@@ -11,11 +11,11 @@ This is the required workflow for real online tests of the new Her Feishu archit
 
 Choose the test lane before touching containers:
 
-| Product line      | Local source of truth                                                                        | S1 source of truth                              | Test targets                                      |
-| ----------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------- |
-| `carher-openclaw` | `/Users/buyitian/Documents/work/openclaw`                                                    | `/Data/CarHer`                                  | pure OpenClaw `carher-*`; S1 control `carher-198` |
-| `carher-hermes`   | `/Users/buyitian/Documents/work/hermestest` `dev`                                            | `/Data/hermestest`                              | pure Hermes `hermestest-199`                      |
-| `carher-dual`     | currently `/Users/buyitian/Documents/work/hermestest` `dev`; future standalone `carher-dual` | `/Data/hermestest/deploy/carher-{13,14,75,200}` | dual candidates `hermestest-13/14/75/200`         |
+| Product line      | Local source of truth                                 | S1 source of truth     | Test targets                                               |
+| ----------------- | ----------------------------------------------------- | ---------------------- | ---------------------------------------------------------- |
+| `carher-openclaw` | `/Users/buyitian/Documents/work/openclaw`             | `/Data/CarHer`         | pure OpenClaw `carher-*`; S1 control `carher-198`          |
+| `carher-hermes`   | `/Users/buyitian/Documents/work/hermestest` `dev`     | `/Data/hermestest`     | pure Hermes `hermestest-199`                               |
+| `carher-runtime`  | `/Users/buyitian/Documents/work/carher-runtime` `dev` | `/Data/carher-runtime` | runtime canary `hermestest-200`; future `carher-runtime-*` |
 
 Do **not** start new CICD/deploy work from `/Users/buyitian/Documents/work/hermestest-dual-engine`. That worktree is historical evidence for `feat/dual-engine` at `38abd1f`; the current authoritative Hermes/Dual source is `hermestest dev` at/after `d20ad65`, which includes the dual lark-cli token-store sync fix.
 
@@ -25,7 +25,7 @@ Do **not** treat OpenClaw `carher/feat/dual-engine-poc` as the full delivery. It
 
 - Approved online test bots:
   - S1 control: `carher-198`.
-  - S1 Hermes/Dual: `hermestest-13`, `hermestest-199`, `hermestest-200`.
+- S1 Hermes/Runtime: `hermestest-199`, `hermestest-200`. Legacy dual baseline: `hermestest-13`.
   - S3 Dual: `hermestest-14`, `hermestest-75`.
 - The user explicitly authorized S3 docker14/75 dual gray testing on 2026-05-11. Future destructive changes still require rollback discipline, but normal E2E messages in Her 产品测试群 are allowed for regression.
 - Keep messages clearly marked and low-noise.
@@ -130,18 +130,20 @@ Use this gate when validating the cloud hot-switch candidate:
 
 - `carher-198` is the pure OpenClaw control.
 - `hermestest-199` is the mature Hermes control.
-- `hermestest-200` is the dual-engine candidate replacing `carher-200`.
+- `hermestest-200` is the `carher-runtime` canary replacing `carher-200`.
 - Test group: `oc_fd0624fa2a9cb343cc9371be5c527686`.
 - 198 bot mention id: `ou_b115c0942d35446311232f584e697d2c`.
 - 199 bot mention id: `ou_57078c733f9584da21aa37d4373b4969`.
 - 200 bot mention id: `ou_c2bc759110aa5bc80b2edea2ede864e9`.
 - 200 DM chat: `oc_f5065ccf48849859a8fe7d04f42db6e6`.
 
-Run the cloud hot-switch matrix on S1:
+Run the cloud hot-switch matrix on S1 from the runtime repository:
 
 ```bash
-cd /Data/hermestest
-bash parity/s1_dual_200_e2e.sh
+cd /Data/carher-runtime
+bash e2e/s1_runtime_200_e2e.sh
+bash e2e/s1_feature_e2e.sh
+bash e2e/s1_command_matrix_e2e.sh
 ```
 
 Required PASS evidence:
@@ -157,8 +159,8 @@ Required PASS evidence:
 - 200 OpenClaw DM reads the prior Hermes DM marker and returns
   `OPENCLAW200_DM_OK`.
 
-Latest known green run after git-archive replay + rebuild + compose recreate:
-`s1-dual-200-20260511T080356`.
+Latest known green runtime dev run after git-archive replay + rebuild + compose recreate:
+`s1-dual-200-20260511T094344`.
 
 For cloud feature parity, also run a feature matrix that covers:
 
@@ -168,21 +170,33 @@ For cloud feature parity, also run a feature matrix that covers:
 - 199 `/gpt` and `/opus` model switches.
 - 200 Hermes Knowledge QA through lark-cli user token.
 
-Latest known green run after git-archive replay + rebuild + compose recreate:
-`s1-feature-20260511T080935`.
+Latest known green feature run after git-archive replay + rebuild + compose recreate:
+`s1-feature-20260511T094908`.
+
+Latest known green command matrix run:
+`s1-command-matrix-20260511T095943`.
 
 S1 replay source of truth for these runs:
 
 - Local `hermestest` `dev` HEAD:
   `1224dbb CarHer dual: keep Feishu secrets out of compose`.
 - S1 `/Data/hermestest/.carher-dual-source-ref`:
-  `1224dbbace9d90f31f7ff156364ee4e958a86123`.
+  `1224dbbace9d90f31f7ff156364ee4e958a86123` (Hermes engine source; later `dev` change is doc-only).
+- S1 `/Data/carher-runtime/.carher-runtime-source-ref`:
+  `742ff12` / local full SHA `742ff122e346db4d32fc60179794dc02b47365b9`.
 - Rebuilt `hermestest:dev`:
   `sha256:f3729711a3c7137dd87607a25977eb3a517ecfc0ce0b33fae8b085cca3396e2e`.
 - Rebuilt `hermestest:dual` for 200:
   `sha256:24ad6668aebac4f6760db36d7282dbba8dbf27a88f38a3fb59e1677a05db4369`.
+- Rebuilt `carher-runtime:dev` for 200:
+  `sha256:e9d17af6e22e7afe6727fd539289cc9e512595fde255ddc2566004c1ecc66cb8`.
 - Final 200 safe state after feature E2E:
   `/data/.engine/active=openclaw`.
+
+Do not use `hermestest-dual-engine` or `hermestest` as the deployment source
+for new runtime work. Runtime code, supervisor, switch glue, compose, rollback,
+and E2E live in `carher-runtime dev`. Engine UX patches stay in
+`carher-openclaw` and `carher-hermes`.
 
 Do not claim 199/200 parity by only inspecting live containers. The required
 release proof is: local git commit/tag/bundle -> `git archive HEAD` to S1 ->

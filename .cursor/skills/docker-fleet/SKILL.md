@@ -1,6 +1,6 @@
 ---
 name: docker-fleet
-description: Fleet-wide CarHer 运维（S1/S2/S3 所有 docker），包括 carher-openclaw、carher-hermes、carher-dual 当前容器角色。使用 docker compose 管理容器。仅 admin 容器可用（需 sshpass + /data/.openclaw/servers.txt）。
+description: Fleet-wide CarHer 运维（S1/S2/S3 所有 docker），包括 carher-openclaw、carher-hermes、carher-runtime 当前容器角色。使用 docker compose 管理容器。仅 admin 容器可用（需 sshpass + /data/.openclaw/servers.txt）。
 metadata:
   requires:
     bins: ["sshpass", "ssh"]
@@ -21,11 +21,11 @@ metadata:
 
 ## Fleet 拓扑（2026-05-09 现状）
 
-| 服务器 | IP           | 跑的容器                                                                                                                                | 架构    |
-| ------ | ------------ | --------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| S1     | 10.68.13.186 | carher-12 (test), hermestest-13 (dual/卜弋天), **carher-198 (admin/研究1)**, hermestest-199 (Hermes/研究2), hermestest-200 (dual/研究3) | compose |
-| S2     | 10.68.13.187 | 仅 carher-fallback (nginx)                                                                                                              | —       |
-| S3     | 10.68.13.188 | hermestest-14 (dual/刘国现), hermestest-75 (dual/林森), carher-fallback, cloudflared                                                    | compose |
+| 服务器 | IP           | 跑的容器                                                                                                                                                 | 架构    |
+| ------ | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| S1     | 10.68.13.186 | carher-12 (test), hermestest-13 (legacy dual/卜弋天), **carher-198 (admin/研究1)**, hermestest-199 (Hermes/研究2), hermestest-200 (runtime canary/研究3) | compose |
+| S2     | 10.68.13.187 | 仅 carher-fallback (nginx)                                                                                                                               | —       |
+| S3     | 10.68.13.188 | hermestest-14 (dual/刘国现), hermestest-75 (dual/林森), carher-fallback, cloudflared                                                                     | compose |
 
 当前 fleet 2026-05-10 已验证到 dev `56ba82d3ee`（runtime code `c6ef7aae6b`）+ image `localhost:5001/carher-core:2026.5.9-p14-a2a-route`;7 个 bot 都应有 R-7 `CARHER_COMMAND_BODY_NORMALIZE_PATCH_V2_MARKER`、P8 history-fill、Bot Registry/knownBots、A2A S1/S3 路由修复、R-9 `reply-card default`、R-10 compact `footer-status`、R-11 `outbound-card default`。升级时不要假设 git remote 名一致:S1 `/Data/CarHer` 通常用 `carher`,S3 通常用 `origin`。
 
@@ -36,11 +36,12 @@ metadata:
 - `hermestest-13` = S1 dual baseline，替代原 `carher-13`，来源 `/Data/hermestest/deploy/carher-13/compose.dual.yaml`。
 - `hermestest-14` = S3 dual baseline，替代原 `carher-14`，来源 `/Data/hermestest/deploy/carher-14/compose.dual.yaml`。
 - `hermestest-75` = S3 dual baseline，替代原 `carher-75`，来源 `/Data/hermestest/deploy/carher-75/compose.dual.yaml`。
-- `hermestest-200` = S1 dual hot-switch candidate，替代原 `carher-200`，来源 `/Data/hermestest/deploy/carher-200/compose.dual.yaml`。
+- `hermestest-200` = S1 `carher-runtime` canary，替代原 `carher-200`，来源 `/Data/carher-runtime/deploy/carher-200/compose.runtime.yaml`。
 - 原 `carher-13` / `carher-14` / `carher-75` / `carher-200` compose 保留为 rollback；看到这些 `carher-*` 不在 `docker ps` 里不要误判离线，先查对应 `hermestest-*`。
 - dual 容器的 active marker 是 `/data/.engine/active`，默认/安全态应为 `openclaw`。OpenClaw HOME=`/data`，Hermes HOME=`/opt/data`，lark-cli user token store 必须双向同步。
 - 2026-05-11 已验证 13/14/75 使用同一 `hermestest:dual` image id `sha256:dce47696b6d96f54de54942199ff5bfd7f2e5b2613198e9a88c8b103c61fb448`，14/75 在 Her 产品测试群完成 hot-switch、`/new`、context、knownBots、KQA、ACP、daemon、reset index、A2A 回归。基线文档在 `hermestest/parity/DUAL_BASELINE_20260511.md`。
 - 2026-05-11 已重新从 `hermestest` git HEAD `1224dbb` 通过 `git archive` 同步 S1 `/Data/hermestest`，重建 `hermestest:dev`=`sha256:f3729711a3c7137dd87607a25977eb3a517ecfc0ce0b33fae8b085cca3396e2e` 和 `hermestest:dual`=`sha256:24ad6668aebac4f6760db36d7282dbba8dbf27a88f38a3fb59e1677a05db4369`，compose recreate 199/200 后通过 `s1-dual-200-20260511T080356` 与 `s1-feature-20260511T080935`。200 最终安全态是 `openclaw`。
+- 2026-05-11 `hermestest-200` 又升级为 `carher-runtime` dev canary：`carher-runtime dev`=`742ff122e346db4d32fc60179794dc02b47365b9`，S1 `/Data/carher-runtime`，image `carher-runtime:dev`=`sha256:e9d17af6e22e7afe6727fd539289cc9e512595fde255ddc2566004c1ecc66cb8`，E2E 通过 `s1-dual-200-20260511T094344`、`s1-feature-20260511T094908`、`s1-command-matrix-20260511T095943`。200 最终安全态是 `openclaw`。
 
 A2A 跨 S1/S3 依赖 `CARHER_SERVER`：S1 必须注册 `S1`,S3 必须注册 `S3`,不能都保持 `local`。`server=local` 会让跨主机 peer 被误判成同机 Docker DNS (`http://carher-N:18800`),表现为 S1 her 找不到 S3 her。检查 Redis `a2a:card:*` 时同时看 `server` 和 `endpoints.lan`。
 

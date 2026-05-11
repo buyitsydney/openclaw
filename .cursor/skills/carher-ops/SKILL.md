@@ -1,6 +1,6 @@
 ---
 name: carher-ops
-description: CarHer 统一运维手册：三产品线 carher-openclaw / carher-hermes / carher-dual，A+B 架构 + 3 层 config + compose 部署 + registry 分发 + 灰度 + 自检 + 回滚 + CSV 同步 + Admin。Use when the user mentions 董事长, her, docker, 容器, 服务器, server, carher, hermes, dual, hot-switch, 健康检查, 重启, restart, 日志, CSV, open_id, owner, pairing, 升级 openclaw, 升级 hermes, 升级 dual, 升级到 xxxx.x.xx 版本, 跟官方发版, 换 base, 换 FROM tag, 回滚 carher-core, 换镜像 tag, or any enterprise deployment operation.
+description: CarHer 统一运维手册：三产品线 carher-openclaw / carher-hermes / carher-runtime，A+B 架构 + 3 层 config + compose 部署 + registry 分发 + 灰度 + 自检 + 回滚 + CSV 同步 + Admin。Use when the user mentions 董事长, her, docker, 容器, 服务器, server, carher, hermes, runtime, dual, hot-switch, 健康检查, 重启, restart, 日志, CSV, open_id, owner, pairing, 升级 openclaw, 升级 hermes, 升级 runtime, 升级 dual, 升级到 xxxx.x.xx 版本, 跟官方发版, 换 base, 换 FROM tag, 回滚 carher-core, 换镜像 tag, or any enterprise deployment operation.
 ---
 
 # CarHer 统一运维手册
@@ -13,11 +13,11 @@ description: CarHer 统一运维手册：三产品线 carher-openclaw / carher-h
 
 不要把所有 Her 升级都当成同一个工程。先判断目标产品线：
 
-| 产品线            | 当前工程/目录                                                                   | 目标容器                     | 发版/升级入口                                                                                                            | 说明                                                                               |
-| ----------------- | ------------------------------------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
-| `carher-openclaw` | `/Users/buyitian/Documents/work/openclaw`；S1 `/Data/CarHer`                    | `carher-*`                   | `carher-core` image + `/Data/CarHer/deploy/carher-N`                                                                     | 现有主流 OpenClaw fleet。跟 OpenClaw 上游、CarHer OpenClaw plugins/patches 走。    |
-| `carher-hermes`   | `/Users/buyitian/Documents/work/hermestest`；S1 `/Data/hermestest`              | `hermestest-199` 等纯 Hermes | `hermestest dev` + `/Data/hermestest/deploy/...`                                                                         | 当前 `hermestest` 是 Hermes 线权威；未来可改名为 `carher-hermes`。                 |
-| `carher-dual`     | 暂未独立；当前临时权威仍是 `/Users/buyitian/Documents/work/hermestest` 的 `dev` | `hermestest-13/14/75/200`    | `hermestest dev` 的 `Dockerfile.dual`、`hermestest-entrypoint-dual.sh`、`deploy/carher-{13,14,75,200}/compose.dual.yaml` | 二合一热切换线。未来应拆成独立 `carher-dual`，只放 manifest + dual glue + CI/E2E。 |
+| 产品线            | 当前工程/目录                                                              | 目标容器                                                 | 发版/升级入口                                                                                                                          | 说明                                                                                                       |
+| ----------------- | -------------------------------------------------------------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `carher-openclaw` | `/Users/buyitian/Documents/work/openclaw`；S1 `/Data/CarHer`               | `carher-*`                                               | `carher-core` image + `/Data/CarHer/deploy/carher-N`                                                                                   | 现有主流 OpenClaw fleet。跟 OpenClaw 上游、CarHer OpenClaw plugins/patches 走。                            |
+| `carher-hermes`   | `/Users/buyitian/Documents/work/hermestest`；S1 `/Data/hermestest`         | `hermestest-199` 等纯 Hermes                             | `hermestest dev` + `/Data/hermestest/deploy/...`                                                                                       | 当前 `hermestest` 是 Hermes 线权威；未来可改名为 `carher-hermes`。                                         |
+| `carher-runtime`  | `/Users/buyitian/Documents/work/carher-runtime`；S1 `/Data/carher-runtime` | `hermestest-200` runtime canary；未来 `carher-runtime-*` | `carher-runtime dev` 的 `docker/Dockerfile.runtime`、`runtime/supervisor/dual-entrypoint.sh`、`deploy/carher-200/compose.runtime.yaml` | 多 engine supervisor / 组合器。只放 manifest + runtime-only glue + CI/E2E，不吞 OpenClaw/Hermes UX patch。 |
 
 **当前不要从 `hermestest-dual-engine` 发起新部署。** 它是昨晚历史 feature worktree，停在 `38abd1f Hermes parity: validate S1 dual-engine rollout`；`hermestest dev` 已前进到 `d20ad65 Hermes parity: sync dual lark token stores`，包含后续双 HOME lark-cli token-store 修复。
 
@@ -26,8 +26,9 @@ description: CarHer 统一运维手册：三产品线 carher-openclaw / carher-h
 **三产品线原则**：
 
 - `carher-openclaw` 和 `carher-hermes` 独立演进，互不自动影响。
-- `carher-dual` 只能通过 release manifest 显式组合某个 OpenClaw artifact 和某个 Hermes artifact。
+- `carher-runtime` 只能通过 release manifest 显式组合某个 OpenClaw artifact 和某个 Hermes artifact。
 - 生产发布不能依赖服务器上 `/Data/CarHer` 或 `/Data/hermestest` 当前 git 状态的偶然漂移；正式 dual image 要 COPY 固定版本 patch/plugin bundle，pin `@larksuite/openclaw-lark`，并写 `/etc/carher-release.json`。
+- 最终交付必须落在三个仓库的 `dev` 分支。可以先用 feature/worktree 试验，但验收前必须合入 `dev`，再从 `dev` 重新构建、部署、E2E。
 
 ---
 
@@ -92,13 +93,13 @@ deploy/carher-{id}/
 
 **Mac 本地测试容器**（id=101/102/103/104）:`carher-101`=tester, `carher-102`=tester2, `carher-103`=tester3, `carher-104`=tester4。
 
-**Hermes hot-switch experiment（2026-05-11）**:S1 `carher-200` 的原 compose
-被保留为 rollback；当前实验服务是 `/Data/hermestest/deploy/carher-200`
+**CarHer runtime canary（2026-05-11）**:S1 `carher-200` 的原 compose
+被保留为 rollback；当前 runtime canary 服务是 `/Data/carher-runtime/deploy/carher-200`
 里的 `hermestest-200`，复用原 `carher-200` volumes/ports，通过
 `/data/.engine/active` 在 `openclaw` 和 `hermes` 间切换。纯 OpenClaw 对照请用
 `carher-198`；成熟 Hermes 对照请用 `hermestest-199`。不要把
 `carher-200` 不在 `docker ps` 中误判为 200 离线，先看
-`hermestest-200` 和 active marker。
+`hermestest-200`、active marker 和 `carher-runtime:dev` 镜像。
 
 **Dual gray baseline（2026-05-11）**:`hermestest-13`、`hermestest-14`、
 `hermestest-75` 已升级为与 200 同架构的 dual 容器，默认安全态均为
@@ -125,6 +126,18 @@ commit/tag；失败时先回滚到这份 baseline。
 最终安全态为 `/data/.engine/active=openclaw`。以后不要只测 live 200 就宣称固化，
 必须按 git commit/tag/bundle -> git archive -> S1 build -> compose recreate -> E2E
 闭环证明。
+
+**S1 carher-runtime dev canary（2026-05-11）**:`carher-runtime dev`
+`742ff122e346db4d32fc60179794dc02b47365b9` 已推送到
+`https://github.com/buyitsydney/carher-runtime` 并通过 `git archive` 同步到
+S1 `/Data/carher-runtime`。S1 构建 `carher-runtime:dev` =
+`sha256:e9d17af6e22e7afe6727fd539289cc9e512595fde255ddc2566004c1ecc66cb8`。
+OpenClaw patch 源来自 `/Data/CarHer/scripts/carher-patches`，Hermes patch 源来自
+`/Data/hermestest/patches`，runtime-only glue 来自 `/Data/carher-runtime/runtime`。
+通过 E2E artifacts:
+`s1-dual-200-20260511T094344`、`s1-feature-20260511T094908`、
+`s1-command-matrix-20260511T095943`。200 最终安全态为
+`/data/.engine/active=openclaw`。
 
 **Hermes dual lark-cli token trap**:200 有两个 HOME：OpenClaw=`/data`,
 Hermes=`/opt/data`。飞书 user refresh token 会轮换，不能只检查 `.lark-cli`
