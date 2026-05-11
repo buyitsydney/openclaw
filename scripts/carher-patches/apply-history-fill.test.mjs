@@ -971,6 +971,19 @@ main();
       type: "custom_message",
       customType: "openclaw.runtime-context",
       content: "Chat history since last reply (untrusted, for context):\nold",
+    })}\n${JSON.stringify({
+      traceSchema: "openclaw-trajectory",
+      type: "model.completed",
+      data: {
+        messagesSnapshot: [
+          { role: "user", content: "real prompt" },
+          {
+            role: "custom",
+            customType: "openclaw.runtime-context",
+            content: "Chat history since last reply (untrusted, for context):\nold",
+          },
+        ],
+      },
     })}\n${JSON.stringify({ type: "message", role: "user", content: "real user text" })}\n`,
   );
   try {
@@ -993,6 +1006,8 @@ main();
 
     const scrubbed = readFileSync(sessionFile, "utf-8");
     assert.doesNotMatch(scrubbed, /openclaw\.runtime-context/);
+    assert.doesNotMatch(scrubbed, /Chat history since last reply/);
+    assert.match(scrubbed, /real prompt/);
     assert.match(scrubbed, /real user text/);
 
     execSync(

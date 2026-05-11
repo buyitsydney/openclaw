@@ -100,6 +100,28 @@ def is_runtime_context_record(record: object) -> bool:
         return False
     return record.get("type") in {"custom_message", "custom"} or record.get("role") == "custom"
 
+def strip_nested_runtime_context(value):
+    if isinstance(value, list):
+        next_items = []
+        changed = False
+        for item in value:
+            if is_runtime_context_record(item):
+                changed = True
+                continue
+            cleaned, item_changed = strip_nested_runtime_context(item)
+            changed = changed or item_changed
+            next_items.append(cleaned)
+        return next_items, changed
+    if isinstance(value, dict):
+        changed = False
+        next_obj = {}
+        for key, item in value.items():
+            cleaned, item_changed = strip_nested_runtime_context(item)
+            changed = changed or item_changed
+            next_obj[key] = cleaned
+        return next_obj, changed
+    return value, False
+
 for path in root.glob("agents/*/sessions/*.jsonl"):
     try:
         raw = path.read_text(encoding="utf-8")
@@ -119,6 +141,11 @@ for path in root.glob("agents/*/sessions/*.jsonl"):
             continue
         if is_runtime_context_record(record):
             removed += 1
+            continue
+        cleaned, changed = strip_nested_runtime_context(record)
+        if changed:
+            removed += 1
+            kept.append(json.dumps(cleaned, ensure_ascii=False, separators=(",", ":")))
             continue
         kept.append(line)
     if removed == 0:
