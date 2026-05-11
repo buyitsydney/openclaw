@@ -889,6 +889,9 @@ test("PATCH: apply-inbound-history-meta.sh filters replayed runtime context bloc
   const scratchDir = dirname(DISPATCH_PATH);
   const getReplyScratch = join(scratchDir, "get-reply-meta-replay.patchscratch.js");
   const replayScratch = join(scratchDir, "compaction-successor-transcript.patchscratch.js");
+  const queueScratch = join(scratchDir, "runtime-context-prompt.patchscratch.js");
+  const dataRoot = join(scratchDir, "runtime-context-scrub-data.patchscratch");
+  const sessionFile = join(dataRoot, "agents/main/sessions/test.jsonl");
   writeFileSync(
     getReplyScratch,
     `
@@ -931,20 +934,86 @@ sanitizeSessionHistory({ messages: [
 });
 `,
   );
+  writeFileSync(
+    queueScratch,
+    `
+async function queueRuntimeContextForNextTurn(params) {
+\tconst runtimeContext = params.runtimeContext?.trim();
+\tif (!runtimeContext) return;
+\tawait params.session.sendCustomMessage({
+\t\tcustomType: "openclaw.runtime-context",
+\t\tcontent: runtimeContext,
+\t\tdisplay: false,
+\t\tdetails: { source: "openclaw-runtime-context" }
+\t}, { deliverAs: "nextTurn" });
+}
+async function main() {
+  const sent = [];
+  const session = { sendCustomMessage: async (message) => sent.push(message) };
+  await queueRuntimeContextForNextTurn({
+    runtimeContext: "Chat history since last reply (untrusted, for context):\\nold",
+    session
+  });
+  await queueRuntimeContextForNextTurn({
+    runtimeContext: "non-Feishu runtime context",
+    session
+  });
+  if (sent.length !== 1) throw new Error("expected Feishu runtime context not to persist");
+  if (sent[0].content !== "non-Feishu runtime context") throw new Error("expected ordinary runtime context to persist");
+}
+main();
+`,
+  );
+  execSync(`mkdir -p ${dirname(sessionFile)}`);
+  writeFileSync(
+    sessionFile,
+    `${JSON.stringify({
+      type: "custom_message",
+      customType: "openclaw.runtime-context",
+      content: "Chat history since last reply (untrusted, for context):\nold",
+    })}\n${JSON.stringify({ type: "message", role: "user", content: "real user text" })}\n`,
+  );
   try {
-    execSync(`bash ${APPLY_INBOUND_HISTORY_META_SH} ${getReplyScratch}`, { stdio: "pipe" });
+    execSync(
+      `CARHER_OPENCLAW_DATA_ROOT=${dataRoot} bash ${APPLY_INBOUND_HISTORY_META_SH} ${getReplyScratch}`,
+      {
+        stdio: "pipe",
+      },
+    );
     const once = readFileSync(replayScratch, "utf-8");
     assert.match(once, /CARHER_REPLAY_CONTEXT_FILTER_PATCH_MARKER/);
     assert.match(once, /customType !== "openclaw\.runtime-context"/);
     execSync(`node --check ${replayScratch}`, { stdio: "pipe" });
     execSync(`node ${replayScratch}`, { stdio: "pipe" });
 
-    execSync(`bash ${APPLY_INBOUND_HISTORY_META_SH} ${getReplyScratch}`, { stdio: "pipe" });
+    const queueOnce = readFileSync(queueScratch, "utf-8");
+    assert.match(queueOnce, /CARHER_RUNTIME_CONTEXT_QUEUE_FEISHU_SKIP_PATCH_MARKER/);
+    execSync(`node --check ${queueScratch}`, { stdio: "pipe" });
+    execSync(`node ${queueScratch}`, { stdio: "pipe" });
+
+    const scrubbed = readFileSync(sessionFile, "utf-8");
+    assert.doesNotMatch(scrubbed, /openclaw\.runtime-context/);
+    assert.match(scrubbed, /real user text/);
+
+    execSync(
+      `CARHER_OPENCLAW_DATA_ROOT=${dataRoot} bash ${APPLY_INBOUND_HISTORY_META_SH} ${getReplyScratch}`,
+      {
+        stdio: "pipe",
+      },
+    );
     const twice = readFileSync(replayScratch, "utf-8");
     const markerCount = (twice.match(/CARHER_REPLAY_CONTEXT_FILTER_PATCH_MARKER/g) ?? []).length;
     assert.equal(markerCount, 1, "idempotent: double-apply must not duplicate replay filter");
     execSync(`node ${replayScratch}`, { stdio: "pipe" });
+
+    const queueTwice = readFileSync(queueScratch, "utf-8");
+    const queueMarkerCount = (
+      queueTwice.match(/CARHER_RUNTIME_CONTEXT_QUEUE_FEISHU_SKIP_PATCH_MARKER/g) ?? []
+    ).length;
+    assert.equal(queueMarkerCount, 2, "idempotent: double-apply must not duplicate queue filter");
+    execSync(`node ${queueScratch}`, { stdio: "pipe" });
   } finally {
-    execSync(`rm -f ${getReplyScratch} ${replayScratch}`);
+    execSync(`rm -f ${getReplyScratch} ${replayScratch} ${queueScratch}`);
+    execSync(`rm -rf ${dataRoot}`);
   }
 });
