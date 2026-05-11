@@ -1,6 +1,6 @@
 # CarHer Runtime 三工程解耦需求与验收标准
 
-**状态**：需求冻结草案  
+**状态**：执行中，最终交付必须落在三个仓库的 `dev` 分支  
 **日期**：2026-05-11  
 **目标工程**：`carher-openclaw`、`carher-hermes`、`carher-runtime`
 
@@ -15,6 +15,15 @@ CarHer 当前已经形成三类用户和三条工程线：
 3. 使用 Runtime 热切换能力的多 engine 用户。
 
 本次重构不是简单把文件拆成三个仓库，而是要证明三条线可以独立演进、独立发布、独立回滚，并且 runtime 模式下仍然完整保留 OpenClaw 与 Hermes 两边已经验证过的用户体验。
+
+最终交付口径：
+
+- `carher-openclaw`：最终成果必须在 `dev`，不能停留在 `feat/*` 或历史 PoC 分支。
+- `carher-hermes`：最终成果必须在 `dev`，不能依赖 `hermestest-dual-engine` 等历史 worktree。
+- `carher-runtime`：最终成果必须在 `dev`，不能只存在于 S1 手工目录或本地临时目录。
+- 可以先用 feature branch / worktree 做实验，但验收前必须合入对应仓库的 `dev`。
+- 合入 `dev` 后必须从 `dev` 的固化 commit 重新构建、重新部署 canary、重新跑端到端回归。
+- 最终状态不能依赖服务器上未提交文件、手工 patch、旧 feature 分支或“昨晚能跑”的偶然状态。
 
 ---
 
@@ -483,6 +492,14 @@ Runtime OpenClaw mode 也必须跑同一矩阵，将 `198` 替换为 runtime can
 ## 8. 执行纪律
 
 本轮 scope 明确为 **建仓 + canary + 真实 E2E**。不得退化成只建骨架。
+
+最终发布分支纪律：
+
+- 所有最终可交付代码、文档、脚本、skills 必须在对应仓库 `dev` 分支。
+- 任何 feature branch 只允许作为中间验证手段。
+- 如果使用 feature branch 测试，必须先 merge/cherry-pick 到 `dev`，再从 `dev` 重新走 CICD。
+- E2E 通过必须发生在 `dev` 产物上，而不是 feature branch 产物上。
+- 最终报告必须列出三个 `dev` 的 commit sha、S1 部署来源、image digest、E2E artifact。
 
 下一轮执行必须一气呵成完成以下顺序，不得只做文件拆分就宣称成功：
 
