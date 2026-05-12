@@ -215,7 +215,25 @@ describe("resolved session visibility checks", () => {
 });
 
 describe("resolveSessionReference", () => {
-  it("prefers a literal current session key before alias fallback", async () => {
+  it("maps current directly to the requester session key when available", async () => {
+    await expect(
+      resolveSessionReference({
+        sessionKey: "current",
+        alias: "main",
+        mainKey: "main",
+        requesterInternalKey: "agent:main:subagent:child",
+        restrictToSpawned: false,
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      key: "agent:main:subagent:child",
+      displayKey: "agent:main:subagent:child",
+      resolvedViaSessionId: false,
+    });
+    expect(callGatewayMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to literal current lookup when requester session key is unavailable", async () => {
     callGatewayMock.mockResolvedValueOnce({ key: "current" });
 
     await expect(
@@ -223,7 +241,6 @@ describe("resolveSessionReference", () => {
         sessionKey: "current",
         alias: "main",
         mainKey: "main",
-        requesterInternalKey: "agent:main:subagent:child",
         restrictToSpawned: false,
       }),
     ).resolves.toMatchObject({
@@ -241,7 +258,7 @@ describe("resolveSessionReference", () => {
     });
   });
 
-  it("prefers a literal current sessionId before alias fallback", async () => {
+  it("can still resolve current through sessionId lookup without a requester key", async () => {
     callGatewayMock.mockResolvedValueOnce({});
     callGatewayMock.mockResolvedValueOnce({ key: "agent:ops:main" });
 
@@ -250,7 +267,6 @@ describe("resolveSessionReference", () => {
         sessionKey: "current",
         alias: "main",
         mainKey: "main",
-        requesterInternalKey: "agent:main:subagent:child",
         restrictToSpawned: false,
       }),
     ).resolves.toMatchObject({
@@ -292,15 +308,6 @@ describe("resolveSessionReference", () => {
       displayKey: "agent:main:subagent:child",
       resolvedViaSessionId: false,
     });
-    expect(callGatewayMock).toHaveBeenNthCalledWith(1, {
-      method: "sessions.resolve",
-      params: {
-        sessionId: "current",
-        spawnedBy: "agent:main:subagent:child",
-        includeGlobal: false,
-        includeUnknown: false,
-      },
-    });
-    expect(callGatewayMock).toHaveBeenCalledTimes(1);
+    expect(callGatewayMock).not.toHaveBeenCalled();
   });
 });

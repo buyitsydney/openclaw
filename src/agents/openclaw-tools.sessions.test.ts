@@ -34,7 +34,7 @@ import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { __testing as agentStepTesting } from "./tools/agent-step.js";
 import { createSessionsHistoryTool } from "./tools/sessions-history-tool.js";
 import { createSessionsListTool } from "./tools/sessions-list-tool.js";
-import { __testing as sessionsResolutionTesting } from "./tools/sessions-resolution.js";
+import { testing as sessionsResolutionTesting } from "./tools/sessions-resolution.js";
 import { __testing as sessionsSendA2ATesting } from "./tools/sessions-send-tool.a2a.js";
 import { createSessionsSendTool } from "./tools/sessions-send-tool.js";
 
@@ -659,7 +659,6 @@ describe("sessions tools", () => {
   it("sessions_send supports fire-and-forget and wait", async () => {
     const calls: Array<{ method?: string; params?: unknown }> = [];
     let agentCallCount = 0;
-    let _historyCallCount = 0;
     let sendCallCount = 0;
     let lastWaitedRunId: string | undefined;
     const replyByRunId = new Map<string, string>();
@@ -693,7 +692,6 @@ describe("sessions tools", () => {
         return { runId: params?.runId ?? "run-1", status: "ok" };
       }
       if (request.method === "chat.history") {
-        _historyCallCount += 1;
         const text = (lastWaitedRunId && replyByRunId.get(lastWaitedRunId)) ?? "";
         return {
           messages: [

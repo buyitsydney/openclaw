@@ -382,6 +382,14 @@ export async function resolveSessionReference(params: {
   restrictToSpawned: boolean;
 }): Promise<SessionReferenceResolution> {
   const rawInput = params.sessionKey.trim();
+  if (rawInput === "current" && params.requesterInternalKey) {
+    return buildResolvedSessionReference({
+      key: params.requesterInternalKey,
+      alias: params.alias,
+      mainKey: params.mainKey,
+      resolvedViaSessionId: false,
+    });
+  }
   if (rawInput === "current") {
     const resolvedCurrent = await resolveSessionReferenceByKeyOrSessionId({
       raw: rawInput,
@@ -454,7 +462,7 @@ export async function resolveVisibleSessionReference(params: {
 
 export const normalizeOptionalKey: (value?: string) => string | undefined = normalizeOptionalString;
 
-export const __testing = {
+export const testing = {
   setDepsForTest(overrides?: Partial<{ callGateway: GatewayCaller }>) {
     sessionsResolutionDeps = overrides
       ? {
