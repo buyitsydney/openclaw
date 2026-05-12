@@ -62,13 +62,18 @@ function carherIsEngineFooterText(value) {
 \treturn normalized.includes("·") && (normalized.startsWith("🦞 OpenClaw") || normalized.startsWith("☤ Hermes"));
 }
 function carherStripFlattenedEngineCardFooter(value) {
-\tconst normalizedShell = value.replace(/^\\s*<card\\b[^>]*>\\s*/i, "").replace(/\\s*<\\/card>\\s*$/i, "");
-\tif (normalizedShell === value) return value;
-\tconst separatorIndex = normalizedShell.lastIndexOf("---");
+\tconst withoutClosingCard = value.replace(/\\s*<\\/card>\\s*$/i, "");
+\tif (withoutClosingCard === value) return value;
+\tconst openCardMatch = withoutClosingCard.match(/^\\s*(?:(\\[message_id=[^\\]]+\\])\\s*)?<card\\b[^>]*>\\s*/i);
+\tif (!openCardMatch) return value;
+\tconst shellBody = withoutClosingCard.slice(openCardMatch[0].length);
+\tconst separatorIndex = shellBody.lastIndexOf("---");
 \tif (separatorIndex === -1) return value;
-\tconst body = normalizedShell.slice(0, separatorIndex);
-\tconst footer = normalizedShell.slice(separatorIndex + 3);
-\treturn carherIsEngineFooterText(footer) ? body.trim() : value;
+\tconst body = shellBody.slice(0, separatorIndex);
+\tconst footer = shellBody.slice(separatorIndex + 3);
+\tif (!carherIsEngineFooterText(footer)) return value;
+\tconst messagePrefix = openCardMatch[1] ? openCardMatch[1].trim() : "";
+\treturn messagePrefix ? `${messagePrefix} ${body.trim()}`.trim() : body.trim();
 }
 // === end __MARKER__ ==='''.replace("__MARKER__", marker)
 sanitize_anchor = '''function sanitizePromptBody(value) {

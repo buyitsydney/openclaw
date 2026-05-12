@@ -33,22 +33,28 @@ function isEngineFooterText(value: string): boolean {
 }
 
 function stripFlattenedEngineCardFooter(value: string): string {
-  const normalizedShell = value
-    .replace(/^\s*<card\b[^>]*>\s*/i, "")
-    .replace(/\s*<\/card>\s*$/i, "");
-  if (normalizedShell === value) {
+  const withoutClosingCard = value.replace(/\s*<\/card>\s*$/i, "");
+  if (withoutClosingCard === value) {
     return value;
   }
-  const [body, footer] = (() => {
-    const index = normalizedShell.lastIndexOf("---");
-    return index === -1
-      ? [normalizedShell, ""]
-      : [normalizedShell.slice(0, index), normalizedShell.slice(index + 3)];
-  })();
+  const openCardMatch = withoutClosingCard.match(
+    /^\s*(?:(\[message_id=[^\]]+\])\s*)?<card\b[^>]*>\s*/i,
+  );
+  if (!openCardMatch) {
+    return value;
+  }
+  const shellBody = withoutClosingCard.slice(openCardMatch[0].length);
+  const separatorIndex = shellBody.lastIndexOf("---");
+  if (separatorIndex === -1) {
+    return value;
+  }
+  const body = shellBody.slice(0, separatorIndex);
+  const footer = shellBody.slice(separatorIndex + 3);
   if (!isEngineFooterText(footer)) {
     return value;
   }
-  return body.trim();
+  const messagePrefix = openCardMatch[1]?.trim();
+  return messagePrefix ? `${messagePrefix} ${body.trim()}`.trim() : body.trim();
 }
 
 function normalizePromptMetadataString(value: unknown): string | undefined {

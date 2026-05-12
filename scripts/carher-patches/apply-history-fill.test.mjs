@@ -892,11 +892,44 @@ const fs = require("fs");
 const vm = require("vm");
 const code = fs.readFileSync(${JSON.stringify(scratch)}, "utf8");
 const sandbox = {};
-vm.runInNewContext(code + ${JSON.stringify(
-        ';result=sanitizePromptBody("<card>\\nbody\\n---\\n🦞 OpenClaw · opus4.7 · 1k/1.0m · 1% · 🔒主人@ · 1.0s\\n</card>");',
-      )}, sandbox);
-if (sandbox.result !== "body") {
-  throw new Error("bad cleanup " + sandbox.result);
+vm.runInNewContext(code, sandbox);
+const cases = [
+  {
+    name: "plain card",
+    input: "<card>\\nbody\\n---\\n🦞 OpenClaw · opus4.7 · 1k/1.0m · 1% · 🔒主人@ · 1.0s\\n</card>",
+    expected: "body",
+  },
+  {
+    name: "message id prefix",
+    input: "[message_id=om_real] <card>\\n葡萄\\n苏州\\n---\\n🦞 OpenClaw · opus4.7 · 1k/1.0m · 1% · 🔒主人@ · 1.0s\\n</card>",
+    expected: "[message_id=om_real] 葡萄\\n苏州",
+  },
+  {
+    name: "Hermes",
+    input: "<card>\\n颜色\\n---\\n**☤ Hermes** · opus4.7 · 1k/1.0m · 1% · 🔒主人@ · 1.0s\\n</card>",
+    expected: "颜色",
+  },
+  {
+    name: "body separator",
+    input: "<card>\\n段1\\n---\\n段2\\n---\\n🦞 OpenClaw · opus4.7 · 1k/1.0m · 1% · 🔒主人@ · 1.0s\\n</card>",
+    expected: "段1\\n---\\n段2",
+  },
+  {
+    name: "no footer",
+    input: "<card>\\n段1\\n---\\n段2\\n</card>",
+    expected: "<card>\\n段1\\n---\\n段2\\n</card>",
+  },
+  {
+    name: "arbitrary prefix",
+    input: "quoted <card>\\nbody\\n---\\n🦞 OpenClaw · opus4.7 · 1k/1.0m · 1% · 🔒主人@ · 1.0s\\n</card>",
+    expected: "quoted <card>\\nbody\\n---\\n🦞 OpenClaw · opus4.7 · 1k/1.0m · 1% · 🔒主人@ · 1.0s\\n</card>",
+  },
+];
+for (const item of cases) {
+  const result = sandbox.sanitizePromptBody(item.input);
+  if (result !== item.expected) {
+    throw new Error(item.name + " cleanup mismatch: " + JSON.stringify(result));
+  }
 }
 `,
     );

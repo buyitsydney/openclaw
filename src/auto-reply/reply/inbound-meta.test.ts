@@ -538,6 +538,83 @@ describe("buildInboundUserContextPrefix", () => {
     expect(text).not.toContain("<card>");
   });
 
+  it("strips only official flattened card footers across reply-target edge cases", () => {
+    const cases: Array<{
+      name: string;
+      input: string;
+      expected: string;
+      shouldStrip: boolean;
+    }> = [
+      {
+        name: "message-id-prefixed OpenClaw card from real Feishu reply target",
+        input:
+          "[message_id=om_x100b6f05fadcd4b0b256e72f01b5b58] <card>\n葡萄\n苏州\n---\n🦞 OpenClaw · opus4.7 · 48.3k/1.0m · 5% · 🔒主人@ · 19.3s\n</card>",
+        expected: "[message_id=om_x100b6f05fadcd4b0b256e72f01b5b58] 葡萄\n苏州",
+        shouldStrip: true,
+      },
+      {
+        name: "Hermes card",
+        input:
+          "<card>\n颜色是琥珀色\n---\n**☤ Hermes** · opus4.7 · 28k/1.0m · 3% · 🔒主人@ · 14.5s\n</card>",
+        expected: "颜色是琥珀色",
+        shouldStrip: true,
+      },
+      {
+        name: "body contains markdown separators before official footer",
+        input:
+          "<card>\n段1\n---\n段2\n---\n🦞 OpenClaw · opus4.7 · 45.5k/1.0m · 5% · 🔒主人@ · 18.4s\n</card>",
+        expected: "段1\n---\n段2",
+        shouldStrip: true,
+      },
+      {
+        name: "body contains markdown separator but no footer",
+        input: "<card>\n段1\n---\n段2\n</card>",
+        expected: "<card>\n段1\n---\n段2\n</card>",
+        shouldStrip: false,
+      },
+      {
+        name: "wrong lobster spacing is not an official footer",
+        input:
+          "<card>\n正文\n---\n🦞OpenClaw · opus4.7 · 45.5k/1.0m · 5% · 🔒主人@ · 18.4s\n</card>",
+        expected:
+          "<card>\n正文\n---\n🦞OpenClaw · opus4.7 · 45.5k/1.0m · 5% · 🔒主人@ · 18.4s\n</card>",
+        shouldStrip: false,
+      },
+      {
+        name: "wrong separator dot is not an official footer",
+        input:
+          "<card>\n正文\n---\n🦞 OpenClaw • opus4.7 • 45.5k/1.0m • 5% • 🔒主人@ • 18.4s\n</card>",
+        expected:
+          "<card>\n正文\n---\n🦞 OpenClaw • opus4.7 • 45.5k/1.0m • 5% • 🔒主人@ • 18.4s\n</card>",
+        shouldStrip: false,
+      },
+      {
+        name: "arbitrary prose before card is not stripped",
+        input:
+          "quoted body <card>\n正文\n---\n🦞 OpenClaw · opus4.7 · 45.5k/1.0m · 5% · 🔒主人@ · 18.4s\n</card>",
+        expected:
+          "quoted body <card>\n正文\n---\n🦞 OpenClaw · opus4.7 · 45.5k/1.0m · 5% · 🔒主人@ · 18.4s\n</card>",
+        shouldStrip: false,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const text = buildInboundUserContextPrefix({
+        ChatType: "group",
+        ReplyToBody: testCase.input,
+      } as TemplateContext);
+      const payload = parseUntrustedJsonBlock(
+        text,
+        "Replied message (untrusted, for context):",
+      ) as Record<string, unknown>;
+      expect(payload["body"], testCase.name).toBe(testCase.expected);
+      if (testCase.shouldStrip) {
+        expect(String(payload["body"]), testCase.name).not.toContain("<card>");
+        expect(String(payload["body"]), testCase.name).not.toContain("opus4.7");
+      }
+    }
+  });
+
   it("omits forwarded metadata blocks unless ForwardedFrom is present", () => {
     const text = buildInboundUserContextPrefix({
       ChatType: "group",

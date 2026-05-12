@@ -203,6 +203,82 @@ describe("getMessageFeishu", () => {
     expect(result?.content).not.toContain("<card>");
   });
 
+  it("strips only official flattened card footers from quoted card edge cases", async () => {
+    const cases: Array<{
+      name: string;
+      raw: string;
+      expected: string;
+    }> = [
+      {
+        name: "message-id-prefixed OpenClaw card",
+        raw:
+          "[message_id=om_x100b6f05fadcd4b0b256e72f01b5b58] <card>\n葡萄\n苏州\n---\n🦞 OpenClaw · opus4.7 · 48.3k/1.0m · 5% · 🔒主人@ · 19.3s\n</card>",
+        expected: "[message_id=om_x100b6f05fadcd4b0b256e72f01b5b58] 葡萄\n苏州",
+      },
+      {
+        name: "Hermes official footer",
+        raw:
+          "<card>\n颜色是琥珀色\n---\n**☤ Hermes** · opus4.7 · 28k/1.0m · 3% · 🔒主人@ · 14.5s\n</card>",
+        expected: "颜色是琥珀色",
+      },
+      {
+        name: "body markdown separator before official footer",
+        raw:
+          "<card>\n段1\n---\n段2\n---\n🦞 OpenClaw · opus4.7 · 45.5k/1.0m · 5% · 🔒主人@ · 18.4s\n</card>",
+        expected: "段1\n---\n段2",
+      },
+      {
+        name: "markdown separator without official footer stays unchanged",
+        raw: "<card>\n段1\n---\n段2\n</card>",
+        expected: "<card>\n段1\n---\n段2\n</card>",
+      },
+      {
+        name: "wrong lobster spacing stays unchanged",
+        raw:
+          "<card>\n正文\n---\n🦞OpenClaw · opus4.7 · 45.5k/1.0m · 5% · 🔒主人@ · 18.4s\n</card>",
+        expected:
+          "<card>\n正文\n---\n🦞OpenClaw · opus4.7 · 45.5k/1.0m · 5% · 🔒主人@ · 18.4s\n</card>",
+      },
+      {
+        name: "wrong separator dot stays unchanged",
+        raw:
+          "<card>\n正文\n---\n🦞 OpenClaw • opus4.7 • 45.5k/1.0m • 5% • 🔒主人@ • 18.4s\n</card>",
+        expected:
+          "<card>\n正文\n---\n🦞 OpenClaw • opus4.7 • 45.5k/1.0m • 5% • 🔒主人@ • 18.4s\n</card>",
+      },
+      {
+        name: "arbitrary prose before card stays unchanged",
+        raw:
+          "quoted body <card>\n正文\n---\n🦞 OpenClaw · opus4.7 · 45.5k/1.0m · 5% · 🔒主人@ · 18.4s\n</card>",
+        expected:
+          "quoted body <card>\n正文\n---\n🦞 OpenClaw · opus4.7 · 45.5k/1.0m · 5% · 🔒主人@ · 18.4s\n</card>",
+      },
+    ];
+
+    for (const testCase of cases) {
+      mockClientGet.mockResolvedValueOnce({
+        code: 0,
+        data: {
+          items: [
+            {
+              message_id: `om_${testCase.name.replaceAll(/\W+/g, "_")}`,
+              chat_id: "oc_footer",
+              msg_type: "interactive",
+              body: { content: testCase.raw },
+            },
+          ],
+        },
+      });
+
+      const result = await getMessageFeishu({
+        cfg: {} as ClawdbotConfig,
+        messageId: "om_footer_card",
+      });
+
+      expect(result?.content, testCase.name).toBe(testCase.expected);
+    }
+  });
+
   it("extracts text content from post messages", async () => {
     mockClientGet.mockResolvedValueOnce({
       code: 0,
