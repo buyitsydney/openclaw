@@ -16,7 +16,7 @@ import test from "node:test";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const script = resolve(__dirname, "carher-migrate-ui.mjs");
 
-function makeFixture({ applyFails = false, conflictFails = false } = {}) {
+function makeFixture({ applyFails = false, conflictFails = false, strictBotFails = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "carher-migrate-ui-test-"));
   const bin = join(root, "bin");
   const log = join(root, "lark.log");
@@ -30,6 +30,12 @@ set -euo pipefail
 printf '%s\\n' "$*" >> "${log}"
 if [ "\${CARHER_MIGRATE_UI_LOG_ENV:-0}" = "1" ]; then
   printf 'HOME=%s HERMES_HOME=%s HERMES_DATA_DIR=%s\\n' "\${HOME:-}" "\${HERMES_HOME:-}" "\${HERMES_DATA_DIR:-}" >> "${envLog}"
+fi
+if [ "${strictBotFails ? "1" : "0"}" = "1" ] && printf '%s\\n' "$*" | grep -q -- '--as bot'; then
+  cat >&2 <<'JSON'
+{"ok":false,"identity":"bot","error":{"type":"strict_mode","message":"strict mode is \"user\", only user-identity commands are available"}}
+JSON
+  exit 1
 fi
 if [ "$1" = "im" ]; then
   echo '{"data":{"message_id":"om_ui_test"}}'
@@ -156,6 +162,35 @@ test("run uses Hermes lark-cli home when a Hermes bind config exists", () => {
       assert.match(line, new RegExp(`HERMES_HOME=${hermesHome.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
       assert.match(line, new RegExp(`HERMES_DATA_DIR=${hermesHome.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
     }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("run falls back to direct Feishu OpenAPI when lark-cli strict-mode rejects bot identity", () => {
+  const fixture = makeFixture({ strictBotFails: true });
+  const openApiLog = join(fixture.root, "openapi.log");
+  try {
+    const result = spawnSync(
+      "node",
+      [script, "run", "--chat-id", "oc_test", "--confirm"],
+      {
+        encoding: "utf8",
+        env: {
+          ...fixture.env,
+          FEISHU_APP_ID: "cli_test",
+          FEISHU_APP_SECRET: "secret_test",
+          CARHER_MIGRATE_UI_OPENAPI_MOCK_LOG: openApiLog,
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /carher_migrate_ui_message_id=om_direct_api/);
+    assert.match(result.stdout, /message_id=om_direct_api/);
+    const requests = readFileSync(openApiLog, "utf8").trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    assert.equal(requests.filter((request) => request.method === "POST" && request.path.startsWith("/im/v1/messages?")).length, 1);
+    assert.equal(requests.filter((request) => request.method === "PATCH").length, 5);
+    assert.ok(requests.every((request) => request.token === "" || request.token === "tenant-token"));
   } finally {
     fixture.cleanup();
   }

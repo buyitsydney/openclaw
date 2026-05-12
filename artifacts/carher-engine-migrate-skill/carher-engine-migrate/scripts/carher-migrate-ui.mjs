@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { appendFileSync, existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const migrateScript = process.env.CARHER_MIGRATE_SCRIPT || resolve(__dirname, "carher-migrate.sh");
 const sleepMs = Number(process.env.CARHER_MIGRATE_UI_SLEEP_MS || "400");
+let cachedTenantAccessToken = "";
 
 function usage() {
   console.log(`Usage:
@@ -125,6 +127,115 @@ function runLarkCli(args) {
   return runChecked("lark-cli", args, { env: larkCliEnv() });
 }
 
+function strictModeRejectsBotIdentity(text) {
+  const body = String(text || "");
+  return (
+    /strict_mode/i.test(body) &&
+    /strict mode is ["']?user["']?/i.test(body) &&
+    /only user-identity commands are available/i.test(body)
+  );
+}
+
+function feishuOpenApiBaseUrl() {
+  return (process.env.CARHER_FEISHU_OPENAPI_BASE_URL || "https://open.feishu.cn/open-apis").replace(/\/+$/, "");
+}
+
+function appendOpenApiMockRequest(request) {
+  const logPath = process.env.CARHER_MIGRATE_UI_OPENAPI_MOCK_LOG;
+  if (!logPath) {
+    return false;
+  }
+  appendFileSync(logPath, `${JSON.stringify(request)}\n`);
+  return true;
+}
+
+async function feishuJsonRequest(method, path, body, token = "") {
+  const url = `${feishuOpenApiBaseUrl()}${path}`;
+  const headers = { "content-type": "application/json; charset=utf-8" };
+  if (token) {
+    headers.authorization = `Bearer ${token}`;
+  }
+  const response = await fetch(url, {
+    method,
+    headers,
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  let parsed;
+  try {
+    parsed = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`飞书 OpenAPI 返回了非 JSON 响应: ${text}`);
+  }
+  if (!response.ok || Number(parsed.code || 0) !== 0) {
+    throw new Error(`飞书 OpenAPI ${method} ${path} 失败: ${text || response.statusText}`);
+  }
+  return parsed;
+}
+
+async function tenantAccessToken() {
+  if (cachedTenantAccessToken) {
+    return cachedTenantAccessToken;
+  }
+  const appId = process.env.FEISHU_APP_ID || process.env.LARK_APP_ID;
+  const appSecret = process.env.FEISHU_APP_SECRET || process.env.LARK_APP_SECRET;
+  if (!appId || !appSecret) {
+    throw new Error(
+      "飞书 bot 卡片需要 FEISHU_APP_ID/FEISHU_APP_SECRET。当前 lark-cli strict-mode=user，不能使用 --as bot；请给容器注入飞书应用凭证后重试。",
+    );
+  }
+  if (
+    appendOpenApiMockRequest({
+      method: "POST",
+      path: "/auth/v3/tenant_access_token/internal",
+      token: "",
+      body: { app_id: appId, app_secret: appSecret },
+    })
+  ) {
+    cachedTenantAccessToken = "tenant-token";
+    return cachedTenantAccessToken;
+  }
+  const parsed = await feishuJsonRequest("POST", "/auth/v3/tenant_access_token/internal", {
+    app_id: appId,
+    app_secret: appSecret,
+  });
+  if (!parsed.tenant_access_token) {
+    throw new Error("飞书 OpenAPI 没有返回 tenant_access_token，无法发送迁移卡片。");
+  }
+  cachedTenantAccessToken = parsed.tenant_access_token;
+  return cachedTenantAccessToken;
+}
+
+async function directCreateCard(chatId, card) {
+  const token = await tenantAccessToken();
+  const path = "/im/v1/messages?receive_id_type=chat_id";
+  const body = {
+    receive_id: chatId,
+    msg_type: "interactive",
+    content: JSON.stringify(card),
+    uuid: randomUUID(),
+  };
+  if (appendOpenApiMockRequest({ method: "POST", path, token, body })) {
+    return "om_direct_api";
+  }
+  const parsed = await feishuJsonRequest("POST", path, body, token);
+  const messageId = findMessageId(parsed);
+  if (!messageId) {
+    throw new Error(`飞书 OpenAPI 发卡成功但没有返回 message_id: ${JSON.stringify(parsed)}`);
+  }
+  return messageId;
+}
+
+async function directPatchCard(messageId, card) {
+  const token = await tenantAccessToken();
+  const path = `/im/v1/messages/${encodeURIComponent(messageId)}`;
+  const body = { content: JSON.stringify(card) };
+  if (appendOpenApiMockRequest({ method: "PATCH", path, token, body })) {
+    return JSON.stringify({ code: 0, msg: "ok" });
+  }
+  return JSON.stringify(await feishuJsonRequest("PATCH", path, body, token));
+}
+
 function findMessageId(value) {
   if (!value || typeof value !== "object") {
     return "";
@@ -147,7 +258,7 @@ function findMessageId(value) {
   return "";
 }
 
-function sendCard(chatId, card) {
+async function sendCard(chatId, card) {
   const result = runLarkCli([
     "im",
     "+messages-send",
@@ -161,7 +272,11 @@ function sendCard(chatId, card) {
     JSON.stringify(card),
   ]);
   if (result.status !== 0) {
-    throw new Error(`lark-cli send failed: ${result.stderr || result.stdout}`);
+    const output = result.stderr || result.stdout;
+    if (strictModeRejectsBotIdentity(output)) {
+      return directCreateCard(chatId, card);
+    }
+    throw new Error(`lark-cli send failed: ${output}`);
   }
   let parsed;
   try {
@@ -176,7 +291,7 @@ function sendCard(chatId, card) {
   return messageId;
 }
 
-function patchCard(messageId, card) {
+async function patchCard(messageId, card) {
   const result = runLarkCli([
     "api",
     "PATCH",
@@ -189,7 +304,11 @@ function patchCard(messageId, card) {
     "json",
   ]);
   if (result.status !== 0) {
-    throw new Error(`lark-cli patch failed: ${result.stderr || result.stdout}`);
+    const output = result.stderr || result.stdout;
+    if (strictModeRejectsBotIdentity(output)) {
+      return directPatchCard(messageId, card);
+    }
+    throw new Error(`lark-cli patch failed: ${output}`);
   }
   return result.stdout;
 }
@@ -297,7 +416,7 @@ function translateFailureLines(lines) {
 }
 
 async function patchFrame(messageId, frame) {
-  patchCard(messageId, buildCard(frame));
+  await patchCard(messageId, buildCard(frame));
   await delay(sleepMs);
 }
 
@@ -311,7 +430,7 @@ async function runUi(options) {
 
   let messageId = "";
   try {
-    messageId = sendCard(
+    messageId = await sendCard(
       options["chat-id"],
       buildCard({
         phase: "开始",
@@ -406,7 +525,7 @@ async function runUi(options) {
     console.log(`message_id=${messageId}`);
   } catch (error) {
     if (messageId) {
-      patchCard(
+      await patchCard(
         messageId,
         buildCard({
           phase: "失败",
@@ -443,7 +562,7 @@ async function main() {
     if (!options["chat-id"]) {
       throw new Error("--chat-id is required");
     }
-    const messageId = sendCard(
+    const messageId = await sendCard(
       options["chat-id"],
       buildCard({
         phase: options.phase || "开始",
@@ -459,7 +578,7 @@ async function main() {
     if (!options["message-id"]) {
       throw new Error("--message-id is required");
     }
-    patchCard(
+    await patchCard(
       options["message-id"],
       buildCard({
         phase: options.phase || "更新",
