@@ -37,6 +37,7 @@ vi.mock("./sessions-send-tool.a2a.js", () => ({
 
 let createSessionsListTool: typeof import("./sessions-list-tool.js").createSessionsListTool;
 let createSessionsSendTool: typeof import("./sessions-send-tool.js").createSessionsSendTool;
+let createSessionsHistoryTool: typeof import("./sessions-history-tool.js").createSessionsHistoryTool;
 let resolveAnnounceTarget: (typeof import("./sessions-announce-target.js"))["resolveAnnounceTarget"];
 let setActivePluginRegistry: (typeof import("../../plugins/runtime.js"))["setActivePluginRegistry"];
 const MAIN_AGENT_SESSION_KEY = "agent:main:main";
@@ -59,6 +60,7 @@ type SessionsListResult = Awaited<
 beforeAll(async () => {
   ({ createSessionsListTool } = await import("./sessions-list-tool.js"));
   ({ createSessionsSendTool } = await import("./sessions-send-tool.js"));
+  ({ createSessionsHistoryTool } = await import("./sessions-history-tool.js"));
   ({ resolveAnnounceTarget } = await import("./sessions-announce-target.js"));
   ({ setActivePluginRegistry } = await import("../../plugins/runtime.js"));
 });
@@ -142,6 +144,10 @@ const installRegistry = async () => {
 
 function createMainSessionsListTool() {
   return createSessionsListTool({ agentSessionKey: MAIN_AGENT_SESSION_KEY });
+}
+
+function createMainSessionsHistoryTool() {
+  return createSessionsHistoryTool({ agentSessionKey: MAIN_AGENT_SESSION_KEY });
 }
 
 async function executeMainSessionsList() {
@@ -451,6 +457,90 @@ describe("sessions_list gating", () => {
       method: "chat.history",
       params: { sessionKey: "current", limit: 1 },
     });
+  });
+});
+
+describe("sessions_history tool", () => {
+  beforeEach(() => {
+    callGatewayMock.mockClear();
+    loadConfigMock.mockReturnValue({
+      session: { scope: "per-sender", mainKey: "main" },
+      tools: {
+        agentToAgent: { enabled: true },
+        sessions: { visibility: "all" },
+      },
+    });
+  });
+
+  it("maps current to the requester session and preserves peer-engine history records", async () => {
+    const peerUser = {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text:
+            "[CarHer peer-engine history: user message seen by the other engine]\n" +
+            "H1: Hermes side fact is indigo.",
+        },
+      ],
+      metadata: { source: "peer-engine", lark_message_id: "om_peer_user" },
+    };
+    const peerAssistant = {
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text:
+            "[CarHer peer-engine history: other engine assistant reply]\n" +
+            "H1_ACK",
+        },
+      ],
+      metadata: { source: "peer-engine", lark_message_id: "om_peer_assistant" },
+      usage: { totalTokens: 0 },
+    };
+    callGatewayMock.mockResolvedValueOnce({
+      messages: [
+        {
+          role: "system",
+          content: [
+            {
+              type: "text",
+              text:
+                "[CarHer system marker] Cross-engine DM catch-up anchor " +
+                "carher-marker-old was not present.",
+            },
+          ],
+          metadata: { source: "carher-runtime", customType: "carher.system-marker" },
+        },
+        peerUser,
+        peerAssistant,
+      ],
+    });
+
+    const result = await createMainSessionsHistoryTool().execute("call-history", {
+      sessionKey: "current",
+      limit: 20,
+    });
+
+    expect(callGatewayMock).toHaveBeenCalledWith({
+      method: "chat.history",
+      params: { sessionKey: MAIN_AGENT_SESSION_KEY, limit: 20 },
+    });
+    expect(result.details).toMatchObject({
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      messages: expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          metadata: expect.objectContaining({ source: "peer-engine" }),
+        }),
+        expect.objectContaining({
+          role: "assistant",
+          metadata: expect.objectContaining({ source: "peer-engine" }),
+        }),
+      ]),
+    });
+    expect(JSON.stringify(result.details)).toContain("H1: Hermes side fact is indigo.");
+    expect(JSON.stringify(result.details)).toContain("H1_ACK");
   });
 });
 
