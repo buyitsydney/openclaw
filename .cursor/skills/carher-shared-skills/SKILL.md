@@ -33,9 +33,38 @@ description: CarHer 三层技能架构管理（全员/部门/个人）。Use whe
 ./scripts/publish-shared-skills.sh list      # 查看本地全员 skills
 ./scripts/publish-shared-skills.sh diff      # 对比本地 vs 三台服务器
 ./scripts/publish-shared-skills.sh push      # 推送到所有服务器（rsync --delete）
+./scripts/publish-shared-skills.sh diff-one <skill>  # 只对比单个 skill
+./scripts/publish-shared-skills.sh push-one <skill>  # 只推送单个 skill
 ```
 
 `push` 读 `docker/servers.txt` 获取凭证，rsync 整体同步。不需要重建容器。
+修单个 skill 时优先用 `diff-one/push-one`，避免把本机未准备发布的其它
+skills 一起同步到线上。
+
+发布新 skill 或修复 skill 时，必须按这个顺序验收：
+
+```bash
+rsync -a artifacts/<skill-artifact>/<skill-name>/ ~/.openclaw/skills/<skill-name>/
+./scripts/publish-shared-skills.sh diff-one <skill-name>
+./scripts/publish-shared-skills.sh push-one <skill-name>
+```
+
+然后进入目标容器验证挂载后的真实版本，而不是只看本地文件。以
+`carher-engine-migrate` 和 `hermestest-200` 为例：
+
+```bash
+docker exec hermestest-200 sh -lc 'ln -sfn /data/.openclaw/skills/carher-engine-migrate /tmp/carher-engine-migrate && cd /tmp/carher-engine-migrate && bash -n scripts/carher-migrate.sh scripts/openclaw-to-hermes-migrate.sh && node --test scripts/openclaw-to-hermes-migrate.test.mjs'
+```
+
+如果需要单机 ssh 验证，凭证只从 `docker/servers.txt` 读取：
+
+```bash
+S1_PW=$(awk '/^10\.68\.13\.186[[:space:]]/ {print $3; exit}' docker/servers.txt)
+sshpass -p "$S1_PW" ssh -o StrictHostKeyChecking=no cltx@10.68.13.186 'docker ps --format "{{.Names}}" | grep hermestest-200'
+```
+
+不要把“服务器不可访问”当成 skill 设计假设；如果当前执行环境的
+ssh/docker 权限被拦截，要明确记录为本地权限门禁，并保留上述正式发布和验证命令。
 
 ### skill-creator 最新版来源
 
