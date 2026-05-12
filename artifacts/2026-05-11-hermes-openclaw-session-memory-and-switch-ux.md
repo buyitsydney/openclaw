@@ -2,18 +2,18 @@
 
 Date: 2026-05-11
 Owner: aligned with @卜弋天
-Status: Workstreams A and B delivered and live E2E-verified on hermestest-200
+Status: Workstream B delivered; Workstream A peer-session skill corrected after design review and awaiting fresh bot-level validation
 
 This file captures two related but separate workstreams:
 
 1. Hermes/OpenClaw cross-session visibility plus official OpenClaw-to-Hermes memory migration.
 2. CarHer engine branding and hot-switch UX, to start only after the current Feishu Context Dedup Fix lands and passes E2E.
 
-## Update: Workstream A Delivered
+## Update: Workstream A Peer-Session Skill Corrected
 
-Updated on 2026-05-12 after the missing original Workstream A was implemented and live-tested.
+Updated on 2026-05-12 after design review found that the first peer-session skill incorrectly wrapped lookup behavior in a custom helper script. That helper-centric design has been replaced with a pure storage-map skill.
 
-Delivered scope:
+Corrected scope:
 
 - Added shared skill `carher-peer-sessions`.
   - Local audit copy: `artifacts/carher-peer-sessions-skill/carher-peer-sessions/`.
@@ -21,20 +21,17 @@ Delivered scope:
   - S1 Hermes skill root: `/Data/hermestest/skills/carher-peer-sessions/`.
   - Runtime-visible OpenClaw path: `/data/.openclaw/skills/carher-peer-sessions/`.
   - Runtime-visible Hermes path: `/opt/hermestest/skills/carher-peer-sessions/`.
-- The skill is read-only and provides `status`, `memory`, `recent`, `search`, and `show` commands through `scripts/peer-session-search.sh`.
-- It auto-detects active engine from `/data/.engine/active`, maps `peer` to the inactive engine, and searches OpenClaw/Hermes session and memory roots without mutating either store.
-- It excludes noisy `*.trajectory.jsonl` files and truncates long JSONL snippets so bot answers remain usable.
+- The skill is read-only and intentionally provides no helper program.
+- It teaches the bot the OpenClaw and Hermes session/memory layouts, how to identify the peer engine from `/data/.engine/active`, what files are authoritative, and what evidence to cite.
+- The bot should use its normal file-inspection tools directly against the live filesystem instead of trusting a bespoke script result.
+- The old `scripts/peer-session-search.sh` helper was removed from the audit copy and must not be shipped as the bot-facing interface.
 
-Live cross-session E2E on `hermestest-200`:
+Previous helper-based validation is now treated as invalid evidence for the product goal. Fresh validation must prove that a new bot session can use the structure-only skill and inspect peer files directly:
 
-- `active=hermes`: `peer=openclaw`; the helper found `R200_OPENCLAW_DM_OK` in `/data/.openclaw/agents/main/sessions/601139fd-b89b-45a5-af50-56381f056fcc.jsonl` with line evidence.
-- Real DM `/openclaw` switch succeeded, then `active=openclaw`: `peer=hermes`; the helper found `HERMES200_DM_OK` in Hermes session files under `/opt/data/sessions/`.
-- `/new` OpenClaw bot-level validation passed:
-  - Test marker: `PEERSESS_20260512T072334_BOT_OPENCLAW2`.
-  - Bot reply used `carher-peer-sessions` and returned Hermes evidence including `/opt/data/sessions/20260510_171346_63e0ebee.jsonl:3` and `/opt/data/sessions/20260511_180839_a18db3db.jsonl:3`.
-- `/new` Hermes bot-level validation passed:
-  - Test marker: `PEERSESS_20260512T072947_BOT_HERMES`.
-  - Bot reply used `carher-peer-sessions` and returned OpenClaw evidence including `/data/.openclaw/agents/main/sessions/601139fd-b89b-45a5-af50-56381f056fcc.jsonl.reset.2026-05-11T23-21-50.197Z` lines 14, 16, 19, 21, and 23.
+- In Hermes mode, ask about a fact that exists only in OpenClaw session files.
+- In OpenClaw mode, ask about a fact that exists only in Hermes session files.
+- The answer must cite the peer engine storage path and record/line evidence.
+- No answer may rely on `peer-session-search.sh` or any other helper shipped by this skill.
 
 Official Hermes OpenClaw migration:
 
@@ -196,7 +193,7 @@ OpenClaw and Hermes must be able to see each other's session history after a hot
 
 - After switching from OpenClaw to Hermes, Hermes can inspect OpenClaw's session/history files.
 - After switching from Hermes to OpenClaw, OpenClaw can inspect Hermes's session/history files.
-- A global CarHer skill teaches the bot how to search the other engine's session history using normal CLI tools such as `rg`, `sed`, `sqlite3`, `hermes sessions list`, or equivalent read/search commands.
+- A global CarHer skill teaches the bot the other engine's session and memory structure so it can inspect the inactive engine's persisted files directly.
 - After `/new`, the bot should naturally use that skill when the user asks about cross-engine memory.
 
 This is not just a one-time copy. The runtime needs a stable peer-home or shared-mount design so either active engine can inspect the inactive engine's persisted conversation history.
@@ -207,7 +204,7 @@ This is not just a one-time copy. The runtime needs a stable peer-home or shared
 - Add stable, read-oriented peer paths in the dual runtime:
   - OpenClaw active state can read Hermes history.
   - Hermes active state can read OpenClaw history.
-- Make peer session search explicit in a global skill under the CarHer shared skill layer:
+- Make peer session visibility explicit in a global skill under the CarHer shared skill layer:
   - Host path: `~/.openclaw/skills/`
   - Container path: `/data/.openclaw/skills/`
   - The skill is read-only by default and should avoid mutating either engine's memory/session store.
@@ -259,7 +256,7 @@ Memory is loaded as a frozen snapshot at new-session start, so migration verific
 1. OpenClaw can read Hermes session/history storage through a stable path after hot switch.
 2. Hermes can read OpenClaw session/history storage through a stable path after hot switch.
 3. The shared global skill is installed, pushed, and visible to new sessions after `/new`.
-4. The bot can answer cross-engine memory questions by using the skill and CLI search, not by guessing from current context.
+4. The bot can answer cross-engine memory questions by using the skill's storage map and inspecting peer files directly, not by guessing from current context or trusting a custom helper.
 5. Official Hermes migration is run first as dry-run, then applied with an explicit conflict policy.
 6. Before/after evidence confirms `SOUL.md`, `USER.md`, and `MEMORY.md` content moved accurately from OpenClaw into Hermes.
 7. Any skipped, archived, or conflicting migration item is reported with its reason.
@@ -296,7 +293,7 @@ Expected result: the bot uses the peer-session skill and returns concrete eviden
 3. Ask: "去查一下 Hermes 之前有没有聊过 `<unique-marker>`."
 4. Repeat in the reverse direction for OpenClaw.
 
-Expected result: the skill is discoverable in the fresh session and the bot uses CLI search/read commands.
+Expected result: the skill is discoverable in the fresh session and the bot directly inspects the peer engine's persisted files.
 
 #### A4. Migration Dry Run
 
