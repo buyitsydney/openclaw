@@ -216,6 +216,12 @@ describe("getMessageFeishu", () => {
         expected: "[message_id=om_x100b6f05fadcd4b0b256e72f01b5b58] 葡萄\n苏州",
       },
       {
+        name: "message-id-prefixed OpenClaw card with escaped newlines",
+        raw:
+          "[message_id=om_x100b6f0646ec80b4b4b5ad82789ee74] <card>\\n石榴\\n杭州\\n---\\n🦞 OpenClaw · opus4.7 · 48.6k/1.0m · 5% · 🔒主人@ · 13.6s\\n</card>",
+        expected: "[message_id=om_x100b6f0646ec80b4b4b5ad82789ee74] 石榴\n杭州",
+      },
+      {
         name: "Hermes official footer",
         raw:
           "<card>\n颜色是琥珀色\n---\n**☤ Hermes** · opus4.7 · 28k/1.0m · 3% · 🔒主人@ · 14.5s\n</card>",

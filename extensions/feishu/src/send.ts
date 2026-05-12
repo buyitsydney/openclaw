@@ -232,6 +232,10 @@ function isEngineFooterText(value: string): boolean {
   );
 }
 
+function normalizeFlattenedCardShellBody(value: string): string {
+  return value.replace(/\\r\\n|\\n|\\r/g, "\n");
+}
+
 function stripFlattenedEngineCardFooter(value: string): string {
   const withoutClosingCard = value.replace(/\s*<\/card>\s*$/i, "");
   if (withoutClosingCard === value) {
@@ -243,7 +247,9 @@ function stripFlattenedEngineCardFooter(value: string): string {
   if (!openCardMatch) {
     return value;
   }
-  const shellBody = withoutClosingCard.slice(openCardMatch[0].length);
+  const shellBody = normalizeFlattenedCardShellBody(
+    withoutClosingCard.slice(openCardMatch[0].length),
+  );
   const separatorIndex = shellBody.lastIndexOf("---");
   if (separatorIndex === -1) {
     return value;

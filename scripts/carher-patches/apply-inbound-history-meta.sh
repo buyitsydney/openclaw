@@ -61,12 +61,15 @@ function carherIsEngineFooterText(value) {
 \tconst normalized = carherNormalizeFlattenedCardFooterText(value.trim());
 \treturn normalized.includes("·") && (normalized.startsWith("🦞 OpenClaw") || normalized.startsWith("☤ Hermes"));
 }
+function carherNormalizeFlattenedCardShellBody(value) {
+\treturn value.replace(/\\\\r\\\\n|\\\\n|\\\\r/g, "\\n");
+}
 function carherStripFlattenedEngineCardFooter(value) {
 \tconst withoutClosingCard = value.replace(/\\s*<\\/card>\\s*$/i, "");
 \tif (withoutClosingCard === value) return value;
 \tconst openCardMatch = withoutClosingCard.match(/^\\s*(?:(\\[message_id=[^\\]]+\\])\\s*)?<card\\b[^>]*>\\s*/i);
 \tif (!openCardMatch) return value;
-\tconst shellBody = withoutClosingCard.slice(openCardMatch[0].length);
+\tconst shellBody = carherNormalizeFlattenedCardShellBody(withoutClosingCard.slice(openCardMatch[0].length));
 \tconst separatorIndex = shellBody.lastIndexOf("---");
 \tif (separatorIndex === -1) return value;
 \tconst body = shellBody.slice(0, separatorIndex);

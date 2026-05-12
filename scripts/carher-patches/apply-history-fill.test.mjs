@@ -905,6 +905,11 @@ const cases = [
     expected: "[message_id=om_real] 葡萄\\n苏州",
   },
   {
+    name: "message id prefix escaped newlines",
+    input: "[message_id=om_real] <card>\\\\n石榴\\\\n杭州\\\\n---\\\\n🦞 OpenClaw · opus4.7 · 1k/1.0m · 1% · 🔒主人@ · 1.0s\\\\n</card>",
+    expected: "[message_id=om_real] 石榴\\n杭州",
+  },
+  {
     name: "Hermes",
     input: "<card>\\n颜色\\n---\\n**☤ Hermes** · opus4.7 · 1k/1.0m · 1% · 🔒主人@ · 1.0s\\n</card>",
     expected: "颜色",
