@@ -1,6 +1,6 @@
 ---
 name: carher-engine-migrate
-description: Use when the owner asks to migrate or sync OpenClaw memory, persona, user profile, skills, or setup into Hermes after a CarHer OpenClaw/Hermes hot switch. Handles phrases like "sync openclaw memory to hermes", "migrate OpenClaw memory to Hermes", "one-click memory migration", or "sync SOUL/USER/MEMORY.md into Hermes".
+description: Use when the owner asks to migrate or sync OpenClaw memory, persona, user profile, skills, or setup into Hermes after a CarHer OpenClaw/Hermes hot switch. Handles Chinese phrases like "迁移记忆", "迁移我的记忆", "同步记忆", "导入记忆", "同意迁移", "同意覆盖迁移", plus English phrases like "migrate OpenClaw memory to Hermes" or "sync SOUL/USER/MEMORY.md into Hermes".
 ---
 
 # CarHer Engine Migration
@@ -10,6 +10,26 @@ Use this skill only for owner-directed OpenClaw -> Hermes migration.
 The official Hermes path is `hermes claw migrate`: first run a dry-run preview,
 then execute only after the owner confirms. The safe default is `--preset
 user-data`, which does not migrate API keys or secrets.
+
+## Product Interaction
+
+The runtime does not intercept natural-language migration requests. If the
+owner says "迁移记忆", "迁移我的记忆", "同步记忆", "导入记忆", "同意迁移", or
+"同意覆盖迁移", you must use this skill and drive the migration yourself.
+
+Speak to the owner like a product, not like an implementation log:
+
+- Do not mention this skill name unless the owner asks how it works.
+- Do not explain cron/secrets/skill internals in the ready card or ordinary
+  reply. Put those details only in the migration result card when relevant.
+- Keep the user-facing prompt short. The preferred copy is:
+  `需要迁移 OpenClaw 记忆？回复「迁移记忆」。`
+- Use the one-card UI runner for apply so the owner sees start, progress,
+  success, or refusal in a single Feishu card.
+
+Treat an owner DM saying `迁移记忆` or `同意迁移` as explicit confirmation for
+the normal safe apply path. Treat `同意覆盖迁移` as explicit confirmation for
+`--overwrite`.
 
 ## Hard Rules
 
@@ -23,8 +43,9 @@ user-data`, which does not migrate API keys or secrets.
 4. Never migrate secrets unless the owner explicitly asks for secrets and you
    explain that `--migrate-secrets` is required. The default is no secrets.
 5. Always do `plan` before `apply`.
-6. Apply requires the owner to clearly confirm, for example:
-   `confirm OpenClaw to Hermes memory migration`.
+6. Apply requires the owner to clearly confirm. In the post-switch migration
+   flow, `迁移记忆`, `同意迁移`, or `confirm OpenClaw to Hermes memory migration`
+   are clear confirmations for the safe apply path.
 7. If apply output says no files were modified, preview only, or run without
    `--dry-run` and does not also say `Migration complete!`, treat it as
    failed. Hermes normally prints a preview before a real apply; do not
@@ -106,7 +127,8 @@ target container.
 2. Run `plan`. If it warns that OpenClaw is running, this is acceptable for
    preview only.
 3. Summarize what Hermes says it will migrate, conflicts, and skipped items.
-4. Ask for explicit confirmation. Do not proceed from vague agreement.
+4. Ask for explicit confirmation unless the current owner DM itself is already
+   `迁移记忆`, `同意迁移`, or an equivalent explicit request.
 5. If the plan has any conflicts, say plainly: normal `apply --confirm` can
    refuse to write because Hermes protects existing targets. Do not describe
    this as "maybe" or "probably". Use `apply --confirm --overwrite` only after
