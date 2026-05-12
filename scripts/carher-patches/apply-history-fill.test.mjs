@@ -854,7 +854,13 @@ test("PATCH: apply-inbound-history-meta.sh renders message metadata in core hist
     scratch,
     `
 function normalizePromptMetadataString(value) { return value == null ? undefined : String(value).trim() || undefined; }
-function sanitizePromptBody(value) { return value == null ? undefined : String(value); }
+function stripNullBytes(value) {
+\treturn value.replaceAll("\\0", "");
+}
+function sanitizePromptBody(value) {
+\tif (typeof value !== "string") return;
+\treturn stripNullBytes(value) || void 0;
+}
 function render(boundedHistory) {
   const label = "Chat history since last reply (untrusted, for context):";
   return boundedHistory.map((entry) => ({
@@ -872,16 +878,36 @@ function render(boundedHistory) {
     assert.match(once, /message_id: normalizePromptMetadataString\(entry\.messageId\)/);
     assert.match(once, /message_type: normalizePromptMetadataString\(entry\.messageType\)/);
     assert.match(once, /reply_to_id: normalizePromptMetadataString\(entry\.replyToId\)/);
+    assert.match(once, /CARHER_REPLY_TARGET_CARD_CLEANUP_PATCH_MARKER/);
+    assert.match(once, /carherStripFlattenedEngineCardFooter\(stripNullBytes\(value\)\)/);
 
     const singleMetaCount = (once.match(/CARHER_INBOUND_HISTORY_META_PATCH_MARKER/g) ?? []).length;
     assert.equal(singleMetaCount, 2, "single apply: exactly one metadata block");
+    execSync(`node --check ${scratch}`, { stdio: "pipe" });
+    const runner = join(dirname(DISPATCH_PATH), "reply-card-cleanup-runner.patchscratch.cjs");
+    writeFileSync(
+      runner,
+      `
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync(${JSON.stringify(scratch)}, "utf8");
+const sandbox = {};
+vm.runInNewContext(code + ${JSON.stringify(
+        ';result=sanitizePromptBody("<card>\\nbody\\n---\\n🦞 OpenClaw · opus4.7 · 1k/1.0m · 1% · 🔒主人@ · 1.0s\\n</card>");',
+      )}, sandbox);
+if (sandbox.result !== "body") {
+  throw new Error("bad cleanup " + sandbox.result);
+}
+`,
+    );
+    execSync(`node ${runner}`, { stdio: "pipe" });
     execSync(`bash ${APPLY_INBOUND_HISTORY_META_SH} ${scratch}`, { stdio: "pipe" });
     const twice = readFileSync(scratch, "utf-8");
     const doubleMetaCount = (twice.match(/CARHER_INBOUND_HISTORY_META_PATCH_MARKER/g) ?? []).length;
     assert.equal(doubleMetaCount, 2, "idempotent: double-apply must not duplicate metadata");
-    execSync(`node --check ${scratch}`, { stdio: "pipe" });
   } finally {
     execSync(`rm -f ${scratch}`);
+    execSync(`rm -f ${join(dirname(DISPATCH_PATH), "reply-card-cleanup-runner.patchscratch.cjs")}`);
   }
 });
 
@@ -900,7 +926,13 @@ test("PATCH: apply-inbound-history-meta.sh filters replayed runtime context bloc
     getReplyScratch,
     `
 function normalizePromptMetadataString(value) { return value == null ? undefined : String(value).trim() || undefined; }
-function sanitizePromptBody(value) { return value == null ? undefined : String(value); }
+function stripNullBytes(value) {
+\treturn value.replaceAll("\\0", "");
+}
+function sanitizePromptBody(value) {
+\tif (typeof value !== "string") return;
+\treturn stripNullBytes(value) || void 0;
+}
 function render(boundedHistory) {
   const label = "Chat history since last reply (untrusted, for context):";
   return boundedHistory.map((entry) => ({

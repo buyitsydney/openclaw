@@ -168,6 +168,41 @@ describe("getMessageFeishu", () => {
     );
   });
 
+  it("strips flattened interactive card footers from quoted card content", async () => {
+    mockClientGet.mockResolvedValueOnce({
+      code: 0,
+      data: {
+        items: [
+          {
+            message_id: "om_footer_card",
+            chat_id: "oc_footer",
+            msg_type: "interactive",
+            body: {
+              content:
+                "<card>\n1. 蓝莓\n2. 成都\n---\n🦞 OpenClaw · opus4.7 · 45.5k/1.0m · 5% · 🔒主人@ · 18.4s\n</card>",
+            },
+          },
+        ],
+      },
+    });
+
+    const result = await getMessageFeishu({
+      cfg: {} as ClawdbotConfig,
+      messageId: "om_footer_card",
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        messageId: "om_footer_card",
+        chatId: "oc_footer",
+        contentType: "interactive",
+        content: "1. 蓝莓\n2. 成都",
+      }),
+    );
+    expect(result?.content).not.toContain("OpenClaw · opus4.7");
+    expect(result?.content).not.toContain("<card>");
+  });
+
   it("extracts text content from post messages", async () => {
     mockClientGet.mockResolvedValueOnce({
       code: 0,

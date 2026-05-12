@@ -16,6 +16,41 @@ function stripNullBytes(value: string): string {
   return value.replaceAll("\u0000", "");
 }
 
+function normalizeFlattenedCardFooterText(value: string): string {
+  return value
+    .replace(/<\/?font\b[^>]*>/gi, "")
+    .replaceAll("**", "")
+    .split(/\s+/)
+    .join(" ");
+}
+
+function isEngineFooterText(value: string): boolean {
+  const normalized = normalizeFlattenedCardFooterText(value.trim());
+  return (
+    normalized.includes("·") &&
+    (normalized.startsWith("🦞 OpenClaw") || normalized.startsWith("☤ Hermes"))
+  );
+}
+
+function stripFlattenedEngineCardFooter(value: string): string {
+  const normalizedShell = value
+    .replace(/^\s*<card\b[^>]*>\s*/i, "")
+    .replace(/\s*<\/card>\s*$/i, "");
+  if (normalizedShell === value) {
+    return value;
+  }
+  const [body, footer] = (() => {
+    const index = normalizedShell.lastIndexOf("---");
+    return index === -1
+      ? [normalizedShell, ""]
+      : [normalizedShell.slice(0, index), normalizedShell.slice(index + 3)];
+  })();
+  if (!isEngineFooterText(footer)) {
+    return value;
+  }
+  return body.trim();
+}
+
 function normalizePromptMetadataString(value: unknown): string | undefined {
   const normalized = normalizeOptionalString(value);
   if (!normalized) {
@@ -29,7 +64,7 @@ function sanitizePromptBody(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
-  const sanitized = stripNullBytes(value);
+  const sanitized = stripFlattenedEngineCardFooter(stripNullBytes(value));
   return sanitized || undefined;
 }
 

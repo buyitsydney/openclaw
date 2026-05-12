@@ -27,6 +27,77 @@ fi
 MARKER="CARHER_INBOUND_HISTORY_META_PATCH_MARKER"
 REPLAY_MARKER="CARHER_REPLAY_CONTEXT_FILTER_PATCH_MARKER"
 QUEUE_MARKER="CARHER_RUNTIME_CONTEXT_QUEUE_FEISHU_SKIP_PATCH_MARKER"
+REPLY_CARD_MARKER="CARHER_REPLY_TARGET_CARD_CLEANUP_PATCH_MARKER"
+
+patch_reply_target_card_cleanup() {
+  if grep -q "$REPLY_CARD_MARKER" "$TARGET"; then
+    echo "apply-inbound-history-meta.sh: reply-target card cleanup already patched ($TARGET)"
+    return 0
+  fi
+  if grep -q "stripFlattenedEngineCardFooter(stripNullBytes(value))" "$TARGET"; then
+    echo "apply-inbound-history-meta.sh: source build already cleans reply-target card footers ($TARGET)"
+    return 0
+  fi
+
+  local cleanup_backup="${TARGET}.bak.reply-target-card-cleanup"
+  cp "$TARGET" "$cleanup_backup"
+
+  python3 - "$cleanup_backup" "$TARGET" "$REPLY_CARD_MARKER" <<'PY' || {
+import sys
+
+backup, target, marker = sys.argv[1:4]
+text = open(backup, encoding="utf-8").read()
+strip_anchor = '''function stripNullBytes(value) {
+\treturn value.replaceAll("\\0", "");
+}'''
+helper = '''function stripNullBytes(value) {
+\treturn value.replaceAll("\\0", "");
+}
+// === __MARKER__ ===
+function carherNormalizeFlattenedCardFooterText(value) {
+\treturn value.replace(/<\\/?font\\b[^>]*>/gi, "").replaceAll("**", "").split(/\\s+/).join(" ");
+}
+function carherIsEngineFooterText(value) {
+\tconst normalized = carherNormalizeFlattenedCardFooterText(value.trim());
+\treturn normalized.includes("·") && (normalized.startsWith("🦞 OpenClaw") || normalized.startsWith("☤ Hermes"));
+}
+function carherStripFlattenedEngineCardFooter(value) {
+\tconst normalizedShell = value.replace(/^\\s*<card\\b[^>]*>\\s*/i, "").replace(/\\s*<\\/card>\\s*$/i, "");
+\tif (normalizedShell === value) return value;
+\tconst separatorIndex = normalizedShell.lastIndexOf("---");
+\tif (separatorIndex === -1) return value;
+\tconst body = normalizedShell.slice(0, separatorIndex);
+\tconst footer = normalizedShell.slice(separatorIndex + 3);
+\treturn carherIsEngineFooterText(footer) ? body.trim() : value;
+}
+// === end __MARKER__ ==='''.replace("__MARKER__", marker)
+sanitize_anchor = '''function sanitizePromptBody(value) {
+\tif (typeof value !== "string") return;
+\treturn stripNullBytes(value) || void 0;
+}'''
+sanitize_replacement = '''function sanitizePromptBody(value) {
+\tif (typeof value !== "string") return;
+\treturn carherStripFlattenedEngineCardFooter(stripNullBytes(value)) || void 0;
+}'''
+if strip_anchor not in text:
+    raise SystemExit("stripNullBytes anchor not found")
+if sanitize_anchor not in text:
+    raise SystemExit("sanitizePromptBody anchor not found")
+text = text.replace(strip_anchor, helper, 1).replace(sanitize_anchor, sanitize_replacement, 1)
+open(target, "w", encoding="utf-8").write(text)
+PY
+    echo "apply-inbound-history-meta.sh: reply-target card cleanup anchor not found in $TARGET — upstream may have moved" >&2
+    cp "$cleanup_backup" "$TARGET"
+    return 3
+  }
+
+  if ! node --check "$TARGET" 2>/dev/null; then
+    echo "apply-inbound-history-meta.sh: node --check failed for reply-target card cleanup — restoring backup" >&2
+    cp "$cleanup_backup" "$TARGET"
+    return 4
+  fi
+  echo "apply-inbound-history-meta.sh: patched reply-target card cleanup ($TARGET)"
+}
 
 patch_runtime_context_queue() {
   local dist_dir queue_target queue_backup
@@ -254,6 +325,7 @@ else
   echo "apply-inbound-history-meta.sh: patched history metadata ($TARGET)"
 fi
 
+patch_reply_target_card_cleanup
 patch_replay_context_filter
 patch_runtime_context_queue
 scrub_persisted_runtime_context

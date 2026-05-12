@@ -216,6 +216,38 @@ function parseInteractiveCardContent(parsed: unknown): string {
   return texts.join("\n").trim() || "[Interactive Card]";
 }
 
+function normalizeFlattenedCardFooterText(value: string): string {
+  return value
+    .replace(/<\/?font\b[^>]*>/gi, "")
+    .replaceAll("**", "")
+    .split(/\s+/)
+    .join(" ");
+}
+
+function isEngineFooterText(value: string): boolean {
+  const normalized = normalizeFlattenedCardFooterText(value.trim());
+  return (
+    normalized.includes("·") &&
+    (normalized.startsWith("🦞 OpenClaw") || normalized.startsWith("☤ Hermes"))
+  );
+}
+
+function stripFlattenedEngineCardFooter(value: string): string {
+  const normalizedShell = value
+    .replace(/^\s*<card\b[^>]*>\s*/i, "")
+    .replace(/\s*<\/card>\s*$/i, "");
+  if (normalizedShell === value) {
+    return value;
+  }
+  const separatorIndex = normalizedShell.lastIndexOf("---");
+  if (separatorIndex === -1) {
+    return value;
+  }
+  const body = normalizedShell.slice(0, separatorIndex);
+  const footer = normalizedShell.slice(separatorIndex + 3);
+  return isEngineFooterText(footer) ? body.trim() : value;
+}
+
 function parseFeishuMessageContent(rawContent: string, msgType: string): string {
   if (!rawContent) {
     return "";
@@ -225,6 +257,9 @@ function parseFeishuMessageContent(rawContent: string, msgType: string): string 
   try {
     parsed = JSON.parse(rawContent);
   } catch {
+    if (msgType === "interactive") {
+      return stripFlattenedEngineCardFooter(rawContent);
+    }
     return rawContent;
   }
 
