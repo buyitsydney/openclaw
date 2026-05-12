@@ -319,6 +319,7 @@ async function runUi(options) {
         lines: ["写入迁移任务", "准备扫描 OpenClaw 与 Hermes 记忆目录"],
       }),
     );
+    console.log(`carher_migrate_ui_message_id=${messageId}`);
     await delay(sleepMs);
 
     const status = runMigrate(["status"]);

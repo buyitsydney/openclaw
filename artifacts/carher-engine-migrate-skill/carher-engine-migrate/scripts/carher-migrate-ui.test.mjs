@@ -116,6 +116,7 @@ test("run edits the same Feishu card through success frames", () => {
       { encoding: "utf8", env: fixture.env },
     );
     assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /carher_migrate_ui_message_id=om_ui_test/);
     assert.match(result.stdout, /message_id=om_ui_test/);
     const lines = readFileSync(fixture.log, "utf8").trim().split(/\r?\n/);
     assert.equal(lines.filter((line) => line.startsWith("im +messages-send")).length, 1);
@@ -169,6 +170,7 @@ test("run turns the same card red when apply refuses", () => {
       { encoding: "utf8", env: fixture.env },
     );
     assert.equal(result.status, 7);
+    assert.match(result.stdout, /carher_migrate_ui_message_id=om_ui_test/);
     const lines = readFileSync(fixture.log, "utf8").trim().split(/\r?\n/);
     assert.equal(lines.filter((line) => line.startsWith("im +messages-send")).length, 1);
     assert.equal(lines.filter((line) => line.startsWith("api PATCH")).length, 3);
@@ -187,6 +189,7 @@ test("run translates common apply failures into Chinese card details", () => {
       { encoding: "utf8", env: fixture.env },
     );
     assert.equal(result.status, 7);
+    assert.match(result.stdout, /carher_migrate_ui_message_id=om_ui_test/);
     const lines = readFileSync(fixture.log, "utf8").trim().split(/\r?\n/);
     const last = lines.at(-1) || "";
     assert.match(last, /计划摘要/);
