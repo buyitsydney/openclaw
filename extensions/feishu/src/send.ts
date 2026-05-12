@@ -288,7 +288,7 @@ function parseFeishuMessageContent(rawContent: string, msgType: string): string 
   }
 
   if (msgType === "interactive") {
-    return parseInteractiveCardContent(parsed);
+    return stripFlattenedEngineCardFooter(parseInteractiveCardContent(parsed));
   }
 
   if (typeof parsed === "string") {

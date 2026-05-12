@@ -780,7 +780,7 @@ test("FIX: fillChatHistoryIfSparse no-ops for direct messages", async () => {
 
 // -------- TEST 5: Patcher injects a single line at the expected anchor + is idempotent --------
 
-test("PATCH: apply-history-fill.sh injects one line before buildEnvelopeWithHistory (idempotent)", () => {
+test("PATCH: apply-history-fill.sh injects one line before buildEnvelopeWithHistory (idempotent)", async () => {
   // Snapshot the target file shape so regressions in upstream lark are caught loudly.
   const original = readFileSync(DISPATCH_PATH, "utf-8");
   assert.match(
@@ -792,10 +792,17 @@ test("PATCH: apply-history-fill.sh injects one line before buildEnvelopeWithHist
   // Apply patch to a scratch copy. Scratch must keep a `.js` extension
   // because the patcher runs `node --check` which refuses unknown extensions.
   const scratch = join(dirname(DISPATCH_PATH), "dispatch.patchscratch.js");
+  const lookupScratch = join(dirname(DISPATCH_PATH), "../shared/message-lookup.patchscratch.js");
   execSync(`cp ${DISPATCH_PATH} ${scratch}`);
+  execSync(`cp ${join(dirname(DISPATCH_PATH), "../shared/message-lookup.js")} ${lookupScratch}`);
+  const patchEnv = {
+    ...process.env,
+    CARHER_LARK_MESSAGE_LOOKUP_TARGET: lookupScratch,
+  };
   try {
-    execSync(`bash ${APPLY_PATCH_SH} ${scratch}`, { stdio: "pipe" });
+    execSync(`bash ${APPLY_PATCH_SH} ${scratch}`, { stdio: "pipe", env: patchEnv });
     const once = readFileSync(scratch, "utf-8");
+    const lookupOnce = readFileSync(lookupScratch, "utf-8");
 
     assert.match(
       once,
@@ -822,6 +829,16 @@ test("PATCH: apply-history-fill.sh injects one line before buildEnvelopeWithHist
       /replyToId: entry\.replyToId/,
       "patched dispatch must pass reply_to metadata into InboundHistory",
     );
+    assert.match(
+      lookupOnce,
+      /CARHER_QUOTED_CARD_CONTENT_CLEANUP_PATCH_MARKER/,
+      "message lookup must strip flattened card footers from quoted interactive cards",
+    );
+    assert.match(
+      lookupOnce,
+      /content: carherContent/,
+      "quoted message content must use the cleaned content in Feishu reply context",
+    );
     // Anchor line must still be present and appear AFTER the inserted block.
     const markerIdx = once.indexOf("CARHER_HISTORY_FILL_PATCH_MARKER");
     const anchorIdx = once.indexOf("buildEnvelopeWithHistory");
@@ -834,17 +851,68 @@ test("PATCH: apply-history-fill.sh injects one line before buildEnvelopeWithHist
     assert.equal(singleCount, 2, "single apply: exactly one block (2 marker lines)");
     const singleMetaCount = (once.match(/CARHER_HISTORY_META_PATCH_MARKER/g) ?? []).length;
     assert.equal(singleMetaCount, 2, "single apply: exactly one metadata block");
-    execSync(`bash ${APPLY_PATCH_SH} ${scratch}`, { stdio: "pipe" });
+    const singleLookupCount =
+      (lookupOnce.match(/CARHER_QUOTED_CARD_CONTENT_CLEANUP_PATCH_MARKER/g) ?? []).length;
+    assert.equal(singleLookupCount, 4, "single apply: helper + render marker lines");
+    execSync(`bash ${APPLY_PATCH_SH} ${scratch}`, { stdio: "pipe", env: patchEnv });
     const twice = readFileSync(scratch, "utf-8");
+    const lookupTwice = readFileSync(lookupScratch, "utf-8");
     const doubleCount = (twice.match(/CARHER_HISTORY_FILL_PATCH_MARKER/g) ?? []).length;
     assert.equal(doubleCount, 2, "idempotent: double-apply must not duplicate the block");
     const doubleMetaCount = (twice.match(/CARHER_HISTORY_META_PATCH_MARKER/g) ?? []).length;
     assert.equal(doubleMetaCount, 2, "idempotent: double-apply must not duplicate metadata block");
+    const doubleLookupCount =
+      (lookupTwice.match(/CARHER_QUOTED_CARD_CONTENT_CLEANUP_PATCH_MARKER/g) ?? []).length;
+    assert.equal(doubleLookupCount, 4, "idempotent: double-apply must not duplicate cleanup block");
+
+    const sandbox = {
+      exports: {},
+      require: (id) => {
+        if (id === "../converters/content-converter.js") {
+          return {
+            buildConvertContextFromItem: () => ({}),
+            convertMessageContent: async () => ({
+              content:
+                "<card>\n柚子\n宁波\n---\n🦞 OpenClaw · opus4.7 · 48.9k/1.0m · 5% · 🔒主人@ · 17.8s\n</card>",
+            }),
+          };
+        }
+        if (id === "../../core/lark-client.js") {
+          return { LarkClient: { fromCfg: () => ({ sdk: {} }) } };
+        }
+        if (id === "../../core/lark-logger.js") {
+          return { larkLogger: () => ({ info: () => {}, error: () => {} }) };
+        }
+        if (id === "../inbound/user-name-cache.js") {
+          return {
+            createBatchResolveNames: () => async () => ({}),
+            getUserNameCache: () => new Map(),
+          };
+        }
+        if (id === "../../core/accounts.js") {
+          return { getLarkAccount: () => ({}) };
+        }
+        throw new Error(`unexpected require: ${id}`);
+      },
+    };
+    const vm = await import("node:vm");
+    vm.runInNewContext(`${lookupTwice}\nexports.__testParseMessageItem = parseMessageItem;`, sandbox);
+    const parsed = await sandbox.exports.__testParseMessageItem(
+      {
+        msg_type: "interactive",
+        message_id: "om_structured_footer_card",
+        chat_id: "oc_footer",
+        body: { content: "{}" },
+      },
+      "om_structured_footer_card",
+    );
+    assert.equal(parsed.content, "柚子\n宁波");
 
     // Syntax check: patched dispatch.js must still parse (no JS broken).
     execSync(`node --check ${scratch}`, { stdio: "pipe" });
+    execSync(`node --check ${lookupScratch}`, { stdio: "pipe" });
   } finally {
-    execSync(`rm -f ${scratch}`);
+    execSync(`rm -f ${scratch} ${lookupScratch}`);
   }
 });
 

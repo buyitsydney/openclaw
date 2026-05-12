@@ -203,6 +203,48 @@ describe("getMessageFeishu", () => {
     expect(result?.content).not.toContain("<card>");
   });
 
+  it("strips flattened footers from structured interactive card markdown elements", async () => {
+    mockClientGet.mockResolvedValueOnce({
+      code: 0,
+      data: {
+        items: [
+          {
+            message_id: "om_structured_footer_card",
+            chat_id: "oc_footer",
+            msg_type: "interactive",
+            body: {
+              content: JSON.stringify({
+                elements: [
+                  {
+                    tag: "markdown",
+                    content:
+                      "<card>\n柚子\n宁波\n---\n🦞 OpenClaw · opus4.7 · 48.9k/1.0m · 5% · 🔒主人@ · 17.8s\n</card>",
+                  },
+                ],
+              }),
+            },
+          },
+        ],
+      },
+    });
+
+    const result = await getMessageFeishu({
+      cfg: {} as ClawdbotConfig,
+      messageId: "om_structured_footer_card",
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        messageId: "om_structured_footer_card",
+        chatId: "oc_footer",
+        contentType: "interactive",
+        content: "柚子\n宁波",
+      }),
+    );
+    expect(result?.content).not.toContain("OpenClaw · opus4.7");
+    expect(result?.content).not.toContain("<card>");
+  });
+
   it("strips only official flattened card footers from quoted card edge cases", async () => {
     const cases: Array<{
       name: string;

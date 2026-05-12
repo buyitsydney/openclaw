@@ -36,6 +36,7 @@ fi
 
 FILL_MARKER="CARHER_HISTORY_FILL_PATCH_MARKER"
 META_MARKER="CARHER_HISTORY_META_PATCH_MARKER"
+QUOTED_CARD_MARKER="CARHER_QUOTED_CARD_CONTENT_CLEANUP_PATCH_MARKER"
 
 ANCHOR="// 4. Build main envelope (with group chat history)"
 if ! grep -qF "$ANCHOR" "$TARGET"; then
@@ -96,6 +97,85 @@ else
     exit 5
   }
   mv "${TARGET}.tmp.history-meta" "$TARGET"
+fi
+
+LOOKUP_TARGET="${CARHER_LARK_MESSAGE_LOOKUP_TARGET:-$(dirname "$TARGET")/../shared/message-lookup.js}"
+if [ ! -f "$LOOKUP_TARGET" ]; then
+  echo "apply-history-fill.sh: message lookup target not found ($LOOKUP_TARGET) — quoted card cleanup skipped"
+elif grep -q "$QUOTED_CARD_MARKER" "$LOOKUP_TARGET"; then
+  echo "apply-history-fill.sh: quoted card cleanup already patched ($LOOKUP_TARGET)"
+elif grep -q "carherStripFlattenedEngineCardFooter(content)" "$LOOKUP_TARGET"; then
+  echo "apply-history-fill.sh: source build already cleans quoted card content ($LOOKUP_TARGET)"
+else
+  LOOKUP_BACKUP="${LOOKUP_TARGET}.bak.quoted-card-cleanup"
+  cp "$LOOKUP_TARGET" "$LOOKUP_BACKUP"
+  python3 - "$LOOKUP_BACKUP" "$LOOKUP_TARGET" "$QUOTED_CARD_MARKER" <<'PY' || {
+import sys
+
+backup, target, marker = sys.argv[1:4]
+text = open(backup, encoding="utf-8").read()
+helper_anchor = 'const accounts_1 = require("../../core/accounts.js");'
+helper = f'''const accounts_1 = require("../../core/accounts.js");
+// === {marker} ===
+function carherNormalizeFlattenedCardFooterText(value) {{
+    return String(value).replace(/<\\/?font\\b[^>]*>/gi, "").replaceAll("**", "").split(/\\s+/).join(" ");
+}}
+function carherIsEngineFooterText(value) {{
+    const normalized = carherNormalizeFlattenedCardFooterText(value.trim());
+    return normalized.includes("·") && (normalized.startsWith("🦞 OpenClaw") || normalized.startsWith("☤ Hermes"));
+}}
+function carherNormalizeFlattenedCardShellBody(value) {{
+    return String(value).replace(/\\\\r\\\\n|\\\\n|\\\\r/g, "\\n");
+}}
+function carherStripFlattenedEngineCardFooter(value) {{
+    if (typeof value !== "string")
+        return value;
+    const withoutClosingCard = value.replace(/\\s*<\\/card>\\s*$/i, "");
+    if (withoutClosingCard === value)
+        return value;
+    const openCardMatch = withoutClosingCard.match(/^\\s*(?:(\\[message_id=[^\\]]+\\])\\s*)?<card\\b[^>]*>\\s*/i);
+    if (!openCardMatch)
+        return value;
+    const shellBody = carherNormalizeFlattenedCardShellBody(withoutClosingCard.slice(openCardMatch[0].length));
+    const separatorIndex = shellBody.lastIndexOf("---");
+    if (separatorIndex === -1)
+        return value;
+    const body = shellBody.slice(0, separatorIndex);
+    const footer = shellBody.slice(separatorIndex + 3);
+    if (!carherIsEngineFooterText(footer))
+        return value;
+    const messagePrefix = openCardMatch[1] ? openCardMatch[1].trim() : "";
+    return messagePrefix ? `${{messagePrefix}} ${{body.trim()}}`.trim() : body.trim();
+}}
+// === end {marker} ==='''
+convert_anchor = "    const { content } = await (0, content_converter_1.convertMessageContent)(rawContent, msgType, ctx);"
+convert_replacement = f'''    const {{ content }} = await (0, content_converter_1.convertMessageContent)(rawContent, msgType, ctx);
+    // === {marker} render ===
+    const carherContent = msgType === 'interactive' ? carherStripFlattenedEngineCardFooter(content) : content;
+    // === end {marker} render ==='''
+content_anchor = "        content,"
+content_replacement = "        content: carherContent,"
+if helper_anchor not in text:
+    raise SystemExit("message-lookup helper anchor not found")
+if convert_anchor not in text:
+    raise SystemExit("message-lookup convert anchor not found")
+if content_anchor not in text:
+    raise SystemExit("message-lookup content return anchor not found")
+text = text.replace(helper_anchor, helper, 1)
+text = text.replace(convert_anchor, convert_replacement, 1)
+text = text.replace(content_anchor, content_replacement, 1)
+open(target, "w", encoding="utf-8").write(text)
+PY
+    echo "apply-history-fill.sh: quoted card cleanup anchor not found in $LOOKUP_TARGET — upstream may have moved" >&2
+    cp "$LOOKUP_BACKUP" "$LOOKUP_TARGET"
+    exit 6
+  }
+  if ! node --check "$LOOKUP_TARGET" 2>/dev/null; then
+    echo "apply-history-fill.sh: node --check failed for quoted card cleanup — restoring backup" >&2
+    cp "$LOOKUP_BACKUP" "$LOOKUP_TARGET"
+    exit 7
+  fi
+  echo "apply-history-fill.sh: patched quoted card cleanup ($LOOKUP_TARGET)"
 fi
 
 # Syntax check — if node rejects the patched file, restore backup immediately.
