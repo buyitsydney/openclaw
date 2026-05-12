@@ -247,14 +247,53 @@ function summarizeReview(reviewText) {
 
 function failureDetails(resultOrError) {
   if (resultOrError instanceof Error) {
-    return [resultOrError.message];
+    return translateFailureLines([resultOrError.message]);
   }
   const chunks = [resultOrError.stderr, resultOrError.stdout].filter(Boolean).join("\n");
-  return chunks
+  const lines = chunks
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
     .slice(-6);
+  return translateFailureLines(lines);
+}
+
+function translateFailureLines(lines) {
+  const out = [];
+  for (const line of lines) {
+    let match = line.match(/Summary:\s*(\d+)\s+would migrate,\s*(\d+)\s+conflict\(s\),\s*(\d+)\s+skipped/i);
+    if (match) {
+      out.push(`计划摘要: 将迁移 ${match[1]} 项，冲突 ${match[2]} 项，跳过 ${match[3]} 项`);
+      continue;
+    }
+    match = line.match(/Plan has\s*(\d+)\s+conflict\(s\)\. Refusing to apply\./i);
+    if (match) {
+      out.push(`检测到 ${match[1]} 个已有 Hermes 目标，已安全拒绝写入。`);
+      continue;
+    }
+    if (/Each conflict is an item whose target already exists/i.test(line)) {
+      out.push("如要替换已有 Hermes 目标，请明确回复「同意覆盖迁移」；迁移报告里会保留备份。");
+      continue;
+    }
+    if (/To execute the migration/i.test(line) || /hermes claw migrate/i.test(line) || /Or re-run with --dry-run/i.test(line)) {
+      continue;
+    }
+    match = line.match(/refuse:\s*active_engine=openclaw/i);
+    if (match) {
+      out.push("当前还是 OpenClaw。请先切到 Hermes，看到 Hermes 已就位后再回复「迁移记忆」。");
+      continue;
+    }
+    if (/lark-cli send failed/i.test(line)) {
+      out.push(`飞书迁移卡片发送失败: ${line.replace(/^lark-cli send failed:\s*/i, "")}`);
+      continue;
+    }
+    if (/lark-cli patch failed/i.test(line)) {
+      out.push(`飞书迁移卡片更新失败: ${line.replace(/^lark-cli patch failed:\s*/i, "")}`);
+      continue;
+    }
+    out.push(line);
+  }
+  return out.length ? out : ["迁移失败，但没有返回更多错误细节。"];
 }
 
 async function patchFrame(messageId, frame) {

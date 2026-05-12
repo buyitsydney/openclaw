@@ -16,7 +16,7 @@ import test from "node:test";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const script = resolve(__dirname, "carher-migrate-ui.mjs");
 
-function makeFixture({ applyFails = false } = {}) {
+function makeFixture({ applyFails = false, conflictFails = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "carher-migrate-ui-test-"));
   const bin = join(root, "bin");
   const log = join(root, "lark.log");
@@ -53,7 +53,7 @@ case "$1" in
     echo 'Summary: 3 would migrate, 0 conflict(s), 2 skipped'
     ;;
   apply)
-    ${applyFails ? "echo 'refuse: test conflict' >&2; exit 7" : "echo 'Migration complete!'"}
+    ${conflictFails ? "echo 'Summary: 21 would migrate, 1 conflict(s), 32 skipped' >&2; echo 'To execute the migration, run without --dry-run:' >&2; echo 'hermes claw migrate --preset user-data' >&2; echo '✗ Plan has 1 conflict(s). Refusing to apply.' >&2; echo 'Each conflict is an item whose target already exists in ~/.hermes/. Re-run with --overwrite to replace conflicting targets (item-level backups are written to the migration report directory).' >&2; exit 7" : applyFails ? "echo 'refuse: test conflict' >&2; exit 7" : "echo 'Migration complete!'"}
     ;;
   verify)
     echo 'SOUL.source_sha256=sha-soul'
@@ -173,6 +173,28 @@ test("run turns the same card red when apply refuses", () => {
     assert.equal(lines.filter((line) => line.startsWith("im +messages-send")).length, 1);
     assert.equal(lines.filter((line) => line.startsWith("api PATCH")).length, 3);
     assert.match(lines.at(-1) || "", /red|失败|refuse/);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("run translates common apply failures into Chinese card details", () => {
+  const fixture = makeFixture({ conflictFails: true });
+  try {
+    const result = spawnSync(
+      "node",
+      [script, "run", "--chat-id", "oc_test", "--confirm"],
+      { encoding: "utf8", env: fixture.env },
+    );
+    assert.equal(result.status, 7);
+    const lines = readFileSync(fixture.log, "utf8").trim().split(/\r?\n/);
+    const last = lines.at(-1) || "";
+    assert.match(last, /计划摘要/);
+    assert.match(last, /已有 Hermes 目标/);
+    assert.match(last, /同意覆盖迁移/);
+    assert.doesNotMatch(last, /Summary:/);
+    assert.doesNotMatch(last, /Refusing to apply/);
+    assert.doesNotMatch(last, /hermes claw migrate --preset/);
   } finally {
     fixture.cleanup();
   }
