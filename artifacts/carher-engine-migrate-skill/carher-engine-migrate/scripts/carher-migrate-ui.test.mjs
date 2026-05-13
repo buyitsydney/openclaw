@@ -15,6 +15,7 @@ import test from "node:test";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const script = resolve(__dirname, "carher-migrate-ui.mjs");
+const skillDoc = resolve(__dirname, "..", "SKILL.md");
 
 function makeFixture({ applyFails = false, conflictFails = false, strictBotFails = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "carher-migrate-ui-test-"));
@@ -236,4 +237,13 @@ test("run translates common apply failures into Chinese card details", () => {
   } finally {
     fixture.cleanup();
   }
+});
+
+test("skill instructs natural migration requests to use the one-card runner directly", () => {
+  const doc = readFileSync(skillDoc, "utf8");
+  assert.match(doc, /收到.*迁移记忆/);
+  assert.match(doc, /node scripts\/carher-migrate-ui\.mjs run --chat-id <oc_xxx> --confirm/);
+  assert.match(doc, /不要.*单独.*plan/);
+  assert.match(doc, /runner.*plan.*apply.*verify.*review/);
+  assert.doesNotMatch(doc, /Plan summary for the owner/);
 });

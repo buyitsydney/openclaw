@@ -26,6 +26,11 @@ Speak to the owner like a product, not like an implementation log:
   `需要迁移 OpenClaw 记忆？回复「迁移记忆」。`
 - Use the one-card UI runner for apply so the owner sees start, progress,
   success, or refusal in a single Feishu card.
+- 收到「迁移记忆」或「同意迁移」时，直接运行
+  `node scripts/carher-migrate-ui.mjs run --chat-id <oc_xxx> --confirm`。
+  收到「同意覆盖迁移」时，直接运行
+  `node scripts/carher-migrate-ui.mjs run --chat-id <oc_xxx> --confirm --overwrite`。
+  不要单独发 plan 摘要卡；runner 内部会 plan/apply/verify/review 并把结果编辑到同一张卡里。
 
 Treat an owner DM saying `迁移记忆` or `同意迁移` as explicit confirmation for
 the normal safe apply path. Treat `同意覆盖迁移` as explicit confirmation for
@@ -42,7 +47,9 @@ the normal safe apply path. Treat `同意覆盖迁移` as explicit confirmation 
    unavailable, stop after `plan`.
 4. Never migrate secrets unless the owner explicitly asks for secrets and you
    explain that `--migrate-secrets` is required. The default is no secrets.
-5. Always do `plan` before `apply`.
+5. Always do `plan` before `apply`. In bot conversations, the one-card UI
+   runner satisfies this rule internally; do not send a separate prose plan
+   before calling the runner.
 6. Apply requires the owner to clearly confirm. In the post-switch migration
    flow, `迁移记忆`, `同意迁移`, or `confirm OpenClaw to Hermes memory migration`
    are clear confirmations for the safe apply path.
@@ -124,23 +131,27 @@ target container.
    - source OpenClaw files found
    - destination Hermes files found
    - SHA/size for SOUL, USER, MEMORY
-2. Run `plan`. If it warns that OpenClaw is running, this is acceptable for
-   preview only.
-3. Summarize what Hermes says it will migrate, conflicts, and skipped items.
-4. Ask for explicit confirmation unless the current owner DM itself is already
+2. In a bot conversation with a Feishu `oc_...` chat id, prefer the one-card UI
+   runner immediately after `status` when the owner already said `迁移记忆` or
+   `同意迁移`. Do not send a separate plan card; the runner will show the plan,
+   apply/refusal, verify, and review frames in one card.
+3. Outside the bot UI runner path, run `plan`. If it warns that OpenClaw is
+   running, this is acceptable for preview only.
+4. Summarize what Hermes says it will migrate, conflicts, and skipped items.
+5. Ask for explicit confirmation unless the current owner DM itself is already
    `迁移记忆`, `同意迁移`, or an equivalent explicit request.
-5. If the plan has any conflicts, say plainly: normal `apply --confirm` can
+6. If the plan has any conflicts, say plainly: normal `apply --confirm` can
    refuse to write because Hermes protects existing targets. Do not describe
    this as "maybe" or "probably". Use `apply --confirm --overwrite` only after
    the owner explicitly confirms overwriting existing Hermes migration targets.
-6. Before applying, ensure the runtime is in Hermes mode and `status` reports
+7. Before applying, ensure the runtime is in Hermes mode and `status` reports
    `openclaw_process_running=no`.
-7. On confirmation, run `apply --confirm` or the explicit overwrite form.
+8. On confirmation, run `apply --confirm` or the explicit overwrite form.
    If the script exits non-zero, report it as failed and include the refusal
    reason. Never summarize a forced dry-run as a successful migration.
-8. Run `verify`.
-9. Run `review`.
-10. Report before vs after:
+9. Run `verify`.
+10. Run `review`.
+11. Report before vs after:
    - `SOUL.md` source and destination SHA match or differ
    - `USER.md` and `MEMORY.md` migrated into Hermes memory files
    - key phrases present or absent
